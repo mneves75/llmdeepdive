@@ -39,6 +39,10 @@ codex-auto exec <args...>  # non-interactive run in that home
 CODEX_HOME="$(codex-auto home)" codex-lane start <lane> <spec> -- --dangerously-bypass-approvals-and-sandbox
 ```
 
+`codex-bypass` and `codex-bypass-exec` route through `codex-auto` as well, so
+every zshrc wrapper is quota-aware. Only `codex-personal` / `codex-berlin` pin a
+specific account, for when you deliberately want one.
+
 **An exhausted account exits 0 having written nothing**, recording the error only
 inside the session JSONL — so a caller reads success and gets no work. That cost
 a full dispatch round of this project's content lanes. If a lane returns fast
