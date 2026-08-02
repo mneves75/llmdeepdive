@@ -50,6 +50,13 @@ that teach it.
 Geometry is generated in code, not shipped: the whole 3D explorer costs tens of
 kilobytes rather than the tens of megabytes a GLB-based one would.
 
+## Current scale
+
+158 lessons live (79 English, 79 Portuguese) across tracks 0–7, with full
+parity enforced by the build. Tracks 8–11, the capstones and the interactive
+labs are still being written — see the changelog for exactly what is and is not
+done.
+
 ## Develop
 
 ```bash

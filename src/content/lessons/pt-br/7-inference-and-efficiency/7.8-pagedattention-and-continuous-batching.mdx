@@ -1,0 +1,56 @@
+---
+id: "7.8-pagedattention-and-continuous-batching"
+track: "7-inference-and-efficiency"
+order: 8
+title: "PagedAttention e continuous batching"
+summary: "Alocação paginada do KV cache e scheduling por iteração empacotam requisições variáveis sem grandes reservas contíguas."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["7.2-the-kv-cache"]
+unlocks: ["7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+analogy: "Um hotel que exige um andar contíguo para cada grupo desperdiça quartos quando os grupos crescem sem previsão. Um hotel paginado atribui blocos de quartos em qualquer ponto e entrega a cada grupo um diretório ordenado. Continuous batching é a recepção ocupando quartos liberados imediatamente, sem esperar que todos os grupos chegados juntos partam. O diretório custa consultas, mas melhora a ocupação."
+teachBack:
+  prompt: "Explique por que alocação contígua de KV desperdiça memória, como page tables mudam o layout e como continuous batching difere de batching estático."
+  modelAnswer: "Comprimentos de saída são desconhecidos, então reservar um buffer contíguo máximo deixa capacidade ociosa; crescer buffers causa cópias e fragmentação. Alocação paginada guarda blocos lógicos fixos em blocos físicos não contíguos e os mapeia por uma block table por sequência. Continuous batching agenda em fronteiras de etapas, removendo requisições concluídas e admitindo novas, em vez de manter o batch original até seu membro mais lento terminar."
+quiz:
+  - question: "O que uma block table da sequência mapeia?"
+    options: ["Blocos lógicos do KV cache para blocos físicos", "Palavras para regras gramaticais", "Usuários para pesos", "Rewards para épocas"]
+    correctIndex: 0
+    explanation: "A indireção mantém ordem lógica mesmo quando os blocos estão espalhados fisicamente."
+  - question: "Por que continuous batching melhora utilização?"
+    options: ["Slots concluídos recebem novas requisições nas fronteiras de iteração", "Toda requisição tem o mesmo comprimento", "Ele desativa cancelamento", "Reserva contexto máximo para todos"]
+    correctIndex: 0
+    explanation: "O batch ativo evolui, então sequências curtas não deixam lanes ociosas atrás de uma longa."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-02"
+---
+
+A memória do KV cache é dinâmica. O prompt tem comprimento conhecido na admissão, mas a saída é incerta. Reservar buffer contíguo para o máximo desperdiça espaço. Reservar só o comprimento atual exige crescimento, realocação ou tamanhos variados. Sob concorrência, essas escolhas criam fragmentação interna e externa.
+
+**PagedAttention**, apresentada com vLLM em 2023, toma emprestada a ideia de blocos fixos da memória virtual. As posições lógicas da sequência são divididas em blocos. Blocos físicos podem viver em qualquer ponto do pool. Uma block table mapeia a ordem lógica para endereços físicos, e o attention kernel segue o mapeamento ao ler keys e values.
+
+Quando a sequência ultrapassa o bloco atual, o allocator entrega outro bloco sem mover estados anteriores. O desperdício fica principalmente nas posições vazias do último bloco, não numa reserva máxima inteira. O tamanho cria uma troca: blocos grandes reduzem metadata e favorecem acesso contíguo, mas aumentam sobra; blocos pequenos empacotam melhor e aumentam overhead.
+
+A indireção permite compartilhamento. Amostras paralelas, beams ou prefixos comuns apontam para os mesmos blocos read-only. Quando um ramo diverge, copy-on-write cria bloco novo. Reference counts decidem quando devolver blocos. Um bug de ownership vaza capacidade ou expõe estado de outra requisição.
+
+Alocação sozinha não mantém hardware ocupado. Um **batch estático** roda até todos terminarem. Quando uma resposta é longa e as outras acabam, lanes ficam vazias. **Continuous batching** revisita o batch entre iterações. Sequências concluídas ou canceladas saem; novas entram; ativas avançam outro token.
+
+O scheduler considera blocos disponíveis, máximo de tokens, prioridades, deadlines, adapters e mistura de prefill e decode. Pode dividir prefills para não atrasar decode. Preemption remove ou transfere uma sequência de baixa prioridade, mas recomputação e cópia custam. Políticas de fairness evitam que bulk monopolize o cache.
+
+Layouts paginados tornam capacidade visível como blocos. Admissão estima blocos de prompt e margem de saída. Mesmo assim, overcommit precisa de política de exaustão. Rejeitar cedo com erro claro é mais seguro que admitir tudo e falhar durante a geração.
+
+:::warning
+Blocos contêm dados derivados do contexto. Zere ou sobrescreva com segurança, isole tenants na metadata e teste cancelamento, retry e erros, não apenas conclusão normal.
+:::
+
+Desempenho exige kernels que entendam a page table. Copiar tudo para tensores contíguos apaga o ganho. Hashing de prefixos, metadata e locks do scheduler também consomem CPU. Testes variam comprimentos, cancelamentos, prefixos compartilhados e rajadas.
+
+Métricas incluem blocos livres, falhas de alocação, desperdício de cauda, prefix hits, preemptions, fila, sequências ativas, batch tokens, TTFT e inter-token latency. Percentis por classe revelam starvation.
+
+O teste de estresse precisa misturar chegadas curtas e longas, cancelamentos logo após admissão, falhas durante prefill e clientes lentos. Verifique invariantes do allocator depois de cada cenário: nenhuma referência negativa, nenhum bloco ainda ligado a uma requisição encerrada e nenhum bloco simultaneamente livre e em uso. Esses casos são tão importantes quanto o kernel rápido.
+
+O modelo mental tem duas camadas. Alocação paginada resolve *onde o estado crescente vive*: blocos fixos e diretório. Continuous batching resolve *quando a requisição roda*: membership muda em cada etapa. Juntos, empacotam conversas irregulares sem fingir que todas têm o mesmo formato.

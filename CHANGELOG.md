@@ -4,6 +4,55 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-08-02
+
+Content build-out and the anonymous progress backend.
+
+### Added
+
+- **158 lessons** (79 English + 79 Brazilian Portuguese) across tracks 0–7, up
+  from 8. Full EN/pt-BR parity, enforced by the build. Every lesson carries a
+  concrete analogy, a teach-back prompt with a model answer, at least two quiz
+  questions with explanations, and real citations.
+- **Anonymous progress backend on D1.** `GET`/`PUT`/`DELETE /api/progress`,
+  `POST /api/quiz/attempt`, `POST /api/signal`. Identity is an opaque
+  client-generated UUID with no join key to anything.
+- **localStorage-first client** (`src/lib/progress.ts`): every write lands
+  locally and synchronously, then sync is attempted and allowed to fail
+  silently, so the whole site works with the API unreachable.
+- Lesson signal is a **four-value enum**, not a text box, so it cannot become a
+  free-text channel.
+
+### Changed
+
+- The privacy promise is now enforced by schema shape rather than by policy: no
+  table has a column that could hold learner-written prose. A `teachBackText`
+  field sent to the API is accepted and discarded because nothing can store it.
+- Removed `lab:` frontmatter from 44 lessons. Those labs are not implemented
+  yet, and the budget checker was right to fail on a declaration pointing at
+  nothing — the frontmatter was the lie, not the checker.
+
+### Fixed
+
+- The rendered-HTML placeholder test produced two false positives on real
+  content: the quiz option "Always undefined", and `NaN` in the track-5 lesson
+  on training instabilities. Tightened to whole-node matches and dropped the
+  `NaN` check entirely — a test that cries wolf gets disabled rather than heeded.
+
+### Notes
+
+- **Verified:** build (180 pages), typecheck 0 errors, `ast-grep` clean, 11/11
+  tests, and all six content checkers green. API contract verified against
+  staging including 401 on missing/bad token, 400 on invalid lesson id, invalid
+  signal and oversized body, and an erase round-trip.
+- **Performance:** 170 of 180 routes under the 50 ms server-p95 gate. The
+  measuring machine was at load average 23–32 and the failing routes move
+  between runs, so those are local scheduling artefacts rather than route
+  defects — but the run exits non-zero and is reported as 170/180, not 180/180.
+- Still outstanding: tracks 8–11 and the capstones (35 lessons), the 35
+  interactive labs, Pagefind search UI wiring, and per-component 3D scenes for
+  the remaining explorer entries.
+
 ## [0.1.0] — 2026-08-02
 
 First staging release. Foundation, design system, content pipeline and the
@@ -77,4 +126,5 @@ Found by review and real-browser verification before this ever shipped:
   425 KB gzipped versus 130 KB, for a renderer still described upstream as
   experimental.
 
+[0.2.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.1.0

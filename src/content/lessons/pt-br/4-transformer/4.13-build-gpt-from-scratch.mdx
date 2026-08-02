@@ -1,0 +1,204 @@
+---
+id: "4.13-build-gpt-from-scratch"
+track: "4-transformer"
+order: 13
+title: "Construa um GPT do zero, com anotações"
+summary: "Um programa PyTorch completo transforma caracteres em tokens, treina um Transformer causal e gera texto."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["4.12-transformer-families"]
+unlocks: ["4.14-reading-real-weights", "5.1-pretraining-objectives"]
+analogy: "Monte uma prensa de mesa antes de visitar uma gráfica industrial. A versão pequena tem bandejas de tipos, duas estações de attention, uma prensa feed-forward e um optimizer movido à manivela. Ela não imprimirá um grande jornal, mas cada engrenagem se move pelo mesmo motivo da versão industrial. Como nada fica escondido numa biblioteca de modelos, você liga cada linha a uma equação do Transformer."
+teachBack:
+  prompt: "Percorra um batch no GPT mínimo, dos token IDs inteiros até a cross-entropy loss, e explique como a geração reutiliza o mesmo modelo."
+  modelAnswer: "IDs consultam token e position embeddings, produzindo estados B×T×C. Cada bloco aplica multi-head causal attention normalizada e uma atualização feed-forward por conexões residuais. Norm final e projeção de vocabulário geram logits B×T×V. Achatar logits e targets deslocados produz next-token cross-entropy, cujos gradientes atualizam parâmetros. Na geração, o modelo corta o contexto ao limite, usa os logits da última posição, amostra um token, anexa-o e repete o mesmo forward."
+quiz:
+  - question: "Por que a máscara triangular é registrada como buffer?"
+    options: ["Ela acompanha o módulo entre devices, mas não é treinável", "Ela vira parâmetro do optimizer", "Ela guarda texto gerado", "Ela substitui position embeddings"]
+    correctIndex: 0
+    explanation: "Buffers integram o estado e mudam de device com o módulo, sem receber gradientes nem updates do optimizer."
+  - question: "Quais logits amostram o próximo token na geração?"
+    options: ["Os logits da última posição do contexto", "A média de todos os batches já vistos", "Somente a primeira posição", "O escalar de loss"]
+    correctIndex: 0
+    explanation: "A última posição representa todo o prefixo disponível e prevê o token seguinte."
+citations:
+  - title: "Improving Language Understanding by Generative Pre-Training"
+    authors: "Alec Radford et al."
+    year: 2018
+    url: "https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf"
+  - title: "nanoGPT"
+    authors: "Andrej Karpathy"
+    year: 2022
+    url: "https://github.com/karpathy/nanoGPT"
+updated: "2026-08-02"
+---
+
+A forma mais rápida de concretizar o Transformer é implementar um. O programa abaixo é pequeno, mas completo: cria um tokenizer de caracteres, amostra batches, implementa causal multi-head self-attention, empilha blocos residuais, minimiza next-token cross-entropy e gera texto. Ele usa PyTorch para tensores e diferenciação automática, mas nenhum módulo Transformer de alto nível.
+
+Salve o bloco como `minimal_gpt.py`, instale PyTorch pelo comando indicado para sua plataforma em `pytorch.org` e execute `python minimal_gpt.py`. O treinamento roda em CPU numa experiência educacional curta. O corpus repetido e a rede pequena priorizam inspeção, não qualidade linguística. O programa imprime losses medidas; valores exatos podem variar conforme versão do PyTorch e hardware.
+
+```python
+"""Um GPT completo e mínimo em caracteres. Execute: python minimal_gpt.py"""
+
+from dataclasses import dataclass
+
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+
+
+torch.manual_seed(42)
+device = torch.device("cpu")  # Baseline portátil; altere conscientemente se quiser.
+
+# Corpus real incluído no arquivo para o exemplo ser autocontido.
+text = ("attention routes information; residual streams preserve it.\n" * 200)
+chars = sorted(set(text))
+stoi = {character: index for index, character in enumerate(chars)}
+itos = {index: character for character, index in stoi.items()}
+data = torch.tensor([stoi[character] for character in text], dtype=torch.long)
+
+
+@dataclass(frozen=True)
+class Config:
+    vocab_size: int = len(chars)
+    block_size: int = 32
+    batch_size: int = 16
+    n_embed: int = 64
+    n_head: int = 4
+    n_layer: int = 2
+    dropout: float = 0.0
+
+
+config = Config()
+split = int(0.9 * len(data))
+train_data, validation_data = data[:split], data[split:]
+
+
+def get_batch(source: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Retorna prefixos x e seus targets next-token deslocados por uma posição."""
+    starts = torch.randint(len(source) - config.block_size - 1, (config.batch_size,))
+    x = torch.stack([source[i : i + config.block_size] for i in starts])
+    y = torch.stack([source[i + 1 : i + config.block_size + 1] for i in starts])
+    return x.to(device), y.to(device)
+
+
+class AttentionHead(nn.Module):
+    def __init__(self, head_size: int) -> None:
+        super().__init__()
+        self.key = nn.Linear(config.n_embed, head_size, bias=False)
+        self.query = nn.Linear(config.n_embed, head_size, bias=False)
+        self.value = nn.Linear(config.n_embed, head_size, bias=False)
+        # O triângulo acompanha o modelo, mas não recebe gradientes.
+        self.register_buffer("causal", torch.tril(torch.ones(config.block_size, config.block_size)))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _, time, _ = x.shape
+        key, query, value = self.key(x), self.query(x), self.value(x)
+        # (B,T,H) @ (B,H,T) -> (B,T,T): toda query pontua toda key.
+        weights = query @ key.transpose(-2, -1) * (key.shape[-1] ** -0.5)
+        weights = weights.masked_fill(self.causal[:time, :time] == 0, float("-inf"))
+        weights = F.softmax(weights, dim=-1)
+        return weights @ value  # (B,T,T) @ (B,T,H) -> (B,T,H)
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        head_size = config.n_embed // config.n_head
+        self.heads = nn.ModuleList(
+            [AttentionHead(head_size) for _ in range(config.n_head)]
+        )
+        self.output = nn.Linear(config.n_embed, config.n_embed)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Heads roteiam separadas; a concatenação recupera a largura do modelo.
+        return self.output(torch.cat([head(x) for head in self.heads], dim=-1))
+
+
+class FeedForward(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(config.n_embed, 4 * config.n_embed),
+            nn.GELU(),
+            nn.Linear(4 * config.n_embed, config.n_embed),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
+
+
+class Block(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attention = MultiHeadAttention()
+        self.feed_forward = FeedForward()
+        self.norm_attention = nn.LayerNorm(config.n_embed)
+        self.norm_ffn = nn.LayerNorm(config.n_embed)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Updates residuais pre-norm: primeiro comunicar, depois transformar.
+        x = x + self.attention(self.norm_attention(x))
+        x = x + self.feed_forward(self.norm_ffn(x))
+        return x
+
+
+class MiniGPT(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.token_embedding = nn.Embedding(config.vocab_size, config.n_embed)
+        self.position_embedding = nn.Embedding(config.block_size, config.n_embed)
+        self.blocks = nn.Sequential(*[Block() for _ in range(config.n_layer)])
+        self.final_norm = nn.LayerNorm(config.n_embed)
+        self.language_head = nn.Linear(config.n_embed, config.vocab_size)
+
+    def forward(
+        self, indices: torch.Tensor, targets: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        _, time = indices.shape
+        positions = torch.arange(time, device=indices.device)
+        x = self.token_embedding(indices) + self.position_embedding(positions)
+        x = self.blocks(x)
+        logits = self.language_head(self.final_norm(x))  # (B,T,V)
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits.reshape(-1, config.vocab_size), targets.reshape(-1)
+            )
+        return logits, loss
+
+    @torch.no_grad()
+    def generate(self, indices: torch.Tensor, new_tokens: int) -> torch.Tensor:
+        for _ in range(new_tokens):
+            context = indices[:, -config.block_size :]
+            logits, _ = self(context)
+            probabilities = F.softmax(logits[:, -1, :], dim=-1)
+            next_token = torch.multinomial(probabilities, num_samples=1)
+            indices = torch.cat((indices, next_token), dim=1)
+        return indices
+
+
+model = MiniGPT().to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
+
+for step in range(301):
+    inputs, targets = get_batch(train_data)
+    _, loss = model(inputs, targets)
+    if loss is None:
+        raise RuntimeError("training targets must produce a loss")
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+    if step % 100 == 0:
+        print(f"step {step}: train loss {loss.item():.4f}")
+
+seed = torch.zeros((1, 1), dtype=torch.long, device=device)
+generated = model.generate(seed, new_tokens=160)[0].tolist()
+print("".join(itos[index] for index in generated))
+```
+
+Leia o código seguindo shapes. `indices` é $B\times T$. Consultas de token e posição produzem $B\times T\times C$. Cada head projeta $C$ features para $H=C/h$, forma uma matriz $T\times T$ por item, aplica o triângulo e mistura values. Concatenar $h$ heads recupera $C$. A FFN expande para $4C$ e volta a $C$. Toda soma residual tem, portanto, shape compatível.
+
+O target é o input deslocado uma posição. Cross-entropy compara logits de vocabulário em cada posição com o próximo caractere real. Diferenciação automática percorre output head, blocos, pesos de attention e embeddings. AdamW atualiza parâmetros; a máscara causal e os dados permanecem fixos.
+
+Geração usa o mesmo `forward` sem targets. Somente os logits da última posição preveem o próximo caractere. Sampling anexa um ID, e o corte respeita o limite da tabela posicional. Um GPT de produção adiciona attention fundida, dropout, inicialização melhor, grandes corpora tokenizados, treinamento distribuído, checkpoints, avaliações, mixed precision e KV cache. São camadas de escala e confiabilidade em torno do mesmo núcleo causal que agora pode ser inspecionado linha por linha.

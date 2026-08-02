@@ -1,0 +1,62 @@
+---
+id: "5.10-gradient-checkpointing"
+track: "5-pretraining-at-scale"
+order: 10
+title: "Gradient checkpointing e matemática de memória"
+summary: "Activation checkpointing salva fronteiras no forward e recompõe intermediários no backward, trocando compute por memória."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.9-mixed-precision"]
+unlocks: ["5.11-learning-rate-schedules"]
+analogy: "Uma pessoa numa trilha longa pode fotografar cada curva ou somente grandes cruzamentos. Fotografar tudo facilita a volta, mas lota o celular. Guardar só cruzamentos economiza espaço; no retorno, ela percorre cada trecho de novo para reconstruir as curvas. Checkpointing guarda fronteiras de ativações e recompõe o caminho quando os gradientes voltam."
+teachBack:
+  prompt: "Explique o que activation checkpointing guarda, o que recompõe e como estimar se resolve out-of-memory."
+  modelAnswer: "Autograd comum retém intermediários do forward. Checkpointing conserva boundary tensors e RNG state, descarta ativações internas e executa novamente o segmento durante backward. Estime separadamente parâmetros, gradientes, optimizer, ativações, attention, buffers e fragmentação; checkpointing reduz ativações elegíveis, não estado persistente, e adiciona o custo de recompor o forward dos segmentos."
+quiz:
+  - question: "Qual recurso activation checkpointing reduz principalmente?"
+    options: ["Ativações salvas do forward", "Tamanho do vocabulário", "Tokens de treinamento", "Latency da rede"]
+    correctIndex: 0
+    explanation: "Ele descarta intermediários internos e os recria depois a partir de fronteiras."
+  - question: "Por que cuidar do RNG na recomputação?"
+    options: ["Dropout e operações estocásticas precisam reproduzir máscaras compatíveis", "Ele muda shapes", "Ele aloca o tokenizer", "Ele substitui a loss"]
+    correctIndex: 0
+    explanation: "Um forward estocástico diferente faria o backward derivar outra função."
+citations:
+  - title: "Training Deep Nets with Sublinear Memory Cost"
+    authors: "Tianqi Chen, Bing Xu, Chiyuan Zhang e Carlos Guestrin"
+    year: 2016
+    url: "https://arxiv.org/abs/1604.06174"
+updated: "2026-08-02"
+---
+
+Backpropagation precisa de valores do forward para calcular gradientes. Autograd retém ativações, intermediários de attention e outros tensors até as funções de backward rodarem. Num Transformer profundo, esses valores consomem mais memória que os pesos. **Activation checkpointing**, também chamado gradient checkpointing, reduz o consumo esquecendo e recompondo de propósito.
+
+Divida a rede em segmentos. No forward original, salve apenas input ou output de fronteira de cada segmento, não toda ativação interna. No backward, execute novamente o forward do segmento desde a fronteira, reconstrua intermediários, calcule gradientes e libere-os. Os parâmetros não voltam no tempo; “checkpoint” aqui é fronteira de ativação, não arquivo em disco.
+
+O tradeoff é direto: pico menor por compute adicional. Se todo Transformer block é checkpointed, boa parte do forward roda de novo no backward. O overhead exato não é simplesmente dobrar tempo, porque backward, comunicação e trechos não checkpointed continuam, e recomputação se sobrepõe de outro modo. Meça step time e throughput realizado.
+
+Um budget separa categorias:
+
+$$
+M_{peak}=M_{params}+M_{grads}+M_{optimizer}+M_{activations}+M_{temporary}+M_{allocator}.
+$$
+
+Checkpointing ataca principalmente $M_{activations}$. Não divide parâmetros nem moments do Adam. Talvez não elimine temporários de attention, conforme kernel e fronteira. Um job dominado por optimizer state precisa de ZeRO/FSDP; um dominado por ativações de sequência longa ganha mais.
+
+Tamanho de ativação cresce com batch, sequência, largura e camadas salvas. Attention comum adiciona termos quadráticos, enquanto kernels memory-efficient evitam materializar a matriz completa. Combine estimativas por shape com picos medidos do allocator, pois fusão e bookkeeping mudam o que é retido.
+
+:::caveat
+Percentuais de economia dependem da configuração. “Checkpointing salva 60%” não significa nada sem batch, sequência, dtype, kernel, policy e categorias contadas.
+:::
+
+Operações estocásticas exigem cuidado. Se dropout cria uma mask no forward e outra na recomputação, backward diferencia função diferente. Utilitários preservam ou restauram RNG state com algum custo. Módulos com estado, side effects, caches mutáveis e chamadas externas também tornam recomposição incorreta.
+
+Granularidade muda o tradeoff. Segmentos grandes guardam poucas fronteiras, mas recompõem mais e podem reter inputs grandes. Segmentos pequenos mantêm mais checkpoints e invocam mais overhead. Policies seletivas tratam attention e FFN separadamente. Profile em vez de escolher “a cada N camadas” por tradição.
+
+Pipeline parallelism complica scheduling porque recomputação disputa espaço com outros microbatches. FSDP pode repetir all-gather durante recompute, a menos que mantenha parâmetros materializados, trocando comunicação por memória. Compiladores podem fundir ou reordenar regiões. A unidade efetiva é o schedule distribuído inteiro.
+
+Faça uma medição A/B com o mesmo batch e a mesma seed: sem checkpointing, com uma policy por bloco e com uma policy seletiva. Registre memória reservada e alocada, tokens por segundo e tempo de comunicação. Se a configuração economiza memória mas não permite batch, sequência ou modelo maior, o compute adicional talvez não compre benefício algum. O objetivo é remover um gargalo concreto, não maximizar a porcentagem economizada.
+
+Uma calculadora deixa inserir batch, $T$, $d_{model}$, camadas, bytes do dtype, expansão e intervalo, mostrando uma estimativa explicitamente simplificada. Deve rotular omissões e não apresentar contagem teórica como garantia do allocator.
+
+O modelo mental é troca entre tempo e espaço. Guarde estado suficiente para reconstruir o grafo; descarte intermediários volumosos; pague compute para recriá-los antes dos gradientes. A decisão vem de um breakdown medido, não do fato genérico de o modelo ser grande.

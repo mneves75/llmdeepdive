@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { relative, sep } from 'node:path'
-import { displayPath, finish, readLessons, TRACKS_ROOT, walkFiles } from './content-utils.mjs'
+import { displayPath, finish, readLessons, stringField, TRACKS_ROOT, walkFiles } from './content-utils.mjs'
 
 const TRACK_EXTENSIONS = new Set(['.json', '.yaml', '.yml'])
 
@@ -26,7 +26,7 @@ try {
     if (localeEntries?.has(lesson.id)) {
       failures.push(displayPath(lesson.file) + ': duplicate lesson id "' + lesson.id + '" in ' + lesson.locale)
     } else {
-      localeEntries?.set(lesson.id, lesson.file)
+      localeEntries?.set(lesson.id, lesson)
     }
   }
 
@@ -59,6 +59,27 @@ try {
   const tracksMissingInEnglish = [...portugueseTracks.keys()].filter((key) => !englishTracks.has(key)).sort()
   if (tracksMissingInPortuguese.length) failures.push('Tracks missing in pt-br: ' + tracksMissingInPortuguese.join(', '))
   if (tracksMissingInEnglish.length) failures.push('Tracks missing in en: ' + tracksMissingInEnglish.join(', '))
+
+  for (const [lessonLocale, localeLessons] of byLocale) {
+    const localeTracks = tracksByLocale.get(lessonLocale) ?? new Map()
+    for (const lesson of localeLessons.values()) {
+      const track = stringField(lesson.frontmatter, 'track', lesson.file)
+      if (!track) failures.push(displayPath(lesson.file) + ': missing non-empty frontmatter track')
+      else if (!localeTracks.has(track)) {
+        failures.push(displayPath(lesson.file) + ': track "' + track + '" does not resolve in ' + lessonLocale)
+      }
+    }
+  }
+  for (const id of english.keys()) {
+    const enLesson = english.get(id)
+    const ptLesson = portuguese.get(id)
+    if (!enLesson || !ptLesson) continue
+    const enTrack = stringField(enLesson.frontmatter, 'track', enLesson.file)
+    const ptTrack = stringField(ptLesson.frontmatter, 'track', ptLesson.file)
+    if (enTrack !== ptTrack) {
+      failures.push('Lesson "' + id + '" is in track "' + enTrack + '" for en but "' + ptTrack + '" for pt-br')
+    }
+  }
 
   finish(
     'content:parity',

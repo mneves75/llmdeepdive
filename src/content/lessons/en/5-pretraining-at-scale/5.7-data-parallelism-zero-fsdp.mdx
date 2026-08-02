@@ -1,0 +1,58 @@
+---
+id: "5.7-data-parallelism-zero-fsdp"
+track: "5-pretraining-at-scale"
+order: 7
+title: "Data parallelism, ZeRO & FSDP"
+summary: "Data parallelism increases throughput, while ZeRO and FSDP shard parameters, gradients, and optimizer state to fit larger models."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.6-inference-aware-scaling"]
+unlocks: ["5.8-model-parallelism"]
+analogy: "Several kitchens receive different customer orders but use the same recipe. Ordinary data parallelism gives every kitchen a full pantry and averages recipe corrections after service. Sharding divides pantry stock, correction ledgers, and even recipe cards across kitchens; ingredients are gathered just before a dish and released afterward. More storage fits collectively, but delivery traffic becomes part of cooking."
+teachBack:
+  prompt: "Compare replicated data parallelism with ZeRO/FSDP sharding and name the communication needed in one training step."
+  modelAnswer: "Replicated data parallelism keeps a full model and optimizer state on every rank, processes different microbatches, then all-reduces gradients so replicas update identically. ZeRO progressively shards optimizer state, gradients, and parameters. FSDP all-gathers a layer's parameter shards before computation, reduce-scatters gradients after backward, and can reshard parameters, lowering per-rank memory at the cost of communication and scheduling complexity."
+quiz:
+  - question: "What is replicated in ordinary data parallel training?"
+    options: ["The full model on every rank", "The same examples on every rank by requirement", "Only one gradient scalar", "No optimizer state"]
+    correctIndex: 0
+    explanation: "Each rank owns a full parameter copy and sees a different portion of the batch."
+  - question: "What does FSDP typically all-gather before a sharded module computes?"
+    options: ["Its full parameters for that computation", "The complete raw dataset", "All historical checkpoints", "Vocabulary strings from the internet"]
+    correctIndex: 0
+    explanation: "Ranks exchange parameter shards just in time so each can execute the local forward or backward operation."
+citations:
+  - title: "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models"
+    authors: "Samyam Rajbhandari et al."
+    year: 2019
+    url: "https://arxiv.org/abs/1910.02054"
+  - title: "PyTorch FSDP: Experiences on Scaling Fully Sharded Data Parallel"
+    authors: "Yanli Zhao et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2304.11277"
+updated: "2026-08-02"
+---
+
+One accelerator can process only a limited batch and hold only a limited model state. **Data parallelism** increases training throughput by giving several workers identical model replicas and different examples. If rank $r$ computes gradient $g_r$, a collective reduction forms the mean or sum used by every replica. Starting from equal weights and applying equal gradients keeps replicas synchronized.
+
+The global batch is the combined work across ranks and gradient-accumulation steps. If there are $P$ ranks, local microbatch $b$, sequence length $T$, and $a$ accumulation steps, the global batch contains $PbaT$ tokens, assuming no padding loss. Scaling worker count without accounting for global batch changes optimization, not only speed.
+
+Replication is memory-expensive. Mixed-precision Adam training may keep low-precision parameters, gradients, higher-precision master parameters, and two optimizer moment tensors. Exact bytes depend on implementation and dtype, but optimizer state can exceed the memory for inference weights. Ordinary data parallelism duplicates all of it on every rank.
+
+**ZeRO** decomposes that redundancy in stages. Stage 1 shards optimizer state. Stage 2 also shards gradients. Stage 3 also shards parameters. Each rank owns only a fraction of the persistent state, while collectives make the necessary pieces available for computation. The names describe memory ownership, not a new optimization algorithm.
+
+**Fully Sharded Data Parallel** (FSDP) implements the fully sharded pattern around modules. Before a module's forward pass, ranks all-gather its parameter shards to materialize the full parameters needed locally. After use, parameters can be resharded. During backward, communication reconstructs parameters as needed and reduce-scatter distributes gradient shards to their owners. Communication can overlap with computation when ordering and network permit.
+
+:::caveat
+Sharding lowers persistent memory but does not make activation memory disappear. Long sequences, wide FFNs, attention intermediates, temporary all-gather buffers, fragmentation, and communication workspaces can still cause out-of-memory failures.
+:::
+
+Wrapping policy matters. If the sharded unit is too large, peak all-gather memory is large and overlap is limited. If it is too small, collectives become numerous and latency dominates. Transformer-block boundaries are common because they offer substantial compute between communications. Prefetching the next block can hide latency but increases simultaneous memory.
+
+Checkpointing becomes distributed too. A full state-dict gather may exceed host memory. Sharded checkpoints let ranks write their owned tensors, accompanied by metadata that reconstructs the global names and shapes. Resuming under a different world size requires a format and loader that support resharding. Saving only weights is insufficient for exact training continuation; optimizer, scheduler, scaler, random-number, and data-loader states matter.
+
+Failures must be collective. If one rank encounters bad data while others enter an all-reduce, the job can hang rather than throw a clean exception. Timeouts, coordinated error propagation, rank-aware logs, and reproducible batch IDs are operational necessities. Network topology also matters: fast links inside a node and slower links across nodes may favor hierarchical collectives.
+
+The 3D visual for this lesson should distinguish ownership from temporary materialization. Show persistent parameter, gradient, and optimizer shards as colored slices on ranks. Then animate an all-gather around one block, local compute on different data, and reduce-scatter of gradients. Leaving the full model displayed on every rank would misrepresent the memory benefit.
+
+The stable model is replicated computation over different data with increasingly sharded state. Data parallelism buys throughput. ZeRO and FSDP remove redundant memory. They do not provide free capacity: the price is communication, orchestration, and more demanding checkpoint and failure semantics.

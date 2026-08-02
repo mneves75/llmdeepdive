@@ -87,6 +87,30 @@ HTML request never starts an isolate, which is the entire performance argument.
   location, and a smart-placed Worker would serve `ASSETS` fallbacks from a
   distant datacenter.
 
+## API surface
+
+`/api/*` only — everything else is static and never starts an isolate.
+
+| Route | Method | Notes |
+|---|---|---|
+| `/api/health` | GET | the only unauthenticated route |
+| `/api/progress` | GET / PUT / DELETE | per-token; DELETE erases every table |
+| `/api/quiz/attempt` | POST | which option was chosen, never why |
+| `/api/signal` | POST | a four-value enum, deliberately not a text box |
+
+All per-token routes require `x-ldd-token` (a client-generated UUIDv4) and
+return 401 without one. Bodies are capped at 4 KB; every field is validated.
+
+**The privacy promise is enforced by schema shape, not policy.** No table has a
+column that could hold learner-written prose, so teach-back text cannot reach
+the server even by accident — a `teachBackText` field in a request body is
+accepted and discarded because nothing can store it. If you ever find yourself
+adding a TEXT column for learner writing, that is a breach of the stated
+promise, not a feature.
+
+Reads use `withSession('first-unconstrained')`. Enabling D1 read replication
+without a session leaves every query on the primary.
+
 ## Content
 
 Lessons: `src/content/lessons/{en,pt-br}/<track>/<id>.mdx`. Schema in

@@ -42,7 +42,7 @@ test('content parity fails when a translated track is missing', () => {
       mkdirSync(lessonDirectory, { recursive: true })
       writeFileSync(
         join(lessonDirectory, '1.1-test.mdx'),
-        `---\nid: "1.1-test"\nlocale: "${locale}"\n---\n`,
+        `---\nid: "1.1-test"\ntrack: "1-track"\nlocale: "${locale}"\n---\n`,
       )
     }
     const trackDirectory = join(fixture, 'tracks', 'en')

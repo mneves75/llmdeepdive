@@ -1,0 +1,52 @@
+---
+id: "7.7-flashattention-and-io-awareness"
+track: "7-inference-and-efficiency"
+order: 7
+title: "FlashAttention & IO-awareness"
+summary: "FlashAttention computes exact attention in tiles, avoiding materialization of the full score matrix in slow device memory."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.3-prefill-vs-decode-two-different-machines"]
+unlocks: []
+analogy: "A baker must combine every item in two long ingredient lists, but the worktable holds only a few bowls. The naive method writes every pairwise mixture onto trays, carries all trays to a distant warehouse, then retrieves them for normalization. An IO-aware baker works in tiles that fit the table, maintains running totals, and sends only the final loaves out. FlashAttention similarly recomputes cheap local quantities to avoid transporting a gigantic attention matrix."
+teachBack:
+  prompt: "Explain why standard attention materialization is IO-expensive and how tiled online softmax preserves exact attention without storing the full score matrix."
+  modelAnswer: "Naive implementations write the N-by-N score matrix and intermediate softmax results to high-bandwidth memory, then read them again, so memory traffic can dominate arithmetic. FlashAttention tiles Q, K, and V into fast on-chip memory. For each query tile it maintains a running row maximum and normalization sum, rescaling prior partial outputs as new key tiles arrive. This online softmax produces the same mathematical output up to numerical precision without materializing the full matrix."
+quiz:
+  - question: "What is the main object FlashAttention avoids materializing in device memory?"
+    options: ["The full attention score/probability matrix", "All model weights", "Every input token ID", "The final output"]
+    correctIndex: 0
+    explanation: "Tiling streams through score blocks and keeps only the statistics needed to combine them exactly."
+  - question: "Does FlashAttention approximate ordinary softmax attention?"
+    options: ["No; it reorganizes exact computation, subject to normal floating-point effects", "Yes; it always drops half the keys", "Yes; it replaces softmax with top-k", "No; because it performs no attention"]
+    correctIndex: 0
+    explanation: "Its innovation is IO-aware tiling and online normalization, not a sparse or linear approximation."
+citations:
+  - title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    authors: "Tri Dao et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2205.14135"
+updated: "2026-08-02"
+---
+
+The formula for attention is compact, but a straightforward implementation creates large intermediate tensors. For sequence length $N$, the product $QK^\top$ has $N^2$ scores per head. Writing that matrix to accelerator high-bandwidth memory (HBM), reading it for softmax, writing probabilities, and reading them again to multiply $V$ can move far more data than the formula suggests.
+
+Modern accelerators have a hierarchy. Small on-chip SRAM is fast but limited; HBM is larger but slower to access. Arithmetic units can wait while tensors travel between them. **IO-awareness** means designing an algorithm around this movement, not merely counting floating-point operations. FlashAttention's key observation is that attention can be computed in tiles that fit fast memory without storing the complete score matrix.
+
+Split queries into row blocks and keys/values into column blocks. Load one query tile and a key/value tile into SRAM, compute their local scores, and update a partial output. Then proceed to the next key/value tile. The obstacle is softmax: normalizing a row seems to require seeing all its scores simultaneously.
+
+Online softmax solves that obstacle. For each query row, maintain a running maximum $m$ and a running exponential sum $\ell$. When a new score block has maximum $m'$, define the new maximum $m_{new}=\max(m,m')$. Previously accumulated sums and outputs are rescaled by $e^{m-m_{new}}$; the new block is scaled by $e^{s-m_{new}}$. After all blocks, the accumulated weighted value is divided by the accumulated normalization.
+
+This is the same stable softmax identity applied incrementally. The algorithm changes operation order and therefore may differ at the last floating-point bits, but it does not intentionally approximate, sparsify, or truncate attention. Causal masking, dropout during training, variable lengths, and gradients require additional bookkeeping, all handled within tiled kernels.
+
+Recomputation can be cheaper than storage. In the backward pass, FlashAttention can recompute local scores rather than reading a saved $N^2$ matrix. That increases some arithmetic while reducing memory traffic and peak memory. The trade makes sense because matrix arithmetic is fast relative to repeated HBM transfers on supported hardware.
+
+The benefit depends on shape and implementation. Very short sequences may be dominated by launch overhead. Head dimension, dtype, mask, dropout, hardware generation, and library version determine available kernels. A framework can silently fall back to a slower path when a feature is unsupported. Measure the actual selected kernel rather than inferring it from an API flag.
+
+:::caveat
+FlashAttention improves the memory complexity of stored intermediates, not the dense attention dependency itself. Exact dense attention still performs pairwise work that grows quadratically with sequence length.
+:::
+
+During inference, prefill benefits strongly because it processes many positions. Single-token decode has a different shape and is often dominated by reading model weights and the KV cache; specialized decode attention kernels are related but the same headline speedup should not be assumed. Paged cache layouts add another addressing layer that kernels must support.
+
+Correctness tests compare outputs and gradients against a reference across masks, odd lengths, dtypes, and extreme logits. Performance tests record end-to-end phase latency and memory, not only a favorable kernel microbenchmark. The durable insight is broader than one implementation: when compute becomes cheap, algorithm design must count bytes moved through the memory hierarchy. FlashAttention is exact attention rearranged around that physical reality.
