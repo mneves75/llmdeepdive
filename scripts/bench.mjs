@@ -126,10 +126,12 @@ async function timeOnce(url) {
   return { ms: performance.now() - started, status: res.status, body }
 }
 
-async function measure(url, iter) {
+async function measure(url, iter, marker) {
   const samples = []
   let status = 0
   let body = ''
+  let statusFailures = 0
+  let markerFailures = 0
   // One untimed warm-up so TLS/connection setup is not charged to sample 1.
   try {
     await timeOnce(url)
@@ -141,6 +143,8 @@ async function measure(url, iter) {
     samples.push(r.ms)
     status = r.status
     body = r.body
+    if (r.status !== 200) statusFailures += 1
+    if (!r.body.includes(marker)) markerFailures += 1
   }
   samples.sort((a, b) => a - b)
   return {
@@ -151,6 +155,8 @@ async function measure(url, iter) {
     max: samples[samples.length - 1],
     status,
     body,
+    statusFailures,
+    markerFailures,
   }
 }
 
@@ -205,7 +211,7 @@ async function main() {
     const url = new URL(route, base).href
     let r
     try {
-      r = await measure(url, args.iter)
+      r = await measure(url, args.iter, marker)
     } catch (err) {
       console.error(`FAIL ${route} — request error: ${err.message}`)
       failures += 1
@@ -217,16 +223,16 @@ async function main() {
     const serverP50 = Math.max(0, r.p50 - rtt)
     const serverP95 = Math.max(0, r.p95 - rtt)
 
-    const okStatus = r.status === 200
-    const okMarker = r.body.includes(marker)
+    const okStatus = r.statusFailures === 0
+    const okMarker = r.markerFailures === 0
     const okBudget = serverP95 < budget
     const ok = okStatus && okMarker && okBudget
     if (!ok) failures += 1
 
     rows.push({ route, marker, ...r, rtt, serverP50, serverP95, ok, okStatus, okMarker, okBudget })
     const reason = [
-      okStatus ? '' : `status=${r.status}`,
-      okMarker ? '' : 'marker-missing',
+      okStatus ? '' : `bad-status-samples=${r.statusFailures}`,
+      okMarker ? '' : `marker-missing-samples=${r.markerFailures}`,
       okBudget ? '' : `server p95=${serverP95.toFixed(1)}ms>budget`,
     ]
       .filter(Boolean)

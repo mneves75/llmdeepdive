@@ -39,13 +39,16 @@ export default defineConfig({
   markdown: {
     // Pinned to the unified (remark/rehype) pipeline rather than Astro 7's new
     // Sätteri default. Evidence and rationale: docs/adr/0001.
-    processor: unified(),
-    remarkPlugins: [remarkMath, remarkDirective, remarkCallouts],
-    rehypePlugins: [
-      rehypeKatex,
-      rehypeSlug,
-      [rehypeAutolinkHeadings, { behavior: 'wrap', properties: { className: 'heading-anchor' } }],
-    ],
+    // Plugins go INSIDE unified({...}); the top-level `remarkPlugins` /
+    // `rehypePlugins` keys are deprecated in Astro 7.
+    processor: unified({
+      remarkPlugins: [remarkMath, remarkDirective, remarkCallouts],
+      rehypePlugins: [
+        rehypeKatex,
+        rehypeSlug,
+        [rehypeAutolinkHeadings, { behavior: 'wrap', properties: { className: 'heading-anchor' } }],
+      ],
+    }),
     syntaxHighlight: { type: 'shiki', excludeLangs: ['mermaid'] },
     shikiConfig: {
       themes: { light: 'github-light', dark: 'github-dark' },
