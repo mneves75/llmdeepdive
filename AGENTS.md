@@ -27,6 +27,28 @@ pnpm bench -- --target staging --iter 20
 pnpm deploy:staging
 ```
 
+## Delegating to Codex
+
+Use **`codex-auto`** (defined in `~/.zshrc`), never bare `codex exec`. It probes
+each `CODEX_HOME` and dispatches to the account that still has quota — personal
+first, the Berlin work account only when personal is exhausted.
+
+```bash
+codex-auto home            # print the CODEX_HOME that has quota
+codex-auto exec <args...>  # non-interactive run in that home
+CODEX_HOME="$(codex-auto home)" codex-lane start <lane> <spec> -- --dangerously-bypass-approvals-and-sandbox
+```
+
+**An exhausted account exits 0 having written nothing**, recording the error only
+inside the session JSONL — so a caller reads success and gets no work. That cost
+a full dispatch round of this project's content lanes. If a lane returns fast
+with no diff, grep the lane `.jsonl` for `usage limit` before diagnosing
+anything else.
+
+Content lanes must **not** run `pnpm build` — several run concurrently and would
+collide on `dist/`. Give each lane a disjoint set of track directories, and run
+the build once yourself afterwards.
+
 ## Engineering principles
 
 These override convenience. When one conflicts with "just make it work", these win.
