@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-08-02
+
+Search, and production is live.
+
+### Added
+
+- **Bilingual search.** Pagefind index fetched on first open — zero bytes on
+  initial page load, zero Worker invocations. Opens with `⌘K` or `/`, arrow keys
+  move through results. Built on a native `<dialog>`, so focus trapping, Escape
+  and background inertness come from the platform rather than being hand-rolled.
+- **Production is live at https://llmdeepdive.com** (apex and www), with the D1
+  schema applied and all six security headers present.
+- Engineering principles recorded in `AGENTS.md`: no backward compatibility,
+  simplest implementation that fully works, grow in layers, prefer existing
+  dependencies over hand-rolled code.
+
+### Fixed
+
+- **Search was silently broken by our own CSP.** Instantiating Pagefind's
+  WebAssembly module is blocked unless `script-src` allows it, and the failure
+  surfaces only as a console error — the box just returns nothing. Added
+  `'wasm-unsafe-eval'`, which permits WebAssembly compilation **only**;
+  `eval()` of JavaScript strings stays blocked, which is the property that
+  matters for XSS. Verified in a real browser: 8 results for "attention".
+
+### Notes
+
+- Content stands at **158 lessons** (79 EN + 79 pt-BR), tracks 0–7.
+- Tracks 8–11 and the capstones were dispatched but **could not be written**:
+  the Codex quota is exhausted until 2026-08-08. This is a hard external block,
+  not a decision.
+
 ## [0.2.0] — 2026-08-02
 
 Content build-out and the anonymous progress backend.
@@ -126,5 +158,6 @@ Found by review and real-browser verification before this ever shipped:
   425 KB gzipped versus 130 KB, for a renderer still described upstream as
   experimental.
 
+[0.3.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.1.0

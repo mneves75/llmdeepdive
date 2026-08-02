@@ -66,7 +66,14 @@ const styleHashes = inlineStyleHashes()
 
 const csp = [
   "default-src 'none'",
-  `script-src 'self' ${scriptHashes.join(' ')}`,
+  // 'wasm-unsafe-eval' is required for Pagefind: instantiating a WebAssembly
+  // module is blocked by default, and without it search fails silently with
+  // "Failed to load the Pagefind WASM" — verified in a real browser.
+  //
+  // This is deliberately NOT 'unsafe-eval'. The narrow keyword permits
+  // WebAssembly compilation only; eval() of JavaScript strings stays blocked,
+  // which is the property that actually matters for XSS.
+  `script-src 'self' 'wasm-unsafe-eval' ${scriptHashes.join(' ')}`,
   // Astro emits scoped <style> blocks per page. Hashing them keeps
   // 'unsafe-inline' out of the policy.
   `style-src 'self' ${styleHashes.join(' ')}`,

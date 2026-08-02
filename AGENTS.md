@@ -27,6 +27,29 @@ pnpm bench -- --target staging --iter 20
 pnpm deploy:staging
 ```
 
+## Engineering principles
+
+These override convenience. When one conflicts with "just make it work", these win.
+
+- **Do not preserve backward compatibility.** Remove obsolete paths outright.
+  No compatibility layers, no fallbacks, no migration shims kept "just in case".
+- **Choose the simplest implementation that fully meets the current
+  requirements.** No speculative abstraction, configuration or indirection for
+  needs nobody has yet.
+- **Grow the system in layers.** Start from the smallest version that works end
+  to end, then add each capability on top of something that already works.
+  Never trade a working product for unfinished complexity.
+- **Keep components modular with clearly separated concerns.**
+- **Prefer established, well-maintained libraries** where they reduce total
+  complexity or improve reliability. Do not reimplement common functionality
+  without a stated reason.
+- **Use the dependencies already here before adding or hand-rolling.** Do not
+  assume a library lacks a capability — check its docs and types first. (The
+  search dialog is a `<dialog>` element precisely because focus trapping,
+  Escape and background inertness come free from the platform.)
+- **Make architectural decisions for the long term.** Do not accept a stopgap
+  that only works for now and is meant to be replaced later.
+
 ## Non-negotiable invariants
 
 **1. No HTML is ever personalised.** Every page is byte-identical for every
@@ -48,6 +71,31 @@ Poster renders first; WebGL replaces it. One long-lived `Stage`, never one
 renderer per lab.
 
 **5. No `any`.** `unknown` plus a type guard. `ast-grep scan` blocks commits.
+
+## Engineering stance
+
+- **No backward compatibility.** Delete the obsolete path; never leave a compat
+  layer, alias, shim, fallback, or migration path beside it. Nothing here is a
+  published contract — lesson ids, component props and the `/api/*` shapes are
+  ours to change, and the client is shipped from this same repo.
+- **Simplest implementation that fully meets the current requirement.** No
+  speculative abstraction, configuration knob, or indirection for a requirement
+  nobody has yet. A second call site is what justifies a helper, not the first.
+- **Grow in layers.** Smallest version that works end to end, then each new
+  capability on top of something already working. Never trade a working site for
+  unfinished complexity — the gates (`typecheck`, `content:*`, `budget`, `bench`)
+  stay green between steps, not only at the end.
+- **Modular, with concerns separated.** Content in MDX, schema in
+  `content.config.ts`, rendering in components, edge logic in `/api/*`. A change
+  that smears one into another is a regression.
+- **Reach for the deps already here before writing your own or adding a package.**
+  Astro, Zod 4, unified/remark/rehype, Shiki, Three.js and the Workers runtime
+  cover far more than they look like they do — read their docs and types before
+  concluding a capability is missing. Prefer an established, well-maintained
+  library over a custom implementation whenever it cuts total complexity or
+  raises reliability; don't reimplement common functionality without a reason.
+- **Decide for the long term.** No stopgap that only works for now and is meant
+  to be replaced later.
 
 ## Performance: read this before touching the bench
 
