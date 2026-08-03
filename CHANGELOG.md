@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Reimagined every English and Brazilian Portuguese surface around the
+  **Abyssal Core Atlas** visual system: homepage, track index and detail,
+  lessons, Anatomy Explorer, search, theme controls, quizzes, teach-back, and
+  responsive navigation. The design contract lives in `DESIGN.md`.
+- Increased long-form lesson copy by 30%, to `1.3rem` with `1.65` line height
+  and a `40rem` reading measure, and strengthened paragraph and list rhythm.
+- Reworked course wayfinding as a continuous curriculum descent while keeping
+  the core content semantic and usable before JavaScript or WebGL enhancement.
+
+### Fixed
+
+- Kept translated tier labels and the locale switch available on narrow
+  screens, added sticky-header offsets for skip and lesson fragment targets,
+  and corrected dark-panel color-scheme inheritance.
+- Prevented Anatomy Explorer markers from deriving scale from an unmeasured,
+  hidden canvas; a focused regression test now locks the zero-size behavior.
+
 ## [0.3.0] — 2026-08-02
 
 Search, and production is live.
