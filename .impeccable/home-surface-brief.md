@@ -19,6 +19,6 @@ depth and transformer structure into one legible cross-section. The memorable
 moment is following a signal from surface intuition through the model layers and
 seeing the eight tracks continue that descent.
 
-Unresolved: which of the three composition probes best balances the cross-section,
-value proposition, and curriculum rail. Core UI remains semantic code regardless
-of the selected comp.
+Chosen composition: Diagonal Descent. Its continuous curriculum spine carries
+the cross-section, value proposition, and eight-track rail across desktop and
+mobile. Core UI remains semantic code rather than rasterized mockup content.
