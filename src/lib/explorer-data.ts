@@ -50,8 +50,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'BPE: Sennrich et al., 2016',
       variants: 'BPE · SentencePiece · byte-level BPE · Unigram',
     },
-    lessons: ['1.2-tokenization-i', '1.3-tokenization-ii', '1.4-tokenization-iii'],
-    accent: '#8d6bcc',
+    lessons: ['1.2-tokenization-i', '1.3-bpe-step-by-step', '1.4-sentencepiece-byte-level-token-counts'],
+    accent: '#007f91',
   },
   {
     id: 'embedding',
@@ -69,8 +69,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'Bengio et al., 2003; word2vec, 2013',
       variants: 'Tied vs untied with the LM head',
     },
-    lessons: ['1.5-embeddings', '1.6-word2vec'],
-    accent: '#8d6bcc',
+    lessons: ['1.5-embeddings-meaning-as-geometry', '1.6-word2vec-glove-analogy'],
+    accent: '#287855',
   },
   {
     id: 'positional',
@@ -88,8 +88,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'Vaswani et al., 2017; RoPE: Su et al., 2021',
       variants: 'Sinusoidal · learned · RoPE · ALiBi · NoPE',
     },
-    lessons: ['4.6-positional-i', '4.7-rope', '4.8-alibi'],
-    accent: '#6b4fa8',
+    lessons: ['4.6-positional-encoding-sinusoidal-learned', '4.7-rope', '4.8-alibi-relative-bias'],
+    accent: '#c59e00',
   },
   {
     id: 'attention',
@@ -107,8 +107,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'Bahdanau et al., 2014; Vaswani et al., 2017',
       variants: 'MHA · MQA · GQA · MLA · sliding-window',
     },
-    lessons: ['4.2-self-attention', '4.3-scaled-dot-product', '4.4-causal-masking'],
-    accent: '#c4553f',
+    lessons: ['4.2-self-attention', '4.3-scaled-dot-product-attention', '4.4-causal-masking'],
+    accent: '#d74234',
   },
   {
     id: 'ffn',
@@ -126,8 +126,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'Vaswani et al., 2017; SwiGLU: Shazeer, 2020',
       variants: 'ReLU · GELU · SwiGLU · MoE-sparse',
     },
-    lessons: ['4.9-feed-forward', '8.1-moe'],
-    accent: '#c98a2b',
+    lessons: ['4.9-feed-forward-block', '4.11-full-transformer-block'],
+    accent: '#c59e00',
   },
   {
     id: 'norm',
@@ -145,8 +145,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'LayerNorm: Ba et al., 2016; RMSNorm: Zhang & Sennrich, 2019',
       variants: 'LayerNorm · RMSNorm · pre-norm vs post-norm',
     },
-    lessons: ['2.8-normalization', '4.10-pre-post-norm'],
-    accent: '#9aa3b2',
+    lessons: ['2.8-initialization-normalization-residuals', '4.10-residuals-pre-norm-post-norm'],
+    accent: '#58717b',
   },
   {
     id: 'residual',
@@ -164,8 +164,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'He et al., 2015 (ResNet)',
       variants: 'Scaled residuals · DeepNorm',
     },
-    lessons: ['4.10-pre-post-norm', '10.1-residual-stream'],
-    accent: '#769d74',
+    lessons: ['4.10-residuals-pre-norm-post-norm', '2.8-initialization-normalization-residuals'],
+    accent: '#287855',
   },
   {
     id: 'kv-cache',
@@ -183,8 +183,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'Standard practice since 2019',
       variants: 'Paged · quantised · sliding-window · MLA-compressed',
     },
-    lessons: ['7.2-kv-cache', '7.8-paged-attention'],
-    accent: '#2f8a8a',
+    lessons: ['7.2-the-kv-cache', '7.8-pagedattention-and-continuous-batching'],
+    accent: '#007f91',
   },
   {
     id: 'moe-router',
@@ -202,8 +202,10 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'Shazeer et al., 2017; Switch: Fedus et al., 2021',
       variants: 'Top-k · expert-choice · shared experts',
     },
-    lessons: ['8.1-moe', '8.2-moe-practice', '11.4-moe-streaming'],
-    accent: '#c98a2b',
+    // Mixture-of-experts has no track of its own yet; 4.9 is where the router
+    // is actually taught, as the sparse variant of the feed-forward block.
+    lessons: ['4.9-feed-forward-block'],
+    accent: '#c59e00',
   },
   {
     id: 'sampler',
@@ -221,8 +223,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'Nucleus sampling: Holtzman et al., 2019',
       variants: 'Greedy · temperature · top-k · top-p · min-p · beam',
     },
-    lessons: ['7.4-sampling', '7.5-speculative'],
-    accent: '#2f8a8a',
+    lessons: ['7.4-sampling', '7.5-beam-search-speculative-decoding-and-medusa'],
+    accent: '#007f91',
   },
   {
     id: 'lm-head',
@@ -240,8 +242,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'Weight tying: Press & Wolf, 2017',
       variants: 'Tied · untied',
     },
-    lessons: ['4.11-full-block', '7.4-sampling'],
-    accent: '#2f8a8a',
+    lessons: ['4.11-full-transformer-block', '7.4-sampling'],
+    accent: '#007f91',
   },
   {
     id: 'quantization',
@@ -259,8 +261,8 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       introduced: 'GPTQ: Frantar et al., 2022; AWQ: Lin et al., 2023',
       variants: 'int8 · int4 · MXFP4 · GGUF k-quants · QAT',
     },
-    lessons: ['7.9-quantization-i', '7.10-quantization-ii', '11.3-quantization'],
-    accent: '#c4553f',
+    lessons: ['7.9-quantization-i-int8-int4-the-basics', '7.10-quantization-ii-gptq-awq-gguf-qat'],
+    accent: '#d74234',
   },
 ]
 
@@ -270,4 +272,114 @@ export const LENS_LABELS: Record<Lens, Record<Locale, string>> = {
   animation: { en: "A token's journey", 'pt-br': 'A jornada de um token' },
   failure: { en: 'Failure modes', 'pt-br': 'Modos de falha' },
   context: { en: 'Where it sits', 'pt-br': 'Onde se encaixa' },
+}
+
+const PT_FACTS: Record<string, ComponentFacts> = {
+  tokenizer: {
+    params: 'Nenhum (uma tabela de consulta, não pesos aprendidos)',
+    cost: 'Desprezível na inferência',
+    introduced: 'BPE: Sennrich et al., 2016',
+    variants: 'BPE · SentencePiece · BPE em bytes · Unigram',
+  },
+  embedding: {
+    params: '~2–10% (vocabulário × d_model)',
+    cost: 'Uma operação gather por token',
+    introduced: 'Bengio et al., 2003; word2vec, 2013',
+    variants: 'Pesos compartilhados ou não com a cabeça LM',
+  },
+  positional: {
+    params: 'Zero (RoPE, ALiBi) ou proporcional ao vocabulário (aprendida)',
+    cost: 'Fundido à projeção de atenção',
+    introduced: 'Vaswani et al., 2017; RoPE: Su et al., 2021',
+    variants: 'Senoidal · aprendida · RoPE · ALiBi · NoPE',
+  },
+  attention: {
+    params: '~25–33% (quatro projeções d_model × d_model)',
+    cost: 'O(n²) no comprimento da sequência durante o prefill',
+    introduced: 'Bahdanau et al., 2014; Vaswani et al., 2017',
+    variants: 'MHA · MQA · GQA · MLA · janela deslizante',
+  },
+  ffn: {
+    params: '~60–67% (a maior parcela individual)',
+    cost: 'Domina o decode; limitado pela largura de banda da memória',
+    introduced: 'Vaswani et al., 2017; SwiGLU: Shazeer, 2020',
+    variants: 'ReLU · GELU · SwiGLU · MoE esparso',
+  },
+  norm: {
+    params: '<0,1%',
+    cost: 'Barato, mas cria um ponto de sincronização',
+    introduced: 'LayerNorm: Ba et al., 2016; RMSNorm: Zhang & Sennrich, 2019',
+    variants: 'LayerNorm · RMSNorm · pré-norm vs. pós-norm',
+  },
+  residual: {
+    params: 'Nenhum (uma soma)',
+    cost: 'Praticamente zero',
+    introduced: 'He et al., 2015 (ResNet)',
+    variants: 'Resíduos escalados · DeepNorm',
+  },
+  'kv-cache': {
+    params: 'Nenhum (estado de execução)',
+    cost: '2 × camadas × cabeças × d_head × sequência × bytes',
+    introduced: 'Prática padrão desde 2019',
+    variants: 'Paginado · quantizado · janela deslizante · comprimido por MLA',
+  },
+  'moe-router': {
+    params: 'Roteador <0,1%; especialistas podem superar 90% do modelo',
+    cost: 'Lê k/E dos pesos dos especialistas por token',
+    introduced: 'Shazeer et al., 2017; Switch: Fedus et al., 2021',
+    variants: 'Top-k · escolha pelo especialista · especialistas compartilhados',
+  },
+  sampler: {
+    params: 'Nenhum',
+    cost: 'Desprezível',
+    introduced: 'Amostragem nucleus: Holtzman et al., 2019',
+    variants: 'Gulosa · temperatura · top-k · top-p · min-p · beam search',
+  },
+  'lm-head': {
+    params: '~2–10% (ou zero com pesos compartilhados)',
+    cost: 'Uma multiplicação de matrizes grande por token gerado',
+    introduced: 'Compartilhamento de pesos: Press & Wolf, 2017',
+    variants: 'Pesos compartilhados · pesos separados',
+  },
+  quantization: {
+    params: 'Afeta todos os parâmetros',
+    cost: 'Desquantização no caminho crítico',
+    introduced: 'GPTQ: Frantar et al., 2022; AWQ: Lin et al., 2023',
+    variants: 'int8 · int4 · MXFP4 · k-quants GGUF · QAT',
+  },
+}
+
+export function factText(
+  component: ExplorerComponent,
+  key: keyof ComponentFacts,
+  locale: Locale,
+): string {
+  return locale === 'pt-br' ? (PT_FACTS[component.id]?.[key] ?? component.facts[key]) : component.facts[key]
+}
+
+/** Compact, data-backed copy for the five non-WebGL reading lenses. */
+export function lensText(component: ExplorerComponent, lens: Lens, locale: Locale): string {
+  const isPt = locale === 'pt-br'
+  switch (lens) {
+    case 'math':
+      return isPt
+        ? `Parâmetros: ${factText(component, 'params', locale)}. Custo dominante: ${factText(component, 'cost', locale)}.`
+        : `Parameters: ${factText(component, 'params', locale)}. Dominant cost: ${factText(component, 'cost', locale)}.`
+    case 'compare':
+      return isPt
+        ? `As principais alternativas são ${factText(component, 'variants', locale)}.`
+        : `The main alternatives are ${factText(component, 'variants', locale)}.`
+    case 'animation':
+      return `${component.tagline[locale]}. ${component.summary[locale]}`
+    case 'failure':
+      return isPt
+        ? `Se este componente for limitado ou configurado incorretamente, o modelo perde capacidade de ${component.system[locale].toLocaleLowerCase('pt-BR')}.`
+        : `If this component is constrained or misconfigured, the model loses capacity for ${component.system[locale].toLowerCase()}.`
+    case 'context':
+      // Deliberately no lesson-id list: ids are internal slugs, not prose, and
+      // the detail panel's CTA already links the lesson by title.
+      return isPt
+        ? `Marco histórico: ${factText(component, 'introduced', locale)}. Variantes em uso: ${factText(component, 'variants', locale)}.`
+        : `Historical marker: ${factText(component, 'introduced', locale)}. Variants in use: ${factText(component, 'variants', locale)}.`
+  }
 }
