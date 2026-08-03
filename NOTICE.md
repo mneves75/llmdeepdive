@@ -10,12 +10,14 @@ See `package.json`. All runtime and build dependencies are OSI-licensed; run
 
 ## Fonts
 
-| Font | Source | Licence |
-|---|---|---|
-| Newsreader | Production Type, via Google Fonts | SIL Open Font License 1.1 |
-| Inter | Rasmus Andersson | SIL Open Font License 1.1 |
-| JetBrains Mono | JetBrains | SIL Open Font License 1.1 |
-| Caveat | Impallari Type | SIL Open Font License 1.1 |
+**None are bundled or fetched.** The site ships no `@font-face` rule and no font
+file; `src/styles/tokens.css` names only fonts already present on the operating
+system, with a stack that degrades to `sans-serif` and `monospace`. No font is
+downloaded on any page load, and the CSP's `font-src 'self'` would block a CDN
+even if one were added.
+
+Nothing here therefore requires a font licence. Earlier revisions of this file
+credited Newsreader, Inter, JetBrains Mono and Caveat; those were never shipped.
 
 ## Imagery
 

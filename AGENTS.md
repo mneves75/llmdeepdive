@@ -22,6 +22,8 @@ pnpm content:stubs       # no TODO/TBD/Lorem, word floor
 pnpm content:graph       # prerequisite ids resolve, no cycles
 pnpm content:citations   # citations present or reason given
 pnpm content:assets      # every referenced asset exists
+pnpm links               # every internal link in dist/ resolves (runs in build)
+pnpm a11y:contrast       # palette stays above accessible contrast ratios
 pnpm budget              # per-route JS budget
 pnpm bench -- --target staging --iter 20
 pnpm deploy:staging
@@ -38,6 +40,10 @@ codex-auto home            # print the CODEX_HOME that has quota
 codex-auto exec <args...>  # non-interactive run in that home
 CODEX_HOME="$(codex-auto home)" codex-lane start <lane> <spec> -- --dangerously-bypass-approvals-and-sandbox
 ```
+
+`codex-bypass` and `codex-bypass-exec` route through `codex-auto` as well, so
+every zshrc wrapper is quota-aware. Only `codex-personal` / `codex-berlin` pin a
+specific account, for when you deliberately want one.
 
 **An exhausted account exits 0 having written nothing**, recording the error only
 inside the session JSONL — so a caller reads success and gets no work. That cost
@@ -75,13 +81,13 @@ These override convenience. When one conflicts with "just make it work", these w
 ## Non-negotiable invariants
 
 **1. No HTML is ever personalised.** Every page is byte-identical for every
-visitor. Progress lives in `localStorage`; only anonymous booleans may reach D1.
-This is what makes the whole site edge-cacheable and the performance target
-reachable. A change that makes HTML vary per visitor is a regression, not an
-optimisation.
+visitor. Progress lives in `localStorage` and nowhere else. This is what makes
+the whole site edge-cacheable and the performance target reachable. A change
+that makes HTML vary per visitor is a regression, not an optimisation.
 
-**2. Teach-back prose never leaves the browser.** No schema field may hold the
-learner's own writing. If you find yourself adding a free-text column, stop.
+**2. Nothing a learner writes leaves the browser.** There is no server to send
+it to — see "No backend" below. Adding one to store progress or teach-back
+prose would undo a deliberate removal, not add a feature.
 
 **3. A missing translation fails the build.** Astro i18n `fallback` is
 deliberately unset — `fallbackType: 'rewrite'` would silently serve English at a
@@ -93,31 +99,6 @@ Poster renders first; WebGL replaces it. One long-lived `Stage`, never one
 renderer per lab.
 
 **5. No `any`.** `unknown` plus a type guard. `ast-grep scan` blocks commits.
-
-## Engineering stance
-
-- **No backward compatibility.** Delete the obsolete path; never leave a compat
-  layer, alias, shim, fallback, or migration path beside it. Nothing here is a
-  published contract — lesson ids, component props and the `/api/*` shapes are
-  ours to change, and the client is shipped from this same repo.
-- **Simplest implementation that fully meets the current requirement.** No
-  speculative abstraction, configuration knob, or indirection for a requirement
-  nobody has yet. A second call site is what justifies a helper, not the first.
-- **Grow in layers.** Smallest version that works end to end, then each new
-  capability on top of something already working. Never trade a working site for
-  unfinished complexity — the gates (`typecheck`, `content:*`, `budget`, `bench`)
-  stay green between steps, not only at the end.
-- **Modular, with concerns separated.** Content in MDX, schema in
-  `content.config.ts`, rendering in components, edge logic in `/api/*`. A change
-  that smears one into another is a regression.
-- **Reach for the deps already here before writing your own or adding a package.**
-  Astro, Zod 4, unified/remark/rehype, Shiki, Three.js and the Workers runtime
-  cover far more than they look like they do — read their docs and types before
-  concluding a capability is missing. Prefer an established, well-maintained
-  library over a custom implementation whenever it cuts total complexity or
-  raises reliability; don't reimplement common functionality without a reason.
-- **Decide for the long term.** No stopgap that only works for now and is meant
-  to be replaced later.
 
 ## Performance: read this before touching the bench
 
@@ -143,43 +124,47 @@ A gate never seen red is not a gate. Run it after changing the harness.
 
 ## Cloudflare
 
-One Worker, static assets, `run_worker_first: ["/api/*"]` — the **array** form.
-With `true`, every CSS and font request would invoke the Worker. As scoped, an
-HTML request never starts an isolate, which is the entire performance argument.
+**Static assets only. There is no Worker script and no binding of any kind** —
+`wrangler deploy --dry-run` should report assets and `No bindings found`. An
+HTML request therefore never starts an isolate, which is the entire performance
+argument. If you find yourself adding `main` back to `wrangler.jsonc`, you are
+re-introducing something that was deliberately removed (see "No backend").
 
-- Named environments do **not** inherit `vars` or bindings. Every `env.*`
-  re-declares them or staging goes up broken and silent.
+- `compatibility_date` is the date the config was actually tested, not an old
+  pinned example. Keep it current when you touch the deploy.
+- Named environments do **not** inherit `assets` or anything else. Every `env.*`
+  re-declares the whole block or staging goes up broken and silent.
 - `wrangler deploy` exits 0 with empty output in non-TTY. **Never trust its
   stdout.** Verify with `wrangler versions list` plus a live smoke request.
 - Run wrangler and vite under Node, never Bun — wrangler hangs silently after
   its first API call under Bun.
 - Smart Placement stays off: static assets already serve from the nearest
-  location, and a smart-placed Worker would serve `ASSETS` fallbacks from a
-  distant datacenter.
+  location, and there is no Worker to place.
+- Asset limits: 100,000 files per version, 25 MiB each. The build emits ~600.
+- `_headers` is generated by `scripts/gen-headers.mjs` from hashes of the actual
+  inline scripts in the output, so editing an inline script cannot silently
+  break the CSP.
+- `not_found_handling: "404-page"` needs a real `404.html` to resolve to.
+  `src/pages/404.astro` and `src/pages/pt-br/404.astro` are it; without them
+  every bad URL returns a zero-byte body, which is how it shipped once already.
 
-## API surface
+## No backend
 
-`/api/*` only — everything else is static and never starts an isolate.
+There is no API, no database and no server-side state. This is a decision, not
+an omission.
 
-| Route | Method | Notes |
-|---|---|---|
-| `/api/health` | GET | the only unauthenticated route |
-| `/api/progress` | GET / PUT / DELETE | per-token; DELETE erases every table |
-| `/api/quiz/attempt` | POST | which option was chosen, never why |
-| `/api/signal` | POST | a four-value enum, deliberately not a text box |
+A D1-backed `/api/*` surface was built, deployed, and then found to have no
+callers at all: `src/lib/progress.ts` held every call site and was imported by
+nothing, because the lesson pages track completion directly in `localStorage`.
+It was removed in 0.4.0 rather than wired up.
 
-All per-token routes require `x-ldd-token` (a client-generated UUIDv4) and
-return 401 without one. Bodies are capped at 4 KB; every field is validated.
+The consequence worth keeping: **the privacy promise is now structural.** Teach-
+back prose and quiz results cannot reach a server because there is no server.
+Adding one back to "sync progress" would trade that property for a feature that
+was already shipped once and never used.
 
-**The privacy promise is enforced by schema shape, not policy.** No table has a
-column that could hold learner-written prose, so teach-back text cannot reach
-the server even by accident — a `teachBackText` field in a request body is
-accepted and discarded because nothing can store it. If you ever find yourself
-adding a TEXT column for learner writing, that is a breach of the stated
-promise, not a feature.
-
-Reads use `withSession('first-unconstrained')`. Enabling D1 read replication
-without a session leaves every query on the primary.
+Completion is local and unchanged: a lesson completes when the teach-back is
+≥80 characters and ≥15 words **and** the quiz is answered correctly.
 
 ## Content
 
@@ -200,7 +185,13 @@ pt-BR is a real translation, not machine output. Industry-standard English terms
 
 ## Facts that must not drift
 
-Track 11 rests on numbers that were checked and must not be quietly "corrected":
+**These are a forward specification, not a description of shipped content.** The
+corpus is tracks 0–7; tracks 8–11 are unwritten. The figures below were checked
+against primary sources and are recorded nowhere else, so they must survive
+until the lessons that use them exist. Several plausible-sounding "corrections"
+would break them.
+
+When Track 11 is written, it rests on:
 
 - Kimi K3 routes **16 of 896** experts, not 384.
 - The 8 GB engine is **colibrì** — pure C, `pread` + `O_DIRECT`, deliberately

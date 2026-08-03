@@ -1,4 +1,4 @@
-import { COMPONENTS } from './explorer-data'
+import { COMPONENTS, factText, lensText, type Lens } from './explorer-data'
 import type { Locale } from './i18n'
 import { isWebGLAvailable } from './three/webgl'
 
@@ -68,16 +68,21 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     set('[data-detail-name]', c.name[locale])
     set('[data-detail-tagline]', c.tagline[locale])
     set('[data-detail-summary]', c.summary[locale])
-    set('[data-fact-params]', c.facts.params)
-    set('[data-fact-cost]', c.facts.cost)
-    set('[data-fact-introduced]', c.facts.introduced)
-    set('[data-fact-variants]', c.facts.variants)
-
-    const cta = root.querySelector<HTMLAnchorElement>('[data-detail-cta]')
-    const lesson = c.lessons[0]
-    if (cta && lesson) {
-      cta.href = locale === 'pt-br' ? `/pt-br/lessons/${lesson}/` : `/lessons/${lesson}/`
+    set('[data-fact-params]', factText(c, 'params', locale))
+    set('[data-fact-cost]', factText(c, 'cost', locale))
+    set('[data-fact-introduced]', factText(c, 'introduced', locale))
+    set('[data-fact-variants]', factText(c, 'variants', locale))
+    for (const lens of root.querySelectorAll<HTMLElement>('[data-lens]')) {
+      const key = lens.dataset.lens as Lens | undefined
+      if (key) lens.textContent = lensText(c, key, locale)
     }
+
+    // The href is resolved at build time and carried on the rail button: a
+    // lesson URL needs its track segment, which the component data does not
+    // know. Constructing it here from the bare id produced a 404 every time.
+    const cta = root.querySelector<HTMLAnchorElement>('[data-detail-cta]')
+    const href = root.querySelector<HTMLElement>(`[data-component="${id}"]`)?.dataset.lessonHref
+    if (cta && href) cta.href = href
 
     for (const btn of root.querySelectorAll<HTMLButtonElement>('[data-component]')) {
       btn.setAttribute('aria-current', btn.dataset.component === id ? 'true' : 'false')
@@ -120,6 +125,14 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     // these chunks were in flight.
     if (torndown) return
 
+    // Reveal the canvas BEFORE anything measures it. It ships with the `hidden`
+    // attribute so the poster shows first, and a hidden element has no layout
+    // box: renderer size, camera aspect and marker scale would all be computed
+    // from 0x0. If construction below throws, the caller's `.catch()` puts the
+    // poster back.
+    if (poster) poster.hidden = true
+    canvas.hidden = false
+
     const stage = new Stage({ canvas })
     const scene = new TransformerScene()
     stage.mount(scene)
@@ -128,8 +141,9 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     markers.set(transformerMarkers())
     stage.scene.add(markers.group)
 
-    const syncViewport = (): void => markers.setViewport(canvas.clientHeight)
-    syncViewport()
+    // One observer, one source of truth for size — see `Stage.onResize`.
+    stage.onResize = (_w, h) => markers.setViewport(h)
+    markers.setViewport(canvas.clientHeight)
 
     // Drive markers from the stage's own loop rather than a second rAF.
     const originalUpdate = scene.update.bind(scene)
@@ -189,8 +203,6 @@ export function mountExplorer(root: HTMLElement): Cleanup {
         : 'Transformer block in 3D. Use the arrow keys to cycle annotations and Escape to close.',
     )
 
-    on(window, 'resize', (): void => syncViewport())
-
     // Tools
     const isolateBtn = root.querySelector<HTMLButtonElement>('[data-tool="isolate"]')
     on(isolateBtn, 'click', () => {
@@ -215,10 +227,6 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       rotate.checked = stage.autoRotate
       on(rotate, 'change', () => stage.setAutoRotate(rotate.checked))
     }
-
-    // Swap poster for canvas only now that the renderer exists.
-    if (poster) poster.hidden = true
-    canvas.hidden = false
 
     bundle = { stage, markers, scene }
     cleanups.push(() => {

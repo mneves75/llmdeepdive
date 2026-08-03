@@ -1,49 +1,58 @@
 # llmdeepdive, explained from the inside
 
-Think of the site as a publishing press with a learning instrument attached.
+Think of the site as two machines bolted together: a publishing system and a
+learning instrument.
 
-Astro is the press. It reads bilingual lessons and tracks from `src/content/`,
-checks that English and Brazilian Portuguese stay in lockstep, then prints the
-static course pages. `src/pages/` chooses a route, `src/layouts/` supplies the
-shared frame, and `src/components/` supplies the interactive pieces.
+Astro is the publishing press. It reads bilingual lesson and track files from
+`src/content/`, checks that English and pt-BR stay in lockstep, then prints 180
+static pages. Those pages are deliberately identical for every visitor: no
+account data or learner prose is baked into HTML. `src/pages/` chooses a route,
+`src/layouts/` supplies the shared frame, and `src/components/` supplies the
+interactive pieces.
 
-The learning instrument runs in the browser. Search downloads Pagefind only
-when opened. Theme, teach-back text, quizzes, and immediate progress state use
-local storage. Anonymous completion booleans may synchronize through the D1
-API, but learner prose never leaves the device. Static course content and
-private learner work therefore have deliberately different owners.
+The learning instrument runs inside the browser. Search downloads Pagefind only
+when opened. Theme and lesson progress use local storage. A teach-back is like a
+private notebook locked in the learner’s desk: the text never leaves the device.
+The quiz stores only whether the answer set was correct. That split—static course
+outside, private practice inside—is the most important ownership boundary.
 
 ## The visual map
 
-`src/styles/tokens.css` is the legend for the Abyssal Core Atlas: chart field,
-abyssal navy, Survey Cyan, Sonar Yellow, Coral Red, and Kelp Green.
-`global.css` establishes reading and focus behavior; `DESIGN.md` explains when
-each token earns its place.
+`src/styles/tokens.css` is the legend for the whole atlas: chart paper, abyssal
+navy, Survey Cyan, Sonar Yellow, Coral Red, and Kelp Green. `global.css` establishes
+reading and focus behavior. `DESIGN.md` explains when each token earns its place.
 
-The homepage is a cross-section of the curriculum. Track pages continue the
-same descent. Lesson pages narrow to a `40rem` reading column and add a depth
-rail so the learner always knows where they are. The Anatomy Explorer is the
-literal core sample: a server-rendered component library and fact panel around
-an optional Three.js specimen.
+The home page is a cross-section of the full curriculum. Track pages turn the
+same idea into a continuous descent. Lesson pages narrow back to a readable
+`70ch` column and add a depth rail, so a learner always knows where they are.
+The Anatomy Explorer is the literal core sample: a server-rendered component
+library and fact panel wrapped around an optional Three.js specimen.
 
 ## Why the explorer has two layers
 
-WebGL is useful but unreliable as a prerequisite. Some browsers expose no GPU
-context; a dynamic chunk can fail; motion preferences vary. The explorer ships
-real SVG, component facts, reading lenses, and keyboard-safe controls in HTML
-first. Only when its canvas approaches the viewport and WebGL passes detection
-does `src/lib/explorer-client.ts` import the Three.js stage.
+WebGL is impressive but unreliable as a prerequisite. Some browsers expose no
+GPU context; some fail a dynamic chunk; motion preferences vary. So the explorer
+ships a real SVG poster, component facts, five analysis lenses, and keyboard-safe
+controls in HTML first. Only when its canvas approaches the viewport and WebGL
+passes detection does `src/lib/explorer-client.ts` import the Three.js stage.
 
-A hidden canvas is zero pixels tall. Treating that as one pixel once made a
-32-pixel marker large enough to cover the specimen. The fix is strict: zero
-means “not measured,” so markers stay hidden until `ResizeObserver` reports a
-real size. `tests/marker-scale.test.mjs` locks that rule down.
+One subtle bug came from measuring marker size while that canvas was still
+hidden. A hidden canvas is zero pixels tall; pretending it was one pixel made a
+32-pixel marker enormous enough to cover the whole specimen. The fix is pleasingly
+strict: zero means “not measured,” so markers stay hidden until `ResizeObserver`
+reports a real size. `tests/marker-scale.test.mjs` locks that rule down.
 
 ## Pitfalls worth remembering
 
-- Never personalize generated HTML; learner prose belongs only on the device.
-- Never import Three.js eagerly; the static reading experience is the product.
-- Never let the two languages drift; the build fails instead of falling back.
-- Validate branch-wide visual changes with a fresh production build and
-  preview, because an old Astro server can retain stale scoped CSS.
-- Cartographic decoration must explain a real relationship or be removed.
+- Do not personalize the generated HTML. All learner state belongs in the
+  browser — there is no API to put it behind. A D1-backed progress API was built
+  and deployed here once, discovered to have no callers at all, and deleted;
+  adding one back would undo a deliberate removal.
+- Do not import Three.js eagerly. The static reading experience is the product;
+  3D is enhancement.
+- Do not let the two languages drift. The build intentionally fails instead of
+  silently falling back to English.
+- After switching branches, an old Astro dev server can serve stale scoped CSS.
+  A fresh production build and preview is the trustworthy visual check.
+- Cartographic decoration must explain a relationship. If a contour, marker, or
+  layer carries no information, remove it.
