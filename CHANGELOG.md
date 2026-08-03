@@ -4,6 +4,65 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-08-02
+
+The Abyssal Core Atlas redesign, and the discovery that ten green gates were
+hiding a mostly-broken explorer.
+
+### Added
+
+- **The Abyssal Core Atlas visual system** across every surface — home, track
+  index and detail, lesson, explorer, search, theme toggle, quiz and teach-back,
+  desktop and mobile, both locales. Documented in `DESIGN.md`.
+- **404 pages for both locales.** `not_found_handling: "404-page"` had been set
+  since the first deploy with no `404.html` to resolve to, so every bad URL
+  returned a zero-byte body — confirmed against live production. Each page
+  routes back to the tracks, the explorer and lesson 0.1.
+- **`pnpm links` — a link-integrity gate over the built site**, wired into
+  `pnpm build`. It resolves every internal `href`/`src` in `dist/` to a real
+  built file, checks `#fragment` targets against the ids actually present, and
+  refuses to count a bare directory as a page. 3,294 references across 182
+  pages. This is the gate that would have caught the explorer defects below.
+- **A noise floor and a confirmation pass in the benchmark.** Over-budget routes
+  are now measured a second time and only fail if they fail twice, and an
+  immutable content-hashed asset is measured alongside to establish what this
+  machine and link can physically produce. If the control alone exceeds budget
+  the run reports `INCONCLUSIVE` rather than inventing a verdict.
+
+### Fixed
+
+- **21 of the explorer's 26 lesson links were dead.** The anatomy explorer is
+  the site's wayfinding centrepiece and almost none of its "View lesson" links
+  worked. Some named lessons in tracks 8, 10 and 11, which have no content at
+  all (`8.1-moe`, `10.1-residual-stream`, `11.3-quantization`); others were
+  near-misses against real slugs (`1.3-tokenization-ii` for what is actually
+  `1.3-bpe-step-by-step`). Every id now resolves against the corpus.
+- **Even valid explorer ids produced 404s.** Lesson URLs are
+  `/lessons/<track>/<id>/`, but the explorer only stored bare ids and built
+  `/lessons/<id>/` in the browser — the track segment is knowable only from the
+  content collection. Hrefs are now resolved at build time, so a stale id fails
+  the build instead of shipping a dead link.
+- **The explorer's server-rendered CTA pointed at `/lessons/`**, a route that
+  has never existed. It now points at the selected component's real lead lesson
+  before any script runs.
+- **The MoE router organ** linked into unwritten tracks. It now points at
+  `4.9-feed-forward-block`, where mixture-of-experts is actually taught as the
+  sparse variant of the feed-forward block.
+- **Internal lesson slugs no longer leak into learner-facing prose.** The
+  explorer's "context" lens listed raw ids like `1.3-bpe-step-by-step` as if
+  they were sentences.
+
+### Removed
+
+- **The anonymous D1 progress backend, in full** — `worker/`, the D1 binding and
+  migration, and `src/lib/progress.ts`. The module holding every call site was
+  imported by nothing: the lesson pages track completion directly in
+  `localStorage`, so the API, the database and the token were unreachable from
+  the UI and had been since they were written. Local per-device completion is
+  unchanged. The site now deploys as pure static assets — no Worker script, no
+  bindings — which removes an isolate from the request path entirely.
+- `pnpm check`, which pointed at a `scripts/check.mjs` that exists in no commit.
+
 ## [0.3.0] — 2026-08-02
 
 Search, and production is live.
