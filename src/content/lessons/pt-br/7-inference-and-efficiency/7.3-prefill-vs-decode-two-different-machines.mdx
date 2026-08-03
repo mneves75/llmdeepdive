@@ -1,0 +1,56 @@
+---
+id: "7.3-prefill-vs-decode-two-different-machines"
+track: "7-inference-and-efficiency"
+order: 3
+title: "Prefill e decode: duas máquinas diferentes"
+summary: "Processar o prompt favorece matrizes grandes e paralelas; decode token a token é dominado pelo movimento repetido de pesos e cache."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["7.1-what-actually-happens-when-you-hit-send"]
+unlocks: ["7.7-flashattention-and-io-awareness", "7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+analogy: "Imprimir um livro inteiro e acrescentar uma linha personalizada são tarefas de tinta no papel, mas pedem máquinas diferentes. A prensa prospera com folhas grandes e repetição paralela; reiniciá-la para uma linha desperdiça capacidade. Uma impressora de etiquetas responde depressa, uma faixa por vez, mas nunca alcança a prensa. Prefill é a prensa, processando posições juntas. Decode é a etiquetadora, criando uma posição nova por sequência num loop de baixa latência."
+teachBack:
+  prompt: "Compare prefill e decode pelo paralelismo, gargalo provável e métrica percebida pela pessoa usuária."
+  modelAnswer: "Prefill processa as posições do prompt em paralelo por grandes operações matriciais e cria o KV cache; alcança maior intensidade aritmética e afeta time to first token. Decode avança cada sequência por uma posição. Suas matrizes são estreitas e ele relê pesos mais cache crescente, portanto bandwidth e scheduling costumam dominar; ele controla inter-token latency e throughput da saída. Batching muda os dois regimes, mas não os torna iguais."
+quiz:
+  - question: "Por que prefill utiliza aceleradores de forma diferente de decode?"
+    options: ["Ele expõe trabalho paralelo em muitas posições do prompt", "Ele não usa attention", "Nunca lê pesos", "Não cria KV state"]
+    correctIndex: 0
+    explanation: "O prompt oferece uma dimensão grande de tokens, enquanto cada etapa de decode acrescenta uma posição por sequência."
+  - question: "Qual métrica está mais ligada à cadência do decode?"
+    options: ["Tempo por token de saída depois que a geração começa", "Épocas de treinamento", "Criação do vocabulário", "Bytes enviados no prompt"]
+    correctIndex: 0
+    explanation: "Depois do primeiro token, as etapas repetidas de decode determinam a velocidade dos seguintes."
+citations:
+  - title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    authors: "Tri Dao et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2205.14135"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-02"
+---
+
+Inferência costuma ser descrita como um forward pass repetido, mas a primeira passagem e as seguintes têm formatos muito diferentes. **Prefill** processa o prompt e cria estado de attention. **Decode** usa esse estado para gerar tokens uma posição por vez. Tratar tudo como o mesmo workload esconde por que uma otimização ajuda uma métrica e prejudica outra.
+
+No prefill, o modelo recebe muitas posições juntas. Camadas lineares multiplicam matrizes de pesos por matrizes de ativações com dimensão substancial de tokens. Attention calcula interações entre posições permitidas, e cada camada grava keys e values. O acelerador explora paralelismo entre tokens, heads e entradas do batch. Prompts longos criam muito trabalho, mas podem atingir alta utilização aritmética.
+
+A saída do prefill são logits do primeiro token novo e um KV cache preenchido. Por isso, comprimento do prompt, fila, eficiência de kernels e prefix-cache hits influenciam **time to first token** (TTFT). Um serviço otimizado apenas para tokens totais por segundo pode segurar prefills para formar batches grandes e fazer uma pessoa esperar.
+
+Decode tem só uma posição nova por sequência ativa em cada etapa. O modelo ainda atravessa todas as camadas e lê os pesos, mas a matriz de ativações é fina. Também lê keys e values do cache. Pode haver aritmética insuficiente por byte movido para saturar compute. Por isso decode é descrito como limitado por memory bandwidth, embora o gargalo dependa de batch, modelo, contexto, kernel e hardware.
+
+Um roofline model esclarece a diferença. Hardware possui um teto de throughput aritmético e outro de bandwidth. A **intensidade aritmética** de um kernel é a quantidade de operações por byte transferido. Trabalho de baixa intensidade atinge primeiro o teto de memória; trabalho de alta intensidade se aproxima do teto de compute. Prefill costuma ter intensidade maior que decode de uma sequência. Batching de decode combina sequências e reutiliza pesos, aumentando trabalho útil por leitura.
+
+Batching não é gratuito. Esperar um batch maior aumenta latência de fila. Sequências terminam em momentos e comprimentos distintos. Continuous batching insere requisições novas à medida que antigas acabam, trocando um retângulo estático por um conjunto mutável. O scheduler equilibra throughput, TTFT, inter-token latency, fairness e memória.
+
+Prefill e decode podem interferir. Um prefill grande consome compute e bandwidth enquanto requisições de decode precisam de cadência regular. Chunked prefill divide o prompt para intercalar etapas. Alguns sistemas separam as fases em workers, mas precisam transportar KV state por rede ou interconnect. O benefício deve superar transferência e coordenação.
+
+:::caveat
+“Prefill compute-bound, decode bandwidth-bound” é um modelo de primeira ordem, não uma lei. Prompts pequenos, batches enormes, quantização, transferências e kernels ruins podem mudar o gargalo.
+:::
+
+Métricas devem separar fases: fila, duração e throughput de prefill; tempo por etapa e throughput de saída em decode. Plote percentis por comprimento e concorrência. Médias escondem um scheduler eficiente para batch que maltrata tráfego interativo.
+
+Otimização segue a distinção. Attention kernels e prefix reuse atacam o prompt. Quantização de pesos, layout de cache, speculation e batches maiores atacam geração repetida. Scheduling conecta ambos. O modelo mental não é uma máquina fazendo uma tarefa, mas um processador paralelo de prompts entregando estado a um motor de tokens sensível à latência.

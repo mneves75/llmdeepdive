@@ -1,0 +1,52 @@
+---
+id: "7.1-what-actually-happens-when-you-hit-send"
+track: "7-inference-and-efficiency"
+order: 1
+title: "O que realmente acontece quando você aperta enviar"
+summary: "Uma requisição atravessa admissão, tokenização, scheduling, execução, decoding, streaming e limpeza antes de o texto chegar ao usuário."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["4.2-self-attention"]
+unlocks: ["7.2-the-kv-cache", "7.3-prefill-vs-decode-two-different-machines"]
+analogy: "Um pedido de restaurante não sai da mesa e vira refeição instantaneamente. A recepção admite o grupo, a atendente normaliza o pedido, a cozinha reúne pratos que usam o mesmo equipamento, prepara a leva inicial e emprata cursos posteriores um por vez. Garçons fazem streaming dos pratos, enquanto pedidos cancelados liberam ingredientes e bancada. Um servidor de inferência coordena requisições, tokens, batches de GPU e blocos de cache da mesma forma."
+teachBack:
+  prompt: "Acompanhe uma requisição de chat da chegada HTTP até o primeiro token e cite uma falha ou métrica em três etapas diferentes."
+  modelAnswer: "O gateway autentica e valida, o chat template serializa os papéis e o tokenizer produz IDs. O admission control verifica limites; o scheduler aloca KV cache e agrupa o prefill. O modelo calcula logits, o decoder seleciona um token, e o servidor faz detokenization e streaming. Queue time pode dominar antes do compute, templates errados mudam comportamento, falta de cache rejeita trabalho e time to first token mede o caminho até o fim do prefill, não toda a geração."
+quiz:
+  - question: "O que normalmente acontece antes de o modelo receber IDs de tokens?"
+    options: ["Validação, aplicação do chat template e tokenização", "Eviction do KV cache após concluir", "Retreinamento dos pesos", "Backpropagation pelo usuário"]
+    correctIndex: 0
+    explanation: "A camada de serving valida e serializa a conversa antes de mapeá-la ao vocabulário do modelo."
+  - question: "O que time to first token inclui?"
+    options: ["Fila e processamento do prompt até o primeiro token poder ser enviado", "Somente o download após concluir", "Tempo de treinamento", "Latência de toda requisição futura"]
+    correctIndex: 0
+    explanation: "TTFT cobre admissão, fila, tokenização e prefill até a primeira saída."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-02"
+---
+
+Apertar “enviar” inicia um workflow de sistemas distribuídos, não uma única chamada de modelo. Os componentes variam, mas um ciclo útil possui sete fronteiras: tratamento da requisição, montagem do prompt, tokenização, admissão e scheduling, execução do modelo, decoding e streaming, seguidos de limpeza. Cada fronteira possui falhas próprias de corretude e latência.
+
+No edge ou API gateway, o serviço autentica quem chama, confere autorização e cota, valida o schema e atribui um request ID. Limites de bytes, mensagens, imagens, ferramentas e geração máxima precisam atuar antes do trabalho caro. Rate limiting fica aqui, não dentro de um prompt. Texto do usuário é dado não confiável; nunca pode ganhar autoridade sobre credenciais ou acesso a outro tenant.
+
+A aplicação constrói a entrada do modelo. Combina instruções de system, histórico, resultados de ferramentas e a nova mensagem usando o **chat template** do checkpoint. Esse template insere tokens de papéis e fronteiras aprendidos no pós-treinamento. Dois templates visualmente parecidos podem criar sequências e comportamentos diferentes. A gestão do contexto trunca ou resume por uma política explícita; descartar a mensagem de system silenciosamente é bug.
+
+O tokenizer mapeia texto para IDs inteiros. A validação precisa ocorrer antes e depois da tokenização, pois caracteres e tokens têm contagens diferentes. O servidor pode reutilizar um prefixo em cache quando a sequência inicial de tokens é idêntica. Caso contrário, a requisição entra na fila com comprimento do prompt, orçamento de saída, prioridade e necessidade de cache.
+
+O scheduler decide a admissão. Pesos ocupam memória quase fixa; o KV cache cresce com sequências ativas. Uma requisição que cabe sozinha talvez não caiba ao lado do trabalho atual. Servidores modernos formam batches dinâmicos e combinam requisições em posições distintas, sem esperar o batch inteiro terminar. Fairness, deadlines e preemption decidem se uma geração longa bloqueia trabalho interativo curto.
+
+Durante **prefill**, o modelo processa o prompt e grava keys e values em todas as camadas. A posição final produz logits para o primeiro novo token. O decoder aplica temperature, truncamento, constraints e uma regra de seleção. O token escolhido é anexado, e **decode** executa outro forward step usando os estados em cache em vez de recalcular o prompt.
+
+O servidor faz detokenization incremental e envia eventos. Fronteiras de tokens não correspondem necessariamente a caracteres, palavras ou chunks UTF-8 válidos, então o buffer segue o decoder do tokenizer. Stop sequences, parsers de tool calls, filtros e structured output podem atrasar ou suprimir bytes. Backpressure importa: um cliente lento não deve reter memória ilimitada.
+
+:::insight
+“Latência do modelo” são várias métricas. Queue time revela pressão; time to first token enfatiza o prompt; inter-token latency descreve decode; tempo total inclui comprimento da saída e conexão.
+:::
+
+Cancelamento percorre o caminho inverso. Se a pessoa interrompe, a conexão fecha ou o deadline expira, a geração deve parar, o item deve sair da fila e os blocos voltar ao allocator. Cobrança e logs precisam da contagem real e do motivo final. Vazamentos de limpeza viram incidentes sob carga.
+
+Observabilidade acompanha request IDs por essas etapas sem armazenar prompts sensíveis por padrão. Registre versões do modelo, tokenizer e template; fila; tokens de entrada e saída; cache; batch; TTFT; cadência; finish reason e erros. O modelo mental é um pipeline: a rede neural está no centro, mas scheduling, fronteiras e ownership decidem se ela vira serviço confiável.

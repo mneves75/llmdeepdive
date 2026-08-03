@@ -1,0 +1,64 @@
+---
+id: "5.8-model-parallelism"
+track: "5-pretraining-at-scale"
+order: 8
+title: "Tensor, pipeline e sequence parallelism"
+summary: "Métodos de model parallelism dividem dimensões matriciais, profundidade ou posições quando data sharding não basta."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.7-data-parallelism-zero-fsdp"]
+unlocks: ["5.9-mixed-precision"]
+analogy: "Um teatro divide a produção de três formas. Tensor parallelism dá a seções da orquestra notas diferentes do mesmo acorde e reúne o som. Pipeline parallelism atribui atos a palcos e move vários elencos numa linha de montagem. Sequence parallelism dá a cada editor um trecho do roteiro longo e troca informação quando uma cena precisa do contexto inteiro."
+teachBack:
+  prompt: "Diferencie a dimensão que tensor, pipeline e sequence parallelism dividem e cite um custo de cada."
+  modelAnswer: "Tensor parallelism divide grandes operações pelas features e usa collectives para combinar resultados parciais. Pipeline parallelism distribui camadas por stages e agenda microbatches, introduzindo transferência de ativações e bubbles. Sequence parallelism divide posições, reduzindo ativações ou memória de attention por rank, mas exige trocas como all-to-all quando heads precisam de informação entre shards."
+quiz:
+  - question: "Qual método divide principalmente a profundidade?"
+    options: ["Pipeline parallelism", "Tensor parallelism", "Deduplicação", "Mixed precision"]
+    correctIndex: 0
+    explanation: "Grupos consecutivos de camadas executam em pipeline stages diferentes."
+  - question: "O que é pipeline bubble?"
+    options: ["Tempo ocioso enquanto o pipeline enche, esvazia ou espera", "Uma probabilidade de attention", "Um byte de fallback", "Um moment do optimizer"]
+    correctIndex: 0
+    explanation: "Dependências e poucos microbatches deixam stages sem trabalho em partes do schedule."
+citations:
+  - title: "Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism"
+    authors: "Mohammad Shoeybi et al."
+    year: 2019
+    url: "https://arxiv.org/abs/1909.08053"
+  - title: "GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism"
+    authors: "Yanping Huang et al."
+    year: 2019
+    url: "https://arxiv.org/abs/1811.06965"
+  - title: "DeepSpeed Ulysses: System Optimizations for Enabling Training of Extreme Long Sequence Transformer Models"
+    authors: "Sam Ade Jacobs et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.14509"
+updated: "2026-08-02"
+---
+
+FSDP distribui o estado, mas ainda pede a cada rank operações completas de um módulo após reunir parâmetros. Camadas enormes, pilhas profundas ou sequências extremas exigem dividir o próprio cálculo. **Model parallelism** reúne layouts que cortam eixos diferentes.
+
+**Tensor parallelism** divide uma grande operação pelas features. Para $Y=XW$, ranks possuem colunas de $W$ e produzem slices de saída, ou possuem linhas e somam resultados parciais. Projeções Transformer são organizadas em formas column- e row-parallel complementares para evitar gathers desnecessários. Collectives restauram a informação pedida pelo próximo passo.
+
+Isso reduz parâmetros e compute de uma camada por rank, mas comunica várias vezes dentro de cada bloco. Funciona melhor em links de alta banda e baixa latency, geralmente no mesmo servidor. Colocá-lo numa rede lenta pode gastar mais tempo combinando matrizes que multiplicando. Heads, hidden width e vocabulário precisam ser divisíveis ou padded conforme o layout.
+
+**Pipeline parallelism** atribui grupos consecutivos de camadas a stages. Um microbatch passa pelo stage 0, depois 1 e assim por diante. Para manter ocupação, o global batch vira vários microbatches com forward e backward intercalados. Ativações cruzam fronteiras; parâmetros ficam nos stages.
+
+O pipeline tem **bubbles**: períodos ociosos no enchimento, esvaziamento ou espera. Mais microbatches melhoram utilização, mas aumentam complexidade de scheduling e estado. Camadas com custos diferentes desequilibram stages, então dividir apenas por contagem é frágil. Activation checkpointing e schedules interleaved trocam memória, recomputação e bubbles.
+
+**Sequence parallelism** divide tokens. Norm e FFN processam slices locais. Attention precisa de interação entre posições, portanto troca queries, keys, values ou heads. DeepSpeed-Ulysses usa all-to-all para transpor partições de sequência e heads, permitindo que cada rank calcule attention completa de certas heads antes de transpor de volta.
+
+:::caveat
+“Sequence parallelism” cobre mais de um algoritmo. Pergunte quais tensors são sharded, quais collectives ocorrem e se attention é exata, ring-based ou aproximada.
+:::
+
+Os eixos se compõem em paralelismo 3D ou maior. Um sistema usa data-parallel groups entre réplicas, pipeline entre faixas de camadas, tensor ranks por stage e sequence sharding para contexto longo. O produto dos tamanhos deve bater com world size, e todo rank precisa de coordenadas determinísticas.
+
+Composição complica batches e checkpoints. Data ranks promediam gradientes; tensor ranks possuem juntos uma camada; pipeline ranks possuem camadas diferentes. O manifesto precisa saber qual eixo dividiu cada tensor. Mudar topologia na retomada exige reshard, não simplesmente mapear arquivos por rank.
+
+Placement físico faz parte do algoritmo de sistemas. Tensor ranks que conversam a cada bloco devem ocupar links muito rápidos; stages de pipeline toleram comunicação menos frequente e podem atravessar nodes. Antes de lançar a run, valide o mapa rank–device–host e execute uma medição coletiva com os mesmos tamanhos de mensagem. Uma topologia lógica correta sobre cabos inadequados continua correta, porém cara e lenta.
+
+Meça model FLOPs utilization, tempo de collective, comunicação exposta, ociosidade, picos e stragglers. FLOPs teóricos altos com bubbles longos não são eficiência. Profiling deve usar comprimentos e microbatches reais, pois um layout ótimo num workload falha em outro.
+
+O mapa durável é por eixo: data divide exemplos; tensor divide features; pipeline divide profundidade; sequence divide posições. Cada método faz o problema caber criando coordenação. A melhor topologia coloca a comunicação mais pesada nos links mais rápidos e mantém todos os stages ocupados.

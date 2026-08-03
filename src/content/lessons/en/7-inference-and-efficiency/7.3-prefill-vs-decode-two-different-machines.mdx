@@ -1,0 +1,56 @@
+---
+id: "7.3-prefill-vs-decode-two-different-machines"
+track: "7-inference-and-efficiency"
+order: 3
+title: "Prefill vs decode: two different machines"
+summary: "Prompt processing favors large parallel matrix operations, while token-by-token decode is dominated by repeated weight and cache movement."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.1-what-actually-happens-when-you-hit-send"]
+unlocks: ["7.7-flashattention-and-io-awareness", "7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+analogy: "Printing a whole book and adding one personalized line are both ink-on-paper tasks, but they want different machines. The press thrives on a large sheet and parallel repetition; restarting that press for one line wastes its capacity. A label printer responds quickly one strip at a time but never reaches press throughput. Prefill is the press, processing many prompt positions together. Decode is the label printer, producing one new position per sequence under a tight latency loop."
+teachBack:
+  prompt: "Contrast prefill and decode in available parallelism, likely hardware bottleneck, and the user-facing metric each most directly affects."
+  modelAnswer: "Prefill processes all prompt positions in parallel through large matrix operations and creates the KV cache; it can use substantial arithmetic intensity and strongly affects time to first token. Decode advances each active sequence by one position per step. Its matrix shapes are thinner, and it repeatedly reads model weights plus growing KV state, so memory bandwidth and scheduling often dominate; it controls inter-token latency and output throughput. Batching changes both regimes but does not make them identical."
+quiz:
+  - question: "Why can prefill utilize accelerators differently from decode?"
+    options: ["It exposes parallel work across many prompt positions at once", "It has no attention", "It never reads weights", "It generates no KV state"]
+    correctIndex: 0
+    explanation: "The prompt offers a larger token dimension for matrix operations, whereas each decode step adds only one position per sequence."
+  - question: "Which metric is most directly tied to decode cadence?"
+    options: ["Time per output token after generation begins", "Training epochs", "Tokenizer vocabulary construction", "Prompt upload byte count"]
+    correctIndex: 0
+    explanation: "Once the first token is available, repeated decode steps determine how quickly subsequent tokens arrive."
+citations:
+  - title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    authors: "Tri Dao et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2205.14135"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-02"
+---
+
+Inference is often described as one forward pass repeated many times, but the first pass and later passes have very different shapes. **Prefill** processes the input prompt and creates attention state. **Decode** consumes that state to generate new tokens one position at a time. Treating them as the same workload hides the reason optimizations help one metric and hurt another.
+
+During prefill, the model receives many prompt positions together. Linear layers multiply weight matrices by activation matrices with a substantial token dimension. Attention computes interactions among allowed prompt positions, and each layer writes keys and values into the cache. Accelerators can exploit parallelism across tokens, heads, and batch entries. Long prompts create considerable work, but that work can reach high arithmetic utilization.
+
+The output of prefill is the logits for the first generated token plus a populated KV cache. Therefore prompt length, queue delay, kernel efficiency, and prefix-cache hits strongly influence **time to first token** (TTFT). A service optimized only for total tokens per second can batch prefills for too long and make an interactive user wait.
+
+Decode has only one new position per active sequence at each step. The model still traverses every layer and reads its weights, but the activation matrix is thin. It also reads cached keys and values for attention. There may be too little arithmetic per byte moved to saturate compute units. This is why decode is commonly described as memory-bandwidth-bound, although the actual bottleneck depends on batch size, model, cache length, kernels, and hardware.
+
+A roofline model clarifies the distinction. Hardware has a ceiling for arithmetic throughput and another for memory bandwidth. A kernel's **arithmetic intensity** is operations performed per byte transferred. Low-intensity work hits the bandwidth roof first; high-intensity work may approach the compute roof. Prefill generally exposes higher intensity than single-sequence decode. Batching decode combines independent sequences and reuses weights across them, increasing useful work per weight read.
+
+Batching is not free. Waiting to form a larger batch raises queue latency. Active sequences finish at different times and have different cache lengths. Continuous batching inserts new requests as old ones finish, trading a static rectangular batch for a changing set of token steps. The scheduler must balance throughput, TTFT, inter-token latency, fairness, and memory.
+
+Prefill and decode can interfere. A large prefill consumes compute and memory bandwidth while decode requests need regular token delivery. Chunked prefill divides a long prompt so decode steps can run between chunks. Some systems disaggregate the phases onto different workers, but then KV state must move across a network or interconnect. The saved interference must exceed transfer and coordination costs.
+
+:::caveat
+“Compute-bound prefill, bandwidth-bound decode” is a useful first-order model, not a law. Small prompts, huge batches, quantized kernels, host transfers, attention length, and poor implementations can move the bottleneck.
+:::
+
+Metrics should be phase-aware. Record queue time, prefill duration and prompt throughput separately from decode step time and output throughput. Plot percentiles by prompt length, output length, and concurrency. Aggregate averages can hide a scheduler that serves bulk jobs efficiently while starving interactive traffic.
+
+Optimization follows the distinction. Faster attention kernels and prefix reuse target prompt work. Weight quantization, cache layout, speculative decoding, and larger decode batches target repeated generation costs. Scheduling connects both. The durable mental model is not one machine doing one task, but a parallel prompt processor handing state to a latency-sensitive token engine.

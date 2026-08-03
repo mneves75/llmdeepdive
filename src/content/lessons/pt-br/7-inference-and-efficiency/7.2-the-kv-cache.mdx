@@ -1,0 +1,64 @@
+---
+id: "7.2-the-kv-cache"
+track: "7-inference-and-efficiency"
+order: 2
+title: "O KV cache"
+summary: "Decoding autorregressivo armazena keys e values anteriores para que cada novo token evite recalcular todo o prefixo."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["7.1-what-actually-happens-when-you-hit-send"]
+unlocks: ["7.6-mqa-gqa-and-mla", "7.8-pagedattention-and-continuous-batching"]
+analogy: "Uma estenógrafa judicial mantém uma transcrição indexada de tudo o que já foi dito. Quando surge outra pergunta, a juíza consulta o registro em vez de pedir que toda testemunha repita a audiência. A transcrição cresce a cada fala e preserva ordem e processo. O KV cache é essa transcrição para attention: keys anteriores são entradas do índice, values são os depoimentos guardados e a nova query faz a consulta."
+teachBack:
+  prompt: "Explique o que um KV cache guarda, por que acelera geração autorregressiva e por que a memória cresce com o comprimento ativo."
+  modelAnswer: "Em cada camada e posição anterior, o servidor guarda as projeções de key e value usadas por attention futura. No decode, o novo token calcula apenas Q, K e V próprios; sua query atende às keys em cache e mistura os values, evitando refazer o prefixo. Como outra key e outro value são anexados em cada camada para cada token, a memória cresce com sequência, batch, camadas, KV heads, dimensão da head e bytes por elemento."
+quiz:
+  - question: "O que o KV cache evita no decode?"
+    options: ["Recalcular projeções de key e value de todos os tokens anteriores", "Calcular a query do novo token", "Carregar pesos em qualquer momento", "Aplicar attention causal"]
+    correctIndex: 0
+    explanation: "K e V anteriores são reutilizados; a nova posição ainda executa o modelo e presta attention neles."
+  - question: "Qual mudança reduz diretamente o tamanho do KV cache?"
+    options: ["Usar menos KV heads com GQA ou MQA", "Aumentar o vocabulário", "Guardar mais camadas", "Usar mais bytes por elemento"]
+    correctIndex: 0
+    explanation: "Compartilhar heads de key/value reduz a quantidade de vetores em cache por token."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-02"
+---
+
+Um modelo decoder-only gera um token, anexa-o ao contexto e repete. Uma implementação ingênua executaria o Transformer inteiro sobre a sequência crescente a cada etapa. Quase todo trabalho nas posições antigas seria idêntico. O **KV cache** guarda os estados de attention necessários no futuro, transformando esse cálculo repetido do prefixo em memória reutilizável.
+
+Numa camada de attention, cada token produz projeções de query, key e value. Durante decode causal, apenas a posição nova precisa de uma saída. Sua query atende às keys de todas as posições anteriores permitidas e usa os pesos para misturar os values. Queries antigas não são mais necessárias: já produziram suas saídas. Assim, o cache preserva **keys e values**, enquanto o token novo calcula $q_t$, $k_t$ e $v_t$.
+
+Para uma head, a operação lembra
+
+$$
+o_t=\operatorname{softmax}\left(\frac{q_tK_{\leq t}^{\top}}{\sqrt{d_k}}\right)V_{\leq t},
+$$
+
+e as matrizes em cache crescem ao anexar $k_t$ e $v_t$. Isso ocorre em toda camada armazenada. O cache é consequência de attention causal exata, não uma aproximação.
+
+Ignorando overhead do allocator, um modelo intuitivo de memória é
+
+$$
+\text{bytes}\approx 2\,L\,T\,H_{kv}\,D\,B,
+$$
+
+em que o fator dois representa keys e values, $L$ é a quantidade de camadas, $T$ as posições, $H_{kv}$ as KV heads, $D$ a dimensão e $B$ bytes por elemento. Multiplique de novo pelas sequências ativas. Isso explica por que long context esgota memória sem alterar os pesos.
+
+Multi-head attention usa K/V separados por head. Multi-query e grouped-query attention compartilham K/V entre query heads, reduzindo $H_{kv}$, tráfego e capacidade. Cache quantizado reduz $B$, com trocas de accuracy e suporte de kernel. Sliding windows ou eviction reduzem $T$, mas posições antigas deixam de participar da attention comum.
+
+O layout afeta desempenho. Decode lê um histórico longo para criar pouco cálculo novo, então mover K/V pode dominar. Tensores precisam de uma disposição eficiente para kernels, enquanto o servidor aloca sequências que crescem sem previsão. Reservar o máximo desperdiça memória; mover buffers contíguos gera cópias e fragmentação. Alocação paginada resolve esse problema de ownership.
+
+Prefix caching compartilha blocos computados quando requisições começam pela mesma sequência de tokens, por exemplo um system prompt. Compartilhamento seguro exige mesmo modelo, adapter, tratamento posicional e tokens. Textos iguais podem tokenizar de outro modo. Cache keys nunca devem atravessar fronteiras de autorização quando estado ou timing revelam contexto privado.
+
+:::warning
+KV state deriva do contexto do usuário e pode ser sensível. Limpe-o quando o ownership terminar, isole tenants, limite retenção e não trate “é só tensor” como exceção de privacidade.
+:::
+
+Beam search e speculative decoding complicam ownership. Candidatas compartilham prefixo, ramificam e descartam caminhos. Block tables com copy-on-write evitam cópias. Cancelamento deve reduzir referências exatamente uma vez. Um leak remove capacidade; reutilização precoce mistura estados de requisições diferentes.
+
+O cache não torna decode constante no comprimento. A projeção do prefixo desaparece, mas a nova query ainda lê os estados retidos, a menos que a arquitetura use janela limitada ou outro mecanismo. O modelo mental é uma transcrição: cálculo já feito vira memória, economizando aritmética ao custo de bandwidth, capacidade, ciclo de vida e privacidade.

@@ -1,0 +1,64 @@
+---
+id: "7.2-the-kv-cache"
+track: "7-inference-and-efficiency"
+order: 2
+title: "The KV cache"
+summary: "Autoregressive decoding stores past attention keys and values so each new token avoids recomputing the entire prefix."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.1-what-actually-happens-when-you-hit-send"]
+unlocks: ["7.6-mqa-gqa-and-mla", "7.8-pagedattention-and-continuous-batching"]
+analogy: "A courtroom stenographer keeps an indexed transcript of everything already said. When a new question arrives, the judge consults the transcript instead of asking every witness to repeat the hearing from the beginning. The transcript grows each turn and must preserve the exact order and case identity. The KV cache is that transcript for attention: prior keys are the index entries, prior values are the stored testimony, and the new query reads them."
+teachBack:
+  prompt: "Explain what is stored in a decoder KV cache, why it accelerates autoregressive generation, and why its memory grows with active sequence length."
+  modelAnswer: "For each cached layer and past token position, the server stores the key and value projections needed by future attention. At decode, the new token computes only its own Q, K, and V; its query attends to cached keys and mixes cached values, avoiding repeated projection of the prefix. Since another key and value are appended at every layer for every generated token, memory grows with sequence length, batch size, layer count, KV-head count, head dimension, and bytes per element."
+quiz:
+  - question: "What does the KV cache avoid during decode?"
+    options: ["Recomputing key and value projections for all previous tokens", "Computing the new token's query", "Loading model weights ever", "Applying causal attention"]
+    correctIndex: 0
+    explanation: "Past K and V tensors are reused; the new position still performs model computation and attends to them."
+  - question: "Which architecture change directly reduces KV-cache size?"
+    options: ["Using fewer KV heads through GQA or MQA", "Increasing vocabulary size", "Adding more cached layers", "Storing more bytes per element"]
+    correctIndex: 0
+    explanation: "Sharing key/value heads reduces the number of cached K/V vectors per token while query heads can remain numerous."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-02"
+---
+
+A decoder-only language model generates one token, appends it to the context, and repeats. A naive implementation would run the entire Transformer over the growing sequence on every step. Most work on earlier positions would be identical. The **KV cache** stores the attention states that future tokens need, turning that repeated prefix computation into reusable memory.
+
+In one attention layer, every token produces query, key, and value projections. During causal decode, only the newest position needs a new output. Its query can attend to keys from all allowed past positions and use the resulting weights to mix their values. Past queries are not needed again: they already produced their own outputs. Therefore the cache retains past **keys and values**, while the new token computes its own $q_t$, $k_t$, and $v_t$.
+
+For one head, the decode operation resembles
+
+$$
+o_t=\operatorname{softmax}\left(\frac{q_tK_{\leq t}^{\top}}{\sqrt{d_k}}\right)V_{\leq t},
+$$
+
+where cached matrices grow when $k_t$ and $v_t$ are appended. This happens at every cached layer. The cache is a consequence of exact causal attention, not an approximation to it.
+
+Ignoring allocator overhead, an intuitive memory model is
+
+$$
+\text{bytes}\approx 2\,L\,T\,H_{kv}\,D\,B,
+$$
+
+where the factor two represents keys and values, $L$ is layer count, $T$ cached positions, $H_{kv}$ KV heads, $D$ head dimension, and $B$ bytes per element. Multiply again by active sequences. This formula explains why long context can exhaust memory even though model weights remain unchanged.
+
+Multi-head attention uses separate K/V heads alongside query heads. Multi-query and grouped-query attention share K/V across query heads, reducing $H_{kv}$ and therefore cache traffic and capacity. Quantized cache formats reduce $B$, with accuracy and kernel-support trade-offs. Sliding windows or eviction reduce effective $T$, but then old tokens are no longer available to ordinary attention.
+
+Cache layout matters to performance. Decode reads a long history to produce a small amount of new computation, so moving K/V data can dominate. Tensors need layouts that kernels consume efficiently, while a server needs flexible allocation for sequences that grow unpredictably. Reserving every request's maximum length wastes memory; repeatedly moving contiguous buffers creates fragmentation and copies. Paged allocation addresses this ownership problem.
+
+Prefix caching shares already computed blocks when requests begin with exactly the same token prefix, such as a common system prompt. Safe sharing requires the same model, adapter, positional treatment, and token sequence. Text that looks identical after rendering may tokenize differently. Cache keys must never cross authorization boundaries when the cached representation or timing can reveal private context.
+
+:::warning
+KV state is derived from user context and can be sensitive. Clear it when ownership ends, isolate tenants, bound retention, and never treat “it is only a tensor” as a privacy exemption.
+:::
+
+Beam search and speculative decoding complicate ownership. Several candidates may share a prefix, branch, and discard paths. Copy-on-write block tables avoid copying the common prefix. Cancellation must decrement references exactly once. A leak gradually removes serving capacity; premature reuse corrupts one request with another's state.
+
+The cache does not make decode constant-time in context length. Projection of the old prefix disappears, but the new query still reads and attends over retained K/V states unless the architecture uses a bounded window or different mechanism. The durable model is a transcript: computation already performed becomes memory, saving arithmetic at the price of growing bandwidth, capacity, lifecycle, and privacy responsibilities.

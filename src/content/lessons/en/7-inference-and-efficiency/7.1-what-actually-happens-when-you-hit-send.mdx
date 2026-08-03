@@ -1,0 +1,52 @@
+---
+id: "7.1-what-actually-happens-when-you-hit-send"
+track: "7-inference-and-efficiency"
+order: 1
+title: "What actually happens when you hit send"
+summary: "An inference request crosses admission control, tokenization, scheduling, model execution, decoding, streaming, and cleanup before text reaches the user."
+tier: "advanced"
+locale: "en"
+prerequisites: ["4.2-self-attention"]
+unlocks: ["7.2-the-kv-cache", "7.3-prefill-vs-decode-two-different-machines"]
+analogy: "A restaurant order is not transported directly from the table into a finished meal. A host admits the party, a server normalizes the order, the kitchen scheduler groups dishes that share equipment, cooks prepare an initial batch, then plate later courses one at a time. Runners stream dishes to the table while canceled orders release ingredients and counter space. An inference server performs the same choreography with requests, tokens, GPU batches, and cache blocks."
+teachBack:
+  prompt: "Trace a chat request from HTTP arrival through the first streamed token and name one failure or metric at three different stages."
+  modelAnswer: "The gateway authenticates and validates the request, the chat template serializes roles, and the tokenizer produces token IDs. Admission control checks limits; the scheduler allocates KV-cache capacity and batches the prefill. The model computes logits, the decoder selects a token, and the server detokenizes and streams it. Queue time can dominate before compute, invalid templates can change behavior, cache exhaustion can reject work, and time to first token measures the path through prefill rather than total generation."
+quiz:
+  - question: "What usually happens before the model sees token IDs?"
+    options: ["Validation, chat templating, and tokenization", "KV-cache eviction after completion", "Weight retraining", "Backpropagation through the user"]
+    correctIndex: 0
+    explanation: "The serving layer must validate and serialize the conversation, then map it to the model's token vocabulary."
+  - question: "What does time to first token include?"
+    options: ["Queueing and prompt processing before the first generated token can stream", "Only network download after completion", "Model training time", "The latency of every future request"]
+    correctIndex: 0
+    explanation: "TTFT spans the request path through admission, queueing, tokenization and prefill until the first output becomes available."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-02"
+---
+
+Pressing “send” starts a distributed systems workflow, not a single model call. The exact components vary, but a useful lifecycle has seven boundaries: request handling, prompt construction, tokenization, admission and scheduling, model execution, decoding and streaming, then cleanup. Each boundary has its own correctness and latency failures.
+
+At the edge or API gateway, the service authenticates the caller, checks authorization and quota, validates the schema, and assigns a request ID. Limits on bytes, messages, images, tools, and maximum generation should be enforced before expensive work. Rate limiting belongs here, not inside a prompt. User text is untrusted data; it must never become authority over credentials or tenant access.
+
+The application builds the model input. It combines system instructions, conversation history, tool results, and the new message using the checkpoint's **chat template**. This template inserts role and boundary tokens learned during post-training. Two templates that render similarly to a person can map to different token sequences and behavior. Context management then truncates or summarizes according to an explicit policy; silently dropping the system message is a correctness bug.
+
+The tokenizer maps text into integer IDs. Input validation must occur both before and after tokenization because character count is not token count. The server may reuse a cached prefix when an identical leading token sequence was processed earlier. Otherwise the request enters a queue with its prompt length, output budget, priority, and cache requirements.
+
+The scheduler decides whether to admit it. Model weights occupy mostly fixed memory; the KV cache grows with active sequences. A request that fits alone may not fit beside current work. Modern servers build dynamic batches, combining requests at different generation positions rather than waiting for a fixed batch to finish. Fairness, deadlines, and preemption determine whether a long generation starves short interactive work.
+
+During **prefill**, the model processes prompt tokens and writes key/value states for every layer. The final prompt position produces logits for the first new token. A decoder applies temperature, truncation, constraints, and a random or deterministic selection rule. The chosen token is appended, and **decode** runs another forward step using cached states rather than recomputing the prompt.
+
+The server detokenizes output incrementally and sends stream events. Token boundaries do not necessarily match characters, words, or valid UTF-8 chunks, so buffering must follow the tokenizer's decoder. Stop sequences, tool-call parsers, safety filters, and structured-output constraints may delay or suppress bytes. Backpressure matters: a slow client should not retain unlimited server memory.
+
+:::insight
+“Model latency” is several metrics. Queue time reveals capacity pressure; time to first token emphasizes prompt processing; inter-token latency describes decode cadence; end-to-end time also includes output length and the client connection.
+:::
+
+Cancellation travels the other direction. If the user stops, the connection closes, or a deadline expires, generation should halt promptly, queued work should disappear, and cache blocks should return to the allocator. Billing and logs need the actual token counts and terminal reason. Cleanup leaks become capacity incidents under load.
+
+Production observability follows request IDs across these stages without storing sensitive prompts by default. Record model and tokenizer versions, template, queue duration, prompt and generated token counts, cache allocation, batch state, first-token and per-token timing, finish reason, and errors. The durable mental model is a pipeline: the neural network is the computational center, but scheduling, boundaries, and resource ownership decide whether it becomes a dependable service.

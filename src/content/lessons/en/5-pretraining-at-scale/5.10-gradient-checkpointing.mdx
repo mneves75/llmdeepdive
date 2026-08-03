@@ -1,0 +1,60 @@
+---
+id: "5.10-gradient-checkpointing"
+track: "5-pretraining-at-scale"
+order: 10
+title: "Gradient checkpointing & memory maths"
+summary: "Activation checkpointing saves selected boundaries during forward and recomputes missing intermediates during backward, trading compute for memory."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.9-mixed-precision"]
+unlocks: ["5.11-learning-rate-schedules"]
+analogy: "A hiker crossing a long route can photograph every turn or only major trail junctions. Photographing everything makes the return route easy but fills the phone. Keeping only junctions saves storage; on the way back, the hiker must retrace each segment to reconstruct intermediate turns. Checkpointing stores selected activation junctions and recomputes the path when gradients travel backward."
+teachBack:
+  prompt: "Explain what activation checkpointing stores, what it recomputes, and how you would estimate whether it solves an out-of-memory problem."
+  modelAnswer: "Ordinary autograd retains forward intermediates needed by backward. Checkpointing keeps chosen boundary tensors and RNG state, discards internal activations, and reruns that forward segment during backward to recreate them. Estimate parameter, gradient, optimizer, activation, attention, temporary-buffer, and fragmentation memory separately; checkpointing reduces eligible activations, not persistent model state, and adds roughly the recomputation of checkpointed forward work."
+quiz:
+  - question: "What resource does activation checkpointing primarily reduce?"
+    options: ["Saved forward activations", "Vocabulary size", "Training tokens", "Network latency"]
+    correctIndex: 0
+    explanation: "It discards internal intermediates and recreates them later from stored boundaries."
+  - question: "Why must random-number state be handled during recomputation?"
+    options: ["Dropout and other stochastic operations must reproduce compatible masks", "It changes parameter shapes", "It allocates the tokenizer", "It replaces the loss"]
+    correctIndex: 0
+    explanation: "A different stochastic forward during backward would not reproduce the computation whose gradients are required."
+citations:
+  - title: "Training Deep Nets with Sublinear Memory Cost"
+    authors: "Tianqi Chen, Bing Xu, Chiyuan Zhang, and Carlos Guestrin"
+    year: 2016
+    url: "https://arxiv.org/abs/1604.06174"
+updated: "2026-08-02"
+---
+
+Backpropagation needs values from the forward pass to compute gradients. Autograd therefore retains activations, attention intermediates, and other tensors until their backward functions run. In a deep Transformer, these saved values can consume more memory than the weights. **Activation checkpointing**, often called gradient checkpointing, reduces that memory by deliberately forgetting and recomputing.
+
+Divide the network into segments. During the original forward, save only each segment's input or boundary output instead of every internal activation. During backward, rerun the segment's forward computation from the saved boundary, reconstruct its intermediates, calculate gradients, then release them. The parameters are not rolled back; “checkpoint” here means an activation boundary, not a file on disk.
+
+The tradeoff is direct: lower peak activation memory for extra computation. If every Transformer block is checkpointed, much of each block's forward work runs again during backward. The exact overhead is not simply double total training time because backward, communication, and non-checkpointed work remain, and recomputation may overlap differently. Measure step time and realized throughput.
+
+A memory budget should separate categories:
+
+$$
+M_{peak}=M_{params}+M_{grads}+M_{optimizer}+M_{activations}+M_{temporary}+M_{allocator}.
+$$
+
+Checkpointing primarily attacks $M_{activations}$. It does not shard parameters or Adam moments. It may also not remove every attention temporary, depending on kernel and where the checkpoint boundary sits. A job dominated by optimizer state needs ZeRO/FSDP; one dominated by long-sequence activations may benefit greatly from checkpointing.
+
+Activation size grows with batch, sequence length, model width, and number of saved layers. Ordinary attention can add terms quadratic in sequence length, while memory-efficient attention kernels avoid materializing the full probability matrix. Combine estimates from tensor shapes with measured allocator peaks, because fused kernels and framework bookkeeping alter what is retained.
+
+:::caveat
+The commonly reported memory reduction is configuration-specific. “Checkpointing saves 60%” is meaningless without batch, sequence, dtype, kernel, segment policy, and what memory categories were counted.
+:::
+
+Stochastic operations require care. If dropout produced one mask during the original forward and another during recomputation, backward would differentiate a different function. Framework checkpoint utilities preserve or restore random-number state, with a performance cost. Stateful modules, side effects, mutable caches, and data-dependent external calls can also make recomputation incorrect.
+
+Granularity changes the tradeoff. Large segments save more boundaries but recompute more work and may retain large segment inputs. Small segments keep more checkpoints and invoke more framework overhead. Selective policies can checkpoint attention and FFN branches differently. Profile memory and compute instead of choosing “every N layers” by folklore.
+
+Pipeline parallelism complicates scheduling because recomputation competes with other microbatches. FSDP may all-gather weights again during recompute unless parameters remain materialized, trading communication against memory. Compilation systems may fuse or reorder regions. The effective unit is the whole distributed schedule, not an isolated function.
+
+A calculator should let learners enter batch, $T$, $d_{model}$, layers, dtype bytes, FFN expansion, and checkpoint interval, then show an explicitly simplified estimate. It must label omitted categories and avoid presenting theoretical tensor counts as an allocator guarantee.
+
+The durable mental model is time–space exchange. Save enough boundary state to reconstruct the forward graph; discard bulky intermediates; pay compute to recreate them just before their gradients are needed. The right decision follows from a measured memory breakdown, not the generic fact that the model is large.

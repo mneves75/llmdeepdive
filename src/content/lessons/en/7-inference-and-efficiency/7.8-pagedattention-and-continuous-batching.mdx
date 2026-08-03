@@ -1,0 +1,54 @@
+---
+id: "7.8-pagedattention-and-continuous-batching"
+track: "7-inference-and-efficiency"
+order: 8
+title: "PagedAttention & continuous batching"
+summary: "Paged KV allocation and iteration-level scheduling let serving systems pack variable-length requests without large contiguous reservations."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.2-the-kv-cache"]
+unlocks: ["7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+analogy: "A hotel that demands one contiguous floor for every group wastes rooms when groups grow unpredictably. A paged hotel assigns standard room blocks anywhere in the building and gives each group a directory listing its rooms in order. Continuous batching is the front desk filling newly freed rooms immediately rather than waiting for every group that arrived together to depart. The directory adds lookup work, but occupancy improves dramatically."
+teachBack:
+  prompt: "Explain why contiguous KV allocation wastes memory, how a page table changes the layout, and how continuous batching differs from static batching."
+  modelAnswer: "Sequence lengths and output lengths are unknown, so reserving one maximum-sized contiguous KV buffer leaves unused capacity, while growing buffers causes copies and fragmentation. Paged allocation stores fixed-size logical token blocks in noncontiguous physical blocks and maps them through a per-sequence block table. Continuous batching reschedules at token-step boundaries, removing finished requests and admitting new ones instead of keeping the original batch fixed until its slowest member completes."
+quiz:
+  - question: "What does a sequence block table map?"
+    options: ["Logical KV-cache blocks to physical memory blocks", "Words to grammar rules", "Users to model weights", "Rewards to optimizer epochs"]
+    correctIndex: 0
+    explanation: "The indirection lets a logical sequence remain ordered even when its cache blocks are scattered physically."
+  - question: "Why does continuous batching improve utilization?"
+    options: ["Finished slots can be replaced by waiting requests at iteration boundaries", "Every request must have equal length", "It disables cancellation", "It reserves maximum context for all users"]
+    correctIndex: 0
+    explanation: "The active batch evolves as sequences finish, so short requests do not leave idle lanes behind a long one."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-02"
+---
+
+KV-cache memory is dynamic. A prompt has known length at admission, but generated length is uncertain. Reserving a contiguous buffer for the maximum possible output wastes unused space. Reserving only current length requires growth, relocation, or many differently sized allocations. Across concurrent requests, these choices create internal and external fragmentation.
+
+**PagedAttention**, introduced with vLLM in 2023, borrows the virtual-memory idea of fixed-size blocks. A sequence's logical KV positions are divided into blocks. Physical blocks can live anywhere in the cache pool. A block table maps logical order to physical addresses, and an attention kernel follows that mapping while reading keys and values.
+
+When a sequence grows past the current block, the allocator assigns another free physical block without moving earlier state. Waste is bounded mostly to unused positions in the last block rather than an entire maximum reservation. Block size creates a trade-off: large blocks reduce metadata and improve contiguous access but increase tail waste; small blocks pack tightly but add mapping overhead and less regular memory access.
+
+Indirection also enables sharing. Parallel samples, beam candidates, or requests with a cached common prefix can point to the same read-only blocks. When one branch diverges, copy-on-write allocates a new block for changed positions. Reference counts determine when shared blocks can return to the pool. An ownership bug can leak capacity or expose one request's state to another.
+
+Allocation alone does not keep hardware busy. A **static batch** groups requests and runs until every member finishes. If one response is long and the others end early, their lanes remain empty. **Continuous batching** revisits the batch at iteration boundaries. Finished or canceled sequences leave; waiting sequences enter; active ones advance another token.
+
+The scheduler works under several constraints: available KV blocks, maximum batch tokens, priorities, deadlines, adapter compatibility, and the mix of prefill and decode. It may chunk long prefills to avoid delaying decode. Preemption can evict or swap a low-priority sequence, but recomputation and transfers have costs. Fairness policies prevent bulk workloads from monopolizing cache.
+
+Paged layouts make capacity visible as blocks rather than vague “free GPU memory.” Admission can estimate prompt blocks and a bounded output allowance. Still, optimistic overcommit needs a policy for exhaustion. Rejecting early with a clear error is often safer than admitting every request and failing deep in generation.
+
+:::warning
+Cache blocks contain context-derived data. Zero or safely overwrite released storage, enforce tenant isolation in metadata, and test cancellation, retry, and error paths—not only normal completion.
+:::
+
+Performance depends on the kernel understanding the page table efficiently. Generic attention over copied contiguous tensors can erase the benefit. Prefix hashing, block metadata, and scheduler locks also consume CPU time at high request rates. End-to-end tests should vary prompt lengths, output lengths, cancellation, prefix sharing, and bursty arrivals.
+
+Metrics include free and used blocks, allocation failures, fragmentation or tail waste, prefix hit rate, preemptions, queue delay, active sequences, batch tokens, TTFT, and inter-token latency. Percentiles should be sliced by request class so throughput does not hide starvation.
+
+The durable mental model has two layers. Paged allocation solves *where growing state lives*: fixed blocks plus a logical directory. Continuous batching solves *when each request runs*: a batch whose membership changes every decoding step. Together they turn irregular, variable-length conversations into a workload the accelerator can pack efficiently without pretending every sequence has the same shape.
