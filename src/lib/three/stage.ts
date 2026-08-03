@@ -70,7 +70,7 @@ export class Stage {
   onResize: ((width: number, height: number) => void) | null = null
 
   private readonly canvas: HTMLCanvasElement
-  private readonly clock = new THREE.Clock()
+  private readonly timer = new THREE.Timer()
   private readonly env: THREE.Texture
   private readonly resizeObserver: ResizeObserver
   private readonly intersectionObserver: IntersectionObserver
@@ -113,24 +113,28 @@ export class Stage {
     // quantisation and never recovers, which looks like a permanent regression.
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, lowPower ? 1.5 : 2))
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.02
+    this.renderer.toneMappingExposure = 1.08
     // No shadow maps: a baked contact shadow costs one textured quad instead of
     // an entire extra scene pass every frame.
     this.renderer.shadowMap.enabled = false
 
     this.scene = new THREE.Scene()
+    this.scene.background = new THREE.Color(0x06141d)
+    this.scene.fog = new THREE.Fog(0x06141d, 8.5, 18)
     this.scene.add(this.root)
 
-    this.camera = new THREE.PerspectiveCamera(opts.fov ?? 42, 1, 0.1, 100)
-    this.camera.position.set(0, 0.6, 8.2)
+    this.camera = new THREE.PerspectiveCamera(opts.fov ?? 39, 1, 0.1, 100)
+    this.camera.position.set(4.5, 3, 7.2)
 
     this.controls = new OrbitControls(this.camera, this.canvas)
+    this.controls.target.set(0, 0.05, 0)
     this.controls.enableDamping = true
     this.controls.dampingFactor = 0.055
     this.controls.enablePan = false
     this.controls.minDistance = opts.minDistance ?? 4.8
     this.controls.maxDistance = opts.maxDistance ?? 12
     this.controls.autoRotateSpeed = 0.65
+    this.controls.update()
     this.controls.addEventListener('start', () => {
       this.interactionUntil = performance.now() + AUTOROTATE_RESUME_MS
       this.invalidate()
@@ -169,11 +173,13 @@ export class Stage {
     const data = new Uint8Array(w * h * 4)
     for (let y = 0; y < h; y += 1) {
       const t = y / (h - 1)
-      // Warm sky over cool ground, matching the paper palette.
-      const r = Math.round(255 * (0.42 + 0.55 * (1 - t)))
-      const g = Math.round(255 * (0.44 + 0.5 * (1 - t)))
-      const b = Math.round(255 * (0.5 + 0.42 * (1 - t)))
       for (let x = 0; x < w; x += 1) {
+        const horizon = Math.exp(-Math.pow((t - 0.48) / 0.2, 2))
+        const key = Math.max(0, Math.cos((x / w) * Math.PI * 2 - 0.7)) ** 8
+        // Cool observatory ambience with one warm, directional reflection.
+        const r = Math.round(7 + 24 * (1 - t) + 42 * horizon + 90 * key)
+        const g = Math.round(13 + 44 * (1 - t) + 58 * horizon + 64 * key)
+        const b = Math.round(20 + 58 * (1 - t) + 70 * horizon + 40 * key)
         const i = (y * w + x) * 4
         data[i] = r
         data[i + 1] = g
@@ -191,13 +197,13 @@ export class Stage {
   }
 
   private addLighting(): void {
-    const key = new THREE.DirectionalLight(0xffffff, 1.5)
-    key.position.set(3.4, 5.2, 4.6)
-    const fill = new THREE.DirectionalLight(0xffe8d2, 0.55)
-    fill.position.set(-4.2, 1.4, 2.2)
-    const rim = new THREE.DirectionalLight(0xd8e2ff, 0.7)
-    rim.position.set(-1.5, 2.6, -5)
-    const ambient = new THREE.AmbientLight(0xffffff, 0.32)
+    const key = new THREE.DirectionalLight(0xf4fbff, 2.2)
+    key.position.set(4.8, 6.2, 5.4)
+    const fill = new THREE.DirectionalLight(0x8fbdcb, 0.62)
+    fill.position.set(-4.6, 1.8, 2.6)
+    const rim = new THREE.DirectionalLight(0xffd29c, 1.05)
+    rim.position.set(-2.2, 3.4, -5.5)
+    const ambient = new THREE.HemisphereLight(0x8ebdca, 0x071018, 0.42)
     this.scene.add(key, fill, rim, ambient)
   }
 
@@ -209,9 +215,9 @@ export class Stage {
     const ctx = c.getContext('2d')
     if (!ctx) return
     const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
-    grad.addColorStop(0, 'rgba(70,48,32,0.34)')
-    grad.addColorStop(0.55, 'rgba(70,48,32,0.12)')
-    grad.addColorStop(1, 'rgba(70,48,32,0)')
+    grad.addColorStop(0, 'rgba(0,6,10,0.46)')
+    grad.addColorStop(0.55, 'rgba(0,6,10,0.16)')
+    grad.addColorStop(1, 'rgba(0,6,10,0)')
     ctx.fillStyle = grad
     ctx.fillRect(0, 0, size, size)
 
@@ -223,7 +229,14 @@ export class Stage {
     mesh.rotation.x = -Math.PI / 2
     mesh.position.y = -2.1
     mesh.name = '__contact-shadow'
-    this.scene.add(mesh)
+
+    const grid = new THREE.GridHelper(12, 24, 0x315361, 0x17313c)
+    grid.position.y = -2.08
+    grid.material.transparent = true
+    grid.material.opacity = 0.16
+    grid.material.depthWrite = false
+    grid.name = '__reference-grid'
+    this.scene.add(mesh, grid)
   }
 
   mount(module: SceneModule): void {
@@ -299,9 +312,9 @@ export class Stage {
     const now = performance.now()
     this.applyAutoRotate(now)
 
-    // Suspension can leave the clock untouched for minutes. Limit the first
+    // Suspension can leave the timer untouched for minutes. Limit the first
     // resumed step so time-based objects do not all jump to the same state.
-    const dt = Math.min(this.clock.getDelta(), 0.1)
+    const dt = Math.min(this.timer.update(now).getDelta(), 0.1)
     const controlsChanged = this.controls.update()
     const moduleWants = this.module?.update?.(this.context(), dt) ?? false
 
@@ -318,6 +331,7 @@ export class Stage {
     document.removeEventListener('visibilitychange', this.onVisibility)
     this.resizeObserver.disconnect()
     this.intersectionObserver.disconnect()
+    this.timer.dispose()
     this.unmount()
     // Everything parented to the scene, including the lights and the contact
     // shadow the constructor added — not just the current module.

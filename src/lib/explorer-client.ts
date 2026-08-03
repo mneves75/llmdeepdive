@@ -26,8 +26,19 @@ interface StageBundle {
   scene: import('./three/scenes/transformer').TransformerScene
 }
 
+const MARKER_BY_COMPONENT: Readonly<Record<string, string>> = Object.fromEntries(
+  COMPONENTS.map(({ id }) => [id, id]),
+)
+
+const COMPONENT_BY_MARKER: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(MARKER_BY_COMPONENT).map(([component, marker]) => [marker, component]),
+)
+
 export function mountExplorer(root: HTMLElement): Cleanup {
   const locale = (root.dataset.locale ?? 'en') as Locale
+  const clearedAnnotation = locale === 'pt-br'
+    ? 'Nenhum ponto selecionado. Use as setas para percorrer as anotações.'
+    : 'No marker selected. Use the arrow keys to cycle annotations.'
   const canvas = root.querySelector<HTMLCanvasElement>('[data-stage-canvas]')
   const poster = root.querySelector<HTMLElement>('[data-poster]')
   const noWebgl = root.querySelector<HTMLElement>('[data-nowebgl]')
@@ -38,6 +49,12 @@ export function mountExplorer(root: HTMLElement): Cleanup {
 
   const cleanups: Cleanup[] = []
   let bundle: StageBundle | null = null
+  let pendingStage: StageBundle['stage'] | null = null
+  let pendingMarkers: StageBundle['markers'] | null = null
+  let componentId =
+    root.querySelector<HTMLElement>('[data-component][aria-current="true"]')?.dataset.component ??
+    COMPONENTS[0]?.id ??
+    ''
   // Set by the returned cleanup. `boot()` awaits two dynamic imports, so the
   // component can be torn down mid-flight; without this the Stage is
   // constructed after cleanup ran and leaks a live WebGL context and rAF loop.
@@ -56,9 +73,10 @@ export function mountExplorer(root: HTMLElement): Cleanup {
 
   // ---- Detail panel (works with or without WebGL) -------------------------
 
-  const setComponent = (id: string): void => {
+  const setComponent = (id: string, syncMarker = true): void => {
     const c = COMPONENTS.find((x) => x.id === id)
     if (!c) return
+    componentId = id
 
     const set = (sel: string, value: string): void => {
       const el = root.querySelector<HTMLElement>(sel)
@@ -87,6 +105,22 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     for (const btn of root.querySelectorAll<HTMLButtonElement>('[data-component]')) {
       btn.setAttribute('aria-current', btn.dataset.component === id ? 'true' : 'false')
     }
+
+    if (!syncMarker || !bundle) return
+    const markerId = MARKER_BY_COMPONENT[id] ?? null
+    const spec = bundle.markers.specs.find((item) => item.id === markerId) ?? null
+    bundle.markers.select(spec?.id ?? null)
+    showCallout(spec)
+
+    const isolateBtn = root.querySelector<HTMLButtonElement>('[data-tool="isolate"]')
+    if (isolateBtn?.getAttribute('aria-pressed') === 'true') {
+      if (spec) bundle.scene.isolate(spec.id)
+      else {
+        bundle.scene.isolate(null)
+        isolateBtn.setAttribute('aria-pressed', 'false')
+      }
+    }
+    bundle.stage.invalidate()
   }
 
   for (const btn of root.querySelectorAll<HTMLButtonElement>('[data-component]')) {
@@ -95,17 +129,21 @@ export function mountExplorer(root: HTMLElement): Cleanup {
 
   // ---- 3D stage (progressive enhancement) ---------------------------------
 
-  const showCallout = (spec: { label: string; detail: string } | null): void => {
+  function showCallout(spec: { id: string; label: string; detail: string } | null): void {
     if (!callout || !calloutLabel || !calloutDetail) return
     if (!spec) {
       callout.hidden = true
+      if (annotations) annotations.textContent = clearedAnnotation
       return
     }
-    calloutLabel.textContent = spec.label
-    calloutDetail.textContent = spec.detail
+    const component = COMPONENTS.find((item) => item.id === COMPONENT_BY_MARKER[spec.id])
+    const label = component?.name[locale] ?? spec.label
+    const detail = component?.tagline[locale] ?? spec.detail
+    calloutLabel.textContent = label
+    calloutDetail.textContent = detail
     callout.hidden = false
     // Announced to assistive tech: selecting a marker must not be silent.
-    if (annotations) annotations.textContent = `${spec.label}. ${spec.detail}`
+    if (annotations) annotations.textContent = `${label}. ${detail}`
   }
 
   const boot = async (): Promise<void> => {
@@ -134,10 +172,12 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     canvas.hidden = false
 
     const stage = new Stage({ canvas })
+    pendingStage = stage
     const scene = new TransformerScene()
     stage.mount(scene)
 
     const markers = new MarkerLayer(stage.camera)
+    pendingMarkers = markers
     markers.set(transformerMarkers())
     stage.scene.add(markers.group)
 
@@ -168,7 +208,17 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     const select = (spec: { id: string; label: string; detail: string } | null): void => {
       markers.select(spec?.id ?? null)
       showCallout(spec)
-      if (spec) setComponent(spec.id)
+      const selectedComponent = spec ? COMPONENT_BY_MARKER[spec.id] : undefined
+      if (selectedComponent) setComponent(selectedComponent, false)
+
+      const isolateBtn = root.querySelector<HTMLButtonElement>('[data-tool="isolate"]')
+      if (isolateBtn?.getAttribute('aria-pressed') === 'true') {
+        if (spec) scene.isolate(spec.id)
+        else {
+          scene.isolate(null)
+          isolateBtn.setAttribute('aria-pressed', 'false')
+        }
+      }
       stage.invalidate()
     }
 
@@ -208,14 +258,16 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     on(isolateBtn, 'click', () => {
       if (!isolateBtn) return
       const pressed = isolateBtn.getAttribute('aria-pressed') !== 'true'
-      isolateBtn.setAttribute('aria-pressed', String(pressed))
-      scene.isolate(pressed ? markers.selected : null)
+      const isolatedId = pressed ? markers.selected : null
+      isolateBtn.setAttribute('aria-pressed', String(Boolean(isolatedId)))
+      scene.isolate(isolatedId)
       stage.invalidate()
     })
 
     const resetBtn = root.querySelector<HTMLButtonElement>('[data-tool="reset"]')
     on(resetBtn, 'click', () => {
       select(null)
+      setComponent(COMPONENTS[0]?.id ?? componentId, false)
       scene.isolate(null)
       isolateBtn?.setAttribute('aria-pressed', 'false')
       stage.controls.reset()
@@ -229,6 +281,9 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     }
 
     bundle = { stage, markers, scene }
+    pendingStage = null
+    pendingMarkers = null
+    setComponent(componentId)
     cleanups.push(() => {
       markers.dispose()
       stage.dispose()
@@ -248,6 +303,11 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       if (!entries.some((e) => e.isIntersecting) || bundle) return
       io.disconnect()
       boot().catch((err: unknown) => {
+        pendingMarkers?.dispose()
+        pendingStage?.dispose()
+        pendingMarkers = null
+        pendingStage = null
+        if (torndown) return
         // A real catch. Without it this is an unhandled rejection and the user
         // stares at a poster that never becomes interactive with no explanation.
         console.error('[explorer] 3D stage failed to start:', err)
@@ -264,6 +324,10 @@ export function mountExplorer(root: HTMLElement): Cleanup {
   return () => {
     torndown = true
     for (const fn of cleanups.splice(0)) fn()
+    pendingMarkers?.dispose()
+    pendingStage?.dispose()
+    pendingMarkers = null
+    pendingStage = null
     bundle = null
   }
 }

@@ -137,3 +137,20 @@ test('three.js is not in any eagerly-loaded page bundle', () => {
     }
   }
 })
+
+test('explorer annotation live regions accept dynamic text without invalid list markup', () => {
+  for (const route of ['/explore/', '/pt-br/explore/']) {
+    const page = pages().find((candidate) => candidate.route === route)
+    assert.ok(page, `${route} was not built`)
+    assert.match(
+      page.html,
+      /<div[^>]+id="specimen-annotations"/,
+      `${route}: dynamic annotation text needs a neutral live-region container`,
+    )
+    assert.doesNotMatch(
+      page.html,
+      /<ul[^>]+id="specimen-annotations"/,
+      `${route}: setting textContent on a list creates an invalid direct text child`,
+    )
+  }
+})
