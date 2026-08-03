@@ -13,6 +13,12 @@ colors:
   sonar-yellow: "#806800"
   coral-red: "#c43327"
   kelp-green: "#287855"
+  instrument-violet: "#8d6bcc"
+  mechanism-coral: "#c4553f"
+  mechanism-amber: "#c98a2b"
+  residual-green: "#769d74"
+  output-teal: "#2f8a8a"
+  signal-cyan: "#5de7ee"
 typography:
   display:
     fontFamily: "Avenir Next Condensed, Arial Narrow, Roboto Condensed, Arial, sans-serif"
@@ -118,6 +124,15 @@ pigments carry stable meaning in both light and dark modes.
 - **Kelp Green** (`#287855`): verified completion, correct answers, and stable
   learned states.
 
+### Instrument
+
+- **Instrument Violet:** embedding and input-vector assemblies.
+- **Mechanism Coral:** attention routing assemblies.
+- **Mechanism Amber:** feed-forward and expert-routing assemblies.
+- **Residual Green:** bypasses and additive residual paths.
+- **Output Teal:** tokenisation, cache, output projection and sampling ports.
+- **Signal Cyan:** the active token path, direction arrow and observatory frame.
+
 ### Neutral
 
 - **Chart Field** (`#f4f7f2`): the light reading and survey ground.
@@ -159,8 +174,10 @@ come from an instrument, coordinate, measurement, code block, or identifier.
 
 The shell is fluid up to `92rem`. Lesson prose stays within `40rem`, paired with
 a `13rem` sticky depth rail on wide screens. Tracks form a single numbered
-descent, not equal cards. The explorer uses a library rail, an abyssal stage,
-and a fact panel; below `1180px` those strata stack without losing content.
+descent, not equal cards. The explorer uses a horizontal component selector,
+a dominant abyssal stage and an evidence drawer; below `1180px` those strata
+stack in selector → stage → evidence order without losing content. On mobile,
+the selector keeps an explicit swipe affordance and snap-aligned items.
 
 At `58rem` the lesson rail becomes a horizontal sticky strip. At `48rem` and
 `42rem`, multi-column introductions and track structures become deliberate
@@ -224,6 +241,16 @@ fields, circular contours, a vertical signal line, and nodes tied to real steps.
 Use it when a surface must explain sequence or internal structure, never as
 wallpaper.
 
+### Signal Observatory
+
+The explorer's procedural 3D specimen is a scientific instrument, not a glossy
+product render. Machined rounded decks expose distinct mechanisms, numbered
+ports map every library component to the model, side routes explain residual
+flow, and a persistent arrow plus bilingual instrument key make the bottom-to-top
+token journey readable without opening the evidence drawer. Selection and
+isolation may clarify the instrument but must never be required to understand
+its direction or layer identity.
+
 ## Do's and Don'ts
 
 ### Do:
@@ -234,6 +261,8 @@ wallpaper.
 - **Do** preserve semantic HTML, visible focus, reduced motion, and complete
   content before WebGL enhancement.
 - **Do** treat mobile as a deliberate vertical survey.
+- **Do** keep every explorer selector mapped to a numbered observatory port and
+  an honest physical mechanism.
 
 ### Don't:
 

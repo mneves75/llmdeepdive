@@ -4,6 +4,31 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-08-02
+
+### Added
+
+- **Signal Observatory 3D model for the Anatomy Explorer.** The procedural
+  transformer is now a machined cutaway instrument with distinct mechanisms,
+  persistent input/output direction, bilingual layer labels and deterministic
+  token flow.
+- **Complete selector-to-specimen coverage.** All 12 library components select
+  an explicit 3D port, update the bilingual evidence drawer and isolate the
+  relevant mechanism.
+### Changed
+
+- Reworked both explorer locales around a selector-first hierarchy, dominant 3D
+  stage, evidence drawer and ruled five-lens strip. Mobile preserves that order
+  and exposes a horizontal-scroll affordance.
+- Upgraded the Three.js stage with calibrated camera, environment light, fog,
+  shadows and render timing while keeping it lazy and off the critical path.
+
+### Fixed
+
+- Removed the deprecated `THREE.Clock` path and invalid live-region list markup
+  found by browser accessibility QA. Axe now reports zero automated WCAG 2A
+  violations on the explorer.
+
 ## [0.4.0] — 2026-08-02
 
 The Abyssal Core Atlas redesign, and the discovery that ten green gates were
@@ -229,6 +254,8 @@ Found by review and real-browser verification before this ever shipped:
   425 KB gzipped versus 130 KB, for a renderer still described upstream as
   experimental.
 
+[0.5.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.5.0
+[0.4.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.4.0
 [0.3.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mneves75/llmdeepdive/releases/tag/v0.1.0

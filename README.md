@@ -28,11 +28,11 @@ the quiz is right. Clicking "reveal" is not learning.
 
 ## The Anatomy Explorer
 
-The course's front door is a transformer you can rotate and click into. Each
-component — attention, the feed-forward network, the residual stream, the KV
-cache, the MoE router — opens through five lenses: the maths, how it differs
-across architectures, a token's journey through it, **how it fails**, and where
-it sits in the stack.
+The course's front door is a transformer signal observatory you can rotate and
+inspect. Its machined cutaway, animated input→output path and 12 numbered ports
+make every library component selectable. Each opens through five lenses: maths,
+architectural differences, a token's journey, **how it fails**, and where it
+sits in the stack.
 
 It doubles as the course map: clicking a component takes you to the lessons
 that teach it.
@@ -42,13 +42,14 @@ that teach it.
 | | |
 |---|---|
 | Astro 7 (`output: 'static'`) | no adapter — `dist/` is served directly |
-| Cloudflare Workers Static Assets | `run_worker_first: ["/api/*"]`, so an HTML request never starts an isolate |
+| Cloudflare Workers Static Assets | static assets only; no Worker script or bindings |
 | Tailwind 4 + hand-written tokens | `light-dark()` theming; "Auto" needs zero JavaScript |
 | Three.js 0.185 (`WebGLRenderer`) | one long-lived stage, procedural geometry, lazy-loaded |
 | Pagefind | per-language index, fetched on first keystroke |
 
-Geometry is generated in code, not shipped: the whole 3D explorer costs tens of
-kilobytes rather than the tens of megabytes a GLB-based one would.
+Geometry, labels and signal paths are generated in code, not shipped as a model:
+the whole 3D explorer costs tens of kilobytes rather than the tens of megabytes
+a GLB-based one would.
 
 ## Current scale
 

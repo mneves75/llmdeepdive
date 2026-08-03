@@ -38,6 +38,10 @@ Read `AGENTS.md` before non-trivial changes. The invariants there are load-beari
 no personalised HTML, no teach-back text leaving the browser, no Three.js on the
 critical path, no `any`.
 
+Explorer changes must keep all library components mapped to selectable 3D ports
+and equivalent EN/pt-BR states. Run `node --test tests/transformer-scene.test.mjs`
+and verify `/explore/` at desktop and mobile widths before submitting them.
+
 ## Licence
 
 By contributing you agree your work is MIT licensed. If you add an asset, add

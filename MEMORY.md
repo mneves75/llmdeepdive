@@ -7,6 +7,9 @@
   is where it was developed and is fully contained in `main`.
 - Visual system: **Abyssal Core Atlas**, documented in `DESIGN.md` and
   `.impeccable/design.json`.
+- Explorer expression: **Signal Observatory** — a mature procedural cutaway
+  with bilingual layer labels, explicit input→output flow and selectable ports
+  for all 12 library components. Delivered in 0.5.0.
 - Product facts and non-visual constraints are captured separately in
   `PRODUCT.md`.
 
@@ -48,3 +51,6 @@
   work; recovery was `git show 'stash@{0}:<path>' > <path>` file by file.
 - Three.js sprites must not derive screen-space scale from a hidden, zero-height
   canvas. Wait for a real canvas measurement and respond to container resize.
+- A component selector without a corresponding marker silently breaks the
+  explorer's choose→inspect contract. Keep marker coverage asserted against the
+  full library, including mechanism aliases such as KV cache→attention.

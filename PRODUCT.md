@@ -37,9 +37,10 @@ wayfinding.
 ## Operating Context
 
 Learners enter through the home page, browse ordered tracks, inspect the
-transformer anatomy, search across the bilingual corpus, read long-form lessons,
-complete local teach-backs and quizzes, and continue through previous/next
-lesson navigation. Progress and learner-written prose remain on the device.
+transformer signal observatory through selectable components and evidence
+lenses, search across the bilingual corpus, read long-form lessons, complete
+local teach-backs and quizzes, and continue through previous/next lesson
+navigation. Progress and learner-written prose remain on the device.
 The interface supports light, dark, and operating-system themes.
 
 ## Capabilities and Constraints

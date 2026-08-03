@@ -98,6 +98,12 @@ pt-BR URL. `content-parity.mjs` is the gate.
 Poster renders first; WebGL replaces it. One long-lived `Stage`, never one
 renderer per lab.
 
+The explorer's current contract is the **Signal Observatory**: every component
+in `COMPONENTS` has a selectable 3D port, an evidence-drawer state and a valid
+lesson link. The specimen keeps visible input→output direction and bilingual
+layer identity. Update `tests/transformer-scene.test.mjs` when that mapping or
+geometry changes, then verify `/explore/` in a real desktop and mobile browser.
+
 **5. No `any`.** `unknown` plus a type guard. `ast-grep scan` blocks commits.
 
 ## Performance: read this before touching the bench

@@ -4,7 +4,7 @@ Think of the site as two machines bolted together: a publishing system and a
 learning instrument.
 
 Astro is the publishing press. It reads bilingual lesson and track files from
-`src/content/`, checks that English and pt-BR stay in lockstep, then prints 180
+`src/content/`, checks that English and pt-BR stay in lockstep, then prints 182
 static pages. Those pages are deliberately identical for every visitor: no
 account data or learner prose is baked into HTML. `src/pages/` chooses a route,
 `src/layouts/` supplies the shared frame, and `src/components/` supplies the
@@ -26,7 +26,8 @@ The home page is a cross-section of the full curriculum. Track pages turn the
 same idea into a continuous descent. Lesson pages narrow back to a readable
 `70ch` column and add a depth rail, so a learner always knows where they are.
 The Anatomy Explorer is the literal core sample: a server-rendered component
-library and fact panel wrapped around an optional Three.js specimen.
+selector and evidence drawer wrapped around an optional Three.js Signal
+Observatory.
 
 ## Why the explorer has two layers
 
@@ -41,6 +42,19 @@ hidden. A hidden canvas is zero pixels tall; pretending it was one pixel made a
 32-pixel marker enormous enough to cover the whole specimen. The fix is pleasingly
 strict: zero means “not measured,” so markers stay hidden until `ResizeObserver`
 reports a real size. `tests/marker-scale.test.mjs` locks that rule down.
+
+The mature specimen is still procedural rather than a heavy downloaded model.
+Rounded decks expose distinct mechanisms, side routes make residual additions
+legible, luminous particles trace input to output, and a bilingual instrument
+key names each major layer. Every one of the 12 library components
+owns a numbered port; components such as the KV cache or quantization isolate
+the physical mechanism they modify instead of pretending to be separate slabs.
+`tests/transformer-scene.test.mjs` locks that coverage and aliasing down.
+
+Browser QA also caught an accessibility trap in the annotation live region: a
+list element was being replaced with raw text, producing invalid list markup.
+The text equivalent now uses a neutral live-region container, and the rendered
+HTML regression test prevents the old structure from returning.
 
 ## Pitfalls worth remembering
 
