@@ -18,8 +18,22 @@
  *
  * A gate that has never been seen red is not a gate. `--self-test` proves this
  * one can fail, by injecting an impossible budget against real measurements.
+ *
+ * Countermeasure 5 was added after the gate reported nine slow routes that were
+ * not slow. An interleaved A/B of those nine against nine "fast" ones came back
+ * p95=64.6ms vs 63.3ms — indistinguishable — and an immutable hashed asset,
+ * which does no server work at all, showed the same tail. The tail was this
+ * machine's link and load, not the site. So:
+ *
+ *  5. A single over-budget p95 is a hypothesis, not a verdict.
+ *     → Every route that exceeds budget is measured AGAIN and only fails if it
+ *       exceeds on the confirmation run too. Both numbers are printed.
+ *     → A control asset is measured alongside. It is a content-hashed,
+ *       immutable file: nothing the site does can make it slow. If the control
+ *       itself blows the budget, the measurement environment is too noisy to
+ *       certify anything and the run says so instead of inventing a verdict.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { loadavg } from 'node:os'
 import { connect } from 'node:net'
@@ -110,6 +124,22 @@ async function measureRtt(host, samples = 12) {
   // Median, not min: the minimum flatters the site by crediting it with a
   // lucky packet.
   return times[Math.floor(times.length / 2)]
+}
+
+/**
+ * A content-hashed asset from the build: immutable, `max-age=31536000`, and
+ * served by the same edge path as the HTML. Its latency is the floor this
+ * machine and link can produce, so it separates "the site is slow" from "the
+ * measurement is noisy". Returns null if the build has no hashed asset.
+ */
+function findControlAsset(dist) {
+  const astroDir = join(dist, '_astro')
+  if (!existsSync(astroDir)) return null
+  const files = readdirSync(astroDir)
+    .filter((f) => f.endsWith('.css') || f.endsWith('.js'))
+    .map((f) => ({ f, size: statSync(join(astroDir, f)).size }))
+    .sort((a, b) => a.size - b.size)
+  return files.length > 0 ? `/_astro/${files[0].f}` : null
 }
 
 function percentile(sorted, p) {
@@ -245,6 +275,53 @@ async function main() {
     )
   }
 
+  // ---- Confirmation pass --------------------------------------------------
+  // Re-measure everything that came in over budget. A route is only reported as
+  // failing if it fails twice; a single spike is this link, not the site.
+  const suspects = rows.filter((r) => !r.okBudget)
+  if (suspects.length > 0 && !args.selfTest) {
+    console.log('')
+    console.log(
+      `confirming ${suspects.length} over-budget route(s) — a single spike is not a verdict; ` +
+        'each is measured again and only counts as a failure if it exceeds twice',
+    )
+    for (const row of suspects) {
+      const again = await measure(new URL(row.route, base).href, args.iter, row.marker)
+      const confirmedP95 = Math.max(0, again.p95 - rtt)
+      row.confirmP95 = confirmedP95
+      row.okBudget = confirmedP95 < budget
+      const wasFailure = !row.ok
+      row.ok = row.okStatus && row.okMarker && row.okBudget
+      if (wasFailure && row.ok) failures -= 1
+      console.log(
+        `  ${row.ok ? 'CLEARED' : 'CONFIRMED'} ${row.route.padEnd(34)} ` +
+          `first p95=${row.serverP95.toFixed(1)}ms · again p95=${confirmedP95.toFixed(1)}ms`,
+      )
+    }
+  }
+
+  // ---- Noise floor --------------------------------------------------------
+  // An immutable, content-hashed asset does no server work. Whatever latency it
+  // shows is the floor imposed by this machine and this link.
+  let control = null
+  const controlPath = findControlAsset(DIST)
+  if (controlPath && !args.selfTest) {
+    const c = await measure(new URL(controlPath, base).href, args.iter, '')
+    control = { path: controlPath, serverP50: Math.max(0, c.p50 - rtt), serverP95: Math.max(0, c.p95 - rtt) }
+    console.log('')
+    console.log(
+      `noise floor · ${controlPath} (immutable, no server work) ` +
+        `server p50=${control.serverP50.toFixed(1)}ms p95=${control.serverP95.toFixed(1)}ms`,
+    )
+    if (control.serverP95 >= budget) {
+      console.log(
+        'INCONCLUSIVE: the control asset alone exceeds the budget, so this machine or link ' +
+          'cannot measure a sub-budget response. Re-run on an idle machine before believing ' +
+          'any failure below.',
+      )
+    }
+  }
+
   const worstServer = Math.max(...rows.map((r) => r.serverP95), 0)
   const worstWire = Math.max(...rows.map((r) => r.p95), 0)
   console.log('')
@@ -261,11 +338,21 @@ async function main() {
       'can mistake one for the other.',
   )
   console.log('note: run-to-run drift on a loaded machine is ~5%; treat smaller deltas as noise.')
+  if (control) {
+    console.log(
+      `note: the immutable control asset measured ${control.serverP95.toFixed(1)}ms p95 on this run — ` +
+        'no route can honestly be expected to beat that floor.',
+    )
+  }
 
   mkdirSync('bench-results', { recursive: true })
   writeFileSync(
     join('bench-results', 'latest.json'),
-    JSON.stringify({ base, iter: args.iter, budget, loadavg: load, rows: rows.map(({ body, ...r }) => r) }, null, 2),
+    JSON.stringify(
+      { base, iter: args.iter, budget, loadavg: load, rtt, control, rows: rows.map(({ body, ...r }) => r) },
+      null,
+      2,
+    ),
   )
 
   if (args.selfTest) {
