@@ -288,7 +288,7 @@ const PT_FACTS: Record<string, ComponentFacts> = {
     variants: 'Pesos compartilhados ou não com a cabeça LM',
   },
   positional: {
-    params: 'Zero (RoPE, ALiBi) ou proporcional ao vocabulário (aprendida)',
+    params: 'Zero (RoPE, ALiBi) ou proporcional ao contexto máximo × d_model (aprendida)',
     cost: 'Fundido à projeção de atenção',
     introduced: 'Vaswani et al., 2017; RoPE: Su et al., 2021',
     variants: 'Senoidal · aprendida · RoPE · ALiBi · NoPE',
