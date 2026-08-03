@@ -60,6 +60,15 @@ export class Stage {
   readonly controls: OrbitControls
   readonly root = new THREE.Group()
 
+  /**
+   * Called with the canvas' CSS size whenever it changes. Anything that sizes
+   * itself in pixels — screen-space markers, DOM overlays — must hang off this
+   * rather than `window.resize`: the canvas is a grid item and changes size on
+   * layout shifts, container queries and font loads that never resize the
+   * window, and a screen-space scale computed once is wrong forever after.
+   */
+  onResize: ((width: number, height: number) => void) | null = null
+
   private readonly canvas: HTMLCanvasElement
   private readonly clock = new THREE.Clock()
   private readonly env: THREE.Texture
@@ -275,6 +284,7 @@ export class Stage {
     this.renderer.setSize(w, h, false)
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
+    this.onResize?.(w, h)
     this.invalidate()
   }
 

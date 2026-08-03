@@ -44,9 +44,27 @@ interface Marker {
   spec: MarkerSpec
   sprite: THREE.Sprite
   anchor: THREE.Vector3
-  /** Outward direction from the scene centre, for the facing test. */
-  outward: THREE.Vector3
+  /** Surface normal for the facing test; null means "always facing". */
+  outward: THREE.Vector3 | null
   opacity: number
+}
+
+/**
+ * Outward normal of the surface a marker is pinned to.
+ *
+ * Markers sit on the vertical side faces of the stack, and a vertical face has a
+ * horizontal normal — so the direction is the anchor's horizontal offset from
+ * the model axis, with the vertical component dropped. Using the full radial
+ * direction (`anchor - centre`, the obvious version) makes the top and bottom
+ * markers of a tall model point at the ceiling and the floor: their facing
+ * dot-product collapses and they fade to invisible while sitting in plain view,
+ * which is what left this scene showing only the one selected dot.
+ *
+ * A marker on the axis itself has no outward direction, so it never faces away.
+ */
+function outwardNormal(anchor: THREE.Vector3): THREE.Vector3 | null {
+  const horizontal = new THREE.Vector3(anchor.x, 0, anchor.z)
+  return horizontal.lengthSq() < 1e-8 ? null : horizontal.normalize()
 }
 
 function dotTexture(color: string): THREE.CanvasTexture {
@@ -75,19 +93,40 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
   return t * t * (3 - 2 * t)
 }
 
+/**
+ * Desired on-screen diameter to world scale for a non-attenuated sprite.
+ * `2 * (px / viewportHeight) * tan(fov/2)` is the exact conversion at the
+ * projection plane.
+ *
+ * Returns 0 — "unknown" — for a viewport that has not been measured. A canvas
+ * queried before it has a layout box reports 0 px tall, and substituting any
+ * fallback height turns a 32 px dot into a ~25 world-unit billboard that fills
+ * the whole canvas with one flat colour. Refusing to guess is the only safe
+ * answer; callers hide the markers until a real measurement arrives.
+ */
+export function markerPixelScale(fovDeg: number, heightPx: number): number {
+  if (!(heightPx > 0)) return 0
+  return 2 * (DOT_PIXELS / heightPx) * Math.tan(((fovDeg * Math.PI) / 180) / 2)
+}
+
 export class MarkerLayer {
   readonly group = new THREE.Group()
 
   private markers: Marker[] = []
-  private pixelScale = 1
+  /** 0 until the canvas has been measured; see `markerPixelScale`. */
+  private pixelScale = 0
   private selectedId: string | null = null
-  private readonly centre = new THREE.Vector3()
 
-  private readonly tmpWorld = new THREE.Vector3()
   private readonly tmpDir = new THREE.Vector3()
   private readonly tmpProj = new THREE.Vector3()
 
-  constructor(private readonly camera: THREE.PerspectiveCamera) {
+  private readonly camera: THREE.PerspectiveCamera
+
+  // Written out rather than declared as a constructor parameter property: that
+  // is TypeScript-only syntax, and it stops Node from loading this module for a
+  // test by stripping types.
+  constructor(camera: THREE.PerspectiveCamera) {
+    this.camera = camera
     this.group.name = '__markers'
   }
 
@@ -107,36 +146,34 @@ export class MarkerLayer {
       const anchor = new THREE.Vector3(...spec.position)
       sprite.position.copy(anchor)
       this.group.add(sprite)
-      this.markers.push({
-        spec,
-        sprite,
-        anchor,
-        outward: anchor.clone().sub(this.centre).normalize(),
-        opacity: 1,
-      })
+      this.markers.push({ spec, sprite, anchor, outward: outwardNormal(anchor), opacity: 1 })
     }
   }
 
   /**
-   * Convert a desired on-screen diameter into world scale.
-   * `2 * (px / viewportHeight) * tan(fov/2)` is the exact conversion at the
-   * projection plane; recompute on every resize or the markers drift in size.
+   * Recompute marker scale for a canvas `heightPx` CSS pixels tall. Call on
+   * every resize or the markers drift in size; a height of 0 (element not laid
+   * out yet) is ignored rather than approximated.
    */
   setViewport(heightPx: number): void {
-    const fov = (this.camera.fov * Math.PI) / 180
-    this.pixelScale = 2 * (DOT_PIXELS / Math.max(heightPx, 1)) * Math.tan(fov / 2)
+    const scale = markerPixelScale(this.camera.fov, heightPx)
+    if (scale > 0) this.pixelScale = scale
   }
 
   /** Returns true if anything changed and another frame is needed. */
   update(dt: number): boolean {
     if (this.markers.length === 0) return false
+    // Nothing legible can be drawn from an unmeasured viewport.
+    if (this.pixelScale <= 0) {
+      for (const m of this.markers) m.sprite.visible = false
+      return false
+    }
     const camPos = this.camera.position
     let changed = false
 
     for (const m of this.markers) {
       this.tmpDir.copy(camPos).sub(m.anchor).normalize()
-      const facing = this.tmpDir.dot(m.outward)
-      const target = smoothstep(FADE_START, FADE_END, facing)
+      const target = m.outward ? smoothstep(FADE_START, FADE_END, this.tmpDir.dot(m.outward)) : 1
 
       // Exponential ease, frame-rate independent.
       const eased = 1 - Math.exp(-dt * 12)
