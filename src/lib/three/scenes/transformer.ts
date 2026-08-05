@@ -22,19 +22,27 @@ export interface Slab {
 }
 
 export const SLABS: readonly Slab[] = [
-  { id: 'embedding', label: 'Token + positional embedding', height: 0.34, color: 0x344553 },
-  { id: 'norm-1', label: 'RMSNorm', height: 0.16, color: 0x223644 },
-  { id: 'attention', label: 'Multi-head self-attention', height: 0.72, color: 0x173846, accent: true },
-  { id: 'residual-1', label: 'Residual add', height: 0.14, color: 0x29404b },
-  { id: 'norm-2', label: 'RMSNorm', height: 0.16, color: 0x223644 },
-  { id: 'ffn', label: 'Feed-forward network', height: 0.66, color: 0x1e3039, accent: true },
-  { id: 'residual-2', label: 'Residual add', height: 0.14, color: 0x29404b },
-  { id: 'lm-head', label: 'LM head + sampler', height: 0.3, color: 0x173d48 },
+  { id: 'embedding', label: 'Token + positional embedding', height: 0.18, color: 0x344553 },
+  { id: 'norm-1', label: 'RMSNorm', height: 0.08, color: 0x223644 },
+  { id: 'attention', label: 'Multi-head self-attention', height: 0.18, color: 0x173846, accent: true },
+  { id: 'residual-1', label: 'Residual add', height: 0.08, color: 0x29404b },
+  { id: 'norm-2', label: 'RMSNorm', height: 0.08, color: 0x223644 },
+  { id: 'ffn', label: 'Feed-forward network', height: 0.18, color: 0x1e3039, accent: true },
+  { id: 'residual-2', label: 'Residual add', height: 0.08, color: 0x29404b },
+  { id: 'lm-head', label: 'LM head + sampler', height: 0.16, color: 0x173d48 },
 ]
 
-const SLAB_W = 2.6
-const SLAB_D = 1.5
-const GAP = 0.11
+const SLAB_W = 1.9
+const SLAB_D = 1.7
+const FRAME_W = 2.4
+const FRAME_D = 2.1
+/**
+ * Deck separation. Sized so the whole assembly — plinth underside to spine cap —
+ * fits `FIT_SIZE`, which is what the stage's fixed camera, fog and floor plane
+ * at y = -2.1 are tuned for. A previous revision used 0.5 to match a concept
+ * render's proportions and sank the plinth half a unit through the floor.
+ */
+const GAP = 0.255
 const DARK = 0x081927
 const SIGNAL = 0x5de7ee
 const AMBER = 0xe6a83d
@@ -157,6 +165,16 @@ export function transformerMarkers(): MarkerSpec[] {
   ]
 }
 
+/**
+ * Half-height of the rising particle column.
+ *
+ * The particles are scene geometry like anything else, so they obey the stage
+ * envelope too: at ±2.2 the column crossed the floor plane, and a bounding box
+ * that skipped it — `THREE.Points` is not a `Mesh` — reported the scene as
+ * fitting when it did not.
+ */
+export const FLOW_SPAN = 1.7
+
 /** Stable particle placement keeps screenshots and reduced-motion fallbacks reproducible. */
 export function tokenFlowPositions(count = 90): Float32Array {
   const positions = new Float32Array(count * 3)
@@ -166,7 +184,7 @@ export function tokenFlowPositions(count = 90): Float32Array {
     const progress = Math.floor(i / 6) / Math.max(1, rows - 1)
     const angle = (lane / 6) * Math.PI * 2 + progress * 1.35
     positions[i * 3] = Math.sin(angle) * (0.45 + (lane % 2) * 0.3)
-    positions[i * 3 + 1] = -2.2 + progress * 4.4
+    positions[i * 3 + 1] = -FLOW_SPAN + progress * FLOW_SPAN * 2
     positions[i * 3 + 2] = Math.cos(angle) * (0.28 + (lane % 3) * 0.1)
   }
   return positions
@@ -203,6 +221,23 @@ export class TransformerScene implements SceneModule {
       mesh.name = slab.id
       group.add(mesh)
 
+      const socketMaterial = new THREE.MeshStandardMaterial({ color: DARK, roughness: 0.3, metalness: 0.58 })
+      const corners = [
+        [-1, -1],
+        [-1, 1],
+        [1, -1],
+        [1, 1],
+      ] as const
+      for (const [index, [xSide, zSide]] of corners.entries()) {
+        const socket = new THREE.Mesh(
+          new RoundedBoxGeometry(0.14, slab.height + 0.08, 0.14, 1, 0.018),
+          socketMaterial,
+        )
+        socket.name = `deck-socket:${slab.id}:${index + 1}`
+        socket.position.set(xSide * (SLAB_W / 2 + 0.055), 0, zSide * (SLAB_D / 2 + 0.055))
+        group.add(socket)
+      }
+
       // A dark undercut makes every layer read as a machined instrument deck.
       const undercut = new THREE.Mesh(
         new RoundedBoxGeometry(SLAB_W + 0.035, 0.035, SLAB_D + 0.035, 2, 0.012),
@@ -236,12 +271,12 @@ export class TransformerScene implements SceneModule {
     if (slab.accent) {
       const trace = new THREE.LineLoop(
         new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(-1.08, top + 0.008, -0.52),
-          new THREE.Vector3(0.68, top + 0.008, -0.52),
-          new THREE.Vector3(1.08, top + 0.008, -0.2),
-          new THREE.Vector3(1.08, top + 0.008, 0.52),
-          new THREE.Vector3(-0.68, top + 0.008, 0.52),
-          new THREE.Vector3(-1.08, top + 0.008, 0.2),
+          new THREE.Vector3(-0.78, top + 0.008, -0.52),
+          new THREE.Vector3(0.48, top + 0.008, -0.52),
+          new THREE.Vector3(0.78, top + 0.008, -0.2),
+          new THREE.Vector3(0.78, top + 0.008, 0.52),
+          new THREE.Vector3(-0.48, top + 0.008, 0.52),
+          new THREE.Vector3(-0.78, top + 0.008, 0.2),
         ]),
         new THREE.LineBasicMaterial({ color: SIGNAL, transparent: true, opacity: 0.82 }),
       )
@@ -251,35 +286,39 @@ export class TransformerScene implements SceneModule {
 
     if (slab.id === 'attention') {
       for (let i = 0; i < 8; i += 1) {
-        const x = -0.9 + (i % 4) * 0.6
+        const x = -0.68 + (i % 4) * 0.45
         const z = i < 4 ? -0.27 : 0.27
         const socket = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.05, 16), dark)
-        socket.position.set(x, top, z)
-        const core = new THREE.Mesh(new THREE.CylinderGeometry(0.105, 0.105, 0.06, 16), glow)
-        core.position.set(x, top + 0.012, z)
+        socket.position.set(x, top + 0.025, z)
+        const core = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.15, 0.28, 8), dark)
+        core.position.set(x, top + 0.17, z)
         core.name = `attention-head:${i + 1}`
-        group.add(socket, core)
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.018, 6, 18), glow)
+        ring.rotation.x = Math.PI / 2
+        ring.position.set(x, top + 0.055, z)
+        group.add(socket, core, ring)
       }
     } else if (slab.id === 'ffn') {
       for (let i = 0; i < 9; i += 1) {
+        const height = i === 4 ? 0.3 : 0.22
         const fin = new THREE.Mesh(
-          new THREE.BoxGeometry(i === 4 ? 0.24 : 0.095, i === 4 ? 0.1 : 0.075, i === 4 ? 1.12 : 1.02),
+          new THREE.BoxGeometry(i === 4 ? 0.16 : 0.1, height, i === 4 ? 1.12 : 1.02),
           i === 4 ? glow : dark,
         )
-        fin.position.set(-0.92 + i * 0.23, top, 0)
+        fin.position.set(-0.72 + i * 0.18, top + height / 2, 0)
         fin.name = i === 4 ? 'compute-core' : `compute-bank:${i + 1}`
         group.add(fin)
       }
     } else if (slab.id === 'embedding') {
       for (let i = 0; i < 12; i += 1) {
-        const tile = new THREE.Mesh(new RoundedBoxGeometry(0.3, 0.045, 0.22, 1, 0.018), i % 4 ? glow : dark)
-        tile.position.set(-0.78 + (i % 4) * 0.52, top, i < 4 ? -0.39 : i < 8 ? 0 : 0.39)
+        const tile = new THREE.Mesh(new RoundedBoxGeometry(0.3, 0.08, 0.22, 1, 0.018), i % 4 ? glow : dark)
+        tile.position.set(-0.78 + (i % 4) * 0.52, top + 0.04, i < 4 ? -0.39 : i < 8 ? 0 : 0.39)
         tile.name = `token-tile:${i + 1}`
         group.add(tile)
       }
     } else if (slab.id.startsWith('norm-')) {
       for (const z of [-0.31, 0, 0.31]) {
-        const rail = new THREE.Mesh(new RoundedBoxGeometry(2.15, 0.035, 0.07, 1, 0.012), dark)
+        const rail = new THREE.Mesh(new RoundedBoxGeometry(1.55, 0.035, 0.07, 1, 0.012), dark)
         rail.position.set(0, top, z)
         group.add(rail)
       }
@@ -292,31 +331,41 @@ export class TransformerScene implements SceneModule {
       bridge.position.y = top
       group.add(ring, bridge)
     } else if (slab.id === 'lm-head') {
+      const ceramic = new THREE.MeshStandardMaterial({ color: CERAMIC, roughness: 0.45, metalness: 0 })
       for (let i = 0; i < 7; i += 1) {
-        const bar = new THREE.Mesh(new RoundedBoxGeometry(0.16, 0.05, 0.35 + i * 0.11, 1, 0.025), i === 3 ? glow : dark)
-        bar.position.set(-0.69 + i * 0.23, top, 0)
+        const height = 0.12 + i * 0.035
+        const bar = new THREE.Mesh(new RoundedBoxGeometry(0.14, height, 0.22, 1, 0.025), ceramic)
+        bar.position.set(-0.69 + i * 0.23, top + height / 2, 0)
         bar.name = `logit-bank:${i + 1}`
         group.add(bar)
       }
     }
   }
 
-  /** External bypasses make residual addition legible instead of another coloured plate. */
+  /**
+   * External bypasses make residual addition legible instead of another coloured plate.
+   *
+   * A decoder block has exactly two of them, and each starts at the *input* of
+   * the sub-layer it skips: the block input around norm-1+attention, and the
+   * first residual output around norm-2+FFN. There is no third bypass — an
+   * earlier revision added one to match a concept render's silhouette, which
+   * would have taught a transformer architecture that does not exist.
+   */
   private buildResidualRoutes(ctx: SceneContext, layout: Map<string, { y: number; height: number }>): void {
     const pairs = [
-      ['norm-1', 'residual-1'],
-      ['norm-2', 'residual-2'],
+      ['embedding', 'residual-1'],
+      ['residual-1', 'residual-2'],
     ] as const
-    for (const [from, to] of pairs) {
+    for (const [index, [from, to]] of pairs.entries()) {
       const y0 = layout.get(from)?.y ?? 0
       const y1 = layout.get(to)?.y ?? 0
-      const x = -SLAB_W / 2 - 0.22
-      const z = SLAB_D / 2 + 0.1
+      const x = FRAME_W / 2 + 0.14 + index * 0.12
+      const z = FRAME_D / 2 + 0.08
       const curve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(-SLAB_W / 2 + 0.08, y0, z),
+        new THREE.Vector3(SLAB_W / 2 - 0.05, y0, z),
         new THREE.Vector3(x, y0 + 0.08, z),
         new THREE.Vector3(x, y1 - 0.08, z),
-        new THREE.Vector3(-SLAB_W / 2 + 0.08, y1, z),
+        new THREE.Vector3(SLAB_W / 2 - 0.05, y1, z),
       ])
       const route = new THREE.Mesh(
         new THREE.TubeGeometry(curve, 24, 0.018, 6, false),
@@ -331,50 +380,75 @@ export class TransformerScene implements SceneModule {
   private buildFrame(ctx: SceneContext, layout: Map<string, { y: number; height: number }>): void {
     const bottom = (layout.get('embedding')?.y ?? 0) - (layout.get('embedding')?.height ?? 0) / 2
     const top = (layout.get('lm-head')?.y ?? 0) + (layout.get('lm-head')?.height ?? 0) / 2
+    const frameTop = top + 0.5
     const frame = new THREE.Group()
     frame.name = 'assembly:frame'
     const material = new THREE.MeshStandardMaterial({ color: 0x183649, roughness: 0.3, metalness: 0.68 })
-    for (const x of [-SLAB_W / 2 - 0.16, SLAB_W / 2 + 0.16]) {
-      for (const z of [-SLAB_D / 2 - 0.12, SLAB_D / 2 + 0.12]) {
-        const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, top - bottom + 0.2, 8), material)
-        rod.position.set(x, (top + bottom) / 2, z)
+    for (const x of [-FRAME_W / 2, FRAME_W / 2]) {
+      for (const z of [-FRAME_D / 2, FRAME_D / 2]) {
+        const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, frameTop - bottom, 8), material)
+        rod.position.set(x, (frameTop + bottom) / 2, z)
         frame.add(rod)
+
+        for (const y of [bottom + 0.02, frameTop - 0.08]) {
+          const collar = new THREE.Mesh(new RoundedBoxGeometry(0.17, 0.15, 0.17, 1, 0.025), material)
+          collar.position.set(x, y, z)
+          collar.name = `post-collar:${x > 0 ? 'right' : 'left'}:${z > 0 ? 'front' : 'rear'}:${y > 0 ? 'top' : 'bottom'}`
+          frame.add(collar)
+        }
       }
     }
     const spine = new THREE.Mesh(
-      new RoundedBoxGeometry(0.14, top - bottom + 0.24, 0.1, 2, 0.035),
+      new RoundedBoxGeometry(0.24, frameTop - bottom + 0.24, 0.38, 2, 0.035),
       material,
     )
     spine.name = 'graphite-spine'
-    spine.position.set(0, (top + bottom) / 2, -SLAB_D / 2 - 0.17)
+    spine.position.set(FRAME_W / 2 + 0.12, (frameTop + bottom) / 2, -FRAME_D / 2 + 0.04)
     frame.add(spine)
     const plinth = new THREE.Mesh(
-      new RoundedBoxGeometry(SLAB_W + 0.48, 0.14, SLAB_D + 0.42, 3, 0.055),
+      new RoundedBoxGeometry(FRAME_W + 0.34, 0.28, FRAME_D + 0.34, 3, 0.055),
       new THREE.MeshStandardMaterial({ color: DARK, roughness: 0.24, metalness: 0.72 }),
     )
     plinth.name = 'instrument-plinth'
-    plinth.position.y = bottom - 0.12
+    plinth.position.y = bottom - 0.19
+    const plinthUpper = new THREE.Mesh(
+      new RoundedBoxGeometry(FRAME_W + 0.16, 0.12, FRAME_D + 0.16, 2, 0.04),
+      material,
+    )
+    plinthUpper.name = 'instrument-plinth-upper'
+    plinthUpper.position.y = bottom - 0.02
+    const plinthInset = new THREE.Mesh(
+      new RoundedBoxGeometry(FRAME_W - 0.14, 0.08, FRAME_D - 0.14, 2, 0.03),
+      new THREE.MeshStandardMaterial({ color: 0x0d2a35, roughness: 0.24, metalness: 0.5 }),
+    )
+    plinthInset.name = 'instrument-plinth-inset'
+    plinthInset.position.y = bottom + 0.055
     const cap = new THREE.Mesh(
-      new RoundedBoxGeometry(SLAB_W + 0.3, 0.075, SLAB_D + 0.28, 3, 0.035),
+      new RoundedBoxGeometry(FRAME_W + 0.18, 0.16, FRAME_D + 0.18, 3, 0.035),
       material,
     )
     cap.name = 'instrument-cap'
-    cap.position.y = top + 0.1
-    frame.add(plinth, cap)
+    cap.position.y = top + 0.42
+    frame.add(plinth, plinthUpper, plinthInset, cap)
     ctx.root.add(frame)
     this.partGroups.set('__frame', [frame])
 
     const shaft = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.018, 0.018, top - bottom + 0.15, 8),
+      new THREE.CylinderGeometry(0.018, 0.018, frameTop - bottom - 0.08, 8),
       new THREE.MeshStandardMaterial({ color: SIGNAL, emissive: SIGNAL, emissiveIntensity: 0.5 }),
     )
-    shaft.position.set(-SLAB_W / 2 - 0.32, (top + bottom) / 2, SLAB_D / 2 + 0.28)
-    const arrow = new THREE.Mesh(
-      new THREE.ConeGeometry(0.075, 0.18, 10),
-      new THREE.MeshStandardMaterial({ color: SIGNAL, emissive: SIGNAL, emissiveIntensity: 0.5 }),
-    )
-    arrow.position.set(shaft.position.x, top + 0.15, shaft.position.z)
-    frame.add(shaft, arrow)
+    shaft.name = 'central-signal-rail'
+    shaft.position.set(0, (frameTop + bottom) / 2 - 0.04, 0)
+    frame.add(shaft)
+    for (const [id, { y }] of layout) {
+      const node = new THREE.Mesh(
+        new THREE.BoxGeometry(0.08, 0.08, 0.08),
+        new THREE.MeshStandardMaterial({ color: SIGNAL, emissive: SIGNAL, emissiveIntensity: 0.65 }),
+      )
+      node.name = `signal-node:${id}`
+      node.position.set(0, y, 0)
+      frame.add(node)
+    }
 
   }
 
@@ -405,7 +479,7 @@ export class TransformerScene implements SceneModule {
     const arr = attr.array as Float32Array
     for (let i = 0; i < arr.length; i += 3) {
       const y = (arr[i + 1] ?? 0) + dt * 0.55
-      arr[i + 1] = y > 2.2 ? -2.2 : y
+      arr[i + 1] = y > FLOW_SPAN ? -FLOW_SPAN : y
     }
     attr.needsUpdate = true
     return true

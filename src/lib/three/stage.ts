@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { disposeSubtree } from './dispose'
+import { STAGE_FLOOR_Y } from './envelope'
 
 /**
  * A single long-lived WebGL stage that scenes are swapped into.
@@ -47,9 +48,6 @@ export interface SceneContext {
   invalidate(): void
   reducedMotion: boolean
 }
-
-/** Uniform box every scene is fitted into, so camera and lighting are reusable. */
-export const FIT_SIZE = 3.8
 
 const AUTOROTATE_RESUME_MS = 3000
 
@@ -227,7 +225,7 @@ export class Stage {
       new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }),
     )
     mesh.rotation.x = -Math.PI / 2
-    mesh.position.y = -2.1
+    mesh.position.y = STAGE_FLOOR_Y
     mesh.name = '__contact-shadow'
 
     const floor = new THREE.Mesh(
@@ -240,11 +238,11 @@ export class Stage {
       }),
     )
     floor.rotation.x = -Math.PI / 2
-    floor.position.y = -2.12
+    floor.position.y = STAGE_FLOOR_Y - 0.02
     floor.name = '__graphite-floor'
 
     const grid = new THREE.GridHelper(12, 24, 0x315361, 0x17313c)
-    grid.position.y = -2.08
+    grid.position.y = STAGE_FLOOR_Y + 0.02
     grid.material.transparent = true
     grid.material.opacity = 0.16
     grid.material.depthWrite = false
