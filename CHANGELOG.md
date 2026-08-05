@@ -3,6 +3,13 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Wrangler 4.118.0 → 4.119.0 and the matching workerd binaries. Deploy tooling only; nothing reaches the browser and `dist/` is unchanged.
+- `pnpm-workspace.yaml` excludes `wrangler@4.119.0` and `miniflare@5.20260801.0-alpha` from the release-age gate so the install resolves. The alpha was already a transitive Wrangler dependency and is not materialised in `node_modules`; the exclusion is deliberate and should be dropped once both versions age past the gate.
+
 ## [0.2.0] — 2026-08-05
 
 ### Added
