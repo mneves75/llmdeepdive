@@ -109,6 +109,22 @@ requirement justifies a downloaded asset. Update
 `tests/transformer-scene.test.mjs` when that mapping or geometry changes, then
 verify `/explore/` in a real desktop and mobile browser.
 
+Two rules the geometry has already broken once each:
+
+- **The scene must fit the stage envelope.** Nothing auto-frames the model —
+  camera, fov, fog and floor are fixed constants. `src/lib/three/envelope.ts`
+  publishes `FIT_SIZE` and `STAGE_FLOOR_Y`; a scene that outgrows them does not
+  merely sit off-centre, it sinks through the floor and clips the canvas at
+  whatever size the author happened to be looking at. The regression test
+  asserts both. A review harness with its own camera and no floor will not
+  catch this — only `/explore/` will.
+- **A concept render is proportion and material intent, not a contract.** It has
+  no obligation to be architecturally true, and matching its silhouette once put
+  a *third* residual bypass into the model; a decoder block has exactly two.
+  When the picture and the architecture disagree, the architecture wins — this
+  is a teaching product. Silhouette-similarity scores against a generated
+  reference are not a gate; the tests and `/explore/` are.
+
 **5. No `any`.** `unknown` plus a type guard. `ast-grep scan` blocks commits.
 
 ## Performance: read this before touching the bench

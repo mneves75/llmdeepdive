@@ -13,6 +13,16 @@
   graphite/smoked-glass instrument, cyan signal paths, ceramic token tiles and
   one amber compute core; its ImageGen direction is stored in
   `.impeccable/concepts/`.
+- The `img2threejs` reconstruction run is **closed, not adopted**. It stopped at
+  the blockout ceiling (`3/3` corrections) with silhouette IoU `0.7163` against
+  a required `0.85`, and the residual turned out to be a lens mismatch, not a
+  geometry defect: the reference renders a near-parallel column while the review
+  harness rendered at fov 35, so the render funnels with depth and no amount of
+  geometry closes the gap. The loop also cost real accuracy — it added a third
+  residual bypass to match the reference silhouette, and a decoder block has
+  exactly two. **The concept render is proportion and material intent, not a
+  contract.** The binding constraint is the stage envelope in
+  `src/lib/three/envelope.ts`, asserted by `tests/transformer-scene.test.mjs`.
 - Product facts and non-visual constraints are captured separately in
   `PRODUCT.md`.
 - The only canonical public site is `https://llmdeepdive.com/`.

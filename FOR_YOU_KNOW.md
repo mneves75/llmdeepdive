@@ -55,6 +55,24 @@ the physical mechanism they modify instead of pretending to be separate slabs.
 `tests/transformer-scene.test.mjs` locks that coverage and material hierarchy
 down.
 
+A later attempt to reconstruct the specimen *from* that reference image, scored
+by silhouette overlap, is the most instructive failure in this repo. The score
+refused to improve, and the reason was not the model: the reference is drawn as
+a near-parallel column while the scoring harness rendered through a 35° lens, so
+the render tapered with depth and the two could never agree. Three rounds of
+real geometry edits chased a broken ruler. Worse, one of those edits added a
+*third* residual bypass because the picture looked better with it — a decoder
+block has exactly two, so an illustration briefly taught an architecture that
+does not exist. And because every round was scored in a bespoke harness with its
+own camera and no floor, nobody noticed that the re-proportioned model had grown
+past the stage envelope and was sinking through the ground at `/explore/`.
+
+Three rules came out of it. A concept render is intent, not a contract. When a
+picture and the architecture disagree in a teaching product, the architecture
+wins. And the thing you verify has to be the thing you ship: `envelope.ts` now
+publishes the box the fixed camera and floor are tuned for, and a test fails if
+the instrument outgrows it.
+
 Browser QA also caught an accessibility trap in the annotation live region: a
 list element was being replaced with raw text, producing invalid list markup.
 The text equivalent now uses a neutral live-region container, and the rendered
