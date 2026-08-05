@@ -40,6 +40,9 @@ function emitLocale404s() {
     if (!existsSync(source)) continue
     const target = join(DIST, entry, '404.html')
     copyFileSync(source, target)
+    // The directory form would otherwise claim `/<locale>/404/` and shadow the
+    // literal filename the not-found walk looks for.
+    rmSync(join(DIST, entry, '404'), { recursive: true })
     emitted.push(target)
   }
   if (emitted.length === 0) {
