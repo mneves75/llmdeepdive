@@ -23,6 +23,14 @@
   exactly two. **The concept render is proportion and material intent, not a
   contract.** The binding constraint is the stage envelope in
   `src/lib/three/envelope.ts`, asserted by `tests/transformer-scene.test.mjs`.
+- **0.2.0 is live in production** (version `44082f2b`, 100%), tagged `v0.2.0`,
+  with `v0.2.0-beta1..3` marking the staging rounds. Verified on the live site,
+  not from the deploy's stdout.
+- **One open item, account-side and unresolved:** Cloudflare Web Analytics still
+  has automatic setup on for this zone, so the edge injects a beacon the CSP
+  blocks. Set `auto_install: false` on the RUM site (dashboard: Web Analytics →
+  Manage site → Advanced options → Disable). Nothing leaks meanwhile — the
+  script never executes — but the config claims analytics that do not exist.
 - Product facts and non-visual constraints are captured separately in
   `PRODUCT.md`.
 - The only canonical public site is `https://llmdeepdive.com/`.
@@ -86,3 +94,13 @@
   and after staging deploys, then exercise the CTA in a cache-busted browser.
 - A documented gate is not a CI gate until the workflow calls it. Graph,
   citation and contrast checks were documented but omitted until 0.1.
+- **Some behaviour belongs to the edge, not the build, and no local gate can
+  reach it.** Two shipped in 0.2.0 and only a live request found them: the
+  locale `404.html` was shadowed by its own directory form under
+  `auto-trailing-slash`, and the zone injects an analytics beacon that exists
+  in no build artefact. Both are written up under Cloudflare in `AGENTS.md`.
+  When a change's outcome is decided by the asset router or the zone, the
+  staging canary *is* the test — treat a green build as saying nothing.
+- **Cache-busting is part of the canary.** The first post-deploy header check
+  read a cached edge response and reported a fix as missing that was actually
+  live. Every canary request carries a unique query string.

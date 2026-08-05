@@ -177,6 +177,30 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
 - `not_found_handling: "404-page"` needs a real `404.html` to resolve to.
   `src/pages/404.astro` and `src/pages/pt-br/404.astro` are it; without them
   every bad URL returns a zero-byte body, which is how it shipped once already.
+- **The not-found walk matches a literal `404.html`, and `html_handling:
+  "auto-trailing-slash"` hides one.** The walk climbs from the requested path
+  (`/pt-br/x/404.html` → `/pt-br/404.html` → `/404.html`), but that mode
+  307-redirects `/file.html` to `/file`, and a sibling `404/index.html` claims
+  `/pt-br/404/` and shadows the literal name. `finalize-dist.mjs` therefore
+  emits `<locale>/404.html` **and deletes the directory form**. Both halves are
+  load-bearing; with only the copy, pt-BR still served the English page. No
+  local gate can see this — the asset router decides it, so the only proof is a
+  live request for a missing pt-BR URL.
+- **Never set `Cache-Control: no-transform` on HTML.** It does stop Cloudflare
+  rewriting the payload at the edge, which is tempting as a way to block
+  injected third-party scripts — and it disables the CDN's Brotli/gzip on those
+  responses at the same time, because the directive forbids every intermediary
+  from transforming the body and Cloudflare is one. Uncompressed HTML is a far
+  worse regression than the thing it fixes.
+- **The zone can inject script the build never emitted.** Cloudflare Web
+  Analytics with automatic setup adds `static.cloudflareinsights.com/beacon.min.js`
+  at the edge, for browser requests only — invisible to `curl` without a browser
+  `User-Agent` and `Accept`, and absent from `dist/`. The hash-pinned CSP blocks
+  it, so it collects nothing and logs a violation in every visitor's console.
+  The fix is `auto_install: false` on the RUM site, not a CSP allowlist: a
+  third-party script origin would cost the property that makes the privacy
+  claim structural. Check for edge injection with browser headers after any
+  zone change.
 
 ## Static-only architecture
 
