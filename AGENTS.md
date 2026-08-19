@@ -26,6 +26,8 @@ pnpm content:figures     # every <Figure id> resolves; both locales; labels diff
 pnpm links               # every internal link in dist/ resolves (runs in build)
 pnpm a11y:contrast       # palette stays above accessible contrast ratios
 pnpm budget              # per-route JS budget
+pnpm privacy             # no machine path, account subdomain or unknown email
+                         #   (+ PRIVATE_REFS_NAMES for client/tooling names)
 pnpm audit --audit-level=high
 pnpm bench --target staging --iter 20   # needs BENCH_STAGING_URL, or --base <url>
 pnpm deploy:staging

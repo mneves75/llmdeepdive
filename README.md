@@ -100,10 +100,25 @@ Full local gate:
 pnpm build && pnpm typecheck && pnpm lint && pnpm test
 pnpm content:parity && pnpm content:stubs && pnpm content:graph
 pnpm content:citations && pnpm content:assets && pnpm a11y:contrast
-pnpm budget && pnpm audit --audit-level=high
+pnpm budget && pnpm privacy && pnpm audit --audit-level=high
 ```
 
 CI runs the same checks plus a full-history Gitleaks scan.
+
+`pnpm privacy` is the other half of that scan. Gitleaks looks for credentials;
+this looks for the things a public repo leaks that are *not* secrets — an
+absolute path from someone's machine, an account-specific deploy subdomain, an
+email address that is not the project contact — across both tracked files and
+commit metadata, because a name in a commit's author field is exactly as public
+as one in a file.
+
+Those rules describe shapes, not names, deliberately: a gate that hardcoded the
+names it forbids would publish that list to everyone who clones the repo. To
+also forbid specific client, project or tooling names, set
+`PRIVATE_REFS_NAMES` — a comma-separated list — in your shell and as a CI
+secret. When it is unset the check says so rather than passing quietly. Keep
+that list to distinctive names: entries that are also ordinary English words
+will match the prose and the gate will be turned off rather than fixed.
 
 Staging deploys with `pnpm deploy:staging`. A successful command is not enough:
 confirm the new version with Wrangler, then click “View lesson” in the live

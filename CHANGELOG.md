@@ -5,6 +5,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`pnpm privacy` — a gate for what a public repo leaks that is not a secret.**
+  The full-history Gitleaks scan passed on every commit while an absolute home
+  path, a third party's email address and an account-specific deploy subdomain
+  sat in tracked files. None is a credential, so none was in scope for it. The
+  new check scans tracked file contents *and* commit metadata — author,
+  committer, subject, body — because a name in a commit's author field is
+  exactly as public as one in a file and no file-level scan can see it.
+
+  Two design choices worth stating. Email addresses are **allowlisted**, not
+  denylisted: only an allowlist catches the address nobody thought to forbid,
+  which is the failure mode that actually occurred. And the shipped rules
+  describe **shapes, not names** — a gate that hardcoded the names it forbids
+  would publish that list to everyone who clones the repo, which is the leak it
+  exists to prevent. Names are injected through `PRIVATE_REFS_NAMES`; when it is
+  unset the check warns rather than passing quietly, because a rule that
+  silently did not run is worse than one that is absent.
+
 ## [0.5.0] — 2026-08-19
 
 Initial public release.
