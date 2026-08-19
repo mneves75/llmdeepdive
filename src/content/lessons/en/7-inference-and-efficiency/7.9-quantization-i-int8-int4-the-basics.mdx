@@ -1,0 +1,65 @@
+---
+id: "7.9-quantization-i-int8-int4-the-basics"
+track: "7-inference-and-efficiency"
+order: 9
+title: "Quantization I: int8, int4, the basics"
+summary: "Quantization walks Qwen3.8-27B down a memory ladder from 54 GB toward 14-16 GB, trading rounding error for hardware reach."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.3-prefill-vs-decode-two-different-machines"]
+unlocks: ["7.10-quantization-ii-gptq-awq-gguf-qat", "7.12-running-models-locally"]
+analogy: "A surveyor records mountain elevations. Writing every measurement to the millimeter is bulky; recording each as one of a few thousand steps relative to a local valley is compact. Wide regions need coarse steps, while a separate scale for each small map tile follows terrain more closely. Quantization likewise maps real weights onto discrete codes, and grouping chooses whether one scale must cover an entire mountain range or only a neighborhood."
+teachBack:
+  prompt: "Walk Qwen3.8-27B down the quantization ladder from bf16 to 4-bit, explain the scale-and-zero-point mechanics behind each step, and state what the ladder does not shrink."
+  modelAnswer: "In bf16 every parameter costs two bytes, giving the 54 GB figure the course's budget math establishes. Int8 stores one byte per parameter, halving weights to about 27 GB; 4-bit stores half a byte, a 13.5 GB floor that real artifacts exceed at roughly 14 to 16 GB because scales, zero points, and selected higher-precision tensors ride along. Each step maps real values to discrete codes via a scale, so rounding and clipping introduce error, and group granularity decides how well scales track local weight distributions against outliers. The ladder shrinks weights only: the KV cache still accrues at 64 KiB per token from lesson 7.2 unless the cache itself is quantized, and speed gains require kernels that consume the packed format natively."
+quiz:
+  - question: "What creates quantization error?"
+    options: ["Rounding values to discrete levels and clipping values outside the represented range", "Tokenization alone", "Causal masking", "HTTP streaming"]
+    correctIndex: 0
+    explanation: "A finite codebook cannot represent every real value, and its finite range may clip extremes."
+  - question: "Using lesson 7.3, why does weight-only quantization help decode more than prefill?"
+    options: ["Decode is memory-bandwidth-bound on reading weights each token, so shrinking weight bytes attacks its binding constraint", "Prefill performs no matrix multiplications", "Decode reruns calibration on every token", "Quantization increases arithmetic throughput of prefill only"]
+    correctIndex: 0
+    explanation: "Lesson 7.3 showed decode moves roughly the whole weight set per generated token; fewer stored bytes means fewer bytes moved exactly where bandwidth is the bottleneck."
+citations:
+  - title: "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models"
+    authors: "Guangxuan Xiao et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2211.10438"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+You want to run Qwen3.8-27B, and the first number that greets you is 54 GB — the bf16 weight footprint the course's budget math establishes (lessons 7.2 and 9.3). No consumer GPU holds that, and even an 80 GB data-center card surrenders most of itself before a single token of cache is allocated. **Quantization** is the standard answer: store each parameter in fewer bits plus a little scale metadata, and accept some approximation error in exchange.
+
+The ladder is easiest to see as bytes per parameter. bf16 spends two bytes on each of the model's roughly 27 billion parameters — the 54 GB starting point. Int8 spends one byte: halve it, about **27 GB**. Int4 spends half a byte: halve again, a **13.5 GB floor** — and real 4-bit artifacts land around **14–16 GB**, because scales, zero points, and selected tensors kept at higher precision ride alongside the codes (the community GGUF Q4_K_M build sits near 16 GB). Each rung roughly doubles the range of hardware that can host the model: 54 GB is 80 GB-accelerator territory or multi-GPU sharding; around 27 GB fits 32–48 GB cards; 14–16 GB fits a 24 GB consumer GPU with room left for cache. The vendor's claim that the model runs in 24 GB of VRAM minimum refers to exactly this 4-bit rung — a floor, not a comfortable operating point, as lesson 7.12 works through in detail.
+
+What the rungs actually do is map real values onto a discrete codebook. In symmetric uniform quantization, a real value $x$ becomes an integer code $q$ through a scale $s$:
+
+$$
+q=\operatorname{clip}\left(\operatorname{round}(x/s),q_{min},q_{max}\right),
+\qquad \hat{x}=s q.
+$$
+
+Affine variants add a zero point so the represented range need not straddle zero symmetrically. Rounding maps many nearby reals to one code; clipping maps extremes to the boundary; the difference between $x$ and $\hat{x}$ is quantization error.
+
+Saying int8 or int4 alone is an incomplete sentence. Ask what is quantized — weights, activations, or the KV cache; at what granularity — whole tensor, output channel, group, or token; whether the representation is symmetric; and what dtype accumulates products. A 4-bit weight format routinely multiplies against 16-bit activations and accumulates in higher precision.
+
+Granularity is the central trade. One scale per tensor is nearly free in metadata but must span the tensor's widest magnitude, so a single outlier weight coarsens the step size for every ordinary value. Per-channel scales adapt to rows or columns; groupwise quantization slices a dimension into chunks of, say, 32–128 values, each with its own scale — better local fit, more metadata, more complex kernels. Weights and activations also behave differently: weights are fixed and can be calibrated offline, while activations depend on the prompt and can carry violent channel-wise outliers. SmoothQuant's contribution was a mathematically equivalent rescaling that shifts quantization difficulty from activations into weights, easing joint weight-and-activation schemes.
+
+Why does this help speed and not just disk space? Recall lesson 7.3: decode is memory-bound, moving roughly the full weight set per generated token. Weight-only quantization cuts precisely those bytes. Here is the classic wrong turn: a runtime loads a 4-bit file, then expands every tensor to floating point in memory before computing. The download was small; resident memory and bandwidth are unchanged; tokens per second do not move. The correction is native packed kernels that dequantize tile-by-tile inside the multiply, so the compact form is what actually crosses the memory bus. Always verify which path your runtime took by measuring resident memory after load, not by reading the filename.
+
+:::warning
+Quantizing weights does not shrink the KV cache. Qwen3.8-27B's cache still accrues at 64 KiB per token in bf16 (lesson 7.2) regardless of weight precision — a long context can dwarf your hard-won weight savings unless the cache is quantized separately, with its own accuracy and kernel-support questions.
+:::
+
+:::caveat
+Bit width alone predicts neither speed nor quality. Two artifacts both labeled 4-bit can differ in group size, calibration data, packing, and kernel support — and the smaller file can be the slower one. Compare exact formats on your hardware and your tasks.
+:::
+
+Accuracy loss is uneven across the network: some layers and channels are far more sensitive, and mixed schemes keep embeddings, output heads, or fragile tensors at higher precision. Perplexity is one signal, but structured-output validity, multilingual behavior, and long-context stability can reveal failures that averages hide. Calibration sets matter too — a quantizer tuned on short English prompts may not preserve behavior on code or on 100,000-token documents.
+
+The durable model is a measured approximation. Discrete codes save capacity and, with the right kernels, bandwidth; scales reconstruct useful magnitudes; grouping adapts to local statistics; accumulators preserve range. The ladder from 54 through 27 toward 14–16 GB is what moves Qwen3.8-27B from the data center toward your desk — and lesson 7.10 examines the algorithms and formats that build each rung well.

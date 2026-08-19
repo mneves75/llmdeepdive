@@ -1,0 +1,80 @@
+---
+id: "3.5-bahdanau-attention"
+track: "3-sequence-models"
+order: 5
+title: "Bahdanau attention: the idea that changed everything"
+summary: "Replacing one fixed summary with a learned, differentiable lookup over every stored encoder state removed the bottleneck and the long gradient path at once — and defined the address-and-retrieve pattern every model in this course still runs."
+tier: "core"
+locale: "en"
+prerequisites: ["3.4-seq2seq-encoder-decoder-bottleneck"]
+unlocks: ["3.6-linear-attention-fast-weights"]
+analogy: "A simultaneous interpreter keeps a row of source-language note cards on the desk. Before speaking each target word, she compares her current unfinished sentence with every card, puts a weight on each, and reads a weighted blend. Translating a name concentrates weight on its card; producing grammar may spread weight over several. The weights are soft and recomputed at every step. They expose an alignment, but do not prove which card causally determined the final wording."
+teachBack:
+  prompt: "Derive Bahdanau attention from encoder states and decoder state through energies, weights, and context vector, and explain which two failures of lesson 3.4 it removes."
+  modelAnswer: "The encoder keeps all its states rather than only the last. Before target step t a learned scorer produces one energy per source position from the decoder state and that position's encoder state; a softmax across source positions turns the energies into non-negative weights summing to one; the context vector is the weighted sum of encoder states, recomputed at every step. This removes the capacity failure, since no single fixed vector must hold everything and the summary is tailored to the current step, and it removes the credit-assignment failure, since a source state now reaches a late target loss through one attention edge instead of dozens of recurrent transitions."
+quiz:
+  - question: "Lesson 3.4 identified a gradient path of roughly source-length plus target-length transitions between an early source token and a late target loss. What does attention do to that path?"
+    options: ["It adds a direct edge, so the source state reaches the loss through a single weighted connection rather than the whole recurrent chain", "It shortens the path by half", "It leaves the path unchanged but increases the learning rate", "It removes the decoder"]
+    correctIndex: 0
+    explanation: "Removing the long product is why attention helped long sources so dramatically, quite apart from the capacity argument."
+  - question: "Across which dimension is the softmax applied for one decoder step?"
+    options: ["Across source positions, so the weights for that one target step sum to one", "Across target steps", "Across model layers", "Across the batch"]
+    correctIndex: 0
+    explanation: "Normalizing across the wrong axis is the classic implementation bug: it still trains, and it still produces fluent-looking output, while the alignment is meaningless."
+  - question: "What is the context vector?"
+    options: ["A weighted sum of the stored encoder states, recomputed for every decoder step", "The single hardest-aligned source token", "A copy of the model parameters", "The cross-entropy scalar"]
+    correctIndex: 0
+    explanation: "Soft weights make the summary differentiable and let it be tailored to what the current step needs."
+citations:
+  - title: "Neural Machine Translation by Jointly Learning to Align and Translate"
+    authors: "Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio"
+    year: 2015
+    url: "https://arxiv.org/abs/1409.0473"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Lesson 3.4 ended with a diagnosis in two parts. One fixed vector cannot hold everything a long source contains, and even if it could, it is computed before the decoder knows which word it is about to produce. Widening it addressed neither. The 2015 answer changes the interface instead of its size, and the change is small enough to state in one sentence: stop throwing the encoder states away.
+
+Let the encoder produce states $h_1,\ldots,h_S$, one per source position, and keep all of them. Before target step $t$, with the decoder holding previous state $s_{t-1}$, a learned scorer produces one **energy** for every source position:
+
+$$
+e_{ti}=v^\top\tanh(W_s s_{t-1}+W_h h_i+b).
+$$
+
+Both the decoder's current need and the source position's content are projected into a shared space, added, squashed, and scored. Nothing here is a similarity metric chosen in advance; the comparison itself is learned.
+
+A softmax across the source positions turns those energies into weights:
+
+$$
+\alpha_{ti}=\frac{\exp(e_{ti})}{\sum_{j=1}^{S}\exp(e_{tj})}.
+$$
+
+For a fixed target step the weights are non-negative and sum to one, and a mask drives padded source positions to effectively zero. The **context vector** is then the weighted blend of what was stored:
+
+$$
+c_t=\sum_{i=1}^{S}\alpha_{ti}h_i.
+$$
+
+The decoder combines $c_t$ with its own state to predict the next token and update itself — and at the next position it computes fresh energies and a fresh context.
+
+Work an example through by hand, because the arithmetic makes the behavior obvious. Take a three-position source and suppose the scorer produces energies $e=(2.0,\,0.5,\,-1.0)$ at some decoder step. Exponentiate: $7.389$, $1.649$, $0.368$, summing to $9.406$. Divide: the weights are approximately $0.786$, $0.175$, and $0.039$. So $c_t\approx0.786\,h_1+0.175\,h_2+0.039\,h_3$ — this step is reading mostly from source position one, with a glance at position two. Now change one energy: raise the second from $0.5$ to $2.5$ and the weights become roughly $0.375$, $0.575$, $0.050$. A difference of two in the exponent moved the majority of the read from one position to another. Softmax is sharply sensitive to energy gaps, which is what lets the mechanism behave like a lookup while remaining perfectly differentiable.
+
+Now count what this bought. The capacity problem is gone, because nothing must be compressed into a single fixed vector and the summary is tailored to the current step. And the credit-assignment problem is gone with it, which is the half people usually forget: source state $h_i$ now influences a late target loss through *one* weighted edge. Lesson 3.4 measured that path at roughly eighty-five recurrent transitions for a modest sentence pair, with a retention factor raised to the eighty-fifth power. Attention replaces the product with a single multiplication by $\alpha_{ti}$. Two distinct failures, one mechanism.
+
+Here is the classic wrong turn, and it is the single most common attention bug ever written. You have a matrix of energies with target steps on one axis and source positions on the other, and you apply softmax to it. Along which axis? Normalize across target steps by mistake and the code runs, the shapes are identical, the loss decreases, and the model produces fluent output — because the decoder's own language modelling can carry a great deal on its own. What you have built is not attention: each source position now distributes a fixed budget of one across the target steps, so a source word that matters to three output words has its influence diluted, and a target step's weights no longer sum to anything meaningful. The correction is an assertion, not a code review: check that every unmasked row over source positions sums to one within numerical tolerance and that every padded position receives zero. Two lines, and they catch an error that a decreasing loss curve will hide indefinitely.
+
+The full matrix of $\alpha_{ti}$ values forms a soft alignment map, and plotting it was a genuine milestone — translation produces roughly diagonal patterns with jumps and spreads where phrases reorder, learned without any word-level alignment supervision. "Soft" means the model may blend positions and gradients flow through every nonzero weight.
+
+:::warning
+The most common misconception is that these weights explain the model. A high weight shows that a stored value contributed strongly through one normalized routing operation, nothing more. Encoder states have already mixed context with their neighbours, so "position three" is not "the third word"; downstream decoder dynamics can amplify or cancel what was retrieved; and alternative weightings frequently produce near-identical outputs. Alignment plots are a good diagnostic and were decisive historical evidence. A causal claim needs an intervention — change the value, measure the output — not a heatmap.
+:::
+
+:::insight
+Bahdanau attention changed the field's central question from "how can the encoder compress everything?" to "how can the decoder retrieve what it needs?", and that question is still the one being answered. The specific machinery moved on: dot-product scoring replaced the learned additive scorer, recurrence disappeared entirely, and query, key, and value became three separate projections of the same information. But look at what runs inside Qwen3.8-27B's full-attention layers — 24 query heads reading over 4 shared key/value heads at a head dimension of 256, in 16 of the model's 64 layers (Qwen3.8-27B Model Card, 2026) — and the shape of the operation is exactly what this lesson derived: score a current need against every stored position, normalize, blend. Track 4 rebuilds it in that modern form. Lesson 3.6 asks a different question about the same equations, one nobody thought to ask until 2020: what happens if you drop the softmax?
+:::
+
+One practical note before that. The design keeps the recurrent decoder, so generation is still sequential, and computing energies for every source position at every target step adds real work that grows with the product of the two lengths. That cost was worth paying to remove the bottleneck, and it is the same cost that reappears, magnified, when attention is applied not between two sequences but within one — which is where track 4 begins.

@@ -1,0 +1,72 @@
+---
+id: "4.8-alibi-relative-bias"
+track: "4-transformer"
+order: 8
+title: "Positional encoding III: ALiBi & relative bias"
+summary: "Relative position biases modify attention logits directly — a road largely not taken by modern decoder LMs, whose hybrid layouts shrink the burden any positional scheme must carry."
+tier: "core"
+locale: "en"
+prerequisites: ["4.7-rope"]
+unlocks: ["4.9-feed-forward-block"]
+analogy: "A radio dispatcher ranks messages by relevance, then subtracts a travel toll for every kilometre between sender and receiver. Different channels charge different tolls: one strongly favors nearby reports, another remains willing to hear distant stations. The message content still sets the base score, while the distance tariff adds a predictable positional preference. ALiBi is that tariff on attention logits."
+teachBack:
+  prompt: "Compare ALiBi with learned relative-position bias and with RoPE, and explain why hybrid architectures change the stakes of this comparison."
+  modelAnswer: "ALiBi adds a fixed, head-specific penalty proportional to query–key distance directly to attention logits before softmax. Learned relative bias, as in T5, also alters logits but looks up a trained value per offset bucket. RoPE instead rotates queries and keys so the dot product itself carries relative phase. All three make position relative rather than absolute, but they live at different interfaces: logit bias versus score geometry. Decoder LMs largely adopted RoPE. Hybrid models like Qwen3.8-27B lower the stakes of the choice: with only 16 of 64 layers using full attention and 48 using a recurrence that tracks order by construction, the positional scheme only has to serve a quarter of the depth."
+quiz:
+  - question: "Where does ALiBi inject position information?"
+    options: ["Into attention logits as a distance-dependent bias", "Into the vocabulary after softmax", "Only into value vectors", "Into the optimizer state"]
+    correctIndex: 0
+    explanation: "ALiBi adjusts query–key compatibility scores before softmax normalizes them."
+  - question: "How does RoPE (lesson 4.7) achieve relative-position dependence, in contrast with ALiBi's additive bias?"
+    options: ["It rotates queries and keys so their dot product depends on the position difference", "It adds a learned vector to token embeddings", "It multiplies softmax outputs by distance", "It sorts keys by distance before attention"]
+    correctIndex: 0
+    explanation: "RoPE's orthogonal rotations combine inside the dot product into a rotation by n − m, encoding the offset in score geometry rather than as an added penalty."
+  - question: "Why use different ALiBi slopes across heads?"
+    options: ["To provide several distance preferences, from strongly local to tolerant of long range", "To make every head identical", "To remove causal order", "To learn absolute token IDs"]
+    correctIndex: 0
+    explanation: "Steep slopes favor local context, while shallow slopes allow relatively more weight at larger distances."
+citations:
+  - title: "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
+    authors: "Ofir Press, Noah A. Smith, and Mike Lewis"
+    year: 2022
+    url: "https://arxiv.org/abs/2108.12409"
+  - title: "Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer"
+    authors: "Colin Raffel et al."
+    year: 2020
+    url: "https://arxiv.org/abs/1910.10683"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+There is a third place position can live. Lesson 4.6 put it in the input, added to embeddings. Lesson 4.7 put it in the score's geometry, rotated into queries and keys. This lesson's family puts it in the **score's value**: compute content compatibility first, then adjust the number directly according to how far apart the two positions are. Historically this road was seriously traveled — T5 and several prominent LMs shipped on it — and understanding it sharpens what the winning road actually won.
+
+The concrete problem, stated as a modeling prior: most useful information for predicting a token sits nearby, but "nearby matters more" is nowhere in the machinery of lessons 4.2–4.5. Could we just tell the model? Let $s_{ij}=q_i\cdot k_j/\sqrt{d_k}$ be the content score from query position $i$ to key position $j$, and add a bias:
+
+$$
+\tilde{s}_{ij}=s_{ij}+b(i,j).
+$$
+
+Softmax then normalizes the adjusted scores; routing probabilities change while value payloads stay untouched. The function $b$ is the design space. T5 learns it, bucketed by offset: small offsets get individual buckets, large distances share coarse ones, one learned value per bucket per head — a bounded parameter budget encoding the prior that the difference between 1 and 2 tokens matters more than between 1,001 and 1,002.
+
+**ALiBi** strips even the learning away. In causal attention each head gets a fixed linear penalty into the past:
+
+$$
+b_h(i,j)=-m_h(i-j),\qquad j\le i,
+$$
+
+with slope $m_h$ varying across heads. A worked example shows the texture. Take a head with slope $m_h = 0.5$ scoring three keys at distances 1, 4, and 8 whose content scores are all equal at 2.0. The biased logits are $2.0 - 0.5 \times 1 = 1.5$, then $2.0 - 0.5 \times 4 = 0$, then $2.0 - 0.5 \times 8 = -2.0$: a strong recency preference, though a distant key with much higher content score could still win. A sibling head with slope $m_h = 0.0625$ charges only $-0.0625$, $-0.25$, and $-0.5$ at those same distances — nearly indifferent, keeping long-range routes open. Steep heads become local specialists, shallow heads long-haul channels, and content can always outvote the tariff. Nothing is a hard window; everything is a graded prior.
+
+The classic implementation mistake is where to apply the penalty. The tempting wrong version — attention weights are what we want to shrink, so subtract from the softmax *outputs* — breaks normalization: rows no longer sum to one, and a subtraction of probabilities is not equivalent to any bias of logits. The correction is the one already in the formula: the bias joins the *logits*, before softmax, exactly like the causal mask's $-\infty$ in lesson 4.4 — of which ALiBi is really a soft, sloped cousin.
+
+:::warning
+The headline misconception concerns extrapolation. ALiBi's title — "train short, test long" — reports an empirical result, not a mathematical guarantee. Being able to *compute* a bias at distance 100,000 (unlike a learned table, which simply has no row there) is necessary but nowhere near sufficient for long-context competence: attention patterns, data, and the evaluation task all decide. The same caution applied to sinusoidal formulas in lesson 4.6 and to RoPE beyond its native range in lesson 4.7; no positional scheme escapes it.
+:::
+
+Why, then, is this largely the road not taken for modern decoder LMs? The bias interface has genuine virtues — clean separation of "how compatible" from "how distant," visible locality in the attention matrix, near-zero parameter cost. But it can express only what a scalar function of distance can express: a monotone or bucketed preference. RoPE encodes offset as *phase* across 32 frequency planes, which downstream projections can consume as rich, directional, content-interacting structure — and it composes naturally with caching and with tricks like partial rotation and frequency rescaling. The field's revealed preference is visible in our course model: Qwen3.8-27B ships RoPE (in the partial, long-base, multimodal form of lesson 4.7), not ALiBi, not learned buckets.
+
+There is a deeper 2026 postscript, and it is the right closing thought for the whole positional trilogy. These three lessons implicitly assumed the architecture of 2017–2022: full attention at every layer, so the positional scheme must serve every token pair at every depth, and long-context strain lands entirely on it. Hybrid layouts break that assumption. In Qwen3.8-27B only 16 of 64 layers run full attention; the other 48 are Gated DeltaNet layers that process the sequence as an ordered recurrence — order is built into their execution, no rotation, bias, or stamp required. The positional scheme now has to be excellent in a quarter of the depth rather than all of it, while the recurrent layers carry cheap length. Debates that were fought as "which encoding extrapolates best" partly dissolve into "how much of the model needs pairwise attention at all" — the question lesson 4.15 takes up directly.
+
+The durable picture for this family remains worth keeping: a content score plus a positional prior, position as the *price* of communication between two points rather than an address stamped on either. Even where ALiBi itself is not shipped, that framing — locality as a soft tariff on logits — recurs across sparse attention, sliding windows, and every scheme that must decide how much the past should cost.

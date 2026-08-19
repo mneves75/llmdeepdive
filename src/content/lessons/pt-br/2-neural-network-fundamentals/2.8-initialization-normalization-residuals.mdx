@@ -1,0 +1,96 @@
+---
+id: "2.8-initialization-normalization-residuals"
+track: "2-neural-network-fundamentals"
+order: 8
+title: "Inicialização, normalização e residuais"
+summary: "Um residual stream carrega o hidden state intocado por todas as 64 camadas enquanto a RMSNorm entrega a cada subcamada uma cópia reescalada — o arranjo que torna a profundidade treinável no Qwen3.8-27B."
+tier: "foundations"
+locale: "pt-br"
+prerequisites: ["2.7-optimizers"]
+unlocks: ["2.9-overfitting-regularization-bitter-lesson"]
+analogy: "Um revezamento de cem pessoas fracassa se cada corredor amplifica ou enfraquece a passagem do bastão de forma imprevisível. A inicialização escolhe uma força inicial sensata. A normalização recalibra os níveis de features de cada passagem. Um caminho residual mantém uma pista desobstruída na qual o bastão viaja inalterado enquanto um corredor acrescenta uma correção. Juntos, eles não decidem para onde a corrida vai; eles impedem que a mensagem e o sinal de treino desapareçam ou explodam ao longo da equipe."
+teachBack:
+  prompt: "Explique por que empilhar 64 transformações é numericamente perigoso, como um residual stream pre-norm resolve isso, e o que a RMSNorm computa, incluindo o papel do seu epsilon."
+  modelAnswer: "Compor muitas transformações multiplica seus fatores de escala, então ativações e gradientes encolhem ou explodem geometricamente com a profundidade. Um bloco residual computa x + F(Norm(x)): o hidden state viaja por um caminho aditivo desobstruído, e cada subcamada recebe uma cópia reescalada em vez do stream bruto. A RMSNorm divide o vetor de features de um token pela raiz da média dos quadrados das suas próprias entradas, com um epsilon pequeno dentro da raiz — 1e-6 no Qwen3.8-27B — para manter a divisão finita quando o vetor está perto de zero, e depois aplica uma escala aprendida por feature. Diferente da LayerNorm, ela não subtrai a média, então é uma operação diferente, e não meramente mais barata."
+quiz:
+  - question: "A lição 2.7 mencionou que parâmetros de escala de normalização geralmente vão para um grupo sem weight decay no otimizador. Por que isso faz sentido?"
+    options: ["Eles definem a escala de operação do sinal normalizado em vez de atuarem como pesos de features, então encolhê-los rumo a zero suprime sistematicamente a saída da camada", "Eles não têm gradientes", "Eles são inteiros", "Weight decay é indefinido para eles"]
+    correctIndex: 0
+    explanation: "O decay serve para desencorajar pesos de features grandes; aplicado a um parâmetro de ganho, ele reescala silenciosamente a camada inteira, o que é uma intervenção diferente."
+  - question: "Num bloco residual pre-norm, o que a normalização de fato normaliza?"
+    options: ["A cópia do hidden state entregue à subcamada — o residual stream em si segue sem normalização", "O residual stream, que portanto é mantido em escala unitária por todo o modelo", "Apenas os gradientes", "Os logits de saída do modelo"]
+    correctIndex: 0
+    explanation: "O stream segue acumulando contribuições e tipicamente cresce com a profundidade; só o que cada subcamada lê é reescalado, e é por isso que existe uma norm final antes do output head."
+  - question: "O que uma conexão residual acrescenta?"
+    options: ["Um atalho identidade em torno de uma transformação aprendida, dando caminho direto tanto ao sinal quanto ao gradiente", "Um novo dataset", "Uma fusão de tokenização", "Um limiar duro de classificação"]
+    correctIndex: 0
+    explanation: "O bloco aprende uma correção ao stream em vez de reconstruir a representação inteira do zero."
+citations:
+  - title: "Layer Normalization"
+    authors: "Jimmy Lei Ba, Jamie Ryan Kiros e Geoffrey E. Hinton"
+    year: 2016
+    url: "https://arxiv.org/abs/1607.06450"
+  - title: "Root Mean Square Layer Normalization"
+    authors: "Biao Zhang e Rico Sennrich"
+    year: 2019
+    url: "https://arxiv.org/abs/1910.07467"
+  - title: "Deep Residual Learning for Image Recognition"
+    authors: "Kaiming He, Xiangyu Zhang, Shaoqing Ren e Jian Sun"
+    year: 2015
+    url: "https://arxiv.org/abs/1512.03385"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Aqui vai uma pergunta com resposta alarmante. O Qwen3.8-27B empilha 64 camadas, cada uma carregando um hidden state de 5120 dimensões por token (Qwen3.8-27B Model Card, 2026). Suponha que cada camada, em média, multiplique por 1,1 a escala do que passa por ela — uma amplificação de dez por cento, que soa inofensiva. Depois de 64 camadas o sinal foi multiplicado por $1.1^{64}\approx490$. Agora suponha que o fator seja 0,9: $0.9^{64}\approx0.0012$, e o sinal sumiu. Profundidade compõe. Uma rede não perdoa pequenos erros de escala; ela os eleva à potência da própria profundidade, no forward pass e de novo no backward pass, onde os mesmos produtos governam se um gradiente chega à camada um.
+
+Três mecanismos administram isso, cada um atacando uma parte diferente do problema: a inicialização define a escala inicial, a normalização controla a escala em evolução, e conexões residuais encurtam o caminho.
+
+A inicialização primeiro, porque ela precisa fazer duas coisas ao mesmo tempo. Ela tem de quebrar simetria — se toda unidade de uma camada começa idêntica, elas recebem gradientes idênticos e permanecem duplicatas para sempre — e tem de controlar variância. Esquemas conscientes de variância escalam pesos aleatórios pelo **fan-in**, o número de conexões que chegam, e às vezes pelo fan-out: Xavier/Glorot para ativações simétricas, escalonamento no estilo He para compensar o fato de a ReLU descartar cerca de metade do sinal. Essas são premissas de partida, não garantias, porque gating, profundidade residual e precisão perturbam todos a propagação. Biases costumam ser zero, já que a aleatoriedade nos pesos já quebra a simetria.
+
+Agora a ideia estrutural que tornou possível a profundidade de verdade. Uma **conexão residual** computa
+
+$$
+y=x+F(x)
+$$
+
+quando os shapes batem. Leia isso como uma afirmação sobre responsabilidade: o trabalho do bloco é computar uma *correção* a ser somada ao que já existe, e não reconstruir a representação do zero. Se $F$ não contribui com nada útil, a informação ainda flui intocada pelo caminho identidade. No backward, a derivada de $y$ em relação a $x$ contém um termo identidade aditivo, então o gradiente alcança camadas anteriores sem ter de sobreviver ao produto de toda jacobiana intermediária.
+
+Isso cria o que os praticantes chamam de **residual stream**: um vetor de 5120 de largura por token que entra no embedding, viaja a profundidade inteira do modelo, e é escrito por toda subcamada no caminho. Cada bloco de attention ou feed-forward lê dele, computa alguma coisa e soma o resultado de volta. Nada o sobrescreve. O stream é a memória de trabalho do modelo, e as 64 camadas são 128 contribuições sucessivas a ele.
+
+O que levanta a questão de escala de novo, numa forma mais aguda. Se um bloco recém-iniciado soma ao stream uma contribuição de magnitude comparável a cada passo e as contribuições são aproximadamente independentes, a variância do stream se acumula aditivamente — ou seja, sua magnitude RMS cresce como $\sqrt{\text{profundidade}}$, de modo que na camada 64 ela está cerca de oito vezes o que era na camada um. Subcamadas fundo na pilha receberiam entradas uma ordem de magnitude maiores que subcamadas perto da entrada, e toda matriz de pesos teria de lidar com escalas de operação muito diferentes dependendo de onde ela por acaso estivesse.
+
+A **normalização** é a resposta, e a colocação dela é o design inteiro. Um bloco **pre-norm** computa
+
+$$
+y=x+F(\operatorname{Norm}(x)),
+$$
+
+que é o que o Qwen3.8-27B usa (Qwen3.8-27B Model Card, 2026). A normalização fica no ramo, não no stream. Cada subcamada recebe uma cópia reescalada do hidden state — sempre numa magnitude familiar, esteja ela na camada 3 ou na camada 61 — enquanto o stream em si segue pelo caminho identidade sem operação alguma aplicada a ele.
+
+O normalizador específico é o **RMSNorm**. Para um vetor oculto $x$ com $d$ entradas ele computa
+
+$$
+\operatorname{RMSNorm}(x)=\frac{x}{\sqrt{\frac{1}{d}\sum_{i=1}^{d}x_i^{2}+\varepsilon}}\odot g,
+$$
+
+com um ganho aprendido por feature $g$ e, neste modelo, $\varepsilon=10^{-6}$. Passe um vetor por ele. Digamos que o hidden state de um token na camada 40 tenha valor RMS de 12,0 ao longo das suas 5120 entradas. O denominador é $\sqrt{144+10^{-6}}=12.0$ em qualquer precisão que importe, então toda entrada é dividida por 12 e a subcamada vê um vetor de RMS unitário. Agora considere uma posição quase morta cujas entradas estão todas em torno de $10^{-5}$: a média dos quadrados é $10^{-10}$, mil vezes menor que $\varepsilon$, então o epsilon domina a raiz quadrada e a saída é escalada para baixo rumo a zero em vez de explodir por uma divisão por quase nada. É precisamente esse o trabalho do epsilon — ele não é um remendo de arredondamento, é a guarda que mantém a operação definida no fundo da faixa.
+
+Note o que a RMSNorm *não* faz: ela nunca subtrai a média. A LayerNorm centraliza o vetor de features antes de escalar; a RMSNorm apenas reescala.
+
+:::caveat
+É tentador descrever a RMSNorm como "LayerNorm, só que mais rápida". Isso subestima a mudança. Remover a subtração da média é uma mudança na matemática, não apenas no kernel: as duas operações produzem funções diferentes da mesma entrada, e um modelo treinado sob uma não é intercambiável com um modelo treinado sob a outra. A velocidade também depende de kernels, fusão e hardware, e não só da fórmula. Se a troca compensa é uma questão empírica de nível de arquitetura — e a resposta moderna, visível no espécime deste curso, é que compensa.
+:::
+
+O erro clássico aqui é de colocação. O Transformer original usava **post-norm**, $y=\operatorname{Norm}(x+F(x))$, que põe uma operação de normalização *no próprio stream*. Funciona, e em profundidade moderada funciona bem. Mas destrói o caminho identidade limpo: o gradiente fluindo para trás agora precisa atravessar uma normalização em cada um dos 64 passos, e as pilhas profundas resultantes são notoriamente frágeis de treinar, exigindo warmup cuidadoso e às vezes falhando de vez. Mover a norm para o ramo — a mudança de uma linha do post-norm para o pre-norm — restaura a rodovia aditiva desobstruída, e é por isso que pre-norm é o padrão em essencialmente todo modelo grande lançado desde então.
+
+:::warning
+O equívoco mais comum é achar que o pre-norm mantém o residual stream em escala unitária. Ele não mantém, e não pode: nada em $x+F(\operatorname{Norm}(x))$ jamais reescala $x$. O stream cresce com a profundidade exatamente como descrito acima; o que o pre-norm garante é que nenhuma *subcamada* tenha de lidar com esse crescimento. Isso tem uma consequência visível que você pode conferir em qualquer checkpoint — uma normalização final fica depois da última camada, antes do output head, porque o stream bruto chegando na camada 64 está na escala errada para uma projeção em logits de vocabulário.
+:::
+
+Esses mecanismos são infraestrutura, e importa que você os leia como tal. Nenhum deles decide o que o modelo aprende. Eles tornam a composição profunda numericamente sobrevivível para que os blocos de attention e feed-forward da track 4 possam gastar o orçamento de otimização aprendendo transformações úteis em vez de lutar contra o colapso. A lição 4.10 volta a esse arranjo com o bloco transformer completo à vista.
+
+Uma checagem empírica é barata e vale construir cedo. Antes do treinamento, empurre entradas representativas pelo modelo e registre médias de ativação por camada, valores RMS e normas de gradiente após uma loss. Procure colapso monotônico, crescimento explosivo, ramos mortos e descontinuidades nas somas residuais — e rode isso na precisão em que você de fato vai treinar, já que o arredondamento em bf16 faz parte do sistema que você está testando.

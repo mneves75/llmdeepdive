@@ -1,0 +1,81 @@
+---
+id: "8.6-tensorrt-llm"
+track: "8-building-and-serving-stacks"
+order: 6
+title: "TensorRT-LLM"
+summary: "Compiling a model ahead of time buys FP8 kernels and the lowest latency on NVIDIA hardware, and charges for it in build matrices, frozen shapes, and rebuilds you cannot skip."
+tier: "frontier"
+locale: "en"
+prerequisites: ["8.4-vllm", "7.9-quantization-i-int8-int4-the-basics"]
+unlocks: ["8.12-choosing-your-stack"]
+analogy: "A bespoke suit fits better than anything off the rack because every measurement was taken before a stitch was cut. That is also its weakness: gain or lose ten kilos and no amount of pressing helps — the garment must be remade from the cloth up. An ahead-of-time compiled engine is tailored to a fixed batch size, sequence length, precision, GPU architecture, and library version, and any change to those measurements means going back to the cutting table."
+teachBack:
+  prompt: "Explain what is frozen at engine build time in TensorRT-LLM, why FP8 on Hopper multiplies serving capacity by more than the obvious factor of two, and what operational cost the ahead-of-time model imposes."
+  modelAnswer: "The build fixes the precision, the tensor-parallel layout, the maximum batch size, the maximum input length, and the maximum total sequence length, and the resulting engine is tied to a GPU architecture and a library version. FP8 helps twice over. It halves the weights, from 54 GB in bf16 to roughly 27 GB, and it can halve the KV cache, from lesson 7.2's 64 KiB per token to about 32 KiB. On an 80 GB card at a 0.90 budget that turns a pool of roughly 14 GiB holding about 229,000 tokens into a pool of roughly 38 GiB holding about 1.2 million — more than five times the capacity, because the weights were the dominant fixed cost and shrinking them released memory that the smaller cache then stretched further. The cost is operational: engines are not portable across GPU architectures or library versions, every change of shape, precision, or parallelism means a rebuild taking minutes to hours, and a routine security patch to the base container can force the whole build matrix to be regenerated and revalidated."
+quiz:
+  - question: "From lesson 7.9, why is FP8 easier to apply to activations than INT8 despite both using eight bits?"
+    options: ["FP8 keeps an exponent field, so it covers a wide dynamic range with coarse per-tensor scaling, while INT8 is uniform and needs tighter, more careful calibration to avoid clipping outliers", "FP8 uses more bits than INT8", "INT8 cannot represent negative numbers", "FP8 is lossless"]
+    correctIndex: 0
+    explanation: "Activation outliers are what break naive integer quantization; a floating-point 8-bit format absorbs them in the exponent instead of the scale factor."
+  - question: "An engine built with max_batch_size 1 and max_input_len 2048 beats vLLM on your benchmark. Why might it still be the wrong choice?"
+    options: ["It cannot accept the production traffic at all — longer prompts and larger batches are outside the shapes compiled into it, so the benchmark measured a configuration you cannot deploy", "TensorRT-LLM engines expire after a week", "It would produce different tokens from the reference", "Small batches are always slower in production"]
+    correctIndex: 0
+    explanation: "Ahead-of-time compilation makes shape limits hard constraints; a benchmark run inside limits your workload exceeds is not a comparison, it is a different experiment."
+  - question: "What is in-flight batching?"
+    options: ["TensorRT-LLM's iteration-level scheduling, admitting and retiring requests between decode steps rather than holding a fixed batch — the same idea as continuous batching in lesson 7.8", "Batching requests before they reach the server", "Running prefill and decode on separate GPUs", "Capturing CUDA graphs during flight"]
+    correctIndex: 0
+    explanation: "The name differs, the mechanism does not: batch membership changes at iteration boundaries so a finished sequence frees its slot immediately."
+citations:
+  - title: "TensorRT-LLM Documentation"
+    authors: "NVIDIA"
+    year: 2026
+    url: "https://nvidia.github.io/TensorRT-LLM/"
+  - title: "NVIDIA Data Center Technologies"
+    authors: "NVIDIA"
+    year: 2026
+    url: "https://www.nvidia.com/en-us/data-center/"
+  - title: "CUDA Toolkit Documentation"
+    authors: "NVIDIA"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Your vLLM deployment from lesson 8.4 works, the pool arithmetic checks out, and the product team now wants the ninety-fifth-percentile time between tokens cut by a third on hardware you already own. You have exhausted the settings that are free. What remains is the option lesson 7.11 described as NVIDIA-maximal: stop interpreting the model at run time and compile it into an executable engine before the first request ever arrives.
+
+That single change of tense is the whole lesson. vLLM and SGLang build their execution plan while serving; TensorRT-LLM builds it beforehand, with full knowledge of the exact shapes, precisions, and hardware it will meet. Knowing everything in advance is what lets a compiler pick tiling for a specific GPU's memory hierarchy, fuse an entire attention block into one kernel, select FP8 paths on the Tensor Cores that support them, and lay out weights in the format those kernels want rather than the format the checkpoint had. What it costs is exactly what it gained: the assumptions are baked in.
+
+Read that as a list of things you are freezing. Precision. Tensor-parallel and pipeline layout. Maximum batch size. Maximum input length. Maximum total sequence length. The GPU architecture. The library and driver versions the engine was compiled against. The artifact is a serialized engine file, and it is not portable across any of them.
+
+```
+trtllm-build --checkpoint_dir ./qwen38-fp8 \
+  --max_batch_size 32 --max_input_len 8192 --max_seq_len 16384
+```
+
+Flag names move between releases, so treat that as the shape of the decision rather than a command to copy. The decision is what matters: those three numbers are a contract with production, not hints. A request with a nine-thousand-token prompt against that engine is not slow, it is rejected.
+
+Now the payoff, and it is larger than it first looks. Lesson 7.9 introduced eight-bit quantization; FP8 is the variant Hopper-class hardware executes natively, and because it keeps an exponent field it tolerates the activation outliers that make INT8 delicate, needing only per-tensor scales derived from a short calibration pass. Apply it to Qwen3.8-27B and work through the memory, reusing lesson 8.4's subtraction. The weights fall from 54 GB in bf16 to roughly 27 GB. On an 80 GB card at a 0.90 utilization budget of about 72 GB, subtracting 27 GB of weights and about 4 GB of workspace leaves roughly 41 GB, call it 38 GiB of pool — against the 14 GiB we had at bf16. Then apply the same eight-bit format to the cache: lesson 7.2's 64 KiB per token is two bytes per element, so an eight-bit KV format halves it to about 32 KiB per token. The pool now holds
+
+$$
+\frac{38\ \text{GiB}}{32\ \text{KiB per token}} \approx 1{,}245{,}000\ \text{tokens}
+$$
+
+against roughly 229,000 before. That is not a factor of two, it is a factor above five, and the reason is worth internalizing: the weights are a fixed cost subtracted before anything else, so halving them releases memory disproportionately, and the halved cache then stretches the released memory twice as far. Quantization compounds against a fixed overhead. This is the same structure that will decide every hardware question in track 9.
+
+Serving is otherwise familiar. In-flight batching is TensorRT-LLM's name for the iteration-level scheduling of lesson 7.8: requests join and leave between decode steps rather than waiting for a fixed batch to drain. Paged KV, chunked prefill, and speculative decoding all have counterparts here. The programming model differs — engine plus runtime rather than a Python engine you configure — but the concepts transfer intact, which is why this lesson can spend its space on the parts that do not.
+
+:::warning
+The classic wrong turn is the benchmark that proves what you wanted. Someone builds an engine at maximum batch size 1 and maximum input length 2048, measures a beautiful latency curve, and reports that TensorRT-LLM beats vLLM by a wide margin. The comparison is void: production sends variable prompts up to 32K at real concurrency, and that engine cannot accept them at any speed. A fair comparison builds the engine for the shapes production actually sends, then replays the same trace — same prompt and output length distributions, same arrival pattern, same decoding parameters — against both stacks. Compare goodput under a latency objective, not a peak number.
+:::
+
+The operational bill arrives later and is the reason many teams choose otherwise. Your build matrix is the product of precision, parallel layout, shape buckets, GPU architecture, and library version, and every cell is an artifact to build, store, validate, and roll out. Engines do not survive a GPU generation change. A base-image security patch that moves the library version can invalidate the lot. Builds take minutes to hours, so a shape change is a scheduled event rather than a flag flip, and an urgent capacity change on a Friday evening is a build, not a restart. None of this is a defect — it is the price of the tailoring — but it is a standing commitment of engineering time, and it is why lesson 7.11 gated this option behind having an ops team that can own it.
+
+:::caveat
+Architecture support decides everything above, and for this model it must be verified per version rather than assumed. Qwen3.8-27B's 48 Gated DeltaNet layers need explicit implementation: kernels for the delta-rule update and the short convolution, and a runtime that manages a per-sequence recurrent state alongside the paged KV of the 16 attention layers. Compiled stacks typically gain support for a new architecture later than eager and Python-engine stacks do, because a plugin or kernel must be written rather than a module. Before planning any migration, confirm the exact release builds and runs this model, then run the differential test from lesson 8.1 against eager PyTorch. An engine that compiles cleanly and mishandles the recurrent state will be fast, confident, and wrong.
+:::
+
+Weigh it as a trade rather than a ranking. TensorRT-LLM buys the tightest latency available on NVIDIA silicon and, through FP8, a capacity multiplier that compounds against fixed costs; it sells you flexibility, portability, and the ability to change your mind quickly. If your traffic shape is stable, your fleet is homogeneous, and someone owns the build pipeline, that is a good trade. If any of the three is untrue, lesson 8.4's engine will serve you better than an engine you are afraid to rebuild.

@@ -1,0 +1,92 @@
+---
+id: "5.7-data-parallelism-zero-fsdp"
+track: "5-pretraining-at-scale"
+order: 7
+title: "Data parallelism, ZeRO & FSDP"
+summary: "Data parallelism buys throughput; ZeRO and FSDP shard parameters, gradients, and optimizer state — the only way 27 billion parameters plus roughly 324 GB of AdamW state ever fits on 80 GB cards."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.6-inference-aware-scaling"]
+unlocks: ["5.8-model-parallelism"]
+analogy: "Several kitchens receive different customer orders but use the same recipe. Ordinary data parallelism gives every kitchen a full pantry and averages recipe corrections after service. Sharding divides pantry stock, correction ledgers, and even recipe cards across kitchens; ingredients are gathered just before a dish and released afterward. More storage fits collectively, but delivery traffic becomes part of cooking."
+teachBack:
+  prompt: "Build the persistent training-memory budget for a 27-billion-parameter model under mixed-precision AdamW, then show what each ZeRO stage leaves on a single rank of a 64-GPU job."
+  modelAnswer: "bf16 parameters are 54 GB and bf16 gradients another 54 GB. AdamW keeps fp32 master weights plus two fp32 moments, which is 12 bytes per parameter, about 324 GB, giving roughly 432 GB of persistent state before a single activation. Replicated data parallelism needs all of that on every rank, so it cannot start on 80 GB cards. ZeRO-1 shards only the optimizer, leaving 54 + 54 + 5.06 = about 113 GB per rank across 64 ranks, still impossible. ZeRO-2 also shards gradients, leaving about 59.9 GB — feasible but with little room for activations. ZeRO-3 and FSDP shard parameters too, leaving 432/64 = about 6.75 GB of persistent state per rank, with full parameters materialized only transiently during each module's forward and backward."
+quiz:
+  - question: "Under mixed-precision AdamW, what is the persistent memory for 27 billion parameters before any activations?"
+    options: ["About 432 GB: 54 GB bf16 weights, 54 GB bf16 gradients, and about 324 GB of fp32 master weights and moments", "About 54 GB, the same as bf16 inference weights", "About 108 GB, twice the bf16 weights", "About 16 GB, matching the four-bit quantized weights"]
+    correctIndex: 0
+    explanation: "AdamW keeps an fp32 master copy and two fp32 moments, 12 bytes per parameter, so training state is roughly eight times the bf16 serving weights."
+  - question: "Lesson 5.6 showed that 48 of the 64 layers are Gated DeltaNet and hold only a small fixed-size state at inference. What does that imply for their training memory?"
+    options: ["Nothing favourable — their parameters still need gradients and full AdamW state, so they shard exactly like attention layers", "They need no optimizer state because their state is constant in sequence length", "They are excluded from ZeRO sharding", "They halve the fp32 master weight cost"]
+    correctIndex: 0
+    explanation: "The 72 MiB figure is a per-request inference state; training memory is driven by parameter count and optimizer moments, which every layer type pays in full."
+  - question: "What does FSDP typically all-gather before a sharded module computes?"
+    options: ["Its full parameters for that computation", "The complete raw dataset", "All historical checkpoints", "Vocabulary strings from the internet"]
+    correctIndex: 0
+    explanation: "Ranks exchange parameter shards just in time so each can execute the local forward or backward operation."
+citations:
+  - title: "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models"
+    authors: "Samyam Rajbhandari et al."
+    year: 2019
+    url: "https://arxiv.org/abs/1910.02054"
+  - title: "PyTorch FSDP: Experiences on Scaling Fully Sharded Data Parallel"
+    authors: "Yanli Zhao et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2304.11277"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Qwen3.8-27B ships as bf16 safetensors totalling about 54 GB. An 80 GB H100 has room for that with 26 GB to spare, which is why the model serves comfortably on one card. So a reasonable person concludes that training it on a single 80 GB accelerator is tight but conceivable. That conclusion is wrong by a factor of more than five, and the gap between 54 GB and the real number is the reason this lesson exists.
+
+Build the budget honestly. Under a standard mixed-precision AdamW recipe, four kinds of persistent state exist for every parameter. The bf16 parameters used in the forward pass:
+
+$$
+27\times 10^{9}\times 2\ \text{B}=54\ \text{GB}.
+$$
+
+The bf16 gradients produced by backward, the same shape and dtype, another 54 GB. Then the optimizer, which is where the surprise lives. AdamW keeps an fp32 master copy of the weights so tiny updates are not annihilated by bf16 rounding, plus two fp32 moment estimates, the running first and second moments:
+
+$$
+(4+4+4)\ \text{B/param}=12\ \text{B/param},\qquad 27\times 10^{9}\times 12\ \text{B}=324\ \text{GB}.
+$$
+
+Recipes that also accumulate gradients in fp32 push this toward 16 bytes per parameter, about 432 GB of optimizer-side state. Take the conservative end and total it up:
+
+$$
+54+54+324=432\ \text{GB of persistent state},
+$$
+
+before a single activation, temporary buffer, or communication workspace exists. Training state is roughly eight times the weights you serve. One 80 GB card is not close; it is not even the right order of magnitude.
+
+**Data parallelism** is the starting point and does nothing about this. Give several workers identical replicas and different examples; if rank $r$ computes gradient $g_r$, a collective reduction forms the mean used by every replica, and starting from equal weights with equal gradients keeps them synchronized. With $P$ ranks, local microbatch $b$, sequence length $T$, and $a$ accumulation steps, the global batch holds $PbaT$ tokens — so adding workers changes optimization, not merely speed. But every rank still holds all 432 GB. Replication multiplies throughput and multiplies memory.
+
+**ZeRO** removes the redundancy in three stages, and the effect is worth computing on a concrete cluster. Take 64 ranks, one model, the 432 GB above.
+
+Stage 1 shards optimizer state only. Each rank keeps full bf16 parameters and gradients but $1/64$ of the optimizer: $324/64 = 5.06$ GB. Per-rank persistent state becomes $54+54+5.06 \approx 113$ GB. Still impossible on 80 GB cards.
+
+Stage 2 also shards gradients: $54/64 = 0.84$ GB. Now $54+0.84+5.06 \approx 59.9$ GB. This fits — barely. About 20 GB remains for activations, temporaries, fragmentation, and communication buffers on a model with hidden size 5120 and long sequences, which lesson 5.10 will show is not much.
+
+Stage 3 shards parameters as well, so persistent state is simply the whole budget divided by the world size: $432/64 = 6.75$ GB per rank. Full parameters for a module exist only transiently, materialized just before they are needed.
+
+**Fully Sharded Data Parallel** is that fully sharded pattern implemented around modules. Before a module's forward, ranks all-gather its parameter shards to reconstruct the full parameters locally; after use, they can be resharded. During backward, communication reconstructs parameters again as needed, and reduce-scatter distributes gradient shards to their owners. Where ordering and network permit, that communication overlaps with computation.
+
+:::warning
+The misconception this lesson exists to kill is that serving memory predicts training memory. It does not, and the ratio is about eight to one for bf16 AdamW. Worse, the intuition fails in the reassuring direction: the model loads fine, a short forward pass runs fine, and the failure arrives at the first optimizer step, after the job has consumed cluster time. Compute the full budget — parameters, gradients, master weights, both moments, activations, temporaries — before requesting nodes.
+:::
+
+Wrapping policy decides how well stage 3 actually performs. If the sharded unit is too large, peak all-gather memory is large and overlap is limited; too small, and collectives become numerous and latency dominates. Transformer-block boundaries are the usual choice because they place substantial compute between communications. This model offers an unusually natural alternative unit: its 64 layers are organized as 16 repeating super-blocks of three Gated DeltaNet layers followed by one full-attention layer. Wrapping per super-block gives 16 uniform units of about 1.7 billion parameters each, which is coarse but perfectly balanced; wrapping per layer gives 64 finer units of two distinct shapes. Either is defensible, and only measurement decides.
+
+:::caveat
+Sharding lowers persistent memory but does nothing for activations. Long sequences, an FFN intermediate of 17,408, attention intermediates, temporary all-gather buffers, fragmentation, and communication workspaces still cause out-of-memory failures on a job whose persistent budget looks comfortable. Lesson 5.10 attacks that category directly.
+:::
+
+Two operational consequences follow. Checkpointing becomes distributed: a full state-dict gather may exceed host memory, so ranks write their owned tensors alongside metadata that reconstructs global names and shapes, and resuming at a different world size requires a format and loader that support resharding. Saving weights alone is not enough for exact continuation — optimizer moments, scheduler position, loss scaler, random-number state, and data-loader cursor all matter, and at 324 GB the optimizer is the largest thing in the checkpoint.
+
+Failures must also be collective. If one rank hits bad data while the others enter an all-reduce, the job hangs rather than raising a clean exception. Timeouts, coordinated error propagation, rank-aware logs, and reproducible batch identifiers are not niceties. Network topology shapes the design too: fast links inside a node and slower links between nodes favour hierarchical collectives, and a stage-3 job whose all-gathers cross a slow fabric can spend more time moving parameters than using them.
+
+The stable model is replicated computation over different data, with increasingly sharded state behind it. Data parallelism buys throughput. ZeRO and FSDP remove redundant memory. Neither creates capacity for free: the price is communication volume, scheduling complexity, and much more demanding checkpoint and failure semantics.

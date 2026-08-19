@@ -1,0 +1,70 @@
+---
+id: "7.3-prefill-vs-decode-two-different-machines"
+track: "7-inference-and-efficiency"
+order: 3
+title: "Prefill vs decode: two different machines"
+summary: "Qwen3.8-27B's prompt processing is arithmetic-rich and parallel, while batch-1 decode re-reads 54 GB of weights per token; its 48 DeltaNet layers keep decode's cache traffic flat."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.1-what-actually-happens-when-you-hit-send"]
+unlocks: ["7.7-flashattention-and-io-awareness", "7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+analogy: "Printing a whole book and adding one personalized line are both ink-on-paper tasks, but they want different machines. The press thrives on a large sheet and parallel repetition; restarting that press for one line wastes its capacity. A label printer responds quickly one strip at a time but never reaches press throughput. Prefill is the press, processing many prompt positions together. Decode is the label printer, producing one new position per sequence under a tight latency loop."
+teachBack:
+  prompt: "Contrast prefill and decode for Qwen3.8-27B in arithmetic intensity and memory traffic, and explain how the 48 DeltaNet layers change decode's traffic profile."
+  modelAnswer: "Prefill pushes every prompt position through the weights at once, so each weight byte read supports as many multiply-adds as there are prompt tokens — high arithmetic intensity, usually compute-limited, governing time to first token. Decode advances one position per sequence per step, so at batch 1 each of the roughly 54 GB of bf16 weight bytes supports about one operation, making the step bandwidth-limited and governing inter-token latency. On the cache side, only the 16 full-attention layers read a history that grows at 64 KiB per token (lesson 7.2); the 48 Gated DeltaNet layers read and update roughly 72 MiB of fixed-size state regardless of context length, so three-quarters of the depth contributes constant, not growing, decode traffic."
+quiz:
+  - question: "Which user-facing metric does prefill most directly control?"
+    options: ["Time to first token, since it spans prompt processing before any output exists", "Inter-token latency", "Tokenizer vocabulary size", "Weight download time"]
+    correctIndex: 0
+    explanation: "As lesson 7.1 traced, TTFT covers admission, tokenization, and prefill; decode cadence then sets inter-token latency."
+  - question: "Why does decode memory traffic in 48 of Qwen3.8-27B's 64 layers stay flat as the context grows?"
+    options: ["Gated DeltaNet layers read and update a fixed-size recurrent state instead of a growing KV history", "Those layers are skipped during decode", "Their weights shrink over time", "They cache only every fourth token"]
+    correctIndex: 0
+    explanation: "DeltaNet state is about 1.5 MiB per layer, roughly 72 MiB total, independent of sequence length; only the 16 attention layers read a growing cache."
+citations:
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "Roofline: An Insightful Visual Performance Model for Multicore Architectures"
+    authors: "Samuel Williams, Andrew Waterman, and David Patterson"
+    year: 2009
+    url: "https://doi.org/10.1145/1498765.1498785"
+  - title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    authors: "Tri Dao et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2205.14135"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-18"
+---
+
+Serve Qwen3.8-27B and watch the timings: an 8,192-token prompt is absorbed in about the time it takes to read this clause, then the answer trickles out token by token. Same weights, same GPU — yet the two phases run at speeds separated by orders of magnitude. They are effectively two different machines. **Prefill** processes the prompt and creates state; **decode** consumes that state one token at a time.
+
+During prefill, every prompt position moves through the network together. Linear layers multiply weights by activation matrices with a token dimension in the thousands; the 16 attention layers compute interactions among prompt positions and write keys and values, while the 48 Gated DeltaNet layers fold the prompt into their recurrent states. Accelerators love this shape — parallelism across tokens, heads, and batch entries — and long prompts can approach the hardware's arithmetic ceiling. Prefill's output is the first token's logits plus populated state, which is why prompt length and kernel efficiency dominate **time to first token**.
+
+Decode presents the opposite shape: one new position per active sequence per step, through every layer.
+
+Here is the wrong turn most people take when decode feels slow: assume the GPU is out of arithmetic and reach for more FLOPs. Run the numbers instead. For a weight matrix of $P$ parameters in bf16 (2 bytes each), processing $n$ tokens costs about $2nP$ operations against at least $2P$ bytes of weight traffic, so the **arithmetic intensity** is
+
+$$
+I \approx \frac{2\,n\,P}{2\,P} = n\ \text{operations per weight byte}.
+$$
+
+Prefill with $n = 8{,}192$ prompt positions performs roughly 8,192 useful operations for every weight byte it fetches. Batch-1 decode has $n = 1$: about one operation per byte. And the bytes are substantial — Qwen3.8-27B's bf16 weights total about 54 GB, essentially all of which must stream from memory on every single decode step. One operation per byte is far below what any modern accelerator needs to keep its arithmetic units busy, so the step is limited by memory bandwidth, not compute. Adding FLOPs would change nothing; the roofline model (Williams et al.) makes this precise, and lesson 9.1 turns the 54 GB-per-token weight read into an explicit tokens-per-second ceiling on H100-class memory bandwidth. The correction, not the naive guess, explains why decode remedies are all about bytes: quantized weights, batching to reuse each weight read across sequences, speculative decoding to verify several tokens per read.
+
+The second stream of decode traffic is state, and here Qwen3.8-27B's hybrid layout changes the classic picture. In a uniform attention model, every layer reads a KV history that grows with context, so decode gets progressively more expensive per token. In this model only the 16 full-attention layers do that, reading a cache that grows at the 64 KiB per token derived in lesson 7.2 — illustratively, at 100,000 cached tokens those layers stream about 6 GiB of K/V per step. The 48 DeltaNet layers instead read and update fixed-size states totaling roughly 72 MiB, the same at token ten and token 200,000. Three-quarters of the depth contributes constant decode traffic, so cost grows with context far more slowly than layer count alone would suggest — that flattening is precisely what the architecture bought.
+
+Batching reshapes both regimes. Independent sequences decoded together share each weight read, multiplying useful work per byte; that is why $n$ in the intensity formula is really tokens-in-flight, not just prompt length. But batches are not free: waiting to form one raises queue latency, sequences finish at different times, and continuous batching (lesson 7.8) trades a static rectangle for a shifting set of token steps the scheduler must keep fair.
+
+The phases also interfere. A large prefill monopolizes compute and bandwidth exactly while decode requests need their steady cadence; chunked prefill interleaves prompt pieces between decode steps, and some deployments disaggregate the phases onto separate workers, paying KV transfer costs to avoid the contention.
+
+:::caveat
+"Compute-bound prefill, bandwidth-bound decode" is a first-order model, not a law. Tiny prompts, very large decode batches, quantized kernels, and extreme context lengths — where the 16 attention layers' cache reads rival the weight reads — can all move the bottleneck. Measure per phase before optimizing.
+:::
+
+Metrics should respect the split: record queue time, prefill duration, and prompt throughput separately from decode step time and output throughput, in percentiles by prompt length and concurrency. Aggregate averages happily hide a scheduler that feeds bulk jobs while starving interactive users.
+
+The durable mental model: a parallel prompt processor hands state to a latency-sensitive token engine that mostly moves memory. Everything in the rest of this track — IO-aware attention, paged caches, quantization, speculative decoding — is an attack on one side or the other of that boundary.

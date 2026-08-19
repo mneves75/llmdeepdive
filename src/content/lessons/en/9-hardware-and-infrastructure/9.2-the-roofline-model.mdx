@@ -1,0 +1,80 @@
+---
+id: "9.2-the-roofline-model"
+track: "9-hardware-and-infrastructure"
+order: 2
+title: "The roofline model"
+summary: "One chart places every kernel by arithmetic intensity; Qwen3.8-27B prefill sits above the ridge point as compute-bound while batch-1 decode and its DeltaNet layers sit far to the left, bandwidth-bound."
+tier: "frontier"
+locale: "en"
+prerequisites: ["9.1-memory-bandwidth-vs-flops"]
+unlocks: ["9.4-nvidia-cuda-hopper-blackwell"]
+analogy: "A cargo bike has a maximum speed and a maximum load, and a route has a fixed number of deliveries per kilometre. Plot deliveries per kilometre on one axis and you can read off, without riding, whether the trip is limited by how fast you pedal or by how often you stop. Dense routes are pedal-limited; sparse routes are stop-limited, and buying a faster bike helps only one of them. The roofline is that plot for kernels, with arithmetic intensity as deliveries per kilometre."
+teachBack:
+  prompt: "State the roofline formula, compute the ridge point for an H100-class GPU, and place Qwen3.8-27B prefill, batch-1 decode, and the DeltaNet layers on the resulting chart."
+  modelAnswer: "Attainable performance is the minimum of the machine's peak arithmetic rate and its memory bandwidth multiplied by the kernel's arithmetic intensity, so the chart is a slanted bandwidth roof that meets a flat compute roof at the ridge point, where intensity equals peak FLOPs divided by bandwidth. For an H100-class part with vendor-reported figures near one thousand teraflops and 3.35 TB/s, the ridge point is around 300 operations per byte. Prefill on an 8,192-token prompt has an intensity near 8,192, far right of the ridge, so it rides the flat compute roof and is limited by arithmetic. Batch-1 decode has an intensity near one, so it sits on the slanted roof at roughly 3.35 teraflops, about three tenths of one percent of peak, and is limited by bandwidth. The 16 full-attention layers drift further left as context grows because their key-value reads increase at 64 KiB per token with no matching increase in arithmetic, while the 48 Gated DeltaNet layers hold a fixed position because their roughly 72 MiB of state neither grows nor shrinks with context."
+quiz:
+  - question: "A decode kernel achieves 0.3 percent of an H100's peak FLOPs. What does the roofline model conclude?"
+    options: ["The kernel may already be at 100 percent of its attainable roofline; only raising arithmetic intensity or bandwidth can help", "The kernel is badly written and needs better tensor-core usage", "The GPU is faulty", "Peak FLOPs was measured incorrectly"]
+    correctIndex: 0
+    explanation: "At an intensity near one operation per byte the bandwidth roof allows only about 3.35 teraflops; hitting that is perfect efficiency, and the fix is intensity, not instruction scheduling."
+  - question: "Lesson 7.2 derived 64 KiB of key-value cache per token for Qwen3.8-27B. As a conversation grows, how do the 16 full-attention layers move on the roofline chart?"
+    options: ["Leftward, because cache bytes read per decode step grow while the arithmetic per step does not", "Rightward, because longer contexts add arithmetic faster than bytes", "They stay fixed, because the cache is compressed", "They leave the chart, because attention has no roofline"]
+    correctIndex: 0
+    explanation: "Each new query attends over an ever-larger retained history, so bytes per step rise roughly linearly with context while useful operations per byte fall."
+citations:
+  - title: "Roofline: An Insightful Visual Performance Model for Multicore Architectures"
+    authors: "Samuel Williams, Andrew Waterman, and David Patterson"
+    year: 2009
+    url: "https://people.eecs.berkeley.edu/~kubitron/cs252/handouts/papers/RooflineVyNoYellow.pdf"
+  - title: "Nsight Compute Documentation"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/nsight-compute/"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+A profiling report lands on your desk. The decode kernel for Qwen3.8-27B achieves three tenths of one percent of the GPU's peak floating-point rate. The obvious reading is that somebody wrote a terrible kernel and a rewrite will recover two orders of magnitude. The roofline model exists to tell you, in about thirty seconds and without touching the code, that this reading is almost certainly wrong and that the kernel may already be perfect.
+
+Williams, Waterman, and Patterson published the model in 2009 to make exactly this judgement cheap. It compresses a machine into two numbers and a kernel into one. The machine contributes its peak arithmetic rate and its peak memory bandwidth. The kernel contributes its arithmetic intensity, the operations it performs per byte it must move from memory. Attainable performance is then the smaller of what the arithmetic units can deliver and what the memory system can feed:
+
+$$
+P_{\text{attainable}}(I) \ =\ \min\left(P_{\text{peak}},\ \beta \cdot I\right),
+$$
+
+where $\beta$ is bandwidth in bytes per second and $I$ is intensity in operations per byte. Plotted with intensity on the horizontal axis and performance on the vertical, both on logarithmic scales, this draws a slanted line of slope one that stops abruptly at a horizontal ceiling. The bend is the ridge point, the intensity at which the two limits are equal:
+
+$$
+I^{*} \ =\ \frac{P_{\text{peak}}}{\beta}.
+$$
+
+<Figure id="roofline" />
+
+Using the vendor-reported H100-class figures from lesson 9.1, roughly one thousand teraflops of dense bf16 against 3.35 TB/s of HBM3, the ridge point lands near 300 operations per byte, as of Aug 2026 and subject to every hedge those numbers carry. Left of the ridge, the memory system is the constraint. Right of it, arithmetic is. That is the entire model, and it is enough to price most optimization proposals before anyone writes code.
+
+Place Qwen3.8-27B on it. Prefill of an 8,192-token prompt carries the intensity established in lesson 7.3, about 8,192 operations per weight byte, because each weight fetched serves all prompt positions simultaneously. That is roughly 27 times past the ridge point, so prefill rides the flat compute roof. Its attainable performance is $P_{\text{peak}}$, and the honest engineering questions there are about tensor-core occupancy, tiling, and numeric format, because those are what move you along a ceiling you are actually pressed against. Time to first token responds to arithmetic. Buying FLOPs for prefill is a defensible purchase.
+
+Batch-1 decode carries an intensity near one. Its attainable performance is therefore
+
+$$
+P_{\text{attainable}} \ =\ 3.35\times10^{12}\ \frac{\text{B}}{\text{s}} \times 1\ \frac{\text{op}}{\text{B}} \ =\ 3.35\ \text{TFLOP/s},
+$$
+
+which against a thousand-teraflop ceiling is about 0.34 percent of peak. So the profiling report describes a kernel sitting exactly on its roofline. It is not inefficient. It is on a different roof. Nothing in the instruction stream can be reordered to fix it, because the arithmetic units were never the scarce resource, and this is the correction that saves teams from months of kernel micro-optimization that recovers single-digit percentages. Batching to 32 sequences moves the point to intensity 32 and allows about 107 teraflops, roughly a thirty-twofold gain, still an order of magnitude short of the ridge, still on the slanted roof, and obtained entirely by changing the workload rather than the kernel.
+
+The hybrid layout puts two distinct dots on the chart for one model, which is what makes Qwen3.8-27B interesting to profile. The 16 full-attention layers read a key-value history that grows at 64 KiB per token, the figure derived in lesson 7.2, while the arithmetic each new query performs against that history grows at the same rate. Their intensity is roughly constant and low, but the absolute bytes per step climb, so as context lengthens these layers consume a rising share of the step time on the bandwidth roof. The 48 Gated DeltaNet layers behave differently. They read and update a fixed recurrent state of roughly 1.5 MiB per layer, about 72 MiB in total, no matter how long the conversation has run. Their dot does not move. Three quarters of the model's depth therefore contributes a constant, bounded cost to every decode step while a quarter contributes a growing one, which is the architectural bargain restated in roofline terms.
+
+:::warning
+The single most common misuse of the roofline is treating arithmetic intensity as a property of the algorithm alone. It is a property of the algorithm as executed on a specific memory hierarchy. Fusing two kernels so an intermediate never reaches HBM raises intensity without changing the mathematics; tiling attention so the score matrix stays in on-chip memory does the same, which is precisely what the IO-aware attention of lesson 7.7 exploits. Two implementations of identical math routinely sit on opposite sides of the ridge point. Always ask which level of the hierarchy the roofline is drawn against, because a chart against HBM and a chart against L2 tell different stories about the same kernel.
+:::
+
+Turning this from a sketch into evidence requires real counters, not estimates. Kernel profilers report achieved bandwidth and achieved arithmetic separately and can place a measured kernel on a measured roofline, including secondary roofs for L2 and shared memory. That distinction matters because the estimated intensity you derive on paper and the intensity a kernel actually exhibits diverge whenever caching, padding, or memory layout differ from the idealization.
+
+:::caveat
+The roofline is deliberately crude. It assumes perfect overlap of computation and data movement, ignores latency and occupancy effects, treats peak numbers that no kernel attains as reachable, and says nothing about kernel launch overhead, which genuinely matters when decode steps are only milliseconds long. Use it to decide which resource to attack and to reject proposals that attack the wrong one. Do not use it to predict a throughput figure you intend to promise anyone.
+:::
+
+The payoff is a habit. Before optimizing, estimate intensity, compare it to the ridge point, and let the chart tell you whether you are shopping for bytes or for operations. Lesson 9.4 applies that habit to specific silicon, where a newer part changes both roofs at once and the capacity underneath them.

@@ -1,0 +1,81 @@
+---
+id: "4.4-causal-masking"
+track: "4-transformer"
+order: 4
+title: "Causal masking e por que a ordem importa"
+summary: "Um causal mask impede que o treinamento de próximo token vaze a resposta, ao mesmo tempo que permite treinar toda posição de prefixo em paralelo — e é por isso que o cache em decode funciona."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["4.3-scaled-dot-product-attention"]
+unlocks: ["4.5-multi-head-attention"]
+analogy: "Imagine uma prova impressa numa tira de papel. Para a questão cinco, uma capa deslizante revela apenas as questões um a cinco e esconde todas as respostas posteriores. O professor pode preparar uma posição de capa para cada questão de uma vez, então todas as questões são corrigidas em paralelo, mas nenhuma questão vê o próprio futuro. Um causal mask de attention é esse conjunto triangular de capas aplicado a uma matriz de scores."
+teachBack:
+  prompt: "Explique como um causal mask permite treinamento paralelo sem vazamento de tokens futuros, e por que mascarar apenas a loss não bastaria."
+  modelAnswer: "O treinamento fornece a sequência de tokens inteira, mas um causal mask triangular coloca os logits de attention da posição i para posições maiores que i em menos infinito antes do softmax, de modo que seus pesos ficam exatamente zero. Cada linha da matriz de attention é calculada na mesma operação em batch e ainda assim recebe informação apenas do seu prefixo. Mascarar somente a loss falha porque mesmo uma posição sem termo de loss pode escrever informação de tokens futuros em hidden states que predições anteriores leem via attention; a máscara precisa restringir o fluxo de informação, não apenas quais posições são avaliadas. Em decode, essa mesma propriedade significa que keys e values passados são definitivos e podem ficar em cache."
+quiz:
+  - question: "Quando o causal mask é aplicado na attention padrão?"
+    options: ["Aos logits proibidos, antes do softmax", "Aos values, depois da loss de modelo de linguagem", "Aos IDs de token, depois da amostragem", "Somente depois da retropropagação"]
+    correctIndex: 0
+    explanation: "Os logits proibidos recebem menos infinito ou um valor representável suficientemente negativo, de modo que seus pesos de softmax fiquem zero."
+  - question: "Por que somar menos infinito a um logit zera o peso de attention dele (lição 4.3)?"
+    options: ["O softmax exponencia os logits e exp(−∞) é 0, então a posição recebe peso normalizado zero", "Números negativos são apagados da memória", "O vetor de value é zerado diretamente", "Porque os scores são divididos por √d_k"]
+    correctIndex: 0
+    explanation: "O softmax transforma cada logit escalado s em exp(s) antes de normalizar; um logit de menos infinito exponencia para zero e não contribui em nada com a linha."
+  - question: "Por que modelos de linguagem causais ainda conseguem treinar todas as posições em paralelo?"
+    options: ["A matriz triangular de scores inteira é calculada numa única operação em batch", "Cada posição lê a resposta escondida", "A máscara remove todas as dependências", "O treinamento não usa sequência"]
+    correctIndex: 0
+    explanation: "A máscara restringe o fluxo de informação dentro de uma operação matricial; ela não exige um passo recorrente para cada posição durante o treinamento."
+citations:
+  - title: "Attention Is All You Need"
+    authors: "Ashish Vaswani et al."
+    year: 2017
+    url: "https://arxiv.org/abs/1706.03762"
+  - title: "Language Models are Unsupervised Multitask Learners"
+    authors: "Alec Radford et al."
+    year: 2019
+    url: "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Eis a armadilha que todo treinamento de próximo token precisa evitar. Os dados de treino chegam como sequências completas: o modelo vê "O cache armazena keys" de uma vez só, mas está sendo avaliado por prever cada token apenas a partir dos anteriores. Self-attention, como construída nas lições 4.2 e 4.3, deixa cada posição ler todas as outras. Sem restrição, a posição que prevê "armazena" simplesmente daria attention a "armazena", ali mesmo no tensor, copiaria o token adiante e alcançaria uma loss de treino espetacular que não significa nada. O modelo aprenderia a colar, e a geração — onde o futuro genuinamente ainda não existe — desmoronaria.
+
+Formalmente, um modelo de linguagem causal aprende a fatoração
+
+$$
+p(x_1,\ldots,x_n)=\prod_{i=1}^{n}p(x_i\mid x_{<i}),
+$$
+
+de modo que o cálculo para a posição $i$ só pode depender de tokens anteriores. **Causal masking** faz attention obedecer a essa fatoração mantendo o treinamento paralelo.
+
+<Figure id="causal-mask" />
+
+Vamos trabalhar isso num prompt real. Pegue a entrada de quatro palavras "O cache armazena keys" e, para este exemplo, trate cada palavra como um token (um tokenizador real, como a lição 1.2 mostrou, pode dividir as palavras ainda mais — o tokenizador do Qwen3.8-27B usa um vocabulário de 248.320 entradas, e a máscara se aplica às posições de token que ele produzir, quaisquer que sejam). Numere as posições de 1 a 4. O padrão de attention permitida é triangular inferior:
+
+$$
+\begin{bmatrix}
+1&0&0&0\\
+1&1&0&0\\
+1&1&1&0\\
+1&1&1&1
+\end{bmatrix}.
+$$
+
+A linha $i$ é a posição de query que lê; a coluna $j$ é a key que está sendo lida. A posição 1, "O", vê apenas a si mesma. A posição 2, "cache", vê "O" e a si mesma. A posição 3, "armazena", vê "O cache armazena" — e, crucialmente, não vê "keys", justamente o token que seu hidden state está prestes a prever. A posição 4 vê tudo. As implementações realizam isso com uma máscara aditiva: 0 nas entradas permitidas, $-\infty$ nas proibidas, somada a $QK^\top/\sqrt{d_k}$ antes do softmax. Como $\exp(-\infty)=0$, as posições proibidas recebem peso exatamente zero — a mesma mecânica de exponenciação da lição 4.3, usada aqui como interruptor. (Em precisão finita, as bibliotecas usam o valor representável mais negativo ou uma flag de kernel; uma constante "bem negativa" escolhida no chute pode ser insuficiente em dtypes de baixa precisão.)
+
+Agora a correção clássica e errada, porque ela é genuinamente tentadora. "Por que mascarar attention? Basta calcular a loss apenas a partir da predição de cada posição — tokens futuros têm seus próprios termos de loss, então nada é roubado." Isso mascara a *avaliação*, não a *informação*. Mesmo com uma loss perfeitamente por posição, attention sem máscara deixa o hidden state da posição 3 absorver features de "keys" a partir da representação da posição 4 numa camada anterior, ou ler a posição 4 diretamente. O vazamento está nas ativações, não na loss. A correção: restringir o próprio grafo de computação, que é exatamente o que a máscara triangular faz.
+
+:::warning
+O equívoco mais comum: "a loss já cuida da causalidade". Não cuida. O tensor de treinamento pode conter o futuro, mas o grafo de computação de cada predição não pode — e só uma máscara no nível da attention (não no nível da loss) garante isso. Um erro de deslocamento relacionado ronda o alinhamento dos alvos: entradas `[BOS, gatos, dormem]` pareiam com alvos `[gatos, dormem, EOS]`, e uma posição pode dar attention a *si mesma* porque seu estado prevê o *próximo* token, não a própria entrada.
+:::
+
+O ganho da máscara é um raro almoço grátis: *fluxo de informação* sequencial com *computação de treinamento* paralela. Todas as linhas da matriz de scores são calculadas numa única operação em batch, e ainda assim a linha 3 depende apenas das colunas 1 a 3. Uma RNN impõe causalidade executando em ordem; um Transformer a impõe por conectividade e, com isso, treina simultaneamente todas as posições de todas as sequências.
+
+O mesmo triângulo explica o decode. Durante a geração, o modelo mantém um prefixo, produz um token, o anexa e repete. Como a máscara garante que a key e o value da posição $j$ só são lidos por posições $\geq j$ — nunca revisados por posições posteriores —, os K e V por posição calculados ao processar o prefixo são definitivos. Eles podem ser armazenados e reutilizados em vez de recalculados a cada passo. Esse armazenamento é o KV cache; toda a sua aritmética para o Qwen3.8-27B aparece na lição 7.2. No Qwen, a história da máscara tem uma reviravolta que vale antecipar: apenas as suas 16 camadas de attention completa implementam causalidade com essa máscara triangular, enquanto as outras 48 camadas Gated DeltaNet são causais por construção, processando tokens como uma recorrência ordenada (lição 4.15).
+
+Mantenha o causal mask distinto dos vizinhos. Uma **padding mask** esconde posições de preenchimento quando sequências de comprimentos diferentes compartilham um batch — inválidas por comprimento, não por ordem —, e treinamento com documentos empacotados pode acrescentar uma máscara de fronteira para que um documento não dê attention ao anterior; um batch pode precisar de todas ao mesmo tempo. E causalidade não é a mesma coisa que conhecer *posições*: o triângulo diz quais tokens vêm antes, mas distinguir "cachorro morde homem" de "homem morde cachorro" entre os tokens visíveis exige a informação posicional das lições 4.6 a 4.8. Encoders bidirecionais como o BERT descartam o triângulo por completo e pagam por isso com a incapacidade de gerar da esquerda para a direita.
+
+A regra durável cabe numa frase: o tensor de treinamento pode conter o futuro, mas a computação de nenhuma predição pode. Uma matriz triangular transforma essa regra em estrutura — preservando treinamento paralelo, protegendo o objetivo e, discretamente, tornando possível um decode rápido.

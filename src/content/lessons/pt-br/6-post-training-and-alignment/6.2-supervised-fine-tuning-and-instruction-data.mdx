@@ -1,0 +1,70 @@
+---
+id: "6.2-supervised-fine-tuning-and-instruction-data"
+track: "6-post-training-and-alignment"
+order: 2
+title: "Supervised fine-tuning e dados de instrução"
+summary: "O supervised fine-tuning ensina a um modelo pré-treinado um protocolo de interação; no Qwen3.8-27B o artefato que ele produz é um chat template com um segmento de thinking e uma chave por requisição para desligar esse segmento."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["6.1-why-base-models-arent-assistants"]
+unlocks: ["6.3-lora-qlora-and-peft", "6.4-reward-models-and-human-preference-data"]
+analogy: "Uma pianista de concerto já tem técnica, repertório e ouvido musical. Ensaiar para um grupo de câmara específico não ensina música do zero; ensina quando entrar, com que intensidade tocar, como seguir o regente e como terminar junto. O fine-tuning por instrução da mesma forma preserva a ampla capacidade pré-treinada enquanto ensaia o protocolo de interação que o modelo em produção precisa seguir."
+teachBack:
+  prompt: "Descreva o objetivo do SFT, explique por que normalmente só os tokens de resposta entram na loss, e diga que artefato concreto o SFT produziu no Qwen3.8-27B."
+  modelAnswer: "O SFT aplica a cross-entropy comum de próximo token a conversas curadas. O prompt permanece no contexto mas é mascarado da loss, então os gradientes empurram na direção de produzir o turno do assistente, e não de prever o texto do usuário. O artefato que ele deixa é um protocolo: o Qwen3.8-27B entrega um chat template que renderiza os papéis system, user e assistant mais um segmento delimitado de thinking, e uma chave no nível da requisição, enable_thinking em False, que suprime esse segmento. Os pesos e o template são um contrato só; mudar um sem o outro quebra o comportamento."
+quiz:
+  - question: "O que torna o SFT diferente do pretraining na prática?"
+    options: ["Dados curados de instrução-resposta e uma loss focada nas saídas desejadas", "Uma definição diferente de softmax", "Ausência de tokenização", "Os pesos nunca são atualizados"]
+    correctIndex: 0
+    explanation: "Ambos comumente usam cross-entropy de próximo token, mas o SFT usa demonstrações estruturadas escolhidas para ensinar o comportamento de interação desejado."
+  - question: "A lição 6.1 argumentou que um base model já possui a capacidade que parece faltar. O que decorre disso para o projeto de dados de SFT?"
+    options: ["Volume de exemplos de capacidade é a alavanca errada; as demonstrações precisam mostrar qual comportamento selecionar por padrão", "Só conjuntos de SFT muito grandes conseguem instalar qualquer comportamento", "O SFT precisa reensinar gramática e conhecimento de mundo do zero", "O checkpoint base precisa ser descartado antes do SFT"]
+    correctIndex: 0
+    explanation: "Subespecificação comportamental é um problema de seleção. Poucas demonstrações confiáveis do padrão certo valem mais que uma pilha grande de exemplos que o modelo já produziria se fosse instigado."
+  - question: "Por que um dataset grande e ruidoso de instruções não é automaticamente melhor?"
+    options: ["O modelo aprende defeitos sistemáticos e estilos super-representados nas demonstrações", "Mais linhas desativam os gradientes", "Dados de instrução não podem conter texto", "Datasets grandes sempre apagam o tokenizer"]
+    correctIndex: 0
+    explanation: "A supervisão recompensa diretamente as respostas fornecidas, então duplicação, erros e templates estreitos podem dominar o comportamento."
+citations:
+  - title: "Training language models to follow instructions with human feedback"
+    authors: "Long Ouyang et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2203.02155"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Comece pelo artefato, antes da teoria. Quando você chama o Qwen3.8-27B, você não entrega uma string; entrega uma conversa, e um chat template transforma essa conversa numa única sequência plana de tokens. Os papéis são renderizados como tokens marcadores — system, user, assistant — em torno do seu texto. Por padrão o turno do assistente começa com um segmento delimitado de thinking antes da resposta propriamente dita. E o model card documenta uma chave no nível da requisição, enable_thinking em False, que suprime esse segmento. Tudo isso — os marcadores, o segmento, a chave — é saída de post-training. Nada disso existe num checkpoint pré-treinado, e nada disso é arquitetura. Esses marcadores de papel são ids de token comuns tirados do mesmo vocabulário de 248.320 linhas de onde vem todo outro token.
+
+O **supervised fine-tuning** (SFT) é onde a maior parte desse protocolo é instalada. Ele pega um checkpoint pré-treinado e continua treinando-o em demonstrações do comportamento desejado: uma instrução de system, um pedido de user e uma resposta de assistant escrita ou aprovada por um humano. O objetivo não é reensinar gramática ou conhecimento de mundo. A lição 6.1 argumentou que a capacidade já está presente; o SFT torna o contrato conversacional, os padrões de saída e as fronteiras de tarefa estatisticamente familiares, de modo que o comportamento certo vire o padrão sem nenhuma demonstração no contexto.
+
+A loss é a mesma cross-entropy no nível do token usada no pretraining causal, com uma modificação que carrega quase todo o peso. Dados os tokens da conversa $x_1,\ldots,x_T$,
+
+$$
+\mathcal{L}_{\text{SFT}}=-\sum_{t\in A}\log p_\theta\left(x_t\mid x_{<t}\right),
+$$
+
+onde $A$ denota as posições da resposta do assistente. Os tokens de system e user permanecem no contexto de entrada — o modelo precisa prestar attention neles — mas sua loss é mascarada.
+
+Percorra um registro pela aritmética, porque é no mascaramento que as implementações erram em silêncio. Suponha que a conversa renderizada tokenize em 460 posições: 18 tokens marcadores de template, 96 tokens de system, 226 tokens de user e 120 tokens de assistant. O forward pass roda sobre as 460. O backward pass soma log-probabilidades sobre 120 delas. Todo gradiente que o otimizador vê responde, portanto, a uma única pergunta — dado tudo o que veio antes, este era o próximo token certo da resposta do assistente? — e nunca à pergunta do que o usuário deveria ter perguntado. Se a conversa tem três turnos de assistente, a máscara acompanha as fronteiras de papel e cobre os três, não apenas o sufixo final.
+
+Agora o desvio clássico: treinar nas 460 posições sem máscara, com a teoria de que mais tokens supervisionados devem significar mais aprendizado. Treina bem. A loss cai. Aí o modelo em produção termina a resposta e alegremente escreve a próxima pergunta do usuário, porque você gastou 340 de cada 460 sinais de gradiente ensinando-o a ser um bom previsor de turnos de usuário e de marcadores de template. A correção não é mais dados, é a máscara. Cerca de três quartos dos tokens de um registro típico de instrução são contexto para condicionar, não comportamento para imitar.
+
+Um exemplo de instrução ensina muito mais que sua resposta literal. Ele demonstra como ler um pedido, quais suposições explicitar, que formato usar, quando fazer uma pergunta de esclarecimento e — criticamente — quando parar. Um exemplo de segurança ensina uma recusa delimitada seguida de uma alternativa benigna. Um exemplo de uso de ferramenta ensina uma chamada estruturada em vez de prosa. Para um modelo como o Qwen3.8-27B, que entrega dois modos num único conjunto de pesos, as demonstrações precisam cobrir os dois ramos: conversas que contêm um segmento de thinking e conversas que não contêm, para que a chave de fato selecione um comportamento bem ensaiado em vez de empurrar o modelo para fora da sua distribuição de treino.
+
+:::insight
+Os pesos e o chat template são um contrato único. Servir um checkpoint pós-treinado sob um formato de prompt caseiro — papéis certos, marcadores errados — é a regressão de qualidade autoinfligida mais comum em produção, e ela parece um problema de modelo em vez de um problema de formatação. A lição 8.2 revisita isso pelo lado do serving.
+:::
+
+Qualidade de dados é, portanto, o problema central de projeto, e não é um problema de volume. Milhares de templates quase duplicados criam a ilusão de escala enquanto ensinam um padrão de superfície frágil. Demonstrações prolixas tornam o modelo prolixo mesmo quando os usuários pedem concisão. Respostas com citações inventadas recompensam invenção. Rótulos contraditórios ensinam fronteiras instáveis. A filtragem precisa inspecionar prompts além de respostas, porque uma resposta limpa pareada com uma instrução ambígua ainda ensina o mapeamento errado. O projeto da mistura importa pelo mesmo motivo: se a maioria dos exemplos são tarefas fáceis de reescrita, o modelo fica agradável sem ficar melhor em raciocínio nem em compor várias instruções. Separe conjuntos de avaliação por família de tarefa e por fonte, já que um split aleatório de registros duplicados vaza entre treino e teste.
+
+:::warning
+O equívoco mais comum sobre SFT é que ele acrescenta conhecimento. Não acrescenta, não de forma confiável. Ele reponderá comportamento. Fazer fine-tuning em cem documentos sobre o seu produto não instala esses fatos de forma durável, e as respostas polidas e confiantes que você recebe de volta são evidência de transferência de estilo, não de recuperação. Se o modelo precisa saber algo específico, ponha isso no contexto ou numa ferramenta, e use o SFT para ensiná-lo a usar o que você deu.
+:::
+
+O SFT também arrisca **catastrophic forgetting** quando as learning rates ficam altas, o treino roda por muito tempo ou os dados são homogêneos demais. O checkpoint escorrega na direção da distribuição supervisionada e perde massa de probabilidade sobre comportamento pré-treinado útil. Otimização conservadora, misturas amplas e avaliação contra as capacidades base expõem o trade-off. Métodos parameter-efficient (lição 6.3) reduzem quais pesos se movem, mas não salvam supervisão ruim.
+
+Por fim, SFT não é aprendizado de preferência. Uma única resposta-alvo diz "imite isto" sem dizer como ela se compara a alternativas plausíveis, então a imitação no nível do token penaliza demais diferenças inofensivas de redação sempre que várias respostas teriam servido. Métodos de preferência ensinam ordenação relativa, e normalmente rodam depois que o SFT estabeleceu uma política de conversa estável. Um pipeline sólido registra a linhagem do dataset, o chat template, o tokenizer, a política de mascaramento, os pesos da mistura, a configuração do otimizador e a ancestralidade do checkpoint — porque quando o comportamento regredir seis semanas depois, exatamente um desses mudou.

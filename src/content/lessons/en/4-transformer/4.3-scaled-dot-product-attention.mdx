@@ -1,0 +1,75 @@
+---
+id: "4.3-scaled-dot-product-attention"
+track: "4-transformer"
+order: 3
+title: "Scaled dot-product attention & the √d_k"
+summary: "Dividing query–key scores by the square root of their dimension keeps softmax usable — in Qwen3.8-27B that divisor is √256 = 16, and the full-context score matrix motivates all of track 7."
+tier: "core"
+locale: "en"
+prerequisites: ["4.2-self-attention"]
+unlocks: ["4.4-causal-masking"]
+analogy: "Suppose judges score a performance by adding marks from many independent categories. A show evaluated on 256 categories naturally accumulates larger positive and negative totals than one evaluated on four, even if quality per category is unchanged. Sending those raw totals into a winner-take-all rule would make the larger scorecard look absurdly certain. Dividing by the square root of the category count restores a comparable scale before the final vote."
+teachBack:
+  prompt: "Derive why dot-product variance grows with key dimension, state the scaling divisor Qwen3.8-27B uses, and explain what the score matrix costs at full context."
+  modelAnswer: "If query and key components are roughly independent with zero mean and unit variance, each product contributes variance near one, so summing d_k products gives variance near d_k and standard deviation near the square root of d_k. Dividing scores by that square root keeps their typical magnitude stable, preventing softmax from saturating just because the head got wider. Qwen3.8-27B uses head dimension 256, so the divisor is the square root of 256, which is 16. At the model's native context of 262,144 tokens, one head's score matrix holds 262,144 squared — about 6.9 × 10^10 — entries, which is why exact attention at long context needs the memory and kernel techniques of track 7."
+quiz:
+  - question: "Qwen3.8-27B uses head dimension 256. What does the model divide raw attention scores by?"
+    options: ["16, the square root of 256", "256", "5120, the hidden size", "2, one for keys and one for values"]
+    correctIndex: 0
+    explanation: "Scaled dot-product attention divides by the square root of the head dimension: √256 = 16."
+  - question: "Raw scores are produced by comparing which two tensors (lesson 4.2)?"
+    options: ["Queries with keys", "Values with values", "Embeddings with the vocabulary", "Softmax outputs with the mask"]
+    correctIndex: 0
+    explanation: "The score matrix is QKᵀ: each query is dotted with every key; values enter only after softmax."
+  - question: "What is the immediate risk of very large score differences before softmax?"
+    options: ["A saturated, nearly one-hot distribution with small gradients", "A larger context window", "Automatic regularization", "Lossless quantization"]
+    correctIndex: 0
+    explanation: "Large logit gaps push softmax probabilities toward zero and one, where many derivatives become very small."
+citations:
+  - title: "Attention Is All You Need"
+    authors: "Ashish Vaswani et al."
+    year: 2017
+    url: "https://arxiv.org/abs/1706.03762"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Lesson 4.2 left one part of the attention formula unexplained: the mysterious division by $\sqrt{d_k}$. The concrete problem it solves appears the moment head dimension changes. Compare two hypothetical heads scoring the same token pair, one 4-dimensional and one 256-dimensional. Even if each individual feature carries the same amount of signal, the wide head's dot product sums 64 times more terms, so its raw scores swing over a far larger range. Something downstream is about to be very sensitive to that range.
+
+Write one score as
+
+$$
+s = q \cdot k = \sum_{i=1}^{d_k} q_i k_i.
+$$
+
+Under the intuition used in the original Transformer paper — components roughly independent, mean zero, variance one — each product $q_i k_i$ has variance near one, so the sum has $\operatorname{Var}(s) \approx d_k$ and standard deviation near $\sqrt{d_k}$. For Qwen3.8-27B's attention heads, $d_k = 256$: typical raw scores are on the order of $\sqrt{256} = 16$ times larger than a single feature's contribution, purely because of width.
+
+Why does that matter? Softmax exponentiates its inputs, so scale is behavior. The naive first approach — feed raw scores straight into softmax — works acceptably for tiny heads and fails quietly for wide ones. Walk through it with three keys. Suppose the "true" preference pattern is mild: one key twice as compatible as the next. At small scale the raw scores might be $[0.5, 0.25, 0]$, and softmax spreads meaningful weight across all three. Now let the 256-wide head inflate everything by its natural factor of 16: the same pattern becomes $[8, 4, 0]$. Softmax of $[8, 4, 0]$ puts roughly 98% of the weight on the first key — near winner-take-all certainty the model never earned, and in the saturated region most gradients are nearly zero, so learning stalls exactly where it should be adjusting.
+
+The correction is to divide by the standard deviation the width introduced:
+
+$$
+\operatorname{Attention}(Q,K,V)
+= \operatorname{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V.
+$$
+
+With Qwen's numbers, the inflated scores $[8, 4, 0]$ divided by $\sqrt{256} = 16$ come back to $[0.5, 0.25, 0]$ — the trainable regime. The divisor can also be read as a fixed softmax **temperature** of $T = \sqrt{d_k} = 16$: a scale chosen once from geometry rather than exposed as a knob. The model can still learn sharper or flatter attention by growing or shrinking query and key norms; the scaling only removes the automatic sharpening that width alone would cause.
+
+:::caveat
+Scaled attention weights are not calibrated probabilities about truth or importance. They are normalized routing weights inside one head at one layer, shaped by learned representations. The √d_k keeps them trainable; it does not make them meaningful as confidences. And the tidy variance story holds at initialization — trained networks violate the independence assumptions, which is fine, because the divisor's job was to remove the *systematic* growth with dimension, not to enforce exact unit variance forever.
+:::
+
+Numerical stability is a separate, complementary fix. Practical softmax subtracts the row maximum before exponentiating, which prevents overflow without changing the resulting distribution. Max-subtraction solves *representability*; $\sqrt{d_k}$ solves *saturation*. You need both.
+
+Now the second reason this lesson matters: the size of the thing being normalized. The score matrix has one entry per query–key pair. Qwen3.8-27B's native context length is 262,144 tokens. At full context, one head of one layer scores
+
+$$
+262{,}144 \times 262{,}144 = 2^{18} \times 2^{18} = 2^{36} \approx 6.9 \times 10^{10}
+$$
+
+query–key pairs — about 69 billion score entries, before multiplying by the model's 24 query heads, and before noting that 16 of its 64 layers run this computation. Nothing about the √256 division changes that count; scaling fixes the *statistics* of the scores, not their *quantity*. This is the quadratic bill from lesson 4.1 made concrete, and it is the standing motivation for track 7: FlashAttention-style kernels that avoid materializing the matrix, the KV cache whose arithmetic lands in lesson 7.2, and the grouped-query design from lesson 7.6 that Qwen already bakes into its 24-query/4-KV head layout. Qwen's deeper answer — replacing attention entirely in 48 of 64 layers — arrives in lesson 4.15.
+
+The lesson generalizes beyond one denominator. Whenever a sum collects many roughly independent contributions, its typical magnitude grows with the number of terms, and passing it into a sensitive nonlinearity changes behavior merely because width changed. The Transformer compensates with a scale derived from variance — a two-character fix in the formula, load-bearing at every width from a toy head to 256.

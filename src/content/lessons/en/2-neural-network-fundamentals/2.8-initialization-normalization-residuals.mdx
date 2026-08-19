@@ -1,0 +1,96 @@
+---
+id: "2.8-initialization-normalization-residuals"
+track: "2-neural-network-fundamentals"
+order: 8
+title: "Initialization, normalization, and residuals"
+summary: "A residual stream carries the hidden state untouched through all 64 layers while RMSNorm hands each sublayer a rescaled copy — the arrangement that makes depth trainable in Qwen3.8-27B."
+tier: "foundations"
+locale: "en"
+prerequisites: ["2.7-optimizers"]
+unlocks: ["2.9-overfitting-regularization-bitter-lesson"]
+analogy: "A hundred-person relay fails if every runner amplifies or weakens the handoff unpredictably. Initialization chooses a sensible starting force. Normalization recalibrates each handoff's feature levels. A residual path keeps an unobstructed lane where the baton travels unchanged while a runner adds a correction. Together they do not decide where the race goes; they keep the message and the coaching signal from disappearing or exploding across the team."
+teachBack:
+  prompt: "Explain why stacking 64 transformations is numerically hazardous, how a pre-norm residual stream solves it, and what RMSNorm computes including the role of its epsilon."
+  modelAnswer: "Composing many transformations multiplies their scale factors, so activations and gradients shrink or explode geometrically with depth. A residual block computes x + F(Norm(x)): the hidden state travels down an unobstructed additive path, and each sublayer receives a rescaled copy rather than the raw stream. RMSNorm divides a token's feature vector by the root mean square of its own entries, with a small epsilon inside the square root — 1e-6 in Qwen3.8-27B — to keep the division finite when the vector is near zero, then applies a learned per-feature scale. Unlike LayerNorm it does not subtract the mean, so it is a different operation, not merely a cheaper one."
+quiz:
+  - question: "Lesson 2.7 mentioned that normalization scale parameters are usually placed in a no-decay optimizer group. Why does that make sense?"
+    options: ["They set the operating scale of the normalized signal rather than acting as feature weights, so shrinking them toward zero systematically suppresses the layer's output", "They have no gradients", "They are integers", "Weight decay is undefined for them"]
+    correctIndex: 0
+    explanation: "Decay is meant to discourage large feature weights; applied to a gain parameter it quietly rescales the whole layer, which is a different intervention."
+  - question: "In a pre-norm residual block, what does the normalization actually normalize?"
+    options: ["The copy of the hidden state handed to the sublayer — the residual stream itself continues unnormalized", "The residual stream, which is therefore kept at unit scale throughout the model", "The gradients only", "The model's output logits"]
+    correctIndex: 0
+    explanation: "The stream keeps accumulating contributions and typically grows with depth; only what each sublayer reads is rescaled, which is why a final norm sits before the output head."
+  - question: "What does a residual connection add?"
+    options: ["An identity shortcut around a learned transformation, giving both signal and gradient a direct path", "A new dataset", "A tokenization merge", "A hard classification threshold"]
+    correctIndex: 0
+    explanation: "The block learns a correction to the stream rather than reconstructing the entire representation from scratch."
+citations:
+  - title: "Layer Normalization"
+    authors: "Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E. Hinton"
+    year: 2016
+    url: "https://arxiv.org/abs/1607.06450"
+  - title: "Root Mean Square Layer Normalization"
+    authors: "Biao Zhang and Rico Sennrich"
+    year: 2019
+    url: "https://arxiv.org/abs/1910.07467"
+  - title: "Deep Residual Learning for Image Recognition"
+    authors: "Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun"
+    year: 2015
+    url: "https://arxiv.org/abs/1512.03385"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Here is a question with an alarming answer. Qwen3.8-27B stacks 64 layers, each carrying a 5120-dimensional hidden state per token (Qwen3.8-27B Model Card, 2026). Suppose each layer, on average, multiplies the scale of what passes through it by 1.1 — a ten percent amplification, which sounds harmless. After 64 layers the signal has been multiplied by $1.1^{64}\approx490$. Now suppose the factor is 0.9 instead: $0.9^{64}\approx0.0012$, and the signal is gone. Depth compounds. A network is not forgiving of small scale errors; it raises them to the power of its own depth, in the forward pass and again in the backward pass, where the same products govern whether a gradient reaches layer one at all.
+
+Three mechanisms manage this, each attacking a different part of the problem: initialization sets the starting scale, normalization controls the evolving scale, and residual connections shorten the path.
+
+Initialization first, because it must do two jobs at once. It has to break symmetry — if every unit in a layer starts identical, they receive identical gradients and remain duplicates forever — and it has to control variance. Variance-aware schemes scale random weights by **fan-in**, the number of incoming connections, and sometimes fan-out: Xavier/Glorot for symmetric activations, He-style scaling to compensate for ReLU discarding roughly half the signal. These are starting assumptions, not guarantees, because gating, residual depth, and precision all perturb propagation. Biases are usually zero, since randomness in the weights already breaks symmetry.
+
+Now the structural idea that made real depth possible. A **residual connection** computes
+
+$$
+y=x+F(x)
+$$
+
+when shapes match. Read it as a claim about responsibility: the block's job is to compute a *correction* to be added to what already exists, not to reconstruct the representation from scratch. If $F$ contributes nothing useful, information still flows through the identity path untouched. Backward, the derivative of $y$ with respect to $x$ contains an additive identity term, so gradient reaches earlier layers without having to survive the product of every intervening Jacobian.
+
+This creates what practitioners call the **residual stream**: one 5120-wide vector per token that enters at the embedding, travels the full depth of the model, and is written to by every sublayer along the way. Each attention or feed-forward block reads from it, computes something, and adds the result back. Nothing overwrites it. The stream is the model's working memory, and the 64 layers are 128 successive contributions to it.
+
+Which raises the scale question again, in a sharper form. If a fresh block adds a contribution of comparable magnitude to the stream at every step and the contributions are roughly independent, the stream's variance accumulates additively — meaning its root-mean-square magnitude grows like $\sqrt{\text{depth}}$, so by layer 64 it is around eight times what it was at layer one. Sublayers deep in the stack would receive inputs an order of magnitude larger than sublayers near the input, and every weight matrix would have to cope with wildly different operating scales depending on where it happened to sit.
+
+**Normalization** is the answer, and its placement is the whole design. A **pre-norm** block computes
+
+$$
+y=x+F(\operatorname{Norm}(x)),
+$$
+
+which is what Qwen3.8-27B uses (Qwen3.8-27B Model Card, 2026). The normalization sits on the branch, not on the stream. Each sublayer receives a rescaled copy of the hidden state — always at a familiar magnitude, whether it sits at layer 3 or layer 61 — while the stream itself continues down the identity path with no operation applied to it at all.
+
+The specific normalizer is **RMSNorm**. For a hidden vector $x$ with $d$ entries it computes
+
+$$
+\operatorname{RMSNorm}(x)=\frac{x}{\sqrt{\frac{1}{d}\sum_{i=1}^{d}x_i^{2}+\varepsilon}}\odot g,
+$$
+
+with a learned per-feature gain $g$ and, in this model, $\varepsilon=10^{-6}$. Walk one vector through. Say a token's hidden state at layer 40 has a root-mean-square value of 12.0 across its 5120 entries. The denominator is $\sqrt{144+10^{-6}}=12.0$ to any precision that matters, so every entry is divided by 12 and the sublayer sees a vector of unit RMS. Now consider a near-dead position whose entries are all around $10^{-5}$: the mean square is $10^{-10}$, which is a thousand times smaller than $\varepsilon$, so the epsilon dominates the square root and the output is scaled down toward zero rather than exploding through a division by almost nothing. That is precisely the job epsilon does — it is not a rounding fudge, it is the guard that keeps the operation defined at the bottom of the range.
+
+Note what RMSNorm does *not* do: it never subtracts the mean. LayerNorm centers the feature vector before scaling; RMSNorm only rescales.
+
+:::caveat
+It is tempting to describe RMSNorm as "LayerNorm but faster". That understates the change. Removing mean subtraction is a change to the mathematics, not only to the kernel: the two operations produce different functions of the same input, and a model trained under one is not interchangeable with a model trained under the other. Speed also depends on kernels, fusion, and hardware rather than on the formula alone. Whether the trade is worthwhile is an architecture-level empirical question — and the modern answer, visible in this course's specimen, is that it is.
+:::
+
+The classic wrong turn here is placement. The original Transformer used **post-norm**, $y=\operatorname{Norm}(x+F(x))$, which puts a normalization operation *on the stream itself*. It works, and at moderate depth it works well. But it destroys the clean identity path: gradient flowing backward must now pass through a normalization at every one of the 64 steps, and the deep stacks that result are notoriously fragile to train, needing careful warmup and sometimes failing outright. Moving the norm onto the branch — the one-line change from post-norm to pre-norm — restores the unobstructed additive highway, and it is why pre-norm is the default in essentially every large model shipped since.
+
+:::warning
+The most common misconception is that pre-norm keeps the residual stream at unit scale. It does not, and cannot: nothing in $x+F(\operatorname{Norm}(x))$ ever rescales $x$. The stream grows with depth exactly as described above; what pre-norm guarantees is that no *sublayer* ever has to deal with that growth. This has a visible consequence you can check in any checkpoint — a final normalization sits after the last layer, before the output head, because the raw stream arriving at layer 64 is at the wrong scale for a projection into vocabulary logits.
+:::
+
+These mechanisms are infrastructure, and it matters that you read them as such. None of them decides what the model learns. They make deep composition numerically survivable so that the attention and feed-forward blocks of track 4 can spend the optimization budget learning useful transformations rather than fighting collapse. Lesson 4.10 returns to this arrangement with the full transformer block in view.
+
+An empirical check is cheap and worth building early. Before training, push representative inputs through the model and record per-layer activation means, root-mean-square values, and gradient norms after one loss. Look for monotonic collapse, explosive growth, dead branches, and discontinuities at residual additions — and run it in the precision you will actually train in, since bf16 rounding is part of the system you are testing.

@@ -1,0 +1,60 @@
+---
+id: "7.7-flashattention-and-io-awareness"
+track: "7-inference-and-efficiency"
+order: 7
+title: "FlashAttention & IO-awareness"
+summary: "FlashAttention computes exact attention in tiles sized to on-chip memory, which is what makes Qwen3.8-27B's 262,144-token context physically possible."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.3-prefill-vs-decode-two-different-machines"]
+unlocks: []
+analogy: "A baker must combine every item in two long ingredient lists, but the worktable holds only a few bowls. The naive method writes every pairwise mixture onto trays, carries all trays to a distant warehouse, then retrieves them for normalization. An IO-aware baker works in tiles that fit the table, maintains running totals, and sends only the final loaves out. FlashAttention similarly recomputes cheap local quantities to avoid transporting a gigantic attention matrix."
+teachBack:
+  prompt: "Explain why materializing attention scores at Qwen3.8-27B's native context is infeasible, and how tiled online softmax computes the same result without storing the score matrix."
+  modelAnswer: "At 262,144 tokens the score matrix has two to the thirty-sixth entries per head, about 128 GiB in bf16 — more than an entire accelerator's memory for a single head of a single layer, before counting Qwen's 24 query heads and 16 full-attention layers. FlashAttention loads query and key/value tiles into fast on-chip SRAM, computes local scores there, and maintains a running row maximum and normalization sum, rescaling earlier partial outputs by the exponential of the old-minus-new maximum whenever a later tile raises it. The final output equals standard softmax attention up to floating-point reordering; only the tile statistics ever exist, so memory traffic scales with the inputs and outputs rather than with the squared sequence length."
+quiz:
+  - question: "What is the main object FlashAttention avoids materializing in device memory?"
+    options: ["The full attention score/probability matrix", "All model weights", "Every input token ID", "The final output"]
+    correctIndex: 0
+    explanation: "Tiling streams through score blocks and keeps only the running maximum and normalization statistics needed to combine them exactly."
+  - question: "Using lesson 7.3, why does FlashAttention's headline win apply to prefill more than to single-token decode?"
+    options: ["Prefill processes many query rows at once and is dominated by score traffic, while decode has one query row and is dominated by reading weights and KV cache", "Decode never runs attention", "Prefill skips the softmax", "Decode already stores the full score matrix in SRAM"]
+    correctIndex: 0
+    explanation: "Prefill is the phase with a large query block and a potentially enormous score matrix; decode's single row makes weight and KV-cache bandwidth the binding constraint."
+citations:
+  - title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    authors: "Tri Dao et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2205.14135"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Qwen3.8-27B accepts a native context of 262,144 tokens, and 16 of its 64 layers run full softmax attention over that entire span. Feed the model a maximal prompt and each of those layers must, in principle, compare every query with every key. The attention formula is one line; the question is whether the intermediate objects it implies can physically exist.
+
+Run the arithmetic. With $N = 262{,}144 = 2^{18}$, the score matrix $QK^\top$ has $2^{18} \times 2^{18} = 2^{36} \approx 6.9 \times 10^{10}$ entries per head. At two bytes each in bf16, that is $2^{37}$ bytes, or **128 GiB, for one head of one layer**. Qwen3.8-27B has 24 query heads per full-attention layer, so materializing one layer's scores would take about 3 TiB, and its 16 full-attention layers together roughly 48 TiB — written to high-bandwidth memory (HBM), read back for softmax, written again as probabilities, and read once more to multiply $V$. An 80 GB-class accelerator cannot hold even a single head's matrix. Naive attention at this context length is not slow; it is impossible without changing the memory plan.
+
+Accelerators have a memory hierarchy: a small pool of on-chip SRAM measured in tens of megabytes that is very fast, and HBM that is orders of magnitude larger but far slower to reach. Arithmetic units idle while tensors travel between the two. **IO-awareness** means designing the algorithm around bytes moved through this hierarchy rather than only counting floating-point operations. FlashAttention's observation is that attention can be computed in tiles that fit SRAM, so the score matrix never needs to exist as a whole.
+
+Split queries into row blocks and keys and values into column blocks, and size the tiles to the head dimension. Qwen's full-attention heads use head dimension 256, so a 128-row key tile occupies $128 \times 256 \times 2 = 65{,}536$ bytes, 64 KiB, and its value twin another 64 KiB. That is twice the footprint of the 128-dimensional heads many early kernels were tuned for, which forces smaller row blocks or more passes within the same SRAM budget — and it means kernel support for $d = 256$ must be verified for the exact library version, not assumed from an API flag.
+
+The obstacle to tiling is softmax: normalizing a row of scores appears to require seeing the whole row at once. The classic wrong turn is to softmax each tile locally and concatenate the results. Try it on one query row whose scores arrive as a block $[1.0,\ 3.0]$ followed by a block $[5.0]$. A local softmax of the first block gives the score 3.0 a weight of $e^{3}/(e^{1}+e^{3}) \approx 0.881$ — but the true weight, once the dominant 5.0 arrives, is only about 0.117. Local normalization bakes in a denominator that later tiles invalidate.
+
+Online softmax corrects this by carrying two running statistics per row: the maximum $m$ and the exponential sum $\ell$. After the first block, $m_1 = 3$ and $\ell_1 = e^{1-3} + e^{3-3} = 0.135 + 1 = 1.135$. The second block raises the maximum to $m_{new} = 5$, so the old sum is rescaled by $e^{m_1 - m_{new}} = e^{-2}$: $\ell \leftarrow 1.135 \times 0.135 = 0.154$, then the new term adds $e^{5-5} = 1$, giving $\ell = 1.154$. Computing directly, $e^{-4} + e^{-2} + e^{0} = 0.018 + 0.135 + 1 = 1.154$ — identical. Partial output accumulators are rescaled by the same factor, so after the last tile the division by $\ell$ yields exact attention. The operation order changes, so the last floating-point bits may differ, but nothing is approximated, sparsified, or truncated.
+
+Recomputation extends the same logic to training: the backward pass can recompute local scores inside tiles instead of reading a stored $N^2$ matrix, trading cheap arithmetic for expensive HBM traffic.
+
+:::caveat
+FlashAttention fixes the memory of stored intermediates, not the dependency structure. Exact dense attention still performs pairwise work that grows quadratically with sequence length, so a 262,144-token prefill remains a large computation — it just becomes one that fits.
+:::
+
+The benefit is phase-specific. Prefill processes many query rows and is exactly the regime the tiling targets. Single-token decode has one query row; as lesson 7.3 established, it is dominated by reading weights and the KV cache (lesson 7.2 derives Qwen's per-token cache cost), and specialized decode kernels are cousins rather than beneficiaries of the same headline speedup.
+
+:::insight
+Only 16 of Qwen3.8-27B's 64 layers ever face the quadratic object at all. The other 48 use Gated DeltaNet, whose fixed-size state sidesteps the score matrix entirely — the architectural complement to FlashAttention's algorithmic fix. IO-awareness and hybrid layouts are two answers to the same enemy: bytes moved per token.
+:::
+
+The durable lesson outlives one kernel. When arithmetic is cheap and memory movement is not, algorithm design must count bytes through the hierarchy. FlashAttention is exact attention rearranged around that physical reality — and it is the reason a quarter-million-token context is a product feature rather than a thought experiment.

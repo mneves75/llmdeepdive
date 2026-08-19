@@ -1,0 +1,64 @@
+---
+id: "4.16-hybrid-layouts"
+track: "4-transformer"
+order: 16
+title: "Hybrid layouts: three DeltaNet, one attention"
+summary: "Qwen3.8-27B repeats a four-layer motif sixteen times — three fixed-state DeltaNet blocks, then one full-attention block — trading most of attention's growing memory for constant state while keeping exact long-range retrieval."
+tier: "core"
+locale: "en"
+prerequisites: ["4.15-gated-deltanet", "4.11-full-transformer-block"]
+unlocks: ["7.2-the-kv-cache"]
+analogy: "A newsroom staffs sixteen floors identically: three desks of editors who keep everything on compact running summaries, then one archivist with access to the complete morgue of every page ever filed. Editors handle the constant flow cheaply; when a story needs the exact wording of a clipping from years back, the archivist retrieves it verbatim and posts it on the shared board, where the editors upstairs can work with it. One archivist per floor is expensive enough; one per desk would bankrupt the paper."
+teachBack:
+  prompt: "Describe Qwen3.8-27B's layer layout, what each mixer type contributes, and why the memory bill at long context is dominated by the minority attention layers."
+  modelAnswer: "The stack repeats a super-block sixteen times: three Gated DeltaNet blocks followed by one full-attention block, giving 48 DeltaNet and 16 attention layers with an attention layer every fourth position. Attention contributes exact content-addressed retrieval over the whole context — any past token recoverable verbatim — while DeltaNet contributes constant-size state and constant per-token cost regardless of length. During decode, each attention layer appends keys and values for every token, so its memory grows with context and reaches the gibibyte scale at the native 262,144 window, while all 48 DeltaNet layers together hold only tens of mebibytes, constant in length; the derivation lives in lesson 7.2. The shared residual stream lets retrievals made by one attention layer be consumed by DeltaNet layers above it."
+quiz:
+  - question: "Qwen3.8-27B sets one full-attention layer every four layers across a 64-layer stack. How many layers of each type result?"
+    options: ["48 Gated DeltaNet layers and 16 attention layers", "32 of each", "16 DeltaNet and 48 attention", "60 DeltaNet and 4 attention"]
+    correctIndex: 0
+    explanation: "The four-layer motif — three DeltaNet, one attention — repeats 16 times: 16 × 3 = 48 DeltaNet layers and 16 × 1 = 16 attention layers."
+  - question: "During decode at long context, which layers' memory grows with every generated token, and why?"
+    options: ["Only the 16 attention layers, because attention appends keys and values per token while DeltaNet's state is a fixed-size matrix", "Only the 48 DeltaNet layers, because recurrent state accumulates", "All 64 layers equally", "None; decode memory is constant everywhere"]
+    correctIndex: 0
+    explanation: "Attention's exactness comes from storing the past, so its cache grows linearly; the delta-rule state from lesson 4.15 is edited in place and never grows."
+  - question: "A DeltaNet layer at position 5 needs the verbatim contents of a token from 200,000 positions back. Through which mechanism from lesson 4.11 can it get them?"
+    options: ["The shared residual stream: the attention layer at position 3 can retrieve the token exactly and write it as an update the later layer reads", "It cannot; DeltaNet layers are isolated from attention layers", "Its convolution kernel of 4 reaches back 200,000 positions", "The vocabulary embedding is consulted directly"]
+    correctIndex: 0
+    explanation: "All 64 layers read and write one residual stream, so a retrieval performed by any attention layer becomes available to every layer above it."
+citations:
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "Gated Delta Networks: Improving Mamba2 with Delta Rule"
+    authors: "Songlin Yang, Jan Kautz, and Ali Hatamizadeh"
+    year: 2024
+    url: "https://arxiv.org/abs/2412.06464"
+  - title: "Jamba: A Hybrid Transformer-Mamba Language Model"
+    authors: "Opher Lieber et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2403.19887"
+updated: "2026-08-18"
+---
+
+You now hold two mixers and a design problem. Full attention is exact: any query can retrieve any past token verbatim, at the price of storing keys and values for the entire context and re-reading them every step. Gated DeltaNet is cheap: constant-size state, constant per-token cost at any length, at the price of lossy learned compression — a fixed board cannot promise perfect recall of an arbitrary clipping from half a million tokens ago. A model that wants a 262,144-token native context must decide, layer by layer, which price to pay. Qwen3.8-27B's answer is a **hybrid layout**: a four-layer motif — Gated DeltaNet, DeltaNet, DeltaNet, full attention — repeated sixteen times. That is 48 DeltaNet layers, 16 attention layers, one archivist every fourth floor.
+
+Work the memory consequences step by step, because the intuitive reading gets them backwards. The reflex says: forty-eight recurrent layers, each dragging a state matrix from token to token — surely *that* is where long-context memory goes, with the sixteen attention layers a rounding error. Now check each type against its actual contract. A DeltaNet layer's state is a fixed set of matrices, edited in place; token 200,000 costs exactly what token 200 cost, and the layer stores nothing per token. An attention layer is the opposite: its exactness *is* storage — every generated token appends keys and values that all future queries may consult, so its memory grows linearly with context, multiplied across all sixteen such layers. At the full native window the totals are not close: the sixteen attention layers' key-value cache runs to roughly 16 GiB per sequence, while all forty-eight DeltaNet states together occupy about 72 MiB, constant in length — a contrast of more than two orders of magnitude, in the *opposite* direction from the reflex. Lesson 7.2 derives both numbers from the head counts and dimensions; here the shape of the result is what matters: the minority layer type dominates the memory bill precisely because it is the type that remembers everything.
+
+That asymmetry is the whole argument for the ratio. If every layer were full attention, the growing cache would be four times larger and long contexts would price themselves out of memory. If every layer were DeltaNet, the model would face needle-in-a-haystack retrieval — quote the exact serial number from page two of a four-hundred-page document — armed only with lossy summaries. The 3:1 mixture keeps exact retrieval *available* while making its cost the exception rather than the rule: recall demands are sparse in real workloads, but when they arrive, some layer must be able to serve them exactly.
+
+What makes the mixture function as one model rather than two interleaved ones is the block contract from lesson 4.11. Both layer types read the same 5120-wide residual stream through the same pre-norm RMSNorm and add back updates of the same shape. A retrieval performed by the attention layer on floor 3 — the verbatim contents of a distant token, fetched by content-addressed lookup — is written into the stream, where the DeltaNet layers on floors 4 through 6 can transform, route, and build on it with their cheap machinery. The archivist retrieves; the editors process. Division of labor, coordinated through the shared board, with the identical gated FFN doing the heavy feature transformation on every floor of both kinds.
+
+The layout also shapes *where* different capabilities can live. Exact cross-context operations — copying a long identifier, matching a bracket opened 100,000 tokens ago, induction over distant repetitions — must route through one of the sixteen attention layers, because only they can address arbitrary positions. Recency-weighted processing, local composition, and running-state accumulation sit naturally in the DeltaNet majority, whose kernel-4 convolution and gated state handle short- and medium-range structure without touching a growing store. Interpretability work on hybrid models starts from this map: if a behavior needs exact long-range lookup, you know which sixteen layers to search.
+
+:::warning
+The common misconception is to read the hybrid as "a proper Transformer with 48 degraded layers" — an approximation of some full-attention original. There is no such original: Qwen3.8-27B was trained as this architecture, and its DeltaNet layers are not compressed attention (no score matrix over the past exists in them, even implicitly — lesson 4.15). The equally wrong mirror image is "recurrent layers accumulate the long-context memory bill"; they are the one part of the model whose memory does not grow at all.
+:::
+
+:::note
+The Signal Observatory on the explore page shows one classic attention block. In Qwen3.8-27B this exact block appears once every four layers; the other three replace attention with Gated DeltaNet (lesson 4.15).
+:::
+
+Qwen did not invent the pattern — 2025–26 produced a family of such designs, interleaving state-space or linear-attention blocks with full attention in Jamba-style and Granite-H lineages — but a 3:1 ratio is among the more aggressive publicly documented at this scale, and the checkpoint you read in lesson 4.14 shows the motif directly: three layers of `linear_attn` machinery, one layer of `self_attn` projections, sixteen times over.
+
+Where this leads is inference. The hybrid layout is, at bottom, a bet about serving economics: that a model can keep attention's retrieval quality while shrinking the memory that grows per token to a quarter of the layers — and that this determines what contexts, batch sizes, and hardware are feasible. Pricing that bet requires deriving the cache arithmetic properly: bytes per token per layer, per sequence, per gigabyte of accelerator memory. That derivation — and the full 16 GiB versus 72 MiB accounting this lesson only gestured at — is lesson 7.2, where the KV cache gets its own treatment.

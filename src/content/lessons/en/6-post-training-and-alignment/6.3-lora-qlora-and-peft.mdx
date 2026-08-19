@@ -1,0 +1,74 @@
+---
+id: "6.3-lora-qlora-and-peft"
+track: "6-post-training-and-alignment"
+order: 3
+title: "LoRA, QLoRA & PEFT"
+summary: "Parameter-efficient fine-tuning adapts a model through small trainable modules; on Qwen3.8-27B the module list must reach the 48 Gated DeltaNet layers, and QLoRA is what makes a 24–48 GB GPU viable at all."
+tier: "advanced"
+locale: "en"
+prerequisites: ["6.2-supervised-fine-tuning-and-instruction-data"]
+unlocks: ["6.11-distillation-making-small-models-punch-up"]
+analogy: "A theater owns an enormous fixed lighting grid. Rewiring every cable for each production would be expensive and risky. Instead, the crew adds a compact control board that mixes a few coordinated lighting patterns on top of the existing rig. LoRA is that board: the original weight matrix stays fixed while two thin trainable matrices compose a low-rank update. Different shows can store different boards without duplicating the whole theater."
+teachBack:
+  prompt: "Explain LoRA as a matrix update, then say which modules you would target on Qwen3.8-27B and why the default recipe is wrong for this model."
+  modelAnswer: "LoRA freezes a pretrained weight matrix W and learns a low-rank delta BA, where the rank is far smaller than W's dimensions; only A and B receive gradients and optimizer state. The default recipe adapts the attention query and value projections, but Qwen3.8-27B has full attention in only 16 of its 64 layers. The other 48 are Gated DeltaNet layers with their own query, key, value, and output projections, plus a short convolution. Targeting only attention reaches a quarter of the depth. A reasonable target list covers the DeltaNet projections as well, and often the gated feed-forward matrices, which hold roughly 17B of the model's parameters."
+quiz:
+  - question: "Which parameters are normally updated in LoRA training?"
+    options: ["The small low-rank adapter matrices", "Every frozen base weight", "Only tokenizer vocabulary strings", "No parameters at all"]
+    correctIndex: 0
+    explanation: "LoRA freezes the original matrix and optimizes the factor matrices whose product forms the update."
+  - question: "You run LoRA SFT and the adapted model starts writing the user's next question after answering. Given lesson 6.2, what is the likeliest cause?"
+    options: ["The loss mask was not restricted to assistant-turn positions", "The LoRA rank was too low", "The base weights were quantized", "The adapter was merged before evaluation"]
+    correctIndex: 0
+    explanation: "PEFT changes which weights move, not what the loss rewards. An unmasked conversation trains the model to predict user turns and template markers just as full fine-tuning would."
+  - question: "What is the defining extra step in QLoRA?"
+    options: ["The frozen base model is stored and used in quantized form while adapters train", "The adapters are removed before training", "All computation becomes exact integer arithmetic", "The dataset is replaced by preference pairs"]
+    correctIndex: 0
+    explanation: "QLoRA combines low-rank adapters with a quantized frozen backbone to lower memory use; compute is not simply all-integer training."
+citations:
+  - title: "LoRA: Low-Rank Adaptation of Large Language Models"
+    authors: "Edward J. Hu et al."
+    year: 2021
+    url: "https://arxiv.org/abs/2106.09685"
+  - title: "QLoRA: Efficient Finetuning of Quantized LLMs"
+    authors: "Tim Dettmers et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2305.14314"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Start with the number that ends the conversation about full fine-tuning. Qwen3.8-27B is 54 GB of bf16 weights. Gradients are another copy of the same size. AdamW carries roughly 12 to 16 bytes of state per parameter, which for 27B parameters is between 324 and 432 GB. Add them and full fine-tuning wants something in the neighbourhood of 430 to 540 GB of accelerator memory before a single activation is stored. That is a multi-node job. Meanwhile the machine you actually have is a single 24 GB or 48 GB card. **Parameter-efficient fine-tuning** (PEFT) exists to close that gap, and the arithmetic of how it closes it is the substance of this lesson.
+
+**Low-Rank Adaptation**, or LoRA, changes how a linear layer is represented during fine-tuning. Let the frozen pretrained weight be $W_0\in\mathbb{R}^{d_{out}\times d_{in}}$. Instead of updating all of $W_0$, LoRA learns
+
+$$
+W = W_0 + \Delta W,\qquad \Delta W = BA,
+$$
+
+with $A\in\mathbb{R}^{r\times d_{in}}$ and $B\in\mathbb{R}^{d_{out}\times r}$, and rank $r$ far below either dimension. The forward pass adds the adapter's contribution to the original projection, scaled by an alpha parameter divided by the rank. The low-rank constraint is an inductive bias, not a theorem: useful adaptation *may* live in a small subspace, and rank, placement, and data decide whether it does.
+
+Placement is where this model diverges sharply from the recipe most tutorials hand you. The 2021 LoRA paper adapted the query and value projections of a uniform transformer, and that default has been copied ever since. Apply it to Qwen3.8-27B and here is what happens. The model has 64 layers arranged as sixteen repetitions of three Gated DeltaNet blocks followed by one Gated Attention block. Only 16 of the 64 layers contain the query and value projections your config file names. The other 48 — three quarters of the depth — receive no adapter at all. You will train, the loss will fall, and you will conclude that LoRA underperforms on this model. It did not; your target list missed most of it.
+
+The correct target list follows the architecture. In the 16 attention layers, the projections feeding 24 query heads and 4 key/value heads at head dimension 256, plus the output projection. In the 48 Gated DeltaNet layers, the projections producing its 16 query/key heads and 48 value heads at head dimension 128, plus its output projection; the short convolution with kernel width 4 and the gating parameters are usually left frozen, since they are tiny and numerically delicate. And in all 64 layers, the gated feed-forward matrices that map the 5120-wide residual stream out to 17,408 and back — roughly 17B parameters live there, more than half the model. Read the tensor names out of the safetensors index rather than guessing them, and check the shapes while you are there: the attention projections in this model are deliberately non-square, and a config-derived guess that "everything is 5120 wide" will not survive contact with the checkpoint.
+
+Now the memory arithmetic, worked step by step. Take a rank of 16, and consider one matrix that reads and writes the 5120-wide residual stream. Its adapter costs $r(d_{in}+d_{out}) = 16 \times (5120 + 5120) \approx 164{,}000$ parameters — call it 0.16M. Adapt four projections in each of the 64 layers and you have 256 adapted matrices, so about 42M trainable parameters. (Real widths vary per module, so treat this as illustrative sizing, not a spec.) In bf16 those weights are about 84 MB. AdamW state at 12 to 16 bytes per parameter adds roughly 0.5 to 0.7 GB. Set that beside the 324 to 432 GB the same optimizer would demand for full fine-tuning: three orders of magnitude, from the same optimizer, because it now has three orders of magnitude fewer parameters to track.
+
+That solves optimizer memory. It does not solve the 54 GB of frozen weights, which still have to sit somewhere during the forward and backward passes — and 54 GB does not fit in 24. **QLoRA** closes the remaining gap by storing the frozen backbone in a low-bit representation and dequantizing blocks into a higher compute dtype as operations run. At 4 bits, Qwen3.8-27B's weights land at roughly 14 to 16 GB. On a 48 GB card that leaves around 32 GB for activations, adapters, and optimizer state: comfortable, and long sequences are workable with gradient checkpointing. On a 24 GB card it leaves around 8 GB, which is enough only with short sequences, small micro-batches, gradient checkpointing on, and no illusions. The QLoRA paper's specific contributions — a normal-float format, double quantization, paged optimizers — all serve that budget. The boundary that matters conceptually: quantized *storage* does not mean gradients flow through the whole base model, and it does not mean the arithmetic is low-bit integer.
+
+:::warning
+The most common QLoRA failure is budgeting only for weights. The 4-bit backbone is a fixed cost; activation memory is not, and it scales with sequence length and micro-batch. A run that loads happily at 2,048 tokens will die at 8,192 on the same card. Size the run at the sequence length you actually intend to train on, and remember that Qwen3.8-27B's 262,144-token native context is an inference capability, not an invitation to fine-tune there.
+:::
+
+LoRA also buys deployment flexibility. One base model can serve several small adapters, and an adapter can be merged into the base weights for inference when the numerical formats allow it — which they often do not after 4-bit quantization, so a QLoRA adapter merged back into a 4-bit base is a lossy operation that deserves its own evaluation. Unmerged adapters let a server switch behaviours per request, at the cost of batching complexity.
+
+PEFT is a wider family than LoRA. Adapter layers insert small modules, prompt and prefix tuning learn continuous vectors injected into the context or the layers, selective training unfreezes a chosen subset. Each cuts a different seam, and runtime support, latency, multi-tenant switching, and the behaviour being learned decide which seam fits.
+
+:::caveat
+An adapter is executable model state. Loading an untrusted one can change behaviour radically, and some serialization formats carry unsafe objects. Provenance, safe tensor formats, hashes, licences, base-model compatibility, and evaluation are supply-chain concerns, not conveniences. Qwen3.8-27B ships under Apache 2.0; adapters trained on top of it do not automatically inherit that licence.
+:::
+
+None of this repairs bad instruction data, prevents forgetting, or guarantees parity with full fine-tuning. A small adapter can memorize a narrow dataset or degrade general behaviour just as a full run can. The practical mental model is a frozen foundation plus a learned steering surface: LoRA expresses the surface as a low-rank update, QLoRA makes the foundation cheap enough to hold while you learn it, and the engineering win is separating shared pretrained capability from compact, versioned, task-specific change.

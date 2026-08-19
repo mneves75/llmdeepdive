@@ -1,0 +1,78 @@
+---
+id: "4.14-reading-real-weights"
+track: "4-transformer"
+order: 14
+title: "Reading real weights: opening Qwen3.8-27B's checkpoint"
+summary: "Qwen3.8-27B's safetensors files are a typed map of tensor names to shapes, and every entry — untied embeddings, non-square attention projections, gated FFN triples, DeltaNet state machinery — maps back to a lesson."
+tier: "core"
+locale: "en"
+prerequisites: ["4.13-build-gpt-from-scratch"]
+unlocks: []
+analogy: "Opening a checkpoint is like receiving every machined part of a clock in labelled trays. A tray's dimensions tell you whether it is a gear, spring, or axle; its scratches show use, not purpose. You can inventory parts and detect a warped gear, but understanding timekeeping requires tracing how parts connect. Tensor names and shapes are the trays; the architecture you spent this track learning is the assembly diagram."
+teachBack:
+  prompt: "Given Qwen3.8-27B's safetensors listing, explain how tensor names and shapes identify the untied embeddings, the attention projections, the gated FFN, and the DeltaNet layers — and what a shape alone cannot tell you."
+  modelAnswer: "The embedding table and lm_head both appear as 248320-by-5120 tensors under different names, confirming untied weights of about 1.271B parameters each. In an attention layer, q_proj is 12288-by-5120, because these gated layers pack the output gate into the same matrix: 24 heads times head dimension 256, twice over. k_proj and v_proj are 1024-by-5120 (4 KV heads), and o_proj maps the 6144-wide gated attention output back to 5120 — non-square by design. Each layer's FFN contributes gate, up, and down projections between 5120 and 17408. Layers whose mixer tensors are not q/k/v/o but convolution and state-update machinery are the 48 Gated DeltaNet layers. Shapes verify architecture and catch conversion errors, but they cannot reveal semantics: that requires activations and interventions."
+quiz:
+  - question: "Two tensors in the checkpoint have identical shape 248320×5120. What does their coexistence under different names prove?"
+    options: ["The embeddings are untied: the input table and the lm_head are separate parameters of about 1.271B each", "The checkpoint is corrupted by duplication", "The model ties its embeddings to save memory", "The vocabulary is stored twice for speed"]
+    correctIndex: 0
+    explanation: "A tied model stores one such matrix referenced by both roles; Qwen3.8-27B stores two, roughly 2.54B parameters combined."
+  - question: "In the minimal GPT you built last lesson, which module pair corresponds to these two 248320×5120 tensors?"
+    options: ["token_embedding and language_head, which were also separate matrices", "the causal buffer and the optimizer state", "norm_attention and norm_ffn", "get_batch and generate"]
+    correctIndex: 0
+    explanation: "The toy also kept its embedding and output head untied, so the correspondence is direct — only the shapes changed from a few dozen rows to 248,320."
+  - question: "You encounter q_proj with shape 12288×5120 and conclude the conversion is broken, since 24 heads × 256 is 6144. What is the correct diagnosis?"
+    options: ["Nothing is broken: these layers are gated, so q_proj emits 24 × 256 × 2 = 12288 and splits into a 6144 query and a 6144 gate", "The tensor is transposed and must be fixed to 5120×5120", "The file mixed up q_proj with the FFN", "Head dimension must equal hidden size divided by head count"]
+    correctIndex: 0
+    explanation: "Head count times head dimension need not equal the model width; forcing squareness would silently change the architecture."
+citations:
+  - title: "A Mathematical Framework for Transformer Circuits"
+    authors: "Nelson Elhage et al."
+    year: 2021
+    url: "https://transformer-circuits.pub/2021/framework/index.html"
+  - title: "Interpretability in the Wild: a Circuit for Indirect Object Identification in GPT-2 Small"
+    authors: "Kevin Wang et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2211.00593"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+You have built a Transformer; now open a shipped one. Qwen3.8-27B is distributed as sharded **safetensors** files — a data-only format mapping parameter names to typed arrays, with an index file telling the loader which shard holds which name. There is no dedicated technical report for this model; its architecture is documented by its configuration and its inherited Qwen3.5 lineage. That makes the checkpoint itself unusually important evidence: the tensors are the ground truth, and after this track you can read every one of them.
+
+The reading protocol is always the same. Recover the exact architecture contract first — configuration, tokenizer, naming conventions — then list each tensor's name, shape, and dtype, and map them to the block equations. Names follow the Hugging Face conventions of the model's architecture class; layer indices count from zero, and in Qwen3.8-27B's three-to-one layout the first attention layer appears at index 3, after three DeltaNet layers. Two details catch people out here. This is a multimodal checkpoint, so the text stack is nested under `model.language_model.` and the vision tower lives under `model.visual.`. Match the prefix anchored — `^model\.layers\.` returns nothing here, which is the signal to look for the real prefix. An unanchored `model.layers.` is worse than useless: `language_model.layers.` ends with that exact substring, so it matches every text tensor and hides the nesting you needed to notice. And `lm_head.weight` sits at the top level with no prefix, because the embeddings are untied. A representative slice of the listing looks like this (weights stored output-rows-first; spot-check against the checkpoint's own index before relying on any entry):
+
+```text
+model.language_model.embed_tokens.weight               [248320, 5120]   lesson 1.5
+model.language_model.layers.0.linear_attn.*            DeltaNet tensors lesson 4.15
+model.language_model.layers.3.self_attn.q_proj.weight  [12288, 5120]    lessons 4.2, 4.5
+model.language_model.layers.3.self_attn.k_proj.weight  [1024, 5120]     lessons 4.2, 4.5
+model.language_model.layers.3.self_attn.v_proj.weight  [1024, 5120]     lessons 4.2, 4.5
+model.language_model.layers.3.self_attn.o_proj.weight  [5120, 6144]     lesson 4.5
+model.language_model.layers.3.mlp.gate_proj.weight     [17408, 5120]    lesson 4.9
+model.language_model.layers.3.mlp.up_proj.weight       [17408, 5120]    lesson 4.9
+model.language_model.layers.3.mlp.down_proj.weight     [5120, 17408]    lesson 4.9
+model.visual.blocks.*                                  vision tower
+lm_head.weight                                         [248320, 5120]   lesson 4.11
+```
+
+Walk it top to bottom and the whole course reports for duty. `embed_tokens` is the 248,320-row table from lesson 1.5, one 5120-wide vector per vocabulary entry, about 1.271 billion parameters. The `self_attn` quartet is lesson 4.5's multi-head machinery wearing its real shapes: the query projection emits $24\times 256\times 2 = 12288$ features — the queries and their output gate interleaved head by head — keys and values only $4\times 256 = 1024$ each because four KV heads serve all twenty-four query heads, and `o_proj` folds the 6144-wide gated attention output back into the 5120 stream. The `mlp` triple is lesson 4.9's gated FFN — gate and up expanding to 17,408, down returning, roughly 267 million parameters per layer. And `lm_head` closes the loop from lesson 4.11: a *second* 248,320 × 5120 matrix, not a reference to the first.
+
+That last point deserves its own paragraph, because it is where a confident reader goes wrong. Many famous models tie the output head to the embedding table — one matrix, two roles — and a common habit is to count `lm_head` as free. Run the check: if the weights were tied, the checkpoint would store one tensor referenced by both names, and total parameter accounting would include it once. Qwen3.8-27B stores both tensors. The embeddings are **untied**: about 1.271 billion parameters going in, another ~1.271 billion coming out, roughly 2.54 billion combined. A parameter audit that assumes tying will be off by more than a billion — real money at bf16.
+
+:::caveat
+Do not assume weight tying, and do not assume squareness. Both assumptions produce audits and conversions that look plausible and are wrong. A tensor can even fit a destination shape while being transposed or mapped to the wrong convention, producing fluent-looking failure that no loader error will catch. Shapes are necessary evidence, never sufficient.
+:::
+
+Now scan layer indices and something stranger surfaces: most layers have *no* `self_attn` tensors at all. Layers 0, 1, and 2 instead carry a family of `linear_attn` machinery — projections for a different kind of mixer, a short convolution whose kernel spans four positions, and parameters governing a per-step state update. These are the Gated DeltaNet layers: 48 of the 64, three of every four, exactly as the layout promised. Their tensor names will look unfamiliar until lesson 4.15 opens the mechanism, and lesson 4.16 explains why the checkpoint interleaves the two families at all. For now, treat unfamiliar names the way an archaeologist treats an unfamiliar tool: record the shape, note the layer it belongs to, and resist interpreting it before you know the equation it serves. What you can already verify is the pattern — three layers of state machinery, one layer of q/k/v/o, repeating sixteen times — and that every layer, of either kind, carries the same `mlp` triple and RMSNorm scale vectors.
+
+Basic statistics come next, exactly as with any checkpoint: check for NaNs and infinities, compute norms and ranges per tensor, compare layers against each other. A layer of zeros is a missing shard; a norm vector at a wild scale is a bad dtype cast; Q, K, V distributions that diverge radically from a known-good conversion expose a slicing error. Qwen3.8-27B ships in bfloat16, so a float32 reader that silently upcasts is harmless, while one that misinterprets the raw bytes is not. Histograms show health, not meaning: a large weight is not an important concept, and rotating an internal basis can change every coordinate while preserving behavior.
+
+:::warning
+Never load an untrusted serialized object with a format that can execute arbitrary code. Safetensors exists precisely to be data-only; prefer it, verify provenance and integrity, and treat weight files as inputs — not harmless pictures.
+:::
+
+To move from structure to function, collect activations on controlled inputs, ask what a component writes into the residual stream, and intervene — ablate, patch, project out — before claiming causation. That is interpretability's job, and it rests on the map you just made. The modest conclusion is the powerful one: names and shapes reveal architecture, statistics reveal health, and this particular checkpoint — untied embeddings, non-square attention, gated FFN triples, and forty-eight layers of not-yet-explained state machinery — has just handed you the reading list for the next two lessons.

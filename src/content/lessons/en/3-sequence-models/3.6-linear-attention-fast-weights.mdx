@@ -1,0 +1,86 @@
+---
+id: "3.6-linear-attention-fast-weights"
+track: "3-sequence-models"
+order: 6
+title: "Linear attention and fast weights"
+summary: "Rewriting attention as an RNN with a matrix-valued state makes per-token cost constant, and the delta rule turns that state into an error-correcting memory."
+tier: "core"
+locale: "en"
+prerequisites: ["3.2-rnns-vanishing-gradient", "3.5-bahdanau-attention"]
+unlocks: ["4.15-gated-deltanet"]
+analogy: "One office answers correspondence two ways. The archivist keeps every letter ever received and rereads the whole pile before drafting each reply: perfectly faithful, increasingly slow, and the shelves fill without bound. The clerk keeps a single fixed-size ledger of running totals: each letter updates the totals and is discarded, so every reply costs the same. The naive clerk only ever adds, so contradictory entries pile up under the same name. The careful clerk first checks what the ledger already says for that name and writes only the correction, erasing the stale entry. Linear attention is the naive clerk; the delta rule is the careful one."
+teachBack:
+  prompt: "Explain how linear attention turns attention into an RNN with a matrix-valued state, why the purely additive update causes interference, and how the delta rule fixes it."
+  modelAnswer: "Replacing the softmax similarity with a feature map makes the decode sum associative, so all past key-value contributions collapse into one running matrix S_t=S_{t−1}+φ(k_t)v_tᵀ that the query reads with one multiplication. That is an RNN whose hidden state is a fixed-size matrix, so per-token cost and memory are constant in sequence length. But the additive write superposes every association: writing two different values under similar keys blends them at retrieval, and nothing is ever removed. The delta rule first retrieves what the state currently predicts for the incoming key, S_{t−1}ᵀφ(k_t), and writes only the scaled error β_t φ(k_t)(v_t−S_{t−1}ᵀφ(k_t))ᵀ, so a stale association is overwritten rather than accumulated — a fixed-size state that forgets selectively."
+quiz:
+  - question: "How does the linear-attention state relate to the RNN hidden state from lesson 3.2?"
+    options: ["Both are fixed-size states updated by one shared rule at every step, but here the state is a matrix of associations rather than a vector", "It grows by one slot per token, unlike an RNN", "It is a vector while RNN state is a matrix", "It requires backpropagation through time at inference"]
+    correctIndex: 0
+    explanation: "Linear attention is literally a recurrence: same update applied at every position, constant-size state — the RNN design with a matrix-valued hidden state."
+  - question: "What does the delta rule change about the memory write?"
+    options: ["It writes the error between the incoming value and what the state already retrieves for that key, overwriting stale associations", "It makes the state grow with sequence length", "It restores exact softmax attention", "It removes the need for a key projection"]
+    correctIndex: 0
+    explanation: "Retrieve first, then write only the correction: if the state already stores the right value, the update is near zero; if not, the old entry is replaced."
+  - question: "Why does per-token decode cost stay constant in linear attention but grow in softmax attention?"
+    options: ["The query reads one fixed-size state matrix instead of comparing against every stored past key", "Linear attention skips the value projection", "Softmax attention reloads model weights per token", "The kernel feature map caches the softmax"]
+    correctIndex: 0
+    explanation: "Associativity folds the whole past into S_t once; softmax attention must touch all t cached keys and values at every step."
+citations:
+  - title: "Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention"
+    authors: "Angelos Katharopoulos et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2006.16236"
+  - title: "Gated Delta Networks: Improving Mamba2 with Delta Rule"
+    authors: "Songlin Yang et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2412.06464"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Attention pays for its memory in the most literal way possible: it keeps everything. To produce token $t$, a causal attention layer compares the new query against the key of every earlier position and mixes their values:
+
+$$
+o_t=\sum_{i=1}^{t}\frac{\exp(q_t^{\top}k_i)}{\sum_{j=1}^{t}\exp(q_t^{\top}k_j)}\,v_i.
+$$
+
+Count what this step actually costs. The naive plan — the one every attention decoder follows — stores all $t$ past key and value vectors and performs $t$ similarity computations for the new token. Token one costs one comparison, token one thousand costs a thousand, token $n$ costs $n$: per-token work is $O(n)$ in context length, and the stored keys and values grow without bound. That store is the KV cache, and lesson 7.2 derives its price for our course model: in Qwen3.8-27B at its native 262,144-token context, the cached keys and values of the attention layers reach 16 GiB for a single sequence. Nothing is approximated, which is exactly the appeal — any past token can be retrieved precisely, the learned addressing that lesson 3.5 introduced with Bahdanau's alignment — but the address book is the entire past.
+
+Lesson 3.2 showed the opposite design: an RNN carries one fixed-size hidden state, pays the same cost at every step, and stores nothing per token. The question this lesson answers is whether attention's addressing behavior can live inside a fixed-size state.
+
+Katharopoulos et al. (2020) noticed that the obstacle is the softmax. Replace the exponential similarity with a kernel feature map $\phi$, so the weight on position $i$ is proportional to $\phi(q_t)^{\top}\phi(k_i)$, and the sum becomes associative:
+
+$$
+o_t=\frac{\phi(q_t)^{\top}\sum_{i\le t}\phi(k_i)v_i^{\top}}{\phi(q_t)^{\top}\sum_{i\le t}\phi(k_i)}.
+$$
+
+Both sums no longer depend on the query, so they can be maintained incrementally. Define a matrix-valued state and a normalizer:
+
+$$
+S_t=S_{t-1}+\phi(k_t)v_t^{\top},\qquad z_t=z_{t-1}+\phi(k_t),
+$$
+
+and the output is one read, $o_t=\dfrac{S_t^{\top}\phi(q_t)}{z_t^{\top}\phi(q_t)}$. Look at what happened: this is a recurrence. Same update rule at every position, fixed-size state, constant work per token — the RNN blueprint from lesson 3.2, except the hidden state is now a $d\times d$ matrix of key-to-value associations instead of a vector. Per-token cost drops from $O(n)$ to $O(1)$, and memory from unbounded to constant.
+
+:::insight
+The state $S_t$ is not a summary vector — it is a weight matrix, written at inference time and read by multiplication, exactly like a layer's ordinary weights. This is why the older literature calls the idea **fast weights**: slow weights are learned during training and frozen; fast weights are written token by token, a small learned program updating its own memory as it reads.
+:::
+
+Here is the classic wrong turn. The additive update only ever adds. Write value $v_a$ under some key, later write a different $v_b$ under a nearly identical key, and retrieval returns a blend of both; the stale association is never removed, and as thousands of writes superpose, interference grows. Early linear attention traded away softmax attention's precision and underperformed it on tasks needing exact recall — which is why it spent years as the "losing" idea. The tempting conclusion is that this is fundamental: a fixed-size state cannot forget selectively, so lossy blur is the unavoidable price of $O(1)$. That conclusion is wrong, and the fix was sitting in decades-old associative-memory theory: change the write, not the size.
+
+The **delta rule** makes the write error-correcting. Before writing, retrieve what the state currently predicts for the incoming key — read it the same way any query is read, $S_{t-1}^{\top}\phi(k_t)$ — and write only the difference:
+
+$$
+S_t=S_{t-1}+\beta_t\,\phi(k_t)\bigl(v_t-S_{t-1}^{\top}\phi(k_t)\bigr)^{\top},
+$$
+
+with $\beta_t\in(0,1)$ a learned write strength. Walk through the two cases. If the state already stores $v_t$ for this key, the error is near zero and the state is left alone. If it stores something stale, the update subtracts the old association along that key direction and installs the new one — an overwrite, not a pile-up. Each step is one step of online gradient descent on the memory's own retrieval error: the state learns, while the model runs. DeltaNet is linear attention with this write; adding the learned forgetting gates of lesson 3.3 — a decay on $S_{t-1}$ so the state can also fade what no longer matters — yields Gated DeltaNet (Yang et al., 2024), which lesson 4.15 dissects in full.
+
+:::warning
+The most common misconception: "linear attention is just attention made faster." It is not an acceleration of the same function — it is a different function class. Softmax attention performs exact retrieval over an unbounded store; linear attention compresses the entire past into a fixed-size lossy state, and no write rule makes that compression exact. The delta rule manages the loss intelligently; it does not eliminate it.
+:::
+
+And that difference is precisely how the losing idea of 2020 became production architecture in 2026. Qwen3.8-27B, this course's specimen, builds 48 of its 64 layers as Gated DeltaNet and keeps full softmax attention in only 16, one in every four (Qwen3.8-27B Model Card, 2026). Each DeltaNet layer's recurrent state is about 1.5 MiB; across all 48 layers that is roughly 72 MiB — constant no matter whether the sequence holds one hundred tokens or 262,144 — against the 16 GiB the attention layers' KV cache reaches at full context. The hybrid is an engineering confession that both function classes earn their place: fixed-size error-correcting memory for cheap length, a few exact-retrieval layers for the lookups compression cannot do. The RNN did not lose to attention after all; it went away, learned to write like a memory, and came back as most of the model.

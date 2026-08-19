@@ -1,0 +1,62 @@
+---
+id: "8.10-modular-max-mojo"
+track: "8-building-and-serving-stacks"
+order: 10
+title: "Modular MAX and Mojo"
+summary: "A graph-compiler serving stack and the kernel language beneath it: what compiler-owned fusion and vendor portability promise against vLLM's Python engine, and what you must verify before believing the pitch."
+tier: "frontier"
+locale: "en"
+prerequisites: ["8.4-vllm"]
+unlocks: ["8.12-choosing-your-stack"]
+analogy: "Two orchestras play the same symphony. One is a collection of virtuosos, each with a part hand-copied for their specific instrument by a specialist who knows that instrument intimately; it sounds magnificent, and re-scoring it for a different ensemble means finding new specialists. The other works from a single machine-readable score that a conductor's software re-orchestrates for whatever instruments show up. The second is more portable and more consistent — and it is only as good as the re-orchestration software, which is younger than the specialists."
+teachBack:
+  prompt: "Contrast MAX's compiler-first serving model with vLLM's Python engine over hand-written kernels, and list what you would verify before committing Qwen3.8-27B to MAX."
+  modelAnswer: "vLLM runs a Python orchestration layer — scheduler, paged KV allocator, continuous batching — on top of PyTorch and a set of hand-written CUDA and Triton kernels. Performance improvements there mean writing or tuning kernels, and each vendor's backend is largely a separate effort. MAX inverts the arrangement: the model is expressed as a computation graph, an ahead-of-time compiler owns fusion, scheduling, and memory layout, and the same graph is retargeted across NVIDIA and AMD hardware without vendor-specific rewrites, with an OpenAI-compatible server on top. Mojo is the language the kernels themselves are written in — a Python-family systems language with static types, ownership, and explicit SIMD and tiling primitives, compiled through MLIR, so the compiler still has structure to reason about at the innermost level. Before committing this model I would verify four things: that the hybrid architecture with Gated DeltaNet layers is actually implemented in the graph library for the release I have, not merely 'transformers are supported'; that my quantization format is among the supported ones; that a like-for-like benchmark against vLLM at identical precision, decoding preset, sequence lengths, and concurrency favours it on my workload rather than on a vendor's; and that my team can absorb an ecosystem whose APIs are still moving."
+quiz:
+  - question: "Where should a compiler-first stack most plausibly beat a hand-tuned kernel stack, and where should it most plausibly lose?"
+    options: ["Win where launch overhead and unfused small operations dominate, such as low-batch decode; lose where a vendor kernel already saturates memory bandwidth at high batch", "Win everywhere, because compilation is strictly better than hand-written code", "Win only at very large batch sizes and lose at small ones", "Win on quality of generated text and lose on throughput"]
+    correctIndex: 0
+    explanation: "Fusion and ahead-of-time scheduling remove per-operation overhead, which matters most when the hardware is idle between small kernels; when a hand-tuned kernel is already bandwidth-bound there is little left for a compiler to reclaim."
+  - question: "Recalling lesson 8.4, which vLLM responsibilities does a serving stack still have to provide even if a compiler handles kernel fusion?"
+    options: ["Continuous batching and paged KV-cache allocation across concurrent requests", "Tokenization of the input string", "Choosing the sampling temperature", "Downloading weights from the model hub"]
+    correctIndex: 0
+    explanation: "Scheduling and KV memory management are serving-layer concerns, not kernel concerns; a graph compiler that fuses operations perfectly still needs a scheduler deciding which sequences run in each step."
+citations:
+  - title: "MAX Documentation"
+    authors: "Modular"
+    year: 2026
+    url: "https://max.modular.com/"
+  - title: "Mojo Documentation"
+    authors: "Modular"
+    year: 2026
+    url: "https://docs.modular.com/mojo/"
+updated: "2026-08-18"
+---
+
+You have Qwen3.8-27B running under vLLM on NVIDIA hardware, and your infrastructure team announces that half the next cluster will be AMD. Nothing about the model changes. What changes is that every hand-written CUDA kernel in your serving path now has a counterpart that someone else maintains at a different pace, and your performance profile becomes two profiles. This is the problem Modular's stack is aimed at, and it is worth understanding on its merits before deciding whether the trade is one you want.
+
+Recall the shape of what you already know from lesson 8.4. vLLM is a Python engine: a scheduler, a paged KV allocator, and a continuous-batching loop orchestrating PyTorch operations and a set of hand-written CUDA and Triton kernels for the parts that matter. That design has a specific strength and a specific weakness. The strength is that a specialist can write an attention kernel that extracts nearly everything a particular GPU generation offers. The weakness is that the strength does not travel: a new vendor, a new architecture, or a new layer type means new kernels, written again, by someone who knows that target.
+
+MAX proposes the opposite arrangement. A model is expressed as a **computation graph**, and an ahead-of-time compiler takes ownership of what was previously kernel-author territory — operator fusion, memory layout, scheduling of the graph onto the device — and emits code for whichever supported accelerator you point it at. On top sits a serving layer that speaks an OpenAI-compatible API, so from a client's perspective it slots into the same hole vLLM occupies. The pitch is that the same graph runs on NVIDIA and AMD without a vendor-specific rewrite, and that the compiler's fusion decisions are systematic rather than dependent on which kernels a human found time to hand-tune.
+
+**Mojo** is the layer beneath that, and it exists because a compiler needs structure to reason about at the innermost loop. Mojo is a systems language in the Python family: familiar syntax, but with static types, ownership semantics, and explicit access to SIMD widths, tiling, and memory hierarchy, compiled through MLIR. The intent is that a kernel author writes a fused attention or quantized matmul once, in a language a compiler can specialise and retarget, instead of writing it three times in three vendor dialects. Whether that intent is realised for any given operator is an empirical question, not a design guarantee — but the design is coherent, and it puts kernel authoring and graph compilation in one toolchain, a lineage that runs back through Halide, TVM, XLA and Triton.
+
+Now the honest part, because a frontier lesson that only relays a pitch is not worth reading. This ecosystem is younger than the ones it competes with, and youth has three concrete consequences for a model like Qwen3.8-27B.
+
+The first is **model coverage**, and it is the one that decides whether the rest of the conversation happens. Qwen3.8-27B is not a plain transformer. Its 64 layers are 48 Gated DeltaNet layers interleaved with 16 full-attention layers, and it carries a vision tower. "Supports transformer LLMs" does not imply support for a recurrent linear-attention layer with a gated delta-rule update and a short convolution — that is a distinct operator that must exist in the graph library, be correct, and be fast. Check the supported-model list for the exact release you intend to run, and treat an absent architecture as a blocker rather than a porting exercise, unless writing Mojo kernels is genuinely the project you signed up for.
+
+The second is **quantization coverage**. The formats you have on disk — the GGUF from lesson 8.7, an AWQ or GPTQ checkpoint from lesson 7.10 — are not universally consumable. A stack that supports a model in bf16 may not support it in the precision you can actually afford, and bf16 for this model means 54 GB of weights before any cache.
+
+The third is **maturity of the surface**. APIs, CLI flags, and configuration formats in a fast-moving stack move. That is a real operational cost, and the correct response is to price it rather than to pretend it away.
+
+:::warning
+The misconception to name plainly: "compiler-based" does not mean "faster". A compiler wins where per-operation overhead and unfused work dominate — many small kernels, low batch sizes, launch-bound decode, exactly the regime lesson 8.3 attacked with graph capture. It has much less to reclaim where a hand-tuned vendor kernel already saturates memory bandwidth, which is the regime of large-batch prefill and well-optimised attention. Any claim of a uniform speedup across regimes should raise your eyebrow, whichever direction it points.
+:::
+
+So evaluate it the way you would evaluate any candidate, with the reasoning visible. Step one: does the graph library implement this architecture in the release you have? If not, stop. Step two: does it support the precision you can fit on your hardware? Step three: build a like-for-like benchmark — same model revision, same precision, same decoding preset from the model card, same input and output lengths, same concurrency, same measurement window — and run it against your vLLM baseline. Step four: weigh the result against the portability you are actually buying. If your fleet is and will remain a single NVIDIA generation, vendor portability is worth close to nothing to you and the mature stack wins on ops cost alone. If you are genuinely heterogeneous, or expect to be, a single graph and a single toolchain across vendors is a structural advantage that a per-kernel speed comparison does not capture.
+
+:::caveat
+No independent third-party benchmark of Qwen3.8-27B on this stack is cited here because none is established in the sources this course relies on. Vendor-published throughput figures are marketing artifacts until someone reproduces them on your workload — treat them as a hypothesis worth testing, never as a number to plan capacity from.
+:::
+
+The durable idea is a boundary question: who owns the optimisation, the human or the compiler? Every stack in this track answers it somewhere on that line, and lesson 8.12 lays all of them out at once.

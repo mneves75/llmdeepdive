@@ -1,0 +1,74 @@
+---
+id: "6.6-dpo-skipping-the-reward-model"
+track: "6-post-training-and-alignment"
+order: 6
+title: "DPO: skipping the reward model"
+summary: "Direct Preference Optimization turns preference pairs into a classification-like objective over policy and reference log-probabilities — and on Qwen3.8-27B the thinking segment is what makes or breaks the setup."
+tier: "advanced"
+locale: "en"
+prerequisites: ["6.4-reward-models-and-human-preference-data"]
+unlocks: ["6.7-orpo-kto-simpo-and-the-alignment-zoo"]
+analogy: "Instead of hiring a critic, teaching the critic to assign scores, and then training a chef to chase those scores, a cooking school compares two plates directly. It asks the chef to make the preferred plate more characteristic of their new style than of their old cookbook, while pushing the rejected plate the other way. DPO removes the separate critic, but the pair labels and the old cookbook still determine what is learned."
+teachBack:
+  prompt: "Explain what quantities DPO compares for a chosen and rejected response, and describe one Qwen3.8-27B-specific hazard in setting up a DPO run."
+  modelAnswer: "DPO compares each response's log-probability under the trainable policy against its log-probability under a frozen reference policy, and a logistic loss widens the chosen response's relative margin over the rejected one. On Qwen3.8-27B the hazard is the thinking segment: thinking mode is the default, so the same conversation renders differently depending on whether enable_thinking is False, and the two renderings produce different token sequences and different log-probabilities. If pairs were collected in one mode and scored in the other, or if chosen and rejected responses carry thinking traces of very different lengths, the summed log-probabilities measure trace length rather than answer quality."
+quiz:
+  - question: "What role does the reference model play in standard DPO?"
+    options: ["It anchors relative log-probability changes for chosen and rejected responses", "It generates the tokenizer alphabet", "It supplies human labels automatically", "It removes the need for preference data"]
+    correctIndex: 0
+    explanation: "DPO measures how the policy changes response likelihood relative to a fixed reference, creating an implicit regularization anchor."
+  - question: "Lesson 6.4 described length as the canonical confounder in preference data. Why is offline DPO especially exposed to it?"
+    options: ["It scores whole responses by summed token log-probability, so length differences enter the objective directly and there is no fresh sampling to reveal the drift", "It cannot process responses longer than the context window", "It normalizes every response to the same length automatically", "It discards the rejected response before computing the loss"]
+    correctIndex: 0
+    explanation: "The pairwise labels carry the annotators' length bias, and the objective's own summation over response tokens adds a second, mechanical length dependence on top of it."
+  - question: "Which statement is a limitation of ordinary offline DPO?"
+    options: ["It is constrained by the coverage and quality of existing preference pairs", "It cannot compute token log-probabilities", "It requires no model weights", "It proves the preferences are unbiased"]
+    correctIndex: 0
+    explanation: "Without fresh sampling and labelling, the learner cannot directly correct blind spots outside the recorded comparison distribution."
+citations:
+  - title: "Direct Preference Optimization: Your Language Model is Secretly a Reward Model"
+    authors: "Rafael Rafailov et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2305.18290"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Lesson 6.5 left you holding four models at once and a 27B-parameter policy whose optimizer state alone runs to hundreds of gigabytes. Most teams cannot run that, and many do not need to. **Direct Preference Optimization** (DPO) starts from a mathematical relationship between a KL-regularized optimal policy and its reward, then rearranges it so the policy can be trained directly on preference pairs — no reward model, no rollout workers, no value head. What survives is a forward pass and a loss.
+
+Each example still contains a prompt $x$, a preferred response $y^{+}$, and a rejected response $y^{-}$. DPO uses a trainable policy $\pi_\theta$ and a frozen reference $\pi_{ref}$, sums token log-probabilities over each response conditioned on the prompt, and compares how much more the policy favours each response than the reference already did:
+
+$$
+m=\beta\left[
+\log\frac{\pi_\theta(y^{+}\mid x)}{\pi_{ref}(y^{+}\mid x)}-
+\log\frac{\pi_\theta(y^{-}\mid x)}{\pi_{ref}(y^{-}\mid x)}
+\right],\qquad
+\mathcal{L}_{\text{DPO}}=-\log\sigma(m).
+$$
+
+Now make it concrete on this course's model. You want to adapt Qwen3.8-27B's instruct-mode style for a support product, and you have 8,000 preference pairs. Setting up the run means answering four questions, in this order.
+
+First, where does the reference model come from? Naively you load two 27B checkpoints, which at 54 GB each in bf16 is not happening on one card. The trick is to combine DPO with LoRA from lesson 6.3: train adapters on a 4-bit backbone of roughly 14 to 16 GB, and get the reference for free by running the same forward pass with the adapters disabled. One copy of the base weights, two log-probabilities. That is what puts a DPO run on a 48 GB GPU.
+
+Second, which mode are you training? Qwen3.8-27B ships thinking mode on by default and instruct mode behind enable_thinking set to False, and the two render the same conversation into different token sequences. Log-probabilities are computed over tokens, so a pair collected in one mode and scored in the other is not merely noisy — it is a different objective. Pick a mode, render both the chosen and rejected responses through that exact template branch, and record which branch the dataset used.
+
+Third, which tokens enter the sum? If you are training thinking mode and your chosen response carries a 900-token reasoning trace while the rejected one carries 200, the summed log-probability difference is dominated by trace length before quality gets a vote. Either mask the thinking segment out of the loss and score only the final answer, or length-control your pairs deliberately. Do not leave it to chance.
+
+Fourth, how were the candidates sampled? Generate them under the mode's own published preset — temperature 1.0, top_p 0.95, top_k 20 for thinking; 0.7, 0.80, 20 for instruct. Candidates sampled at some other temperature come from a distribution the deployed model does not use, and you will be teaching preferences over responses your users will never see.
+
+Then run one example through the arithmetic. Take $\beta = 0.1$. Suppose the chosen response scores $-42.0$ under the policy and $-45.0$ under the reference, a relative gain of $+3.0$; the rejected response scores $-50.0$ under the policy and $-48.0$ under the reference, a relative loss of $-2.0$. Then $m = 0.1 \times (3.0 - (-2.0)) = 0.5$, and the loss is $-\log\sigma(0.5)\approx 0.47$. Note what moved the number: not how likely either response is, but how each one's likelihood shifted *relative to the reference*.
+
+That distinction sets up the classic wrong turn. Teams log the policy's raw log-probability of the chosen responses, watch it fall during training, and conclude the run is broken — the model is getting worse at producing the answers we told it to prefer. Look at both series and the panic dissolves. It is entirely normal for chosen log-probability to drift down from $-42$ to $-44$ while rejected log-probability collapses from $-50$ to $-60$: the margin widened from 8 to 16, which is exactly what the objective optimizes. DPO never promised to raise the chosen response's absolute likelihood. It promised to make the chosen response more characteristic of the new policy than the rejected one is. If you want an absolute likelihood floor, you need a supervised term as well — which is precisely the design ORPO adopts, in lesson 6.7. What you should watch instead is the margin, the pairwise accuracy, the mean response length, and the KL-like divergence from the reference; when chosen log-probability falls off a cliff and length collapses with it, the run really is degenerating.
+
+:::caveat
+DPO is not universally "better than RLHF". It solves one preference-learning problem with a simpler objective. PPO remains the tool when rewards are programmatic, interactive, multi-step, or discovered through online exploration, and lesson 6.8 shows a third path when outcomes can be checked outright.
+:::
+
+Removing the reward model does not remove the preferences, and every weakness lesson 6.4 catalogued survives intact: annotator disagreement, length bias, thin prompt coverage, stale candidate policies, mislabelled examples. DPO can also punish a rejected response that contained useful material, because the label applies to the whole sequence and never identifies the failing span. And because standard DPO is offline, it collects no new judgments as the policy moves; if training pushes the model into behaviour the dataset never covered, no feedback exists there at all. Iterative variants regenerate candidates and gather new pairs, which restores a data-production loop even though it still avoids PPO's machinery.
+
+The mechanical details deserve the same care as the mathematics. Padding must be masked. Prompt tokens must be excluded consistently on both sides. Truncation must never delete the evidence that determined the label — a rejected response cut off before its error is a rejected response with no visible reason to be rejected. And $\beta$ conventions differ across libraries, so a value copied from someone else's config may mean something else in yours.
+
+The durable model is pairwise policy shaping. DPO makes the desired response more characteristic of the new policy relative to a fixed baseline, and the rejected response less so. It trades a learned scalar judge and an online optimizer for an elegant offline loss — while the human judgments, the reference choice, the template branch, and the evaluation remain the real specification.

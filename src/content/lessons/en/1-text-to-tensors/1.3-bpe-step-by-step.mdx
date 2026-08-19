@@ -1,0 +1,70 @@
+---
+id: "1.3-bpe-step-by-step"
+track: "1-text-to-tensors"
+order: 3
+title: "Tokenization II: BPE, step by step"
+summary: "Byte-pair encoding merges the most frequent adjacent pair, recounts, and repeats; trace four merges by hand, then see why the ordered merge list, not the vocabulary, is what makes encoding reproducible."
+tier: "foundations"
+locale: "en"
+prerequisites: ["1.2-tokenization-i"]
+unlocks: ["1.4-sentencepiece-byte-level-token-counts"]
+analogy: "A print shop starts with one stamp per letter. Workers keep setting t beside h, so somebody cuts a th stamp. Later th keeps landing before e, so the shop cuts a the stamp. Each new stamp shortens the common jobs while every original letter stays in the drawer for unusual words. Crucially the shop keeps a numbered log of which stamp was cut when, because a job must be set the same way tomorrow as today, and the drawer's contents alone would not determine that."
+teachBack:
+  prompt: "Trace one BPE merge with real counts, then explain why encoding a new string requires the ordered merge list rather than just the final vocabulary."
+  modelAnswer: "Training starts from base units and an end-of-word marker, counts every adjacent pair over the corpus, merges the winning pair everywhere, and recounts, because merging destroys old neighbours and creates new ones. With low appearing five times, lower twice, and lowest three times, the pair l plus o occurs ten times and wins; every occurrence becomes lo, and the next count finds lo plus w at ten. Encoding a new string does not recount anything. It applies the learned merges in the rank order they were learned, which is not the same as greedily matching the longest entry in the final vocabulary: a long entry can exist that the merge sequence would never construct for a given input. That is why a tokenizer ships a merge list and not only a word list."
+quiz:
+  - question: "In the corpus where low appears 5 times, lower twice, and lowest three times, the first merge joins l and o. What is the count of the winning pair on the second round?"
+    options: ["10, for the pair lo followed by w", "5, for the pair lo followed by w", "3, for the pair e followed by s", "10, for the pair l followed by o again"]
+    correctIndex: 0
+    explanation: "After merging, all three words begin lo w, so lo plus w occurs 5 + 2 + 3 = 10 times. The pair l plus o no longer exists anywhere, which is why counts must be recomputed after every merge."
+  - question: "Does tokenizing a user's prompt learn new merges?"
+    options: ["No, it applies the fixed learned merges in their learned order", "Yes, for every new sentence", "Only when the prompt contains punctuation", "Only during fine-tuning"]
+    correctIndex: 0
+    explanation: "Changing the segmentation at inference would change which ids appear, and each id addresses an embedding row that learned its value under the original mapping."
+  - question: "Lesson 1.2 said Qwen3.8-27B's tokenizer is byte-level. What does that guarantee about BPE's base alphabet here?"
+    options: ["The base units are the 256 byte values, so no input can be unrepresentable", "The base units are English letters, so other scripts need an unknown token", "The base alphabet is learned along with the merges", "There is no base alphabet, only merged pieces"]
+    correctIndex: 0
+    explanation: "Starting from bytes removes the unknown-token problem entirely; the price is that unusual strings may expand into many byte-derived pieces rather than being rejected."
+citations:
+  - title: "Neural Machine Translation of Rare Words with Subword Units"
+    authors: "Rico Sennrich, Barry Haddow, and Alexandra Birch"
+    year: 2016
+    url: "https://arxiv.org/abs/1508.07909"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Lesson 1.2 asserted that subword pieces are learned from a corpus and left the learning unexplained. This lesson does it by hand, with a corpus small enough to count on paper, because the algorithm is genuinely simple and the interesting part is what happens *between* the merges.
+
+Take a corpus containing three words with these frequencies: *low* five times, *lower* twice, and *lowest* three times. Split every word into characters and append an end-of-word marker, written here as an underscore so that a piece ending a word is distinguishable from the same piece in the middle of one. The corpus is now `l o w _` at count 5, `l o w e r _` at count 2, and `l o w e s t _` at count 3.
+
+Count every adjacent pair, weighting by word frequency. The pair `l o` appears in all three words, giving $5 + 2 + 3 = 10$. The pair `o w` likewise gives 10. The pair `w _` appears only in *low*, giving 5. The pair `w e` appears in *lower* and *lowest*, giving 5. Then `e r` gives 2, `r _` gives 2, `e s` gives 3, `s t` gives 3, and `t _` gives 3. Two pairs are tied at the top, so the implementation's tie-breaking rule decides; take `l o`.
+
+<Figure id="bpe-merge-trace" />
+
+Merge it everywhere. The corpus becomes `lo w _` at 5, `lo w e r _` at 2, and `lo w e s t _` at 3. Here is the step people skip: **the counts must be recomputed**. The pair `l o` no longer exists anywhere, and a new unit `lo` has appeared with new neighbours. Recounting gives `lo w` at 10, which now wins outright. Merge it, and the corpus becomes `low _` at 5, `low e r _` at 2, `low e s t _` at 3, with the vocabulary having gained the piece `low`.
+
+Recount again. Now `low _` occurs 5 times and `low e` occurs $2 + 3 = 5$ times, tied, with `e s`, `s t`, and `t _` at 3 apiece and `e r`, `r _` at 2. Suppose the tie-break takes `low _`, producing a single unit for the standalone word *low*. The fourth merge then takes `low e`, giving the shared stem of *lower* and *lowest*. Four merges in, the algorithm has independently discovered something that looks like a morpheme, and it discovered it for a purely statistical reason: that string kept being adjacent to itself.
+
+Every decision above is **greedy**. The algorithm selects the best pair under the current segmentation, never reconsidering, and never planning toward a globally optimal vocabulary. Tie-breaking, the representation of word boundaries, the normalization applied beforehand, and the choice of base units are all implementation decisions, which is why two tools that both say BPE need not produce identical tokenizers.
+
+Now the distinction that matters in production. **Training** learns a vocabulary *and an ordered list of merge rules*. **Encoding** applies that fixed list. A common misreading is that encoding works by scanning the vocabulary for the longest entry that matches, the way a dictionary lookup would. It does not, and the difference is observable. Encoding applies merges in learned rank order: split into base units, then repeatedly apply the highest-ranked merge that is currently applicable. A long piece can sit in the vocabulary and still never be produced for a given input, because the merge sequence that would build it is not reachable from that input's intermediate state. Ship a model with only the vocabulary and no merge ranks and its tokenizer becomes unreproducible, even though every piece is present.
+
+Encoding also never recounts anything from your prompt. If it did, the same word could tokenize differently on Tuesday, and every id addresses an embedding row that learned its value under one specific mapping. The merge list is part of the model contract, exactly as lesson 1.2 argued for the vocabulary.
+
+:::insight
+Run the real thing next to your hand trace and the most instructive result is disagreement. Load Qwen3.8-27B's tokenizer, encode *lowest*, and you will very likely not get `low` plus `est`. Its merges were learned from an enormous multilingual corpus, so the pairs that won were the pairs frequent *there*, and the pieces reflect that corpus rather than English morphology. Watch for two more things while you are there: leading spaces usually attach to the following piece rather than standing alone, and a deliberately strange input such as an unusual emoji will expand into several byte-derived pieces. Both behaviors follow directly from a byte-level base alphabet.
+:::
+
+Frequency creates efficiency and bias in the same motion. Strings common in the training corpus become single tokens and consume one position; strings rare there remain long chains, however ordinary they are to their speakers. Capitalization, whitespace, and normalization all change which pairs were available to merge. The algorithm has no concept of a morpheme. It sometimes finds them, purely because a meaningful unit tends to be a reusable one.
+
+Vocabulary size is the governing trade. More merges shorten common sequences but enlarge the embedding table and the output projection, which for Qwen3.8-27B means 5120 numbers per row, twice over, since its input and output matrices are separate. Fewer merges shrink those matrices and lengthen every sequence, raising attention and decoding work. Lesson 5.3 revisits the choice from the training side; there is no universal token-to-word ratio to appeal to.
+
+:::warning
+The misconception worth naming is that a BPE vocabulary is a list of meaningful units, so that an odd segmentation signals a defect. The pieces are compression artifacts of one corpus. What you should actually check is reproducibility: keep the normalization policy, the base alphabet, the ordered merge list, the special-token definitions, and the exact encoder implementation together. Inspect real segmentations rather than trusting the algorithm's name, because two tokenizers labelled BPE can disagree on a string and both be correct implementations.
+:::
+
+The durable image is a ladder of reusable chunks. Start with units that can spell anything, promote the most frequent adjacent combination one rung at a time, and keep a numbered log of the promotions so the climb can be repeated exactly. The ladder compresses surface patterns. What those pieces mean is still entirely the neural network's problem.

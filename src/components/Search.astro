@@ -1,0 +1,312 @@
+---
+import type { Locale } from '~/lib/i18n'
+
+interface Props {
+  locale: Locale
+}
+
+const { locale } = Astro.props
+const isPt = locale === 'pt-br'
+
+const t = {
+  open: isPt ? 'Buscar' : 'Search',
+  label: isPt ? 'Buscar nas aulas' : 'Search lessons',
+  placeholder: isPt ? 'Buscar aulas, conceitos…' : 'Search lessons, concepts…',
+  empty: isPt ? 'Nada encontrado.' : 'No results.',
+  hint: isPt ? 'Digite para buscar' : 'Type to search',
+  close: isPt ? 'Fechar' : 'Close',
+  results: isPt ? 'Resultados' : 'Results',
+}
+---
+
+<button type="button" class="search-open" data-search-open aria-haspopup="dialog">
+  <span>{t.open}</span>
+  <kbd>⌘K</kbd>
+</button>
+
+{/*
+  A native <dialog> rather than a hand-rolled overlay: focus trapping,
+  inertness of the background and correct ARIA come from the platform. Escape
+  is handled explicitly because a populated input[type="search"] consumes the
+  first press to clear itself in Chromium.
+  The reference project we studied hand-rolled role="dialog" with no focus trap
+  and no Escape handler, which is an accessibility failure that is easy to avoid
+  by not hand-rolling it.
+*/}
+<dialog class="search" data-search-dialog aria-label={t.label}>
+  <form method="dialog" class="search__head">
+    <input
+      type="search"
+      class="search__input"
+      data-search-input
+      placeholder={t.placeholder}
+      aria-label={t.label}
+      autocomplete="off"
+      spellcheck="false"
+    />
+    <button class="search__close" value="close" aria-label={t.close}>Esc</button>
+  </form>
+
+  <p class="search__status" data-search-status role="status" aria-live="polite">{t.hint}</p>
+  <ul class="search__results" data-search-results aria-label={t.results}></ul>
+</dialog>
+
+<script define:vars={{ locale, emptyText: t.empty, hintText: t.hint }}>
+  // Pagefind builds a per-language index keyed off <html lang>, so a pt-BR
+  // visitor only ever downloads the pt-BR index. It is fetched on first open —
+  // zero bytes on initial page load, and no Worker invocation ever.
+  let pagefind = null
+  let loading = null
+
+  const dialog = document.querySelector('[data-search-dialog]')
+  const input = document.querySelector('[data-search-input]')
+  const list = document.querySelector('[data-search-results]')
+  const status = document.querySelector('[data-search-status]')
+  if (dialog && input && list && status) {
+    const loadIndex = () => {
+      if (pagefind) return Promise.resolve(pagefind)
+      if (loading) return loading
+      loading = import(/* @vite-ignore */ '/pagefind/pagefind.js')
+        .then(async (mod) => {
+          await mod.options({ baseUrl: '/' })
+          pagefind = mod
+          return mod
+        })
+        .catch((err) => {
+          // Search is an enhancement. If the index is missing the rest of the
+          // site is unaffected, so fail visibly here and nowhere else.
+          console.error('[search] index unavailable:', err)
+          status.textContent = emptyText
+          loading = null
+          return null
+        })
+      return loading
+    }
+
+    const open = () => {
+      if (!dialog.open) dialog.showModal()
+      void loadIndex()
+      input.focus()
+    }
+
+    const opener = document.querySelector('[data-search-open]')
+    opener?.addEventListener('click', open)
+
+    document.addEventListener('keydown', (ev) => {
+      const typing =
+        ev.target instanceof HTMLElement &&
+        (ev.target.tagName === 'INPUT' ||
+          ev.target.tagName === 'TEXTAREA' ||
+          ev.target.isContentEditable)
+      if ((ev.key === 'k' && (ev.metaKey || ev.ctrlKey)) || (ev.key === '/' && !typing)) {
+        ev.preventDefault()
+        open()
+      }
+    })
+
+    let seq = 0
+    const run = async (query) => {
+      const mine = ++seq
+      if (query.trim().length < 2) {
+        list.innerHTML = ''
+        status.textContent = hintText
+        return
+      }
+      const pf = await loadIndex()
+      if (!pf || mine !== seq) return
+
+      const search = await pf.search(query)
+      if (mine !== seq) return // a newer keystroke already won
+
+      const results = await Promise.all(search.results.slice(0, 8).map((r) => r.data()))
+      if (mine !== seq) return
+
+      list.innerHTML = ''
+      if (results.length === 0) {
+        status.textContent = emptyText
+        return
+      }
+      status.textContent = `${results.length}`
+      for (const r of results) {
+        const li = document.createElement('li')
+        const a = document.createElement('a')
+        // The index is first-party build output, but this is the one place a
+        // URL rather than text reaches the DOM. Resolve and compare origins
+        // rather than testing the string: `//evil.com` and `\\evil.com` both
+        // pass a `startsWith('/')` check and both leave this origin.
+        let resolved
+        try {
+          resolved = new URL(r.url, location.href)
+        } catch {
+          continue
+        }
+        if (resolved.origin !== location.origin) continue
+        a.href = resolved.pathname + resolved.search + resolved.hash
+        const title = document.createElement('span')
+        title.className = 'search__title'
+        title.textContent = r.meta?.title ?? r.url
+        const excerpt = document.createElement('span')
+        excerpt.className = 'search__excerpt'
+        // Pagefind returns highlighted HTML; keep it as text so the index can
+        // never inject markup into the page.
+        excerpt.textContent = r.excerpt.replace(/<[^>]*>/g, '')
+        a.append(title, excerpt)
+        li.append(a)
+        list.append(li)
+      }
+    }
+
+    let debounce = 0
+    input.addEventListener('input', () => {
+      window.clearTimeout(debounce)
+      debounce = window.setTimeout(() => void run(input.value), 120)
+    })
+
+    // Escape closes in one press even when the native search field has a value.
+    // Arrow keys move through results; Enter follows the focused one.
+    dialog.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault()
+        dialog.close()
+        opener?.focus()
+        return
+      }
+      if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return
+      const links = [...list.querySelectorAll('a')]
+      if (links.length === 0) return
+      ev.preventDefault()
+      const idx = links.indexOf(document.activeElement)
+      const next =
+        ev.key === 'ArrowDown'
+          ? links[(idx + 1 + links.length) % links.length]
+          : links[(idx - 1 + links.length) % links.length]
+      next?.focus()
+    })
+  }
+</script>
+
+<style>
+  .search-open {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-height: 2.15rem;
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+    color: var(--ink-muted);
+    font-family: var(--font-ui);
+    font-size: var(--text-2xs);
+    cursor: pointer;
+  }
+
+  .search-open:hover { border-color: var(--accent); color: var(--accent); }
+
+  .search-open kbd {
+    font-family: var(--font-data);
+    font-size: var(--text-3xs);
+    opacity: 0.8;
+  }
+
+  .search {
+    width: min(46rem, calc(100vw - 2rem));
+    margin-block-start: 8vh;
+    padding: 0;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-md);
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .search::backdrop {
+    background: rgb(2 13 22 / 0.74);
+    backdrop-filter: blur(5px);
+  }
+
+  .search__head {
+    display: flex;
+    gap: var(--space-2xs);
+    align-items: center;
+    padding: var(--space-md);
+    border-block-end: 2px solid var(--accent);
+  }
+
+  .search__input {
+    flex: 1;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-family: var(--font-body);
+    font-size: var(--text-lg);
+  }
+
+  .search__input:focus { outline: none; }
+
+  .search__close {
+    border: 1px solid var(--rule);
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--ink-faint);
+    font-family: var(--font-data);
+    font-size: var(--text-3xs);
+    padding: 0.2rem 0.45rem;
+    cursor: pointer;
+  }
+
+  .search__status {
+    margin: 0;
+    padding: var(--space-2xs) var(--space-sm);
+    font-family: var(--font-data);
+    font-size: var(--text-3xs);
+    letter-spacing: var(--tracking-eyebrow);
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .search__results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 55vh;
+    overflow-y: auto;
+  }
+
+  .search__results a {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3xs);
+    padding: var(--space-sm) var(--space-md);
+    border-top: 1px solid var(--rule);
+    border-radius: 0;
+    text-decoration: none;
+  }
+
+  .search__results a:hover,
+  .search__results a:focus-visible {
+    color: var(--ink-on-abyss);
+    background: var(--abyss-raised);
+  }
+
+  .search__title { font-family: var(--font-ui); font-size: var(--text-base); font-weight: var(--weight-semibold); }
+  .search__excerpt {
+    font-size: var(--text-sm);
+    color: var(--ink-muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .search__results a:hover .search__excerpt,
+  .search__results a:focus-visible .search__excerpt {
+    color: var(--ink-muted-on-abyss);
+  }
+
+  @media (max-width: 32rem) {
+    .search-open > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    .search-open::before { content: '⌕'; font: var(--text-lg) var(--font-data); }
+    .search-open kbd { display: none; }
+  }
+</style>

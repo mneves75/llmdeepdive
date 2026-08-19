@@ -1,0 +1,92 @@
+---
+id: "5.7-data-parallelism-zero-fsdp"
+track: "5-pretraining-at-scale"
+order: 7
+title: "Data parallelism, ZeRO e FSDP"
+summary: "Data parallelism compra throughput; ZeRO e FSDP fazem sharding de parâmetros, gradientes e estado do optimizer — o único jeito de 27 bilhões de parâmetros mais cerca de 324 GB de estado do AdamW caberem em cartões de 80 GB."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.6-inference-aware-scaling"]
+unlocks: ["5.8-model-parallelism"]
+analogy: "Várias cozinhas recebem pedidos diferentes de clientes, mas usam a mesma receita. O data parallelism comum dá a cada cozinha uma despensa completa e faz a média das correções de receita depois do serviço. O sharding divide o estoque da despensa, os cadernos de correção e até as fichas de receita entre as cozinhas; ingredientes são reunidos pouco antes de um prato e liberados depois. Cabe mais estoque coletivamente, mas o tráfego de entrega vira parte do cozinhar."
+teachBack:
+  prompt: "Monte o orçamento de memória persistente de treino de um modelo de 27 bilhões de parâmetros sob AdamW em mixed precision, e depois mostre o que cada estágio do ZeRO deixa num único rank de um job de 64 GPUs."
+  modelAnswer: "Os parâmetros em bf16 são 54 GB e os gradientes em bf16 outros 54 GB. O AdamW mantém master weights em fp32 mais dois momentos em fp32, o que dá 12 bytes por parâmetro, cerca de 324 GB, totalizando aproximadamente 432 GB de estado persistente antes de uma única ativação. Data parallelism replicado precisa de tudo isso em cada rank, então não consegue nem começar em cartões de 80 GB. O ZeRO-1 faz sharding só do optimizer, deixando 54 + 54 + 5,06 = cerca de 113 GB por rank em 64 ranks, ainda impossível. O ZeRO-2 também faz sharding dos gradientes, deixando cerca de 59,9 GB — viável, mas com pouco espaço para ativações. O ZeRO-3 e o FSDP fazem sharding dos parâmetros também, deixando 432/64 = cerca de 6,75 GB de estado persistente por rank, com os parâmetros completos materializados apenas transitoriamente durante o forward e o backward de cada módulo."
+quiz:
+  - question: "Sob AdamW em mixed precision, qual é a memória persistente de 27 bilhões de parâmetros antes de qualquer ativação?"
+    options: ["Cerca de 432 GB: 54 GB de pesos bf16, 54 GB de gradientes bf16 e cerca de 324 GB de master weights e momentos em fp32", "Cerca de 54 GB, o mesmo dos pesos bf16 de inferência", "Cerca de 108 GB, o dobro dos pesos bf16", "Cerca de 16 GB, correspondendo aos pesos quantizados em quatro bits"]
+    correctIndex: 0
+    explanation: "O AdamW mantém uma cópia master em fp32 e dois momentos em fp32, 12 bytes por parâmetro, então o estado de treino é aproximadamente oito vezes os pesos bf16 de serving."
+  - question: "A lição 5.6 mostrou que 48 das 64 camadas são Gated DeltaNet e guardam apenas um pequeno estado de tamanho fixo na inferência. O que isso implica para a memória de treino delas?"
+    options: ["Nada de favorável — seus parâmetros ainda precisam de gradientes e de estado completo do AdamW, então elas fazem sharding exatamente como as camadas de attention", "Elas não precisam de estado de optimizer porque seu estado é constante no comprimento da sequência", "Elas ficam de fora do sharding do ZeRO", "Elas reduzem à metade o custo dos master weights em fp32"]
+    correctIndex: 0
+    explanation: "Os 72 MiB são um estado de inferência por requisição; a memória de treino é dirigida pela contagem de parâmetros e pelos momentos do optimizer, que todo tipo de camada paga por inteiro."
+  - question: "O que o FSDP tipicamente faz all-gather antes de um módulo shardeado computar?"
+    options: ["Os parâmetros completos dele para aquela computação", "O dataset bruto completo", "Todos os checkpoints históricos", "Strings de vocabulário da internet"]
+    correctIndex: 0
+    explanation: "Os ranks trocam shards de parâmetros just in time para que cada um possa executar a operação local de forward ou backward."
+citations:
+  - title: "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models"
+    authors: "Samyam Rajbhandari et al."
+    year: 2019
+    url: "https://arxiv.org/abs/1910.02054"
+  - title: "PyTorch FSDP: Experiences on Scaling Fully Sharded Data Parallel"
+    authors: "Yanli Zhao et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2304.11277"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+O Qwen3.8-27B é distribuído como safetensors em bf16 totalizando cerca de 54 GB. Um H100 de 80 GB tem espaço para isso com 26 GB de sobra, que é por que o modelo serve confortavelmente num cartão só. Então uma pessoa razoável conclui que treiná-lo num único acelerador de 80 GB é apertado, mas concebível. Essa conclusão está errada por um fator de mais de cinco, e a distância entre 54 GB e o número real é a razão de esta lição existir.
+
+Monte o orçamento honestamente. Sob uma receita padrão de AdamW em mixed precision, existem quatro tipos de estado persistente para cada parâmetro. Os parâmetros em bf16 usados no forward pass:
+
+$$
+27\times 10^{9}\times 2\ \text{B}=54\ \text{GB}.
+$$
+
+Os gradientes em bf16 produzidos pelo backward, do mesmo formato e dtype, outros 54 GB. Então o optimizer, que é onde mora a surpresa. O AdamW mantém uma cópia master dos pesos em fp32 para que updates minúsculos não sejam aniquilados pelo arredondamento do bf16, mais duas estimativas de momento em fp32, o primeiro e o segundo momentos correntes:
+
+$$
+(4+4+4)\ \text{B/param}=12\ \text{B/param},\qquad 27\times 10^{9}\times 12\ \text{B}=324\ \text{GB}.
+$$
+
+Receitas que também acumulam gradientes em fp32 empurram isso para perto de 16 bytes por parâmetro, cerca de 432 GB de estado do lado do optimizer. Fique com a ponta conservadora e some tudo:
+
+$$
+54+54+324=432\ \text{GB de estado persistente},
+$$
+
+antes que exista uma única ativação, buffer temporário ou workspace de comunicação. O estado de treino é aproximadamente oito vezes os pesos que você serve. Um cartão de 80 GB não chega perto; nem sequer está na ordem de magnitude certa.
+
+**Data parallelism** é o ponto de partida e não faz nada quanto a isso. Dê a vários workers réplicas idênticas e exemplos diferentes; se o rank $r$ computa o gradiente $g_r$, uma redução coletiva forma a média usada por toda réplica, e partir de pesos iguais com gradientes iguais os mantém sincronizados. Com $P$ ranks, microbatch local $b$, comprimento de sequência $T$ e $a$ passos de acumulação, o batch global contém $PbaT$ tokens — então acrescentar workers muda a otimização, não meramente a velocidade. Mas cada rank ainda guarda os 432 GB inteiros. A replicação multiplica throughput e multiplica memória.
+
+**ZeRO** remove a redundância em três estágios, e vale calcular o efeito num cluster concreto. Pegue 64 ranks, um modelo, os 432 GB acima.
+
+O estágio 1 faz sharding só do estado do optimizer. Cada rank mantém parâmetros e gradientes bf16 completos, mas $1/64$ do optimizer: $324/64 = 5.06$ GB. O estado persistente por rank vira $54+54+5.06 \approx 113$ GB. Ainda impossível em cartões de 80 GB.
+
+O estágio 2 também faz sharding dos gradientes: $54/64 = 0.84$ GB. Agora $54+0.84+5.06 \approx 59.9$ GB. Isso cabe — por pouco. Restam cerca de 20 GB para ativações, temporários, fragmentação e buffers de comunicação num modelo com hidden size 5120 e sequências longas, o que a lição 5.10 vai mostrar que não é muito.
+
+O estágio 3 faz sharding dos parâmetros também, então o estado persistente é simplesmente o orçamento inteiro dividido pelo tamanho do mundo: $432/64 = 6.75$ GB por rank. Os parâmetros completos de um módulo existem só transitoriamente, materializados pouco antes de serem necessários.
+
+**Fully Sharded Data Parallel** é esse padrão totalmente shardeado implementado em torno de módulos. Antes do forward de um módulo, os ranks fazem all-gather dos shards de parâmetro dele para reconstruir os parâmetros completos localmente; depois do uso, podem voltar a shardear. Durante o backward, a comunicação reconstrói os parâmetros de novo conforme necessário, e um reduce-scatter distribui os shards de gradiente para seus donos. Onde a ordenação e a rede permitem, essa comunicação se sobrepõe à computação.
+
+:::warning
+A concepção equivocada que esta lição existe para matar é que a memória de serving prevê a memória de treino. Ela não prevê, e a razão é de cerca de oito para um em AdamW bf16. Pior, a intuição falha na direção tranquilizadora: o modelo carrega bem, um forward pass curto roda bem, e a falha chega no primeiro passo do optimizer, depois que o job já consumiu tempo de cluster. Calcule o orçamento completo — parâmetros, gradientes, master weights, os dois momentos, ativações, temporários — antes de pedir nós.
+:::
+
+A política de wrapping decide quão bem o estágio 3 de fato se comporta. Se a unidade shardeada for grande demais, a memória de pico do all-gather é grande e a sobreposição é limitada; pequena demais, e os coletivos ficam numerosos e a latência domina. Fronteiras de bloco de transformer são a escolha usual porque colocam compute substancial entre comunicações. Este modelo oferece uma unidade alternativa incomumente natural: suas 64 camadas são organizadas como 16 super-blocos repetidos de três camadas de Gated DeltaNet seguidas de uma camada de full attention. Fazer wrapping por super-bloco dá 16 unidades uniformes de cerca de 1,7 bilhão de parâmetros cada, o que é grosseiro mas perfeitamente balanceado; fazer wrapping por camada dá 64 unidades mais finas de dois formatos distintos. As duas opções são defensáveis, e só a medição decide.
+
+:::caveat
+O sharding reduz a memória persistente, mas não faz nada pelas ativações. Sequências longas, um intermediário de FFN de 17.408, intermediários de attention, buffers temporários de all-gather, fragmentação e workspaces de comunicação ainda causam falhas de out-of-memory num job cujo orçamento persistente parece confortável. A lição 5.10 ataca essa categoria diretamente.
+:::
+
+Duas consequências operacionais decorrem disso. O checkpointing vira distribuído: um gather de state-dict completo pode exceder a memória do host, então os ranks escrevem os tensores que possuem junto com metadados que reconstroem nomes e formatos globais, e retomar com um tamanho de mundo diferente exige um formato e um loader que suportem resharding. Salvar só os pesos não basta para uma continuação exata — momentos do optimizer, posição do scheduler, loss scaler, estado do gerador de números aleatórios e cursor do data loader importam todos, e a 324 GB o optimizer é a maior coisa dentro do checkpoint.
+
+As falhas também precisam ser coletivas. Se um rank tromba com dados ruins enquanto os outros entram num all-reduce, o job trava em vez de levantar uma exceção limpa. Timeouts, propagação coordenada de erro, logs cientes de rank e identificadores reprodutíveis de batch não são luxos. A topologia de rede também molda o projeto: links rápidos dentro de um nó e links mais lentos entre nós favorecem coletivos hierárquicos, e um job de estágio 3 cujos all-gathers atravessam um tecido lento pode gastar mais tempo movendo parâmetros do que usando-os.
+
+O modelo estável é computação replicada sobre dados diferentes, com estado cada vez mais shardeado por trás. Data parallelism compra throughput. ZeRO e FSDP removem memória redundante. Nenhum dos dois cria capacidade de graça: o preço é volume de comunicação, complexidade de escalonamento e semânticas de checkpoint e de falha muito mais exigentes.

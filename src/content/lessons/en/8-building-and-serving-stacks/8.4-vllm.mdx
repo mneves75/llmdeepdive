@@ -1,0 +1,80 @@
+---
+id: "8.4-vllm"
+track: "8-building-and-serving-stacks"
+order: 4
+title: "vLLM"
+summary: "Sizing a real Qwen3.8-27B deployment: how --gpu-memory-utilization and --max-model-len together decide the KV pool, and what the 64 KiB per token from lesson 7.2 buys you on one 80 GB card."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.8-pagedattention-and-continuous-batching", "8.1-pytorch-the-reference-runtime"]
+unlocks: ["8.5-sglang", "8.6-tensorrt-llm"]
+analogy: "A parking garage operator does not ask how many cars exist; he asks how many bays remain after the structural columns, the ramps, and the fire lane. Reserving a full-length bay for every arriving vehicle, in case one turns out to be a coach, empties the garage. vLLM's memory settings are that calculation: the weights are the columns, the workspace is the fire lane, and --max-model-len decides how long a bay any single vehicle is allowed to claim."
+teachBack:
+  prompt: "Size --gpu-memory-utilization and --max-model-len for Qwen3.8-27B on one 80 GB GPU, showing the arithmetic and stating what fails if you set the context length to the model's native maximum."
+  modelAnswer: "At --gpu-memory-utilization 0.90 the engine may use about 72 GB of the 80 GB card. The bf16 weights take 54 GB, leaving about 18 GB. Activation buffers, CUDA graph pools, and the per-sequence recurrent state of the DeltaNet layers must come out of that, so budget roughly 3 GB and call the KV pool about 14 GiB. At 64 KiB per token from lesson 7.2, that pool holds about 229,000 tokens of attention context in total, shared across all live sequences. A single sequence at the native 262,144-token context would need 16 GiB by itself, more than the whole pool, so setting --max-model-len 262144 fails at startup rather than degrading gracefully. Setting it to 32768 costs 2 GiB per fully extended sequence, which fits about seven simultaneous maximum-length sessions and considerably more typical ones, because paging only charges for tokens actually generated."
+quiz:
+  - question: "From lesson 7.8, why does paging let a server admit far more sessions than the maximum-length arithmetic suggests?"
+    options: ["Blocks are allocated as tokens are produced, so a session that uses 4K of a 32K limit pays for 4K", "Because the KV cache is compressed", "Because finished sessions keep their memory for reuse", "Because the model shortens long prompts automatically"]
+    correctIndex: 0
+    explanation: "Reserving each request's maximum is exactly the waste PagedAttention removes; the limit bounds a session, it does not pre-charge it."
+  - question: "Why does raising --gpu-memory-utilization to 0.98 to enlarge the KV pool tend to backfire?"
+    options: ["The fraction must also cover activation peaks, graph capture pools, fragmentation, and the GB-versus-GiB gap, so the engine runs out during warm-up or under a burst", "The flag is ignored above 0.95", "It disables continuous batching", "It forces the model into float32"]
+    correctIndex: 0
+    explanation: "The utilization fraction is a budget for everything the engine allocates, not just the cache; the last few percent is the headroom that keeps a traffic spike from becoming an out-of-memory crash."
+  - question: "Which layers of Qwen3.8-27B contribute to the paged KV pool?"
+    options: ["Only the 16 full-attention layers, at 4 KiB per token each; the 48 DeltaNet layers hold a fixed-size state instead", "All 64 layers equally", "Only the vision tower", "Only the first and last layers"]
+    correctIndex: 0
+    explanation: "Lesson 7.2 derived 64 KiB per token from 16 caching layers; the recurrent layers cost a constant per sequence rather than a cost per token."
+citations:
+  - title: "vLLM Documentation"
+    authors: "vLLM Project"
+    year: 2026
+    url: "https://docs.vllm.ai"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+You have one 80 GB GPU, a copy of Qwen3.8-27B, and a request to stand up an internal chat API for perhaps forty engineers. Two numbers decide whether that works: how much of the card the engine is allowed to claim, and how long a single conversation may become. Get them wrong in one direction and the server refuses to start; wrong in the other and it dies under the first real burst of traffic. This lesson does that sizing arithmetic explicitly, because everything else about vLLM — the OpenAI-shaped API, the scheduler, the metrics — is documentation you can read, and this is the part people get wrong.
+
+vLLM exists because of lesson 7.8. Its scheduler admits and retires requests at iteration boundaries rather than holding a fixed batch until the slowest member finishes, and its cache is paged: fixed-size blocks handed out as tokens are produced, so a session that stops after four thousand tokens never paid for the thirty-two thousand it was permitted. The engine's job at startup is to decide how large that block pool should be, and it does so by subtraction rather than by asking you.
+
+Follow the subtraction on our card. The `--gpu-memory-utilization` flag is a fraction of *total* device memory the engine may use for everything it allocates. At 0.90 on an 80 GB card that is roughly 72 GB — note this is a smaller starting point than the full-card budget lesson 9.3 works from, because the flag deliberately leaves the rest of the device unclaimed. Out of that come the weights first: 54 GB in bf16, the figure lesson 7.2 anchors. That leaves about 18 GB. But the pool is not 18 GB, because the same budget must also cover activation buffers at peak prefill width, the memory pools that CUDA graph capture pins (lesson 8.3), allocator fragmentation, and — specific to this model — the recurrent state of the 48 Gated DeltaNet layers, roughly 72 MiB per live sequence, charged per sequence rather than per token. Reserve about 3 GB for all of that and the usable KV pool is roughly 14 GiB.
+
+Now convert memory into capacity using the one number this whole track leans on. Lesson 7.2 derived 64 KiB of KV per token for this model, because only 16 of the 64 layers cache anything. So the pool holds
+
+$$
+\frac{14\ \text{GiB}}{64\ \text{KiB per token}} = 229{,}376\ \text{tokens}
+$$
+
+of attention context, pooled across every sequence alive at that instant. That is the real capacity of the machine, and it is the number to reason about — not "how many users", which depends entirely on how long their conversations are.
+
+Which brings us to `--max-model-len`. The naive move is to set it to 262144, the model's native context, on the grounds that a limit is free until someone uses it. It is not free, and the failure is immediate: a single sequence at 262,144 tokens would need 16 GiB of KV by itself, more than the entire 14 GiB pool, so the engine cannot guarantee that even one request at the declared maximum can complete. It refuses at startup with a message telling you the pool is too small for the requested context — which is the correct behavior, and much kinder than accepting the setting and deadlocking later.
+
+Set it to something the pool can actually honor. At 32768, a sequence that runs all the way to its limit costs $32{,}768 \times 64\ \text{KiB} = 2\ \text{GiB}$, so the pool holds seven such maximal sequences. In practice you will serve far more than seven concurrent users, because paging charges for tokens produced rather than tokens permitted, and a forty-person internal API mostly consists of short exchanges. The maximum-length figure is your worst case, not your expectation.
+
+```
+vllm serve Qwen/Qwen3.8-27B \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.90
+```
+
+Do not trust the estimate above over the engine. vLLM prints the size of the KV pool it actually allocated and the maximum concurrency that implies at your chosen context length. Read that line, compare it with your arithmetic, and reconcile any large gap before you benchmark anything — a mismatch usually means the workspace reserve or the recurrent-state accounting is different from what you assumed.
+
+:::warning
+The second classic wrong turn is to fight a small pool by raising `--gpu-memory-utilization` toward 0.98. It appears to work: the pool grows, the startup log looks better, and short tests pass. Then a burst arrives, prefill hits its peak activation width on a long prompt while graph capture pools are pinned, and the process is killed for running out of memory — taking every in-flight session with it. Those last few percent are not waste; they are the headroom that absorbs the difference between average and peak. Note too that the runtime reports less than the number on the box once ECC and reserved regions are taken out (lesson 9.3 does that subtraction), so several percent of apparent slack was never there.
+:::
+
+If you genuinely need the full 262,144-token context, no flag will conjure it out of one card. The honest options are more memory or fewer bytes: shard across two GPUs with tensor parallelism so both the weights and the cache divide (lesson 5.8 for the mechanics, lesson 9.9 for the interconnect cost), or shrink the per-token cost with a quantized KV format, which trades a little fidelity for a proportional increase in every capacity number above.
+
+:::caveat
+Everything here assumes your vLLM release actually supports this architecture, and support is version-specific in a way that ordinary models are not. A hybrid model needs a block manager that handles two kinds of memory at once — paged per-token blocks for 16 layers and fixed per-sequence recurrent state for 48 — and engines gained that capability at different times for different layer types. Verify on your exact version before reading any benchmark: confirm the model loads, then run the differential test from lesson 8.1 against eager PyTorch on a short deterministic prompt. An engine that silently mishandles the recurrent state produces fluent, wrong text at excellent throughput.
+:::
+
+Carry the subtraction, not the flags. Total memory times the utilization fraction, minus weights, minus workspace, equals the pool; the pool divided by 64 KiB is your token capacity; `--max-model-len` bounds the largest single claim against it and must fit inside it at least once. Every other stack in this track performs the same subtraction with different names, which is exactly why lesson 8.5 can now focus on what SGLang adds rather than repeating what it shares.

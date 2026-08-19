@@ -1,0 +1,375 @@
+---
+/**
+ * Draws one figure body. Split out of `Figure.astro` so the wrapper owns the
+ * stepper, the caption and the accessibility contract, and this owns only the
+ * four shapes.
+ *
+ * `flow` and `stack` are ordered lists, because that is what they are — an <ol>
+ * needs no ARIA at all. `grid` is a real <table> with row and column headers,
+ * because a masked attention matrix IS a table and screen readers already
+ * navigate one cell by cell announcing both headers; that deletes an entire
+ * primitive's worth of hand-written ARIA. Only `plot` uses SVG, and even there
+ * every string stays in HTML.
+ */
+import { positionOn, ticksFor, seriesPath, binOf } from '~/lib/figures/geometry'
+import { formatNumber, type Locale } from '~/lib/i18n'
+import type { FigureBody, FigureStep, Localised, PlotSeries } from '~/lib/figures/types'
+
+interface Props {
+  body: FigureBody
+  locale: Locale
+  /** Unique within the page; used to link the plot to its data table. */
+  idBase: string
+}
+
+const { body, locale, idBase } = Astro.props
+const t = (value: Localised): string => value[locale]
+const n = (value: number): string => formatNumber(locale, value)
+
+const maskedLabel = locale === 'pt-br' ? 'bloqueado' : 'masked'
+const dataLabel = locale === 'pt-br' ? 'Ver os dados desta figura' : 'View this figure’s data'
+const scrollLabel = locale === 'pt-br' ? 'Figura rolável horizontalmente' : 'Horizontally scrollable figure'
+
+/** Share of the total, as a percentage. Rendered as text as well as width. */
+const shareOf = (steps: readonly FigureStep[], step: FigureStep): number | null => {
+  const total = steps.reduce((sum, s) => sum + (s.weight ?? 0), 0)
+  if (!total || step.weight === undefined) return null
+  return (step.weight / total) * 100
+}
+
+/**
+ * Every distinct x across all series AND all marks, ascending — the data
+ * table's row keys.
+ *
+ * Marks must be included: the SVG is aria-hidden, so the table is the only
+ * accessible representation, and on the roofline the marks ARE the point of the
+ * figure (`batch-1 decode` at x=1, `prefill 8k` at x=8192). Building rows from
+ * line endpoints alone silently dropped both.
+ */
+const plotRows =
+  body.kind === 'plot'
+    ? [
+        ...new Set(
+          body.series.flatMap((series) => [
+            ...series.points.map(([x]) => x),
+            ...(series.marks ?? []).map((mark) => mark.at[0]),
+          ]),
+        ),
+      ].sort((a, b) => a - b)
+    : []
+
+/** A series' value at x: an explicit point, else a mark placed there. */
+const valueAt = (series: PlotSeries, x: number): number | null => {
+  const point = series.points.find(([px]) => px === x)
+  if (point) return point[1]
+  const mark = (series.marks ?? []).find((m) => m.at[0] === x)
+  return mark ? mark.at[1] : null
+}
+
+const gridValues =
+  body.kind === 'grid' ? body.cells.flat().filter((v): v is number => v !== null) : []
+const gridMin = gridValues.length ? Math.min(...gridValues) : 0
+const gridMax = gridValues.length ? Math.max(...gridValues) : 1
+---
+
+{body.kind === 'flow' && (
+  <ol class="fig-flow">
+    {body.steps.map((step) => (
+      <li class="fig-flow__step" data-pigment={step.pigment ?? 'accent'}>
+        <span class="fig-flow__label">{t(step.label)}</span>
+        {step.detail && <span class="fig-flow__detail">{t(step.detail)}</span>}
+      </li>
+    ))}
+  </ol>
+)}
+
+{body.kind === 'stack' && (
+  <ol class="fig-stack" data-direction={body.direction}>
+    {body.steps.map((step) => {
+      const share = shareOf(body.steps, step)
+      return (
+        <li class="fig-stack__band" data-pigment={step.pigment ?? 'accent'}>
+          <span class="fig-stack__bar" style={`--share: ${share === null ? 100 : share.toFixed(2)}%`}></span>
+          <span class="fig-stack__label">{t(step.label)}</span>
+          {step.detail && <span class="fig-stack__detail">{t(step.detail)}</span>}
+          {/* The proportion is stated, not only drawn: a bar alone is not a number. */}
+          {/* A nonzero band rounded to "0%" contradicts both its bar and its
+              own detail text — the DeltaNet state is ~0.1% of the budget, not
+              nothing. Below half a percent, say so rather than lie. */}
+          {share !== null && (
+            <span class="fig-stack__share">{share < 0.5 ? `<1%` : `${n(Math.round(share))}%`}</span>
+          )}
+        </li>
+      )
+    })}
+  </ol>
+)}
+
+{body.kind === 'grid' && (
+  <div class="fig-scroll" role="region" tabindex="0" aria-label={scrollLabel}>
+    <table class="fig-grid">
+      <thead>
+        <tr>
+          <td></td>
+          {body.columns.map((column) => <th scope="col">{t(column)}</th>)}
+        </tr>
+      </thead>
+      <tbody>
+        {body.rows.map((row, r) => (
+          <tr>
+            <th scope="row">{t(row)}</th>
+            {body.columns.map((_, c) => {
+              const cell = body.cells[r]?.[c] ?? null
+              return cell === null
+                ? <td class="fig-grid__cell fig-grid__cell--masked"><span class="visually-hidden">{maskedLabel}</span><span aria-hidden="true">·</span></td>
+                : <td class="fig-grid__cell" data-bin={binOf(cell, gridMin, gridMax, body.bins)}>{n(cell)}</td>
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+)}
+
+{body.kind === 'plot' && (
+  <div class="fig-plot">
+    <div class="fig-plot__area">
+      <svg class="fig-plot__svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        {ticksFor(body.yAxis).map((tick) => (
+          <line x1="0" x2="100" y1={100 - positionOn(body.yAxis, tick) * 100} y2={100 - positionOn(body.yAxis, tick) * 100} class="fig-plot__grid" vector-effect="non-scaling-stroke" />
+        ))}
+        {body.series.map((series) => (
+          <path d={seriesPath(body.xAxis, body.yAxis, series.points)} class="fig-plot__line" data-pigment={series.pigment} vector-effect="non-scaling-stroke" />
+        ))}
+      </svg>
+      {body.series.flatMap((series) =>
+        (series.marks ?? []).map((mark) => {
+          const x = positionOn(body.xAxis, mark.at[0]) * 100
+          // A mark centred on its point overflows the frame near either edge —
+          // and a label clipped by the figure border is a label the reader
+          // cannot finish. Anchor it inward instead of centring it there.
+          const anchor = x > 78 ? 'end' : x < 12 ? 'start' : 'center'
+          return (
+            <span
+              class="fig-plot__mark"
+              data-pigment={series.pigment}
+              data-anchor={anchor}
+              style={`--x: ${x.toFixed(2)}%; --y: ${(positionOn(body.yAxis, mark.at[1]) * 100).toFixed(2)}%`}
+            >{t(mark.label)}</span>
+          )
+        }),
+      )}
+    </div>
+
+    {/* Ticks are HTML, not SVG <text>: an <svg> with a viewBox scales its font
+        with the box, which breaks browser zoom and large-text settings. They
+        also get their own grid cells rather than being overlaid on the plot —
+        an earlier version absolutely positioned them inside the plot area and
+        they printed straight through the axis titles. */}
+    <div class="fig-plot__yticks" data-pagefind-ignore>
+      {ticksFor(body.yAxis).map((tick) => (
+        <span style={`--pos: ${(positionOn(body.yAxis, tick) * 100).toFixed(2)}%`}>{n(tick)}</span>
+      ))}
+    </div>
+    <div class="fig-plot__xticks" data-pagefind-ignore>
+      {ticksFor(body.xAxis).map((tick) => (
+        <span style={`--pos: ${(positionOn(body.xAxis, tick) * 100).toFixed(2)}%`}>{n(tick)}</span>
+      ))}
+    </div>
+
+    <p class="fig-plot__axis fig-plot__axis--x">{t(body.xAxis.label)}{body.xAxis.unit ? ` (${body.xAxis.unit})` : ''}</p>
+    <p class="fig-plot__axis fig-plot__axis--y">{t(body.yAxis.label)}{body.yAxis.unit ? ` (${body.yAxis.unit})` : ''}</p>
+
+    <ul class="fig-plot__legend">
+      {body.series.map((series) => (
+        <li data-pigment={series.pigment}>{t(series.label)}</li>
+      ))}
+    </ul>
+
+    {/* A one-line alt text cannot convey a curve. The disclosure table is the
+        real accessible equivalent, and it is what makes the figure printable
+        and findable by search. */}
+    <details class="fig-plot__data">
+      <summary>{dataLabel}</summary>
+      <div class="fig-scroll" role="region" tabindex="0" aria-label={scrollLabel}>
+        <table class="fig-grid">
+          <thead>
+            <tr>
+              <th scope="col">{t(body.xAxis.label)}</th>
+              {body.series.map((series) => <th scope="col">{t(series.label)}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {/* Rows come from the UNION of x coordinates, looked up per series.
+                Pairing by array index instead was actively wrong: the roofline's
+                two series share no x values (bandwidth runs 0.1→ridge, compute
+                runs ridge→10000), so index pairing printed the compute roof's
+                value against x=0.1 and dropped its x=10000 point entirely. An
+                accessible table that misstates the data is worse than none. */}
+            {plotRows.map((x) => (
+              <tr>
+                <th scope="row">{n(x)}</th>
+                {body.series.map((series) => {
+                  const value = valueAt(series, x)
+                  return <td>{value === null ? '—' : n(value)}</td>
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </div>
+)}
+
+<style>
+  /* Pigments are named, never raw hex — a hex inside a component is invisible to
+     scripts/a11y-contrast.mjs, which is exactly how the explorer's twelve
+     literal colours escaped every gate. */
+  [data-pigment='accent'] { --fig-pigment: var(--accent); }
+  [data-pigment='sonar'] { --fig-pigment: var(--sonar); }
+  [data-pigment='coral'] { --fig-pigment: var(--coral); }
+  [data-pigment='kelp'] { --fig-pigment: var(--kelp); }
+  [data-pigment='muted'] { --fig-pigment: var(--ink-faint); }
+
+  /* --- flow: an ordered list of stages ----------------------------------
+     The class is DOUBLED on purpose. `Lesson.astro` styles prose lists with
+     `.prose :global(ol)` at specificity (0,1,1); Astro scopes component styles
+     with `:where()`, which adds zero specificity, so a single `.fig-flow`
+     (0,1,0) loses and every flow rendered as a vertical prose list. Doubling
+     gives (0,2,0) and the layout stays owned by the component that draws it. */
+  .fig-flow.fig-flow {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+    gap: var(--space-2xs);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .fig-flow__step {
+    display: grid;
+    align-content: start;
+    gap: var(--space-3xs);
+    padding: var(--space-xs);
+    border: 1px solid var(--rule);
+    border-top: 2px solid var(--fig-pigment, var(--accent));
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+  }
+  .fig-flow__step + .fig-flow__step { position: relative; }
+  /* The connector is decorative and marked so — the <ol> already carries order. */
+  .fig-flow__step + .fig-flow__step::before {
+    content: '';
+    position: absolute;
+    inset-inline-start: calc(var(--space-2xs) * -1);
+    inset-block-start: 50%;
+    width: var(--space-2xs);
+    border-top: 1px solid var(--rule-strong);
+  }
+  .fig-flow__label { font-weight: var(--weight-semibold); line-height: var(--leading-snug); text-wrap: balance; }
+  .fig-flow__detail { color: var(--ink-muted); font-family: var(--font-data); font-size: var(--text-3xs); }
+
+  /* --- stack: proportional bands, bottom-up by default ------------------ */
+  /* Doubled for the same reason as .fig-flow above. */
+  .fig-stack.fig-stack { display: grid; gap: var(--space-3xs); margin: 0; padding: 0; list-style: none; }
+  .fig-stack[data-direction='up'] { direction: ltr; }
+  .fig-stack__band {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'bar bar' 'label share' 'detail share';
+    gap: 0 var(--space-sm);
+    padding-block: var(--space-3xs) var(--space-2xs);
+    border-bottom: 1px solid var(--rule);
+  }
+  .fig-stack__bar {
+    grid-area: bar;
+    width: var(--share);
+    height: 6px;
+    margin-bottom: var(--space-3xs);
+    border-radius: var(--radius-xs);
+    background: var(--fig-pigment, var(--accent));
+  }
+  .fig-stack__label { grid-area: label; font-weight: var(--weight-semibold); }
+  .fig-stack__detail { grid-area: detail; color: var(--ink-muted); font-family: var(--font-data); font-size: var(--text-3xs); }
+  .fig-stack__share { grid-area: share; align-self: center; color: var(--ink-muted); font-family: var(--font-data); font-size: var(--text-2xs); }
+
+  /* --- grid: a real table ------------------------------------------------ */
+  .fig-scroll { overflow-x: auto; }
+  .fig-scroll:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .fig-grid { width: 100%; border-collapse: collapse; font-family: var(--font-data); font-size: var(--text-3xs); }
+  .fig-grid th, .fig-grid td { padding: 0.35em 0.5em; text-align: center; border: 1px solid var(--rule); }
+  .fig-grid thead th, .fig-grid tbody th { color: var(--ink-muted); font-weight: var(--weight-semibold); white-space: nowrap; }
+  .fig-grid tbody th { text-align: start; }
+  /* Four discrete bins, not a continuous ramp: a ramp can reach any contrast
+     at all and no gate would see it. Text stays --ink on every level. */
+  .fig-grid__cell[data-bin='0'] { background: color-mix(in srgb, var(--accent) 6%, var(--paper)); }
+  .fig-grid__cell[data-bin='1'] { background: color-mix(in srgb, var(--accent) 16%, var(--paper)); }
+  .fig-grid__cell[data-bin='2'] { background: color-mix(in srgb, var(--accent) 28%, var(--paper)); }
+  .fig-grid__cell[data-bin='3'] { background: color-mix(in srgb, var(--accent) 42%, var(--paper)); }
+  .fig-grid__cell--masked { color: var(--ink-faint); background: repeating-linear-gradient(45deg, transparent, transparent 3px, var(--rule) 3px, var(--rule) 4px); }
+
+  /* --- plot: SVG geometry, HTML strings ---------------------------------- */
+  /* Explicit gutters for the axis furniture. The tick columns and rows are real
+     grid tracks, so a tick can never overlap an axis title however long the
+     translated label is. */
+  .fig-plot {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      'ytitle yticks area'
+      '.      .      xticks'
+      '.      .      xtitle'
+      'legend legend legend'
+      'data   data   data';
+    gap: var(--space-3xs) var(--space-2xs);
+  }
+  .fig-plot__area { grid-area: area; position: relative; aspect-ratio: 16 / 9; min-height: 11rem; }
+  .fig-plot__svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .fig-plot__grid { stroke: var(--rule); stroke-width: 1; }
+  .fig-plot__line { fill: none; stroke: var(--fig-pigment, var(--accent)); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+
+  .fig-plot__yticks, .fig-plot__xticks {
+    position: relative;
+    font-family: var(--font-data);
+    font-size: var(--text-3xs);
+    color: var(--ink-faint);
+  }
+  .fig-plot__yticks span, .fig-plot__xticks span { position: absolute; white-space: nowrap; }
+  .fig-plot__yticks { grid-area: yticks; min-width: 2.2rem; }
+  .fig-plot__yticks span { inset-block-end: var(--pos); inset-inline-end: 0; transform: translateY(50%); }
+  .fig-plot__xticks { grid-area: xticks; height: 1.1rem; }
+  .fig-plot__xticks span { inset-inline-start: var(--pos); inset-block-start: 0; transform: translateX(-50%); }
+  .fig-plot__mark {
+    position: absolute;
+    inset-inline-start: var(--x);
+    inset-block-end: var(--y);
+    transform: translate(-50%, 50%);
+    max-width: 100%;
+    padding: 0.1rem 0.35rem;
+    border: 1px solid var(--fig-pigment, var(--accent));
+    border-radius: var(--radius-xs);
+    background: var(--paper-raised);
+    font-family: var(--font-data);
+    font-size: var(--text-3xs);
+    white-space: nowrap;
+  }
+  .fig-plot__mark[data-anchor='end'] { transform: translate(-100%, 50%); }
+  .fig-plot__mark[data-anchor='start'] { transform: translate(0, 50%); }
+  .fig-plot__axis { margin: 0; color: var(--ink-muted); font-family: var(--font-data); font-size: var(--text-3xs); }
+  .fig-plot__axis--x { grid-area: xtitle; text-align: center; }
+  .fig-plot__axis--y { grid-area: ytitle; align-self: center; writing-mode: vertical-rl; rotate: 180deg; }
+  /* Doubled for the same reason as .fig-flow: this is a <ul> inside .prose,
+     and `.prose :global(ul)` (0,1,1) would otherwise force display:grid. */
+  .fig-plot__legend.fig-plot__legend { grid-area: legend; display: flex; flex-wrap: wrap; gap: var(--space-sm); margin: var(--space-2xs) 0 0; padding: 0; list-style: none; font-size: var(--text-2xs); }
+  .fig-plot__legend li { display: inline-flex; align-items: center; gap: var(--space-3xs); }
+  .fig-plot__legend li::before { content: ''; width: 0.9rem; height: 3px; border-radius: var(--radius-xs); background: var(--fig-pigment, var(--accent)); }
+  .fig-plot__data { grid-area: data; margin-top: var(--space-md); font-size: var(--text-2xs); }
+  .fig-plot__data summary { color: var(--ink-muted); cursor: pointer; }
+  .fig-plot__data[open] summary { margin-bottom: var(--space-2xs); }
+
+  @media (max-width: 34rem) {
+    .fig-plot__area { aspect-ratio: 4 / 3; }
+    .fig-flow.fig-flow { grid-template-columns: 1fr; }
+    .fig-flow__step + .fig-flow__step::before { display: none; }
+  }
+</style>

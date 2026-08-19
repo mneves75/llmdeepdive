@@ -1,0 +1,83 @@
+---
+id: "4.7-rope"
+track: "4-transformer"
+order: 7
+title: "Positional encoding II: RoPE"
+summary: "Rotary position embeddings rotacionam pares de query e key para que o produto escalar carregue posição relativa — e o Qwen3.8-27B as aplica a apenas 64 das 256 dimensões de cada head, com seções multimodais e um contexto nativo de 262.144 tokens."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["4.6-positional-encoding-sinusoidal-learned"]
+unlocks: ["4.8-alibi-relative-bias"]
+analogy: "Dois faroleiros giram setas de direção idênticas por um valor definido pelos seus marcos quilométricos. Quando comparam as setas, a orientação inicial compartilhada importa, mas o alinhamento entre as setas depende da diferença entre os marcos. RoPE faz isso em muitos planos bidimensionais com velocidades de rotação diferentes: o conteúdo fornece as setas, a posição as gira e a attention mede o alinhamento relativo. O Qwen deixa três quartos das dimensões de cada seta sem rotação — puro conteúdo, sem marco quilométrico algum."
+teachBack:
+  prompt: "Explique como RoPE injeta posição relativa na attention e descreva a configuração específica do Qwen3.8-27B: rotação parcial, frequência base, seções multimodais e comprimento de contexto."
+  modelAnswer: "RoPE agrupa as features de query e key em pares bidimensionais e rotaciona cada par por um ângulo proporcional à posição do token, com frequência diferente por par. Como rotações são ortogonais, o produto escalar entre uma query rotacionada na posição m e uma key rotacionada na posição n depende apenas do conteúdo e do deslocamento n menos m, então os scores de attention carregam posição relativa sem somar nada ao residual stream. O Qwen3.8-27B aplica isso parcialmente: com partial_rotary_factor 0,25, só 64 das 256 dimensões de cada head são rotacionadas — 32 pares — enquanto 192 dimensões ficam livres de posição. Sua base de frequência theta é 10.000.000, e os 32 pares são divididos em seções MRoPE intercaladas de 11, 11 e 10 para as posições temporal, de altura e de largura de entradas multimodais. O contexto nativo é de 262.144 tokens, extensível a 1M com YaRN."
+quiz:
+  - question: "O Qwen3.8-27B tem dimensão de head 256 e partial_rotary_factor 0,25. Quantas dimensões por head o RoPE rotaciona?"
+    options: ["64, organizadas como 32 pares bidimensionais", "256, todas elas", "128, exatamente metade", "16, a raiz quadrada de 256"]
+    correctIndex: 0
+    explanation: "256 × 0,25 = 64 dimensões rotacionadas, ou seja, 32 planos de rotação; as 192 dimensões restantes carregam conteúdo puro, sem rotação posicional."
+  - question: "Por que attention baseada só em conteúdo precisa de algum mecanismo posicional (lição 4.6)?"
+    options: ["Attention sobre vetores de token não ordenados é equivariante a permutações, então reordenações são indistinguíveis", "O softmax não lida com scores negativos", "O causal mask apaga o conteúdo dos tokens", "Embeddings são inteiros"]
+    correctIndex: 0
+    explanation: "Como a lição 4.6 mostrou, permutar os vetores de entrada apenas permuta as saídas de attention; algum sinal de posição — vetores somados ou, aqui, rotações — precisa quebrar a simetria."
+  - question: "A quais tensores o RoPE é aplicado?"
+    options: ["Queries e keys", "Apenas values", "Escalares de loss", "IDs de vocabulário depois da amostragem"]
+    correctIndex: 0
+    explanation: "Rotacionar queries e keys muda seus produtos escalares conforme a posição relativa; values não são rotacionados."
+citations:
+  - title: "RoFormer: Enhanced Transformer with Rotary Position Embedding"
+    authors: "Jianlin Su et al."
+    year: 2021
+    url: "https://arxiv.org/abs/2104.09864"
+  - title: "YaRN: Efficient Context Window Extension of Large Language Models"
+    authors: "Bowen Peng et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.00071"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+A lição 4.6 terminou com uma queixa: encodings absolutos carimbam "este é o token 37" na entrada, quando o que a attention geralmente precisa é de "esta key está três tokens atrás desta query". O problema concreto é fazer o *próprio score* — o produto escalar query–key — depender do deslocamento relativo, sem emaranhar posição no residual stream e em cada vetor de value pelo caminho. **Rotary position embedding** (RoPE) resolve isso com geometria: rotaciona queries e keys por ângulos dependentes da posição e deixa o produto escalar fazer a subtração.
+
+Comece em duas dimensões. Um par de features $(x_0,x_1)$ na posição $m$ é rotacionado pelo ângulo $m\theta$:
+
+$$
+R(m\theta)=
+\begin{bmatrix}
+\cos(m\theta)&-\sin(m\theta)\\
+\sin(m\theta)&\cos(m\theta)
+\end{bmatrix}.
+$$
+
+A projeção de conteúdo fornece a seta; a posição a gira. A rotação preserva a norma do vetor, então as estatísticas de score da lição 4.3 sobrevivem intactas. O ganho é a identidade
+
+$$
+(R(m\theta)q)^\top(R(n\theta)k)
+=q^\top R((n-m)\theta)k.
+$$
+
+Duas rotações absolutas se encontram num produto escalar e colapsam numa única rotação pela *diferença* $n-m$. Cada vetor é rotacionado pelo seu próprio índice absoluto, e ainda assim o score depende apenas do conteúdo e do deslocamento relativo — exatamente a interface que pedimos. Values não são rotacionados, nada é somado a embeddings, e o mecanismo se compõe de forma limpa com o causal mask e com cache. O esquema completo apenas repete esse truque em muitos pares de features, com frequências $\theta_i$ espaçadas geometricamente e derivadas de uma base $\theta$: planos rápidos resolvem deslocamentos finos, planos lentos cobrem faixas amplas — a ideia do banco de relógios senoidais realocada da entrada para o score.
+
+:::warning
+O equívoco mais comum: "RoPE é um positional embedding, então é somado aos embeddings de token". Nada é somado em lugar nenhum. RoPE é uma operação aplicada a queries e keys depois das suas projeções e antes do produto escalar — o residual stream e os values nunca veem posição. Confundir as duas coisas tem consequência prática: uma key em cache já carrega sua rotação, e um código que a rotaciona de novo, ou que reinicia os índices de posição de forma errada, compara silenciosamente os deslocamentos errados.
+:::
+
+Agora a suposição razoável mas errada a ser corrigida: a de que um modelo rotaciona *todas* as dimensões de cada head. O Qwen3.8-27B não rotaciona. Sua configuração define `partial_rotary_factor` como 0,25, e vale fazer a conta à mão. A dimensão de head é 256, então a fatia rotacionada é
+
+$$
+256 \times 0.25 = 64
+$$
+
+dimensões por head — e, como cada plano de rotação consome um par de dimensões, isso dá $64 \div 2 = 32$ planos. As $256 - 64 = 192$ dimensões restantes de cada query e de cada key nunca são rotacionadas: elas casam por conteúdo puro, cegas à posição, enquanto as 64 dimensões rotativas carregam todo o sinal posicional. Rotação parcial é uma alavanca de projeto de verdade — reserva a maior parte do head para casamento de conteúdo e concentra a posição num subespaço dedicado.
+
+Mais dois números fecham o retrato rotativo do Qwen. Primeiro, a base de frequência: o RoPE clássico usava $\theta = 10{,}000$; o Qwen3.8-27B usa $\theta = 10{,}000{,}000$. Uma base maior estica todos os comprimentos de onda, desacelerando os planos para que posições separadas por centenas de milhares de tokens ainda caiam em fases distinguíveis — pré-requisito para o seu contexto nativo de 262.144 tokens. Segundo, os 32 planos não formam um banco indiferenciado. O modelo é multimodal, e um patch de vídeo tem *três* coordenadas relevantes: quando (frame) e onde (linha, coluna). O **MRoPE** do Qwen divide os 32 planos em seções intercaladas de $[11, 11, 10]$ — confira: $11 + 11 + 10 = 32$ — atribuídas às posições temporal, de altura e de largura, respectivamente. Para texto comum, as três coordenadas coincidem com o índice do token; para imagens e vídeo, cada seção rotaciona segundo o seu próprio eixo, dando ao mesmo mecanismo de attention uma noção nativa de layout bidimensional e temporal. Como patches de imagem entram na sequência de tokens é a história da lição 4.17.
+
+Além dos 262.144 tokens nativos, o model card especifica extensão para 1M tokens via YaRN, que reescala o escalonamento de frequências para que posições desconhecidas caiam em faixas de fase familiares, em vez de extrapolar ângulos crus. A cautela da lição 4.6 vale com força total: uma fórmula que *produz* ângulos na posição 900.000 não promete que a rede treinada se comporte lá, e é por isso que métodos de extensão existem e por isso que são avaliados por recuperação de longo alcance, e não presumidos.
+
+A interação do RoPE com o decode merece uma frase de antecipação: keys em cache mantêm a rotação da sua posição absoluta original, enquanto cada nova query chega com a rotação da posição atual, então a identidade de deslocamento relativo continua valendo conforme a sequência cresce — uma das várias razões pelas quais esse esquema venceu em modelos decoder-only. A aritmética do cache em si aparece na lição 7.2, e apenas as 16 camadas de attention completa do Qwen fazem qualquer coisa disso; suas 48 camadas DeltaNet acompanham a ordem de forma recorrente, sem maquinaria rotativa alguma (lição 4.15).
+
+A percepção duradoura: a posição pode entrar num modelo por uma *operação* em vez de uma *soma*. RoPE transforma deslocamento em fase relativa dentro da similaridade query–key — e o Qwen3.8-27B mostra os refinamentos de 2026: rotacionar apenas um quarto do head, desacelerar o relógio em três ordens de grandeza e distribuir os planos entre tempo, altura e largura.

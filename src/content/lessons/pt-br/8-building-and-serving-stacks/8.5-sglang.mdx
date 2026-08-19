@@ -1,0 +1,76 @@
+---
+id: "8.5-sglang"
+track: "8-building-and-serving-stacks"
+order: 5
+title: "SGLang"
+summary: "Quando o tráfego são programas estruturados em vez de prompts isolados, o RadixAttention transforma prefixos compartilhados em memória compartilhada e o decoding restrito transforma um schema em garantia."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["8.4-vllm"]
+unlocks: ["8.12-choosing-your-stack"]
+analogy: "Um escritório de advocacia não redigita o contrato padrão para cada cliente. Ele mantém um documento mestre e arquiva apenas as emendas de cada cliente, e dois processos que começam idênticos compartilham as mesmas páginas arquivadas até o momento em que divergem. O arquivamento funciona porque a parte compartilhada é byte a byte idêntica desde a primeira página: mude uma palavra no cabeçalho e os dois processos não compartilham absolutamente nada. O RadixAttention arquiva blocos de KV do mesmo jeito, casados por ids de token desde a posição um."
+teachBack:
+  prompt: "Um agente dispara 40 chamadas que começam todas com o mesmo system prompt e schema de tools de 3.000 tokens. Quantifique o que o compartilhamento de prefixo economiza no Qwen3.8-27B e nomeie o único hábito que destrói a economia inteira."
+  modelAnswer: "A 64 KiB de KV por token da lição 7.2, um prefixo de 3.000 tokens custa cerca de 188 MiB de cache. Sem compartilhamento, 40 chamadas guardam 40 cópias separadas, cerca de 7,3 GiB, e cada chamada paga o compute de prefill desses 3.000 tokens, 120.000 tokens de prefill no total. Com o RadixAttention o prefixo é armazenado uma vez — cerca de 188 MiB — e sofre prefill uma vez, com cada chamada guardando apenas os blocos do seu próprio sufixo divergente. O hábito que destrói isso é colocar qualquer coisa volátil no topo do prompt: um timestamp, um id de requisição, uma lista de tools embaralhada ou uma saudação por usuário. O casamento é exato e ancorado no prefixo por ids de token, então um único token diferente na primeira linha reduz o prefixo compartilhado a nada e toda chamada paga o preço cheio."
+quiz:
+  - question: "Por que conteúdo volátil como um timestamp deve ficar no fim do prompt, e não no começo?"
+    options: ["O casamento de prefixo é exato e ancorado na posição um, então um token diferente logo no início significa que nenhum bloco é compartilhado", "Timestamps confundem o tokenizer", "O modelo lê prompts de trás para frente", "Tokens tardios são cacheados, mas os iniciais não"]
+    correctIndex: 0
+    explanation: "Uma radix tree sobre ids de token só compartilha o trecho inicial comum; divergir no token um deixa um prefixo compartilhado vazio, e tudo depois dele é recomputado."
+  - question: "Pela lição 8.4, o que economizar memória de KV via compartilhamento de prefixo compra de fato numa placa fixa?"
+    options: ["Um pool efetivo de tokens maior e, portanto, mais sessões concorrentes no mesmo comprimento de contexto", "Mais FLOPs por segundo", "Um modelo menor em disco", "Menos banda por token para os pesos"]
+    correctIndex: 0
+    explanation: "Concorrência é o tamanho do pool dividido pelos tokens por sessão; recuperar gibibytes de prefixo duplicado aumenta o numerador sem tocar nos pesos."
+  - question: "O que o decoding restrito por gramática garante, e o que ele não garante?"
+    options: ["Garante que a saída obedece ao schema, não que o conteúdo está correto ou bem raciocinado", "Garante exatidão factual", "Garante latência menor", "Garante que o modelo usou thinking mode"]
+    correctIndex: 0
+    explanation: "Mascarar tokens não permitidos antes do sampling impõe apenas o formato; um objeto válido pelo schema ainda pode estar errado, então validar o significado continua sendo seu trabalho."
+citations:
+  - title: "SGLang Documentation"
+    authors: "SGLang Team"
+    year: 2026
+    url: "https://docs.sglang.ai"
+  - title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    authors: "Lianmin Zheng et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2312.07104"
+  - title: "SGLang Cookbook: Qwen3.8-27B"
+    authors: "SGLang Team"
+    year: 2026
+    url: "https://lmsysorg.mintlify.app/cookbook/autoregressive/Qwen/Qwen3.8-27B"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Seu tráfego não é o que a lição 8.4 supôs. Em vez de usuários independentes fazendo perguntas independentes, você está rodando um agente: uma tarefa se abre em quarenta chamadas ao modelo, cada uma começando com o mesmo system prompt, os mesmos schemas de tools e os mesmos exemplos few-shot — cerca de três mil tokens de preâmbulo idêntico — e divergindo apenas no último parágrafo. Toda chamada precisa devolver um objeto JSON que o seu código vai parsear. Num engine de propósito geral essa carga é silenciosamente patológica, e entender por quê é a razão inteira de o SGLang existir.
+
+Precifique o desperdício com o número que você já tem. A lição 7.2 estabeleceu 64 KiB de KV por token para o Qwen3.8-27B. Um preâmbulo de três mil tokens ocupa, portanto,
+
+$$
+3{,}000 \times 64\ \text{KiB} = 187.5\ \text{MiB}
+$$
+
+de cache. Quarenta chamadas concorrentes, cada uma guardando a própria cópia, dão cerca de 7,3 GiB — sobre o pool de catorze gibibytes que dimensionamos na lição 8.4, isso é mais da metade da capacidade inteira da máquina gasta armazenando quarenta coisas idênticas. O compute é igualmente ruim: o preâmbulo sofre prefill quarenta vezes, cento e vinte mil tokens de trabalho de attention para produzir um prefixo que o engine já computou trinta e nove vezes naquele mesmo segundo.
+
+O RadixAttention é a correção, e seu formato decorre do que o cache de fato é. Blocos de KV são função dos ids de token que os produziram e de suas posições, então duas sequências que começam com a mesma sequência de tokens têm blocos idênticos para esse trecho. O SGLang organiza, portanto, o pool de blocos como uma radix tree indexada por ids de token: uma requisição que chega percorre a árvore desde a raiz, reaproveita cada bloco ao longo do caminho casado mais longo e aloca apenas para o sufixo em que diverge. A eviction é least-recently-used sobre essa árvore, então prefixos quentes — o seu system prompt — permanecem residentes enquanto conversas avulsas envelhecem e saem. No nosso exemplo o preâmbulo é armazenado uma vez, com cerca de 188 MiB, e sofre prefill uma vez, recuperando cerca de sete gibibytes de pool e trinta e nove quarenta avos do custo de prefill do preâmbulo.
+
+:::warning
+A virada errada clássica é ligar o compartilhamento de prefixo, não medir melhoria nenhuma e concluir que o recurso não funciona. Quase sempre o prompt começa com algo volátil: um timestamp, um id de requisição ou de trace, uma saudação por usuário, uma lista de tools serializada em ordem diferente a cada vez, ou um bloco de documentos recuperados cuja ordenação não é estável. O casamento é exato e ancorado na posição um, então um único token diferente no topo colapsa o prefixo compartilhado a zero. Reestruture o prompt para que tudo estável venha primeiro e tudo variável venha por último, e então meça a taxa de acerto de cache que o engine reporta em vez de inferi-la a partir da latência.
+:::
+
+A segunda coisa que o SGLang trata como cidadã de primeira classe é que suas quarenta chamadas são um *programa*, não quarenta requisições sem relação. Elas têm dependências, se ramificam e se juntam, e algumas são ramos especulativos que você vai descartar. Quando o runtime conhece a estrutura do programa, ele pode escalonar com esse conhecimento — mantendo o prefixo de um ramo fixado enquanto seus filhos rodam, agrupando os irmãos em batch, ordenando o trabalho de modo que um pai compartilhado seja computado antes da bifurcação em vez de quarenta vezes depois dela. Um engine que só enxerga requisições HTTP independentes consegue recuperar parte disso a posteriori pelo casamento de prefixo, mas não consegue antecipá-lo.
+
+A saída estruturada é a terceira peça, e é o que transforma a exigência de JSON em garantia em vez de esperança. A lição 7.4 descreveu o sampling como sortear a partir da distribuição sobre o vocabulário. O decoding restrito compila o seu schema JSON ou gramática numa máquina de estados e, a cada passo, mascara os logits de todo token que não pode legalmente seguir o texto até ali, antes que o sampling aconteça. O modelo não consegue emitir um pedido de desculpas em prosa antes da chave, não consegue fechar um array que não abriu e não consegue inventar um nome de campo fora do schema — não porque foi pedido com educação, mas porque esses tokens tiveram sua probabilidade zerada. Duas notas práticas: compilar uma gramática custa tempo real, então schemas devem ser reaproveitados e cacheados em vez de construídos por requisição; e a restrição se aplica apenas ao formato.
+
+:::caveat
+Válido pelo schema não é correto. Um decode restrito produzirá alegremente um objeto perfeitamente formado cujos campos estão errados, inventados ou contraditórios, e fará isso com mais confiança que texto livre, porque o sinal usual de um modelo confuso — divagar — foi mascarado. Mantenha a validação semântica a jusante. O decoding restrito remove erros de parsing da sua lista de incidentes; ele não remove alucinação.
+:::
+
+A arquitetura híbrida acrescenta ao compartilhamento de prefixo uma ruga que vale enunciar com precisão, porque é a coisa mais profunda desta lição. Apenas as 16 camadas de full attention armazenam blocos de KV por token, que são exatamente o que uma radix tree consegue compartilhar. As 48 camadas Gated DeltaNet guardam um estado recorrente de tamanho fixo que é um *resumo* de tudo processado até ali — ele não tem estrutura por token e não pode ser indexado nem parcialmente reaproveitado. Para uma requisição retomar de um prefixo compartilhado, o engine precisa portanto ter também feito checkpoint do estado recorrente naquela fronteira de prefixo e ser capaz de restaurá-lo, cerca de 72 MiB por checkpoint. Isso é barato ao lado dos 188 MiB de KV compartilhado que destrava, mas é um mecanismo genuinamente diferente do compartilhamento de blocos, e se um dado release o implementa — em vez de silenciosamente cair em recomputação completa, ou pior, reaproveitar blocos contra um estado desatualizado — é uma questão por versão a verificar, não a supor. O SGLang publica uma página oficial de cookbook para exatamente este modelo, que é o ponto de partida certo justamente porque fixa as versões e configurações que os mantenedores exercitaram.
+
+Uma regra de fronteira sobrevive a tudo isso sem alteração. O reuso é casamento exato por ids de token, então nenhum conteúdo cruza entre requisições que já não o compartilhassem literalmente — mas um acerto de cache é mais rápido que uma falha, e tempo é observável. Trate o compartilhamento de prefixo entre tenants como uma decisão a tomar deliberadamente, mantenha tenants em pools separados quando o próprio prompt é confidencial, e releia o alerta da lição 7.2 sobre keys e values cacheados serem um registro rico do que um usuário disse.
+
+O mapa da lição 7.11 dizia que o SGLang conquista seu lugar quando o seu tráfego são programas e não prompts. Agora você consegue dizer por quê em números: sete gibibytes de pool e trinta e nove prefills redundantes recuperados de uma única carga, e um contrato JSON imposto no sampler em vez de esperado no prompt.

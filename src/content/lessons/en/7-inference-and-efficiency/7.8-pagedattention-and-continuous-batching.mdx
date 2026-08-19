@@ -1,0 +1,60 @@
+---
+id: "7.8-pagedattention-and-continuous-batching"
+track: "7-inference-and-efficiency"
+order: 8
+title: "PagedAttention & continuous batching"
+summary: "Paged KV allocation and iteration-level scheduling decide how many concurrent Qwen3.8-27B conversations one GPU can actually hold."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.2-the-kv-cache"]
+unlocks: ["7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+analogy: "A hotel that demands one contiguous floor for every group wastes rooms when groups grow unpredictably. A paged hotel assigns standard room blocks anywhere in the building and gives each group a directory listing its rooms in order. Continuous batching is the front desk filling newly freed rooms immediately rather than waiting for every group that arrived together to depart. The directory adds lookup work, but occupancy improves dramatically."
+teachBack:
+  prompt: "Explain why reserving maximum-context KV buffers collapses concurrency for Qwen3.8-27B on an 80 GB GPU, how paged allocation changes the arithmetic, and what continuous batching adds."
+  modelAnswer: "Reserving Qwen's full native context per request means 16 GiB of KV cache per sequence, and after 54 GB of bf16 weights an 80 GB GPU has only about 24 GiB left — one user. Paged allocation stores KV in fixed-size blocks assigned on demand and mapped through a per-sequence block table, so each request consumes only what it has generated: at 64 KiB per token, a 32,768-token sequence holds about 2 GiB, and roughly a dozen such sequences fit in the same budget. Continuous batching then reschedules at token-step boundaries, admitting waiting requests as others finish instead of holding the original batch until its slowest member completes."
+quiz:
+  - question: "What does a sequence block table map?"
+    options: ["Logical KV-cache blocks to physical memory blocks", "Words to grammar rules", "Users to model weights", "Rewards to optimizer epochs"]
+    correctIndex: 0
+    explanation: "The indirection lets a logical sequence remain ordered even when its cache blocks are scattered physically."
+  - question: "Using lesson 7.2's 64 KiB-per-token figure, roughly how much KV cache does one 32,768-token Qwen3.8-27B sequence occupy in bf16?"
+    options: ["About 2 GiB", "About 16 GiB", "About 54 GB", "About 64 KiB in total"]
+    correctIndex: 0
+    explanation: "32,768 tokens times 64 KiB per token is 2,097,152 KiB, which is 2 GiB; 16 GiB corresponds to the full 262,144-token native context."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+You have one 80 GB accelerator and you want to serve Qwen3.8-27B to as many concurrent users as possible. The weights occupy 54 GB in bf16 (lesson 9.3 walks the full budget), and lesson 7.2 established the model's KV bill: only the 16 full-attention layers cache keys and values, at 64 KiB per token, reaching 16 GiB per sequence at the full 262,144-token native context. The serving question is where that growing, unpredictable state should live.
+
+The classic wrong turn is contiguous reservation at the maximum. A request could in principle grow to native context, so reserve 16 GiB up front. Now do the arithmetic: $80 - 54 = 26$ GB, about 24 GiB, of free memory after weights. One reservation of 16 GiB fits. Your 80 GB GPU serves exactly one user, and since a typical chat uses a few thousand tokens, almost all of that reservation sits empty. Reserving the current length instead forces buffers to grow, and growth means relocation, copies, and fragmentation across dozens of differently sized allocations.
+
+**PagedAttention**, introduced with vLLM in 2023, borrows the operating-system idea of virtual memory. A sequence's logical KV positions are divided into fixed-size blocks — say 16 tokens, which at Qwen's 64 KiB per token makes a tidy 1 MiB physical block. Physical blocks live anywhere in the cache pool; a per-sequence **block table** maps logical order to physical addresses, and the attention kernel follows the mapping while reading keys and values. When a sequence outgrows its last block, the allocator hands it another free block without moving anything. Waste is bounded to the unused tail of one block per sequence, not an entire maximum reservation.
+
+Now redo the capacity example with paging. Suppose your users run long-document sessions around 32,768 tokens of context. Per sequence: $32{,}768 \times 64\ \text{KiB} = 2{,}097{,}152\ \text{KiB} = 2\ \text{GiB}$. The pool holds about 24 GiB, and $24 / 2 = 12$ sequences. Two corrections before you promise twelve: each live Qwen sequence also carries the Gated DeltaNet recurrent state — roughly 72 MiB, constant in length, so twelve sequences add about 0.85 GiB — and the runtime needs activation workspace and scheduler headroom. Call it ten to eleven concurrent 32K sessions in practice. Against the single user of the reservation scheme, that is an order of magnitude, from allocation policy alone.
+
+The hybrid architecture adds a wrinkle worth naming. Paging governs the 16 attention layers' growing KV; the 48 DeltaNet layers' state is fixed-size and per-sequence, so a hybrid-aware server manages two pools with different lifecycles. How vLLM handles this concretely is lesson 8.4's territory.
+
+Indirection also enables sharing. Parallel samples, beam candidates, or requests with an identical prompt prefix can point at the same read-only blocks; when a branch diverges, copy-on-write allocates a fresh block for the changed positions, and reference counts decide when a shared block returns to the pool.
+
+Allocation solves where state lives; **continuous batching** solves when each request runs. A static batch groups requests and runs until every member finishes, so one long response leaves the other lanes idle. Continuous batching revisits membership at every iteration boundary: finished or canceled sequences leave, waiting sequences enter, active ones advance one token. The scheduler juggles free blocks, maximum batch tokens, priorities, and the prefill/decode mix — often chunking long prefills so a new arrival's 30,000-token prompt does not stall everyone else's next token. Because capacity is visible as countable blocks rather than vague free memory, admission control can reason in blocks and reject early with a clear error instead of failing deep into generation.
+
+:::caveat
+Paging removes reservation waste; it does not make KV cheaper. Every retained token still costs Qwen3.8-27B 64 KiB, whatever block it lives in. If your users genuinely need 262,144-token contexts, no allocator will conjure more than one 16 GiB sequence out of a 24 GiB pool — that problem needs quantization, more GPUs, or shorter effective contexts.
+:::
+
+:::warning
+Cache blocks contain context-derived data. Zero or safely overwrite released blocks, enforce tenant isolation in block-table metadata, and make cancellation decrement reference counts exactly once — a leak silently shrinks serving capacity, while premature reuse corrupts one request with another's state.
+:::
+
+Watch the operational metrics that make this machinery legible: free and used blocks, allocation failures, tail waste, prefix hit rate, preemptions, queue delay, time to first token, and inter-token latency, sliced by request class so throughput does not hide starvation.
+
+The durable mental model has two layers. Paged allocation turns a growing, irregular cache into fixed blocks plus a logical directory, so concurrency is set by real usage rather than pessimistic reservations. Continuous batching turns the batch into a living population that refills at every step. Together they are why the difference between one and eleven concurrent Qwen sessions on the same silicon is software.

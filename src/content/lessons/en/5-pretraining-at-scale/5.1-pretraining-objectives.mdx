@@ -1,0 +1,76 @@
+---
+id: "5.1-pretraining-objectives"
+track: "5-pretraining-at-scale"
+order: 1
+title: "Objectives: causal LM, MLM, span corruption, FIM"
+summary: "A pretraining objective decides what each prediction may see and what mistake is corrected; Qwen3.8-27B's is next-token prediction over 248,320 classes, extended with multi-token prediction and joint text-image-video input."
+tier: "advanced"
+locale: "en"
+prerequisites: ["4.13-build-gpt-from-scratch"]
+unlocks: ["5.2-data-pipeline"]
+analogy: "Four apprentices study the same damaged manuscripts. One predicts every next word while a curtain moves right. One sees scattered ink blots and restores individual words. One reconstructs whole torn passages marked by numbered tabs. One receives the beginning and ending but must write the missing middle. The library is identical; the pattern of damage decides what kind of repair each apprentice practices."
+teachBack:
+  prompt: "State the objective Qwen3.8-27B is trained under, including what multi-token prediction adds, and compare the visibility and targets of causal LM, MLM, span corruption, and FIM."
+  modelAnswer: "Qwen3.8-27B is a causal language model: at each position it predicts the next token as a distribution over the 248,320 rows of its output embedding, using only the prefix. Its model card adds that it is trained with multi-token prediction, so extra heads also predict tokens further ahead, and that it is natively multimodal, so image and video patches enter the same sequence as tokens. By contrast, MLM uses bidirectional context to recover selected corrupted tokens, span corruption replaces contiguous spans with sentinels and generates the missing text, and FIM rearranges prefix, suffix, and middle so an autoregressive model learns to write an interior span. No training-token count, data mixture, or cutoff is published for this model."
+quiz:
+  - question: "Qwen3.8-27B is trained with multi-token prediction. What does that give you at inference time?"
+    options: ["A built-in draft model whose accepted guesses can accelerate speculative decoding", "Four tokens emitted per step for free, with no verification", "A bidirectional encoder", "A larger vocabulary"]
+    correctIndex: 0
+    explanation: "MTP heads produce candidate future tokens that still have to be verified by the main model; the speedup depends entirely on the acceptance rate (lesson 7.5)."
+  - question: "In the mini-GPT of lesson 4.13, why are the targets the input sequence shifted by one position?"
+    options: ["Because the loss at position i must score the prediction of the token at position i+1 under a causal mask", "Because the tokenizer reverses the string", "Because embeddings are untied", "Because the optimizer requires it"]
+    correctIndex: 0
+    explanation: "Causal factorization gives a loss at almost every position: the model sees the prefix through position i and is scored on the next token."
+  - question: "What distinguishes span corruption from independent token masking?"
+    options: ["It removes contiguous spans and predicts their contents", "It exposes future target tokens", "It requires no tokenizer", "It changes model weights without loss"]
+    correctIndex: 0
+    explanation: "Sentinel-marked spans train reconstruction of missing sequences rather than isolated positions."
+citations:
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding"
+    authors: "Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova"
+    year: 2019
+    url: "https://arxiv.org/abs/1810.04805"
+  - title: "Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer"
+    authors: "Colin Raffel et al."
+    year: 2020
+    url: "https://arxiv.org/abs/1910.10683"
+  - title: "Efficient Training of Language Models to Fill in the Middle"
+    authors: "Mohammad Bavarian et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2207.14255"
+updated: "2026-08-18"
+---
+
+You have a cluster, a corpus, and a 27-billion-parameter network. Nothing yet tells the optimizer what a mistake is. Before a single gradient exists, someone must write a rule that turns raw text into inputs, targets, and a loss. That rule is the **pretraining objective**, and it decides two things: what each prediction is allowed to see, and which error gets corrected. Two models trained on the same corpus under different objectives practice different skills, and no amount of compute converts one skill into the other.
+
+Start with the objective that Qwen3.8-27B actually uses, because it is the simplest one and the whole course rests on it. It is **causal language modelling**. The sequence is factorized left to right: at position $i$ the model predicts $x_{i+1}$ from $x_{\le i}$. A triangular mask blocks future leakage, and shifted targets supply a loss at nearly every position. That is exactly the mini-GPT you built in lesson 4.13, scaled up. The output distribution has one class per row of the output embedding, and this model's is 248,320 rows wide, untied from the input embedding — the model card and config give both matrices roughly 1.271 billion parameters each.
+
+Work through what that vocabulary size means for the loss. Cross-entropy is $-\ln p(\text{correct token})$. A model that has learned nothing and spreads mass uniformly over 248,320 classes assigns each one $1/248{,}320$, so its loss is
+
+$$
+-\ln\frac{1}{248{,}320}=\ln 248{,}320\approx 12.42\ \text{nats}\approx 17.92\ \text{bits}.
+$$
+
+Run one step of the same arithmetic backwards from a plausible converged value. A trained large model reaching about 2.0 nats is, on average, putting $e^{-2.0}\approx 0.135$ of its probability mass on the token that actually came next — roughly one in seven — while the uniform baseline puts $1/248{,}320\approx 0.000004$ there. The distance travelled is a factor of about 33,000 in average assigned probability. That is the entire pretraining signal: 12.42 nats down to roughly 2, one token at a time.
+
+Two model-card facts extend the picture for this specimen. First, it is trained with **multi-token prediction** (MTP): alongside the next token, additional heads predict tokens further ahead. Second, it is **natively multimodal** — image and video patches, produced by the vision tower of lesson 4.17 and projected into the same 5120-dimensional stream, sit in the sequence beside text tokens and are conditioned on identically. The prediction target remains text.
+
+:::warning
+The classic wrong turn with MTP is to read it as "this model emits four tokens per step, so decoding is four times faster." It is not. MTP is a training-time objective; what it buys at inference is a native drafter. The extra heads propose candidate continuations, and the main model still has to verify them, exactly as in speculative decoding (lesson 7.5). If acceptance is poor, you have paid for proposals you throw away and gained nothing. Speedup is an empirical acceptance-rate question, never a property of the objective.
+:::
+
+The alternatives are worth knowing because they define what causal LM gives up. **Masked language modelling**, associated with BERT, corrupts selected input tokens and asks a bidirectional encoder to recover the originals; ordinary positions attend both directions, producing full-context representations, but only selected targets carry the reconstruction loss, so the signal is sparser than next-token loss. **Span corruption**, used by T5, removes contiguous regions marked by sentinels and trains an encoder–decoder to emit the missing passages, which resembles summarization or completion more than isolated blanks do. **Fill-in-the-middle** keeps next-token cross-entropy but rearranges each document into prefix, suffix, then middle, so an autoregressive decoder learns insertion — the shape of most real code editing.
+
+These are not interchangeable labels. Masks, special tokens, packing, target construction, and loss masks have to agree. A visible MLM target leaks the task. FIM boundary tokens that differ between training and inference make the arrangement unrecognizable. Concatenating unrelated documents without separators teaches transitions that never occur. Loss computed on padding wastes signal. Tokenizer configuration is therefore part of the objective contract, not preprocessing that happens beforehand.
+
+:::caveat
+There is no technical report for Qwen3.8-27B. The objective facts above come from the model card and config; the training-token count, data mixture, knowledge cutoff, and training compute are simply not published. Any lesson, blog post, or benchmark table that states them for this model is inferring, and should say so.
+:::
+
+Mixtures are possible and common: a decoder can see ordinary causal examples plus a fraction of FIM-transformed ones. Mixture weights decide how scarce compute is split between skills, so they belong in the run log and the evaluation, not in a preprocessing script nobody reads. Evaluate against the practiced contract — causal perplexity for left-to-right models, reconstruction for corruption objectives, infilling exactness or code tests for FIM — and remember that losses under different objectives are not comparable, because the targets and the visible information differ.
+
+The lasting question is the one to carry into the rest of this track: what prediction game consumes every unit of compute? For this model the answer is next-token prediction over 248,320 classes, with MTP heads looking further ahead and vision patches sharing the sequence. Architecture constrains which games are possible; the objective picks the one that gets rewarded a few trillion times.

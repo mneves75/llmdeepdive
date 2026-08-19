@@ -1,0 +1,81 @@
+---
+id: "8.6-tensorrt-llm"
+track: "8-building-and-serving-stacks"
+order: 6
+title: "TensorRT-LLM"
+summary: "Compilar um modelo antecipadamente compra kernels em FP8 e a menor latência em hardware NVIDIA, e cobra por isso em matrizes de build, shapes congelados e rebuilds que você não pode pular."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["8.4-vllm", "7.9-quantization-i-int8-int4-the-basics"]
+unlocks: ["8.12-choosing-your-stack"]
+analogy: "Um terno sob medida veste melhor que qualquer coisa de prateleira porque cada medida foi tomada antes de cortar o primeiro ponto. Essa também é sua fraqueza: ganhe ou perca dez quilos e nenhuma quantidade de ajuste resolve — a peça precisa ser refeita desde o tecido. Um engine compilado antecipadamente é talhado para um batch size, um comprimento de sequência, uma precisão, uma arquitetura de GPU e uma versão de biblioteca fixos, e qualquer mudança nessas medidas significa voltar à mesa de corte."
+teachBack:
+  prompt: "Explique o que é congelado no momento do build do engine no TensorRT-LLM, por que FP8 em Hopper multiplica a capacidade de serving por mais que o fator óbvio de dois, e que custo operacional o modelo antecipado impõe."
+  modelAnswer: "O build fixa a precisão, o layout tensor-parallel, o batch size máximo, o comprimento máximo de entrada e o comprimento total máximo de sequência, e o engine resultante fica atrelado a uma arquitetura de GPU e a uma versão de biblioteca. O FP8 ajuda duas vezes. Ele reduz os pesos pela metade, de 54 GB em bf16 para cerca de 27 GB, e pode reduzir pela metade o KV cache, dos 64 KiB por token da lição 7.2 para cerca de 32 KiB. Numa placa de 80 GB com orçamento 0.90 isso transforma um pool de cerca de 14 GiB que comportava cerca de 229.000 tokens num pool de cerca de 38 GiB que comporta cerca de 1,2 milhão — mais de cinco vezes a capacidade, porque os pesos eram o custo fixo dominante e encolhê-los liberou memória que o cache menor então esticou ainda mais. O custo é operacional: engines não são portáveis entre arquiteturas de GPU nem versões de biblioteca, toda mudança de shape, precisão ou paralelismo significa um rebuild que leva de minutos a horas, e um patch de segurança rotineiro no contêiner base pode forçar a regeneração e revalidação de toda a matriz de build."
+quiz:
+  - question: "Pela lição 7.9, por que FP8 é mais fácil de aplicar a ativações que INT8, apesar de ambos usarem oito bits?"
+    options: ["O FP8 mantém um campo de expoente, então cobre uma faixa dinâmica ampla com escalonamento grosseiro por tensor, enquanto o INT8 é uniforme e precisa de calibração mais apertada e cuidadosa para não clipar outliers", "O FP8 usa mais bits que o INT8", "O INT8 não representa números negativos", "O FP8 é sem perdas"]
+    correctIndex: 0
+    explanation: "Outliers de ativação são o que quebra a quantization inteira ingênua; um formato de ponto flutuante de 8 bits os absorve no expoente em vez de no fator de escala."
+  - question: "Um engine construído com max_batch_size 1 e max_input_len 2048 bate o vLLM no seu benchmark. Por que ele ainda pode ser a escolha errada?"
+    options: ["Ele não consegue aceitar o tráfego de produção de jeito nenhum — prompts mais longos e batches maiores estão fora dos shapes compilados nele, então o benchmark mediu uma configuração que você não pode implantar", "Engines TensorRT-LLM expiram depois de uma semana", "Ele produziria tokens diferentes da referência", "Batches pequenos são sempre mais lentos em produção"]
+    correctIndex: 0
+    explanation: "A compilação antecipada transforma os limites de shape em restrições duras; um benchmark rodado dentro de limites que a sua carga excede não é uma comparação, é outro experimento."
+  - question: "O que é in-flight batching?"
+    options: ["O escalonamento em nível de iteração do TensorRT-LLM, admitindo e aposentando requisições entre passos de decode em vez de segurar um batch fixo — a mesma ideia do continuous batching da lição 7.8", "Agrupar requisições em batch antes de chegarem ao servidor", "Rodar prefill e decode em GPUs separadas", "Capturar CUDA graphs durante o voo"]
+    correctIndex: 0
+    explanation: "O nome difere, o mecanismo não: a composição do batch muda nas fronteiras de iteração, então uma sequência concluída libera sua vaga imediatamente."
+citations:
+  - title: "TensorRT-LLM Documentation"
+    authors: "NVIDIA"
+    year: 2026
+    url: "https://nvidia.github.io/TensorRT-LLM/"
+  - title: "NVIDIA Data Center Technologies"
+    authors: "NVIDIA"
+    year: 2026
+    url: "https://www.nvidia.com/en-us/data-center/"
+  - title: "CUDA Toolkit Documentation"
+    authors: "NVIDIA"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Seu deployment em vLLM da lição 8.4 funciona, a aritmética do pool fecha, e o time de produto agora quer o tempo entre tokens no percentil noventa e cinco cortado em um terço, num hardware que você já possui. Você esgotou as configurações que são de graça. O que resta é a opção que a lição 7.11 descreveu como NVIDIA-máxima: parar de interpretar o modelo em tempo de execução e compilá-lo num engine executável antes que a primeira requisição chegue.
+
+Essa única mudança de tempo verbal é a lição inteira. O vLLM e o SGLang constroem seu plano de execução enquanto servem; o TensorRT-LLM o constrói de antemão, com pleno conhecimento dos shapes, precisões e hardware exatos que vai encontrar. Saber tudo antecipadamente é o que permite a um compilador escolher tiling para a hierarquia de memória de uma GPU específica, fundir um bloco inteiro de attention em um kernel, selecionar caminhos FP8 nos Tensor Cores que os suportam e dispor os pesos no formato que esses kernels querem, em vez do formato que o checkpoint tinha. O que isso custa é exatamente o que ganhou: as suposições ficam assadas dentro.
+
+Leia isso como uma lista de coisas que você está congelando. Precisão. Layout tensor-parallel e de pipeline. Batch size máximo. Comprimento máximo de entrada. Comprimento total máximo de sequência. A arquitetura da GPU. As versões de biblioteca e de driver contra as quais o engine foi compilado. O artefato é um arquivo de engine serializado, e ele não é portável em nenhum desses eixos.
+
+```
+trtllm-build --checkpoint_dir ./qwen38-fp8 \
+  --max_batch_size 32 --max_input_len 8192 --max_seq_len 16384
+```
+
+Nomes de flags mudam entre releases, então trate isso como o formato da decisão e não como um comando a copiar. O que importa é a decisão: aqueles três números são um contrato com a produção, não sugestões. Uma requisição com um prompt de nove mil tokens contra esse engine não é lenta, é rejeitada.
+
+Agora o retorno, e ele é maior do que parece à primeira vista. A lição 7.9 apresentou a quantization de oito bits; o FP8 é a variante que hardware da classe Hopper executa nativamente e, por manter um campo de expoente, tolera os outliers de ativação que tornam o INT8 delicado, precisando apenas de escalas por tensor derivadas de uma passagem curta de calibração. Aplique-o ao Qwen3.8-27B e refaça a memória, reaproveitando a subtração da lição 8.4. Os pesos caem de 54 GB em bf16 para cerca de 27 GB. Numa placa de 80 GB com orçamento de utilização 0.90, cerca de 72 GB, subtrair 27 GB de pesos e cerca de 4 GB de workspace deixa cerca de 41 GB, chame de 38 GiB de pool — contra os 14 GiB que tínhamos em bf16. Então aplique o mesmo formato de oito bits ao cache: os 64 KiB por token da lição 7.2 são dois bytes por elemento, então um formato de KV de oito bits reduz isso pela metade, para cerca de 32 KiB por token. O pool agora comporta
+
+$$
+\frac{38\ \text{GiB}}{32\ \text{KiB por token}} \approx 1{,}245{,}000\ \text{tokens}
+$$
+
+contra cerca de 229.000 antes. Isso não é um fator de dois, é um fator acima de cinco, e a razão vale ser internalizada: os pesos são um custo fixo subtraído antes de qualquer outra coisa, então reduzi-los pela metade libera memória desproporcionalmente, e o cache pela metade então estica a memória liberada duas vezes mais longe. A quantization compõe contra um overhead fixo. É a mesma estrutura que vai decidir toda questão de hardware da track 9.
+
+O serving é, no mais, familiar. In-flight batching é o nome que o TensorRT-LLM dá ao escalonamento em nível de iteração da lição 7.8: requisições entram e saem entre passos de decode em vez de esperar um batch fixo esvaziar. KV paginado, chunked prefill e speculative decoding têm contrapartes aqui. O modelo de programação difere — engine mais runtime, em vez de um engine Python que você configura — mas os conceitos transferem intactos, que é por que esta lição pode gastar seu espaço nas partes que não transferem.
+
+:::warning
+A virada errada clássica é o benchmark que prova o que você queria. Alguém constrói um engine com batch size máximo 1 e comprimento máximo de entrada 2048, mede uma curva de latência linda e reporta que o TensorRT-LLM bate o vLLM por larga margem. A comparação é nula: a produção manda prompts variáveis de até 32K com concorrência real, e aquele engine não consegue aceitá-los a velocidade nenhuma. Uma comparação justa constrói o engine para os shapes que a produção de fato manda e então reproduz o mesmo trace — mesmas distribuições de comprimento de prompt e de saída, mesmo padrão de chegada, mesmos parâmetros de decoding — contra os dois stacks. Compare goodput sob um objetivo de latência, não um número de pico.
+:::
+
+A conta operacional chega depois e é a razão de muitos times escolherem outra coisa. A sua matriz de build é o produto de precisão, layout paralelo, buckets de shape, arquitetura de GPU e versão de biblioteca, e cada célula é um artefato a construir, armazenar, validar e implantar. Engines não sobrevivem a uma troca de geração de GPU. Um patch de segurança na imagem base que mova a versão da biblioteca pode invalidar o lote inteiro. Builds levam de minutos a horas, então uma mudança de shape é um evento agendado e não uma troca de flag, e uma mudança urgente de capacidade numa sexta à noite é um build, não um restart. Nada disso é defeito — é o preço da alfaiataria — mas é um compromisso permanente de tempo de engenharia, e é por isso que a lição 7.11 condicionou esta opção a ter um time de ops capaz de assumi-la.
+
+:::caveat
+O suporte de arquitetura decide tudo acima, e para este modelo precisa ser verificado por versão em vez de suposto. As 48 camadas Gated DeltaNet do Qwen3.8-27B precisam de implementação explícita: kernels para a atualização da delta rule e para a convolução curta, e um runtime que gerencie um estado recorrente por sequência ao lado do KV paginado das 16 camadas de attention. Stacks compilados tipicamente ganham suporte a uma arquitetura nova mais tarde que stacks eager e engines Python, porque é preciso escrever um plugin ou um kernel, não um módulo. Antes de planejar qualquer migração, confirme que o release exato constrói e roda este modelo, e então rode o teste diferencial da lição 8.1 contra o PyTorch eager. Um engine que compila limpo e trata mal o estado recorrente será rápido, confiante e errado.
+:::
+
+Pese isso como uma troca e não como um ranking. O TensorRT-LLM compra a latência mais apertada disponível em silício NVIDIA e, via FP8, um multiplicador de capacidade que compõe contra custos fixos; ele vende a sua flexibilidade, a sua portabilidade e a sua capacidade de mudar de ideia rápido. Se o formato do seu tráfego é estável, sua frota é homogênea e alguém é dono do pipeline de build, essa é uma boa troca. Se qualquer uma das três não for verdade, o engine da lição 8.4 vai servir você melhor que um engine que você tem medo de reconstruir.

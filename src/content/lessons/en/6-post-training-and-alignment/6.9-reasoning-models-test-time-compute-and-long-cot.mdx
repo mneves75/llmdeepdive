@@ -1,0 +1,68 @@
+---
+id: "6.9-reasoning-models-test-time-compute-and-long-cot"
+track: "6-post-training-and-alignment"
+order: 9
+title: "Reasoning models: test-time compute & long CoT"
+summary: "Qwen3.8-27B ships test-time compute as a product feature: thinking mode is on by default, carries its own hotter sampling preset, and can be switched off per request — and the reasons for each of those three choices are the lesson."
+tier: "advanced"
+locale: "en"
+prerequisites: ["6.8-grpo-and-rl-on-verifiable-rewards"]
+unlocks: []
+analogy: "A chess player can answer instantly with the first plausible move or use ten minutes to analyze branches, reject traps, and compare end positions. More clock time helps only if the player searches useful branches and evaluates them well; staring longer at the same bad line does not. Test-time compute gives a model a larger thinking budget, while search policy and verification determine whether that budget becomes insight or merely extra text."
+teachBack:
+  prompt: "Explain why Qwen3.8-27B samples its thinking segment at temperature 1.0 but its instruct answers at 0.7, and why a long trace is not evidence of correct reasoning."
+  modelAnswer: "A reasoning trace is a search: its value comes from considering branches the model would not otherwise take, and errors inside it are recoverable because later tokens can contradict and correct them while the final answer is conditioned on the whole trace. A final answer has no such downstream repair, so an unlucky sample is simply a wrong answer. Higher temperature therefore buys exploration where mistakes are cheap and is avoided where they are terminal. Both presets keep top_k at 20 out of a 248,320-token vocabulary, so the tail is hard-truncated in either mode. None of this makes trace length a quality signal: a visible trace can rationalize a guess or hide an invalid step, so accuracy must be measured on outcomes and robust process checks."
+quiz:
+  - question: "When does more test-time compute most plausibly help?"
+    options: ["When the system can generate meaningfully different candidates and select or verify them", "Whenever it repeats the same answer verbatim", "Only when temperature is zero", "When no task signal exists"]
+    correctIndex: 0
+    explanation: "Additional compute needs productive search and a way to identify better candidates; raw token count is not the objective."
+  - question: "Lesson 6.8 showed a GRPO group produces no gradient when every sample earns the same reward. What is the decoding-time analogue when you run best-of-N at temperature 0?"
+    options: ["All N samples are identical, so the compute buys no diversity to select from", "The verifier stops accepting valid answers", "The advantage normalization divides by zero", "The reward model refuses to score"]
+    correctIndex: 0
+    explanation: "Both cases waste compute on samples that carry no contrast. Training needs variance within the group; best-of-N needs variance among the candidates. Greedy decoding destroys it at inference just as an all-fail group destroys it in training."
+  - question: "What is best-of-N decoding?"
+    options: ["Generate N candidates and select one using a scoring or verification rule", "Train N tokenizers", "Average all model weights per prompt", "Always choose the longest response"]
+    correctIndex: 0
+    explanation: "Best-of-N spends inference compute on parallel candidates and relies on a selector whose quality becomes a critical bottleneck."
+citations:
+  - title: "Scaling LLM Test-Time Compute Optimally can be More Effective than Scaling Model Parameters"
+    authors: "Charlie Snell et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2408.03314"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Three facts about Qwen3.8-27B, taken straight from its model card, contain most of what this lesson has to teach. Thinking mode is the default. It has its own sampling preset — temperature 1.0, top_p 0.95, top_k 20 — while instruct mode uses temperature 0.7, top_p 0.80, top_k 20. And a caller can switch the thinking segment off per request by setting enable_thinking to False. Test-time compute has stopped being a research technique and become a shipped product surface with a default, a configuration, and an off switch. Each of those three decisions is defensible, and each one costs something.
+
+Start with the axis itself. Traditional scaling spends compute before deployment: train a larger model on more data. **Test-time compute** spends it afterward, on the specific problem in front of the system — more tokens, several sampled solutions, a search over a tree, tool calls, self-critique, verifiers. Quality can sometimes improve without touching the checkpoint at all. The 2024 work by Snell and colleagues framed this as an allocation problem: different strategies and budgets suit different problem difficulties, and compute should go where it pays. That is a claim about allocation, not a promise that inference scaling always beats a bigger model.
+
+The simplest pattern is **best-of-$N$**: generate $N$ candidates and select one with a reward model, an exact checker, or another scorer. The selector is decisive — if it cannot recognize correctness, more candidates simply produce more persuasive errors. Correlated samples cap the gains, too: ten near-identical chains are not ten attempts. Sequential methods spend the budget differently, letting one trajectory propose a plan, execute part of it, detect a contradiction, backtrack, and revise. Tool-using systems spend it on retrieval, code execution, or symbolic solvers. "Reasoning tokens" is not one algorithm.
+
+Now the question the presets pose. Why would a vendor sample the reasoning trace *hotter* than the final answer? The intuition most people bring is that reasoning is the delicate part, so it should be the conservative part. That reads the situation backwards, and working through the arithmetic shows why.
+
+Temperature rescales logits before the softmax. Take two candidate continuations at some step, with logits 4.0 and 3.0 — one obvious next move and one plausible alternative. Considering only these two, at temperature 0.7 the gap of 1.0 is divided by 0.7 and becomes about 1.43 in logit units, so the odds ratio is $e^{1.43}\approx 4.17$ and the alternative takes about 19 percent of the mass. At temperature 1.0 the gap stays 1.0, the odds ratio is $e^{1.0}\approx 2.72$, and the alternative rises to about 27 percent. That is a relative increase of roughly 39 percent in the chance of exploring the second branch, from a change that looks small on the dial.
+
+In a reasoning trace, that extra 8 points of probability is the entire product. The trace is a search, and a search that always takes the modal step is not searching. More importantly, a mistake inside a trace is *recoverable*: the model reads its own previous tokens, and a wrong turn at step four can be contradicted at step nine, with the final answer conditioned on the whole corrected sequence. A mistake in the final answer has no downstream repair. Nothing comes after it. So the vendor pushes temperature up exactly where errors are cheap and pulls it down where they are terminal. That is the principle, and it generalizes far beyond this model.
+
+One detail keeps temperature 1.0 from being reckless: both presets hold top_k at 20. Out of a vocabulary of 248,320 rows, only twenty candidates are ever eligible at any step, and top_p then trims further — to 0.95 in thinking mode, 0.80 in instruct. Raising temperature redistributes mass *within* a hard-truncated shortlist; it does not open the tail. Thinking mode is not permissive sampling, it is a slightly flatter distribution over a very small set.
+
+Which sets up the classic wrong turn. A team wants maximum accuracy and reproducibility, so they decode the thinking segment greedily at temperature 0. Two things break. First, long greedy traces are prone to repetition loops and to committing irreversibly to the first branch, which is precisely the failure mode a trace exists to avoid. Second — and this one is fatal — if they layer best-of-8 on top for extra accuracy, all eight samples are byte-identical. They pay eight times the tokens for one answer. Lesson 6.8 showed the training-side twin of this: a GRPO group in which every sample earns the same reward has zero variance and produces no gradient. Diversity is not a side effect of sampling in either regime; it is the resource being spent. The correction is to use the published preset for the mode you are running, and to introduce determinism, if you need it, through a fixed seed rather than through a collapsed distribution.
+
+Long **chain-of-thought** is the workspace this compute buys: an intermediate textual trace that decomposes a problem and leaves working memory in the context. Post-training on verifiable rewards makes extended traces more useful, because successful strategies get reinforced without anyone authoring the path. But the trace is still generated text. It can rationalize a guess, conceal an invalid step, or repeat itself with perfect fluency. Trace length is a cost, not a quality metric.
+
+The evidence Qwen offers for the mode is a reported GPQA Diamond score of 89.2 — vendor-reported, from the model card, and awaiting independent reproduction. It is a graduate-level science benchmark of exactly the kind where extended reasoning should pay, which makes it a reasonable place to look for the mode's value and a poor place to stop looking. Without a technical report, without an independent run, and without knowing the harness, a single number establishes a claim rather than a fact.
+
+:::caveat
+A visible reasoning trace is not a security boundary and not a guaranteed explanation. It is text sampled from the same distribution as the answer, and treating it as a faithful readout of internal computation is a category error. Systems can surface concise evidence, calculations, citations, and tool results without claiming the prose narrates what actually happened inside the network.
+:::
+
+The off switch is a cost lever as much as a behaviour lever. Thinking tokens are output tokens, and output tokens are the expensive kind — on Cloudflare Workers AI this model bills at USD 3.20 per million output tokens against USD 0.45 per million input tokens, as of August 2026. A thinking segment that runs several thousand tokens before a two-hundred-token answer inverts the economics of a simple request. Thinking tokens also occupy the KV cache at the 64 KiB per token derived in lesson 7.2, and they extend the request's occupancy of a serving slot. Setting enable_thinking to False on routine work is not a downgrade; it is spending the budget where it earns something.
+
+Serving reasoning workloads changes the operational picture as well. Request durations become highly variable, output lengths unpredictable, and branching uneven. Static batching turns inefficient, and schedulers need cancellation, priorities, and hard budget caps — a runaway trace is simultaneously a cost incident and a denial-of-service vector. Evaluation has to change too: plot success against generated tokens, latency, and money; separate proposal quality from selection quality by asking whether *any* candidate was right and whether the selector picked it; and test robustness to reworded prompts and adversarial distractors, or a system will look like it reasons better when it has merely recognized a pattern in your benchmark.
+
+The durable model is compute allocation under uncertainty. Extra inference work creates opportunities to search and to verify; it does not manufacture truth. The proposal mechanism explores, the verifier discriminates, the scheduler decides what the answer is worth — and long chain-of-thought is one possible workspace inside that system, not the definition of reasoning.

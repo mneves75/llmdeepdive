@@ -1,0 +1,78 @@
+---
+id: "5.12-training-instabilities"
+track: "5-pretraining-at-scale"
+order: 12
+title: "Quando o treino dá errado: spikes, divergência, NaNs"
+summary: "Pretraining confiável lê anomalias de forma quantitativa em vez de dramática, preserva estado forense e trata normalização e gating como os dispositivos de estabilidade que são."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.11-learning-rate-schedules"]
+unlocks: ["5.13-pretraining-costs"]
+analogy: "Um monitor de terapia intensiva não resume um paciente com uma média de batimentos. Ele observa ritmo, pressão, oxigênio, falhas de sensor e horários de medicação; quando um alarme dispara, os clínicos preservam o prontuário e identificam se o paciente mudou ou se o sensor falhou. Um dashboard de treino precisa da mesma disciplina: a loss é um sinal vital, e um restart às cegas pode apagar a evidência."
+teachBack:
+  prompt: "Mostre como ler um loss spike quantitativamente contra a baseline uniforme e a distribuição por rank, e nomeie os dispositivos arquiteturais que tornam estável um stack híbrido."
+  modelAnswer: "A cross-entropy é interpretável em nats: um salto de 2,05 para 2,90 significa que a probabilidade média no token correto caiu de cerca de 0,129 para cerca de 0,055, enquanto um modelo desinformado sobre 248.320 classes ficaria em 12,42 nats. Então um solavanco de fração de nat é um batch difícil, não um reset; uma subida rumo a dois dígitos é divergência de verdade. A loss média nunca pode ser lida sozinha, porque com 64 ranks um único rank em 40,0 enquanto o resto fica em 2,0 aparece como uma média global de apenas 2,59. Arquiteturalmente, RMSNorm com epsilon 1e-6 num residual stream pre-norm mantém a escala de ativação limitada através de 64 camadas, a feed-forward com gate multiplica um gate SiLU contra a up-projection para que o bloco possa suprimir a própria saída, e o gate do Gated DeltaNet controla quanto é escrito e decaído no estado recorrente, que é a correção para o crescimento ilimitado de estado que fazia RNNs ingênuas divergirem."
+quiz:
+  - question: "Num job de 64 ranks, 63 ranks reportam loss 2,0 e um reporta 40,0. O que a loss média mostra?"
+    options: ["Cerca de 2,59 — um solavanco modesto que esconde por completo uma falha catastrófica de um único rank", "Cerca de 40,0, já que o máximo domina", "Cerca de 21,0, o ponto médio", "Nada, porque a média é indefinida com outliers"]
+    correctIndex: 0
+    explanation: "(63 x 2,0 + 40) / 64 = 166 / 64 = 2,59, e é por isso que diagnósticos por rank importam mais que a média global."
+  - question: "A lição 5.11 definiu schedules em tokens e alertou sobre a retomada. Que tipo de spike uma retomada malfeita tipicamente produz?"
+    options: ["Um salto no exato step do restart, porque o scheduler reiniciou o warmup ou retomou no ponto errado da curva de decaimento", "Uma deriva lenta ao longo dos 100.000 steps seguintes", "Um valor não finito no tokenizer", "Uma mudança no tamanho do vocabulário"]
+    correctIndex: 0
+    explanation: "Spikes alinhados ao restart apontam para estado de scheduler, optimizer ou cursor de dados, e não para os dados em si."
+  - question: "Por que esperar um NaN é um detector ruim de divergência?"
+    options: ["Uma run pode estar piorando persistentemente com todos os valores ainda finitos, então a trajetória falhou muito antes da aritmética", "Valores NaN são sempre causados por hardware", "NaN não consegue se propagar pelo backward", "Losses finitas nunca divergem"]
+    correctIndex: 0
+    explanation: "Aritmética não finita é um sintoma tardio de propagação; divergência é uma propriedade da trajetória, visível antes na loss, nas normas de gradiente e nas normas de ativação."
+citations:
+  - title: "PaLM: Scaling Language Modeling with Pathways"
+    authors: "Aakanksha Chowdhery et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2204.02311"
+  - title: "Mixed Precision Training"
+    authors: "Paulius Micikevicius et al."
+    year: 2018
+    url: "https://arxiv.org/abs/1710.03740"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Duas semanas dentro de uma run, o dashboard mostra a loss média de treino subindo de 2,05 para 2,59 e ficando ali. Não é dramático. Ninguém chamaria isso de catástrofe. O engenheiro de plantão anota, não vê NaN e deixa o job continuar. Seis horas e uma quantidade considerável de tempo de cluster depois, alguém abre a visão por rank e descobre que 63 ranks estão treinando normalmente em 2,0 enquanto o rank 41 está parado em 40,0 desde o momento do degrau. A média global nunca mentiu; ela estava fazendo média.
+
+Faça essa aritmética, porque é a razão inteira de existir telemetria por rank:
+
+$$
+\frac{63\times 2.0+40.0}{64}=\frac{166}{64}=2.59.
+$$
+
+Um rank em falha completa move o número da manchete em meio nat. Com dezesseis vezes mais ranks, ele o moveria em três centésimos. Fazer média é um filtro passa-baixa exatamente sobre o sinal de que você mais precisa, e quanto maior o job, mais eficazmente ele esconde a coisa que o matou.
+
+A segunda metade de ler bem as anomalias é saber quanto vale um nat. Da lição 5.1, a cross-entropy é $-\ln p(\text{token correto})$, e um modelo desinformado espalhando massa uniformemente sobre 248.320 classes fica em $\ln 248{,}320\approx 12.42$ nats. Então calibre qualquer spike contra esse teto. Um salto de 2,05 para 2,90 significa que a probabilidade média atribuída ao próximo token verdadeiro caiu de $e^{-2.05}\approx 0.129$ para $e^{-2.90}\approx 0.055$ — um fator de 2,3, desagradável mas recuperável, e ainda enormemente melhor que desinformado. Uma subida passando por 6, 9 e rumo a 12,42 é outra coisa completamente: é um modelo perdendo tudo o que aprendeu. O formato de uma curva de loss é ambíguo; sua distância da baseline uniforme não é.
+
+Com essa calibração no lugar, o vocabulário das falhas fica utilizável. Um **loss spike** é uma subida súbita seguida de recuperação ou escalada. Ele pode vir de um batch genuinamente difícil, tokenização corrompida, uma mudança abrupta de mistura, um problema de scheduler, ativações explodindo, um overflow de precisão ou um rank alimentando valores inválidos rio abaixo. O formato sozinho não identifica nenhum deles; compare losses por token, valores por rank, normas de gradiente, normas de ativação e o manifesto de entrada antes de formar uma hipótese. Spikes alinhados exatamente com um restart apontam para estado de scheduler, optimizer ou cursor de dados em vez dos dados, que é por que a lição 5.11 insistiu que a posição do scheduler é estado de checkpoint.
+
+**Divergência** significa que a trajetória para de voltar à sua faixa anterior e piora persistentemente. Learning rate excessivo, warmup insuficiente, inicialização ruim, estado de optimizer corrompido, dados patológicos repetidos ou uma receita de precisão empurrada para fora da sua faixa estável contribuem todos. Crucialmente, um modelo pode permanecer inteiramente finito enquanto já diverge — o que faz de "espere até algo virar NaN" um detector que dispara muito depois de a run ainda valer a pena salvar.
+
+**NaN** e infinito são sinais aritméticos terminais, não diagnósticos. Rastreie o primeiro tensor não finito com hooks ou instrumentação de anomalia em vez de raciocinar de trás para frente a partir de onde ele apareceu, porque camadas posteriores espalham o valor dentro de um único forward pass e o primeiro relato costuma estar bem rio abaixo da causa. Overflow de softmax, divisão por zero, raízes quadradas inválidas, alcance do fp16, redução de gradientes e updates do optimizer são todos candidatos. Sob a receita de mixed precision da lição 5.9 o caso do fp16 é mecânico: o máximo do formato é 65.504, então com uma loss scale de 65.536 qualquer gradiente acima de aproximadamente 1,0 transborda para infinito, e o trabalho do scaler é detectar isso, pular o passo e reduzir a escala pela metade para 32.768 — o que é uma resposta controlada, não um incidente.
+
+:::warning
+Não construa uma regra ilimitada de "pular batch ruim". Ela converte toda categoria de falha em silêncio: uma regressão de parser, uma fonte inteira quebrada ou um shard deliberadamente envenenado podem ser descartados invisivelmente enquanto a run reporta sucesso e a distribuição de dados muda silenciosamente por baixo do objetivo. O descarte precisa ser limitado, categorizado, contado e alertado, e uma taxa crescente de descartes é ela mesma um incidente.
+:::
+
+A arquitetura faz parte da história da estabilidade, e o config deste modelo mostra os dispositivos com clareza. **RMSNorm com epsilon 1e-6 num residual stream pre-norm** é a base: normalizar antes de cada sublayer e somar num residual não normalizado impede que a escala de ativação se componha através de 64 camadas, que foi o que tornou stacks muito profundos treináveis em primeiro lugar. A **feed-forward com gate** multiplica um gate ativado por SiLU contra a up-projection antes de o intermediário de 17.408 de largura ser projetado de volta para baixo, de modo que um bloco pode atenuar a própria contribuição em vez de ser forçado a emitir alguma coisa. E o gate no **Gated DeltaNet** governa quanto cada passo escreve e decai do estado recorrente de tamanho fixo — precisamente o controle que a lição 3.2 identificou como ausente nas redes recorrentes ingênuas, cujos estados cresciam ou desapareciam sem limite. Um stack híbrido que carrega estado recorrente por 48 das suas 64 camadas seria um pesadelo de estabilidade sem ele.
+
+:::caveat
+Nada desse raciocínio é uma alegação publicada sobre como esta run em particular se comportou. Não existe relatório técnico do Qwen3.8-27B, então nenhuma curva de loss, incidente de spike, contagem de restarts ou procedimento de recuperação está disponível para ele. O config diz quais dispositivos de estabilidade estão presentes na arquitetura; ele não diz nada sobre se a run precisou deles, e inferir uma run tranquila a partir de um config limpo não é evidência.
+:::
+
+A sequência forense em si é sem glamour e funciona. A cada checkpoint, retenha o suficiente para reproduzir de perto: modelo, optimizer, scheduler, loss scaler, geradores de números aleatórios, cursor do data loader, estado da mistura, topologia, revisão do código, configuração e eventos recentes de infraestrutura como substituição de nó ou retry de rede. Registre identificadores estáveis de documento e de batch sem copiar texto sensível para logs gerais. Quando algo dispara, comece do último checkpoint conhecido como bom e reproduza o mesmo batch. Se a falha se reproduzir, rode-a de novo num dispositivo só num dtype mais largo e valide faixas de token, máscaras, fronteiras de sequência, alvos e pesos de amostra. Se não se reproduzir, olhe para não determinismo, coletivos, corrupção de memória e telemetria de hardware, e compare um rank saudável contra o que falha.
+
+A recuperação depende de qual desses foi. Coloque em quarentena uma amostra comprovadamente corrompida sob uma política de dados auditável. Baixe a loss scale para um overflow de fp16. Restaure o estado do optimizer se ele estiver corrompido. Uma redução temporária do learning rate pode carregar uma run por cima de um spike de otimização, mas torná-la permanente cria um experimento novo, que precisa ser descrito como tal. Reverter os pesos sem reverter o cursor de dados ou repete o gatilho ou o esconde.
+
+Controles preventivos são mais baratos do que qualquer uma dessas coisas: gradient clipping, normalização estável, inicialização conservadora, warmup adequado, checagens de valor finito em fronteiras selecionadas, validação de entrada, checkpoints protegidos por checksum e pilotos canário. Checagens síncronas demais custam throughput, então combine sinais baratos de alta frequência com sondagens profundas ocasionais. Anote as curvas de loss com checkpoints, restarts, mudanças de topologia, transições de mistura e mudanças de taxa, e compare contra tokens processados em vez de timestamps de relógio.
+
+O princípio operacional é falhar visivelmente e recuperar de forma reprodutível. Spikes são sintomas, valores não finitos são propagação, divergência é uma trajetória — e um sistema sério de treino consegue rastrear cada um deles até dados, numérica, otimização ou infraestrutura, e depois demonstrar que a run retomada volta ao caminho em que estava.

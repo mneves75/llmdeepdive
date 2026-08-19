@@ -1,0 +1,80 @@
+---
+id: "9.1-memory-bandwidth-vs-flops"
+track: "9-hardware-and-infrastructure"
+order: 1
+title: "Memory bandwidth vs FLOPs"
+summary: "Um acelerador vende aritmética e tráfego de memória separadamente; o decode em batch 1 do Qwen3.8-27B precisa ler todos os 54 GB de pesos em bf16 por token, o que o limita perto de 60 tokens por segundo sob bandwidth classe H100."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["7.3-prefill-vs-decode-two-different-machines", "5.13-pretraining-costs"]
+unlocks: ["9.2-the-roofline-model", "9.3-kv-cache-sizing-and-memory-budgets"]
+analogy: "A cozinha de um restaurante tem cozinheiros e tem uma única porta para a despensa. Dobrar os cozinheiros não faz nada por um prato que exige atravessar todo o estoque da despensa por aquela porta antes que um prato saia. Alguns pedidos são limitados pelos cozinheiros e outros pela porta, e é o cardápio que decide qual. As unidades aritméticas são os cozinheiros, a memory bandwidth é a porta, e o decode de fluxo único é o prato que esvazia a despensa a cada prato servido."
+teachBack:
+  prompt: "Explique por que acrescentar throughput aritmético não acelera o decode em batch 1 do Qwen3.8-27B, e derive o teto de tokens por segundo que a memory bandwidth impõe."
+  modelAnswer: "Produzir um token em batch 1 exige que cada peso seja lido da HBM exatamente uma vez, e o Qwen3.8-27B em bf16 são cerca de 54 GB de pesos. Numa H100 SXM com pico de bandwidth de HBM informado pelo fabricante perto de 3,35 TB/s, só essa leitura leva pelo menos 54e9 dividido por 3,35e12, cerca de 16 milissegundos, o que limita a taxa de passos perto de 60 tokens por segundo antes de contar qualquer attention, tráfego de cache ou overhead de kernel. A aritmética realizada contra esses bytes é de aproximadamente uma operação por byte, enquanto a máquina precisa de algumas centenas de operações por byte para saturar seus tensor cores, então as unidades ficam ociosas esperando a memória. Mais FLOPs encurtam uma fase que não é o gargalo. Só menos bytes por token, como pesos quantizados, ou mais trabalho útil por byte, como fazer batch de muitas sequências atrás de uma única leitura de pesos, move o teto."
+quiz:
+  - question: "O Qwen3.8-27B faz decode em batch 1 numa GPU classe H100. Qual mudança eleva o teto de tokens por segundo?"
+    options: ["Servir pesos de 4 bits, cortando a leitura de pesos por token de cerca de 54 GB para algo entre 14 e 16 GB", "Trocar por uma GPU com a mesma bandwidth de HBM e o dobro de FLOPs nos tensor cores", "Aumentar a temperatura de amostragem", "Ampliar o pool do KV cache"]
+    correctIndex: 0
+    explanation: "O teto é fixado pelos bytes movidos por token, então encolher os pesos encolhe a leitura obrigatória; dobrar a aritmética mexe num recurso que já está ocioso."
+  - question: "Na lição 7.3 a arithmetic intensity de uma matriz de pesos foi aproximada pelo número de tokens processados por leitura de peso. O que isso faz do prefill de um prompt de 8.192 tokens?"
+    options: ["Aproximadamente 8.192 operações por byte de peso, muito acima do ponto de equilíbrio da máquina, então o prefill é normalmente limitado por compute", "Aproximadamente uma operação por byte de peso, então o prefill é limitado por bandwidth", "Independente do comprimento do prompt", "Limitado pelo tokenizer"]
+    correctIndex: 0
+    explanation: "Cada byte de peso buscado durante o prefill serve todas as 8.192 posições de uma vez, e é por isso que prefill e decode ficam em lados opostos do mesmo hardware."
+citations:
+  - title: "CUDA C++ Programming Guide"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/"
+  - title: "NVIDIA H100 Tensor Core GPU"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://www.nvidia.com/en-us/data-center/h100/"
+  - title: "Roofline: An Insightful Visual Performance Model for Multicore Architectures"
+    authors: "Samuel Williams, Andrew Waterman e David Patterson"
+    year: 2009
+    url: "https://people.eecs.berkeley.edu/~kubitron/cs252/handouts/papers/RooflineVyNoYellow.pdf"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Alugue uma única GPU classe H100, carregue o Qwen3.8-27B em bf16, abra uma janela de chat e cronometre a saída. Os tokens chegam a algumas dezenas por segundo enquanto a ficha técnica da placa anuncia throughput aritmético na casa dos petaflops. Nada está quebrado e nada está mal configurado. A máquina simplesmente está sendo paga na moeda errada.
+
+Todo acelerador vende duas coisas, e elas têm preços independentes. A primeira é aritmética: operações de ponto flutuante por segundo, entregues pelos tensor cores espalhados pelos streaming multiprocessors. A segunda é tráfego de memória: bytes por segundo movidos entre a memória de alta banda e essas unidades de compute. Um módulo H100 SXM carrega 80 GB de HBM3 com pico informado pelo fabricante perto de 3,35 TB/s, e sua taxa densa em bf16 nos tensor cores é citada na ordem de mil teraflops. Trate ambos como números de fabricante em agosto de 2026, medidos sob condições do fabricante e essencialmente inatingíveis num kernel real. Ainda assim, a razão entre eles é o número que importa, porque diz quanta aritmética a máquina quer para cada byte que busca:
+
+$$
+\frac{1\times10^{15}\ \text{FLOP/s}}{3.35\times10^{12}\ \text{B/s}} \approx 300\ \text{operações por byte}.
+$$
+
+Alimente essa máquina com menos que algumas centenas de operações por byte e os tensor cores travam, esperando. Essa única razão, o ponto de equilíbrio da máquina, decide qual moeda cada kernel gasta.
+
+Agora o exemplo trabalhado. A lição 7.3 estabeleceu que o decode avança uma posição por sequência a cada passo, através de todas as camadas, e que em batch 1 a arithmetic intensity de uma matriz de pesos é de cerca de uma operação por byte de peso. Os bytes não são abstratos. O Qwen3.8-27B guarda aproximadamente 27 bilhões de parâmetros em bfloat16, dois bytes cada, o que dá cerca de 54 GB de pesos, e gerar um único token exige ler essencialmente todos eles: cada uma das 64 camadas roda uma vez, então toda projeção, toda matriz de feed-forward com gate, o lookup de embedding e a cabeça de linguagem não amarrada são todos tocados. O piso do tempo de passo segue diretamente:
+
+$$
+t_{\text{passo}} \ \ge\ \frac{54\times10^{9}\ \text{B}}{3.35\times10^{12}\ \text{B/s}} \ \approx\ 1.61\times10^{-2}\ \text{s} \ =\ 16.1\ \text{ms},
+$$
+
+$$
+\text{tokens por segundo} \ \le\ \frac{1}{16.1\times10^{-3}\ \text{s}} \ \approx\ 62.
+$$
+
+Chame de cerca de 60 tokens por segundo. Isso não é um benchmark e não é uma medição que alguém aqui fez. É um limite superior derivado de uma alegação de bandwidth do fabricante e de uma contagem de parâmetros, e ignora o trabalho de attention, as leituras crescentes de key-value da lição 7.2, as atualizações de estado do DeltaNet, o overhead de lançamento de kernel e toda ineficiência que fica entre a bandwidth de pico e a atingida. Números reais de fluxo único ficam abaixo dele. O valor do limite é que nenhuma quantidade de engenharia passa por cima dele.
+
+Aqui está o desvio errado, e ele é caro o bastante para as pessoas o cometerem com ordens de compra. O decode parece lento, então o time conclui que a GPU ficou sem aritmética e especifica uma peça com mais FLOPs. Rode a aritmética sobre a proposta, em vez disso. Durante aqueles 16,1 milissegundos a placa realiza aproximadamente duas operações por parâmetro para o multiply-accumulate, cerca de 54 bilhões de operações no total, contra um pico de mil teraflops. Isso dá algo como três décimos de um por cento da aritmética que a máquina pode entregar. Os tensor cores ficam ociosos por mais de 99 por cento do passo. Dobrá-los dobra a ociosidade. A correção é atacar bytes, e não operações, e todo remédio eficaz de decode neste curso é exatamente isso: pesos de 4 bits cortam a leitura obrigatória de cerca de 54 GB para algo entre 14 e 16 GB, o batching amortiza uma leitura de pesos entre muitas sequências, e o speculative decoding verifica vários tokens candidatos por leitura.
+
+O batching merece sua própria linha de aritmética porque é a alavanca mais barata e a mais mal compreendida. Fazer decode de 32 sequências independentes juntas ainda lê os pesos uma vez por passo, então a intensidade sobe de cerca de uma operação por byte para cerca de 32. O throughput total sobe aproximadamente 32 vezes enquanto a latência por sequência quase não se move. Mas 32 ainda está muito abaixo do ponto de equilíbrio de 300, então o passo continua limitado por bandwidth, só que de forma útil. É por isso que economia de serving e latência de chat são problemas diferentes com respostas diferentes, e por que um sistema afinado para um pode parecer quebrado quando medido pelo outro.
+
+:::warning
+A porcentagem de utilização reportada pelas ferramentas comuns de monitoramento não é eficiência aritmética. Ela reporta a fração dos intervalos amostrados durante os quais algum kernel estava residente no dispositivo, então um passo de decode que gasta dezesseis milissegundos esperando leituras de HBM aparece como totalmente utilizado enquanto os tensor cores quase nada fazem. Uma placa pode estar simultaneamente a 100 por cento de utilização e a 0,3 por cento do pico de FLOPs. A lição 9.2 dá o gráfico que separa os dois, e ferramentas de profiling reportam bandwidth atingida e aritmética atingida como contadores distintos exatamente por essa razão.
+:::
+
+O lado do treinamento do livro-caixa corre no sentido oposto, o que vale manter em mente ao lado da lição 5.13. O custo de pré-treinamento é estimado como aproximadamente seis operações por parâmetro por token, uma fórmula que conta FLOPs porque o pré-treinamento processa batches enormes de tokens e portanto vive bem do lado rico em aritmética do ponto de equilíbrio. Os mesmos pesos que fizeram do treinamento um exercício de compra de FLOPs fazem do serving de fluxo único um exercício de compra de bandwidth. Um modelo, dois regimes de hardware, e uma decisão de compra que se inverte dependendo de qual fase você está pagando.
+
+:::caveat
+Ambos os números usados aqui são alegações do fabricante e devem ser tratados como âncoras de ordem de grandeza, não como especificações às quais você possa cobrar um sistema. A bandwidth de pico da HBM nunca é plenamente atingida, taxas de FLOP citadas frequentemente assumem esparsidade estruturada ou um formato numérico mais estreito do que você planeja usar, e o número de 54 GB de pesos omite ativações, cache e overhead de runtime. Rederive o limite com os números da peça que você de fato alugar, e então meça.
+:::
+
+O modelo durável é uma máquina de duas moedas. Pergunte de qualquer kernel quantas operações ele realiza por byte que precisa mover, compare isso com o ponto de equilíbrio da máquina, e você sabe, antes de escrever uma linha de otimização, de qual recurso está carente. A lição 9.2 transforma essa comparação num único gráfico onde você pode posicionar cada kernel, e a lição 9.3 gasta a outra metade do orçamento de hardware, a capacidade em vez da bandwidth, no key-value cache.

@@ -1,0 +1,72 @@
+---
+id: "8.2-huggingface-transformers-ecosystem"
+track: "8-building-and-serving-stacks"
+order: 2
+title: "O ecossistema Hugging Face Transformers"
+summary: "Entre os pesos no Hub e uma resposta existem quatro peças móveis — fixação de revisão, carregamento de safetensors, o chat template e generate() — e só uma delas é o modelo."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["8.1-pytorch-the-reference-runtime"]
+unlocks: ["8.4-vllm"]
+analogy: "Uma sala de concertos não entrega o compositor. Ela entrega uma edição impressa da partitura, um bibliotecário que distribui a revisão certa, um maestro que decide andamento e dinâmica e um contrarregra que diz quando a peça acaba. A culpa por uma execução ruim costuma cair sobre o compositor e costuma pertencer a um dos outros três. O Hub, o safetensors, o chat template e o loop de geração são esses três papéis em torno do Qwen3.8-27B."
+teachBack:
+  prompt: "Trace uma requisição de chat através do stack Transformers e explique precisamente onde enable_thinking faz efeito, e por que chamá-lo de configuração do modelo está errado."
+  modelAnswer: "Uma lista de mensagens com papel e conteúdo vai para o apply_chat_template do tokenizer, que renderiza o template Jinja do modelo — guardado com o tokenizer, não com os pesos — em uma única string carregando exatamente os special tokens com que o modelo foi treinado, e então a tokeniza em ids. Esses ids vão para generate(), que roda o forward pass repetidamente, amostra com os parâmetros de decoding que você fornecer, mantém o cache e para em um stop token ou no limite de comprimento. enable_thinking é um argumento de apply_chat_template: ele muda qual andaime o template emite e, portanto, quais tokens o modelo recebe. Os pesos, a config e o forward pass são byte a byte idênticos nos dois casos. Se você montar a string do prompt na mão, ou passar a flag para generate() em vez de para o template, ela não faz absolutamente nada e você vai concluir que o modelo a ignora."
+quiz:
+  - question: "Por que carregar safetensors não executa código arbitrário, ao contrário de um checkpoint em pickle?"
+    options: ["O arquivo é um header JSON com nomes, dtypes, shapes e offsets de bytes seguido de um blob plano de tensors, então carregar é mapear memória e fatiar", "Ele é criptografado", "Ele roda o código em um sandbox", "Ele converte tudo para float32 antes"]
+    correctIndex: 0
+    explanation: "Não há grafo de objetos a reconstruir; o loader lê offsets e mapeia bytes, o que é ao mesmo tempo mais seguro e mais rápido que despicklar."
+  - question: "Pela lição 8.1, o que você deve comparar quando uma resposta do Transformers e a de um serving engine divergem?"
+    options: ["O primeiro token divergente sob decoding guloso, e então se o tokenizer, o chat template ou a configuração de sampling explica a diferença — não igualdade bit a bit de floats", "Só a latência de relógio", "O tamanho dos dois diretórios de modelo", "Se ambos usaram GPUs da mesma marca"]
+    correctIndex: 0
+    explanation: "Reduções em bf16 variam com a ordem de acumulação, então o PyTorch eager define corretude no nível de sequências de tokens e distribuições, não de floats idênticos."
+  - question: "Qual preset de sampling o model card dá para o thinking mode?"
+    options: ["temperature 1.0, top_p 0.95, top_k 20", "temperature 0.7, top_p 0.80, top_k 20", "temperature 0.0, apenas guloso", "temperature 2.0, top_p 1.0, top_k 100"]
+    correctIndex: 0
+    explanation: "O thinking mode é o padrão e pede temperature 1.0 com top_p 0.95 e top_k 20; o preset instruct é o mais apertado 0.7 / 0.80 / 20."
+citations:
+  - title: "Hugging Face Transformers Documentation"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/docs/transformers"
+  - title: "safetensors Documentation"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/docs/safetensors"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Um colega relata que o Qwen3.8-27B "ignora o botão de thinking" — ele desliga, o modelo raciocina mesmo assim, e a flag parece decorativa. Outro relata que o mesmo script dava respostas diferentes no mês passado e hoje dá outras, sem nenhuma mudança de código. Os dois bugs são reais, nenhum está no modelo, e ambos vivem na fina camada de encanamento entre os pesos no Hub e o texto na tela. Essa camada tem quatro partes: quais bytes você baixou, como eles foram carregados, como sua conversa virou uma string e como os tokens foram amostrados. A lição 8.1 deu o runtime; esta lição dá tudo que está enrolado em volta dele.
+
+Comece pela procedência. Um repositório do Hub como `Qwen/Qwen3.8-27B` é um repositório git com arquivos grandes, e um identificador de repositório sozinho nomeia um branch, não um snapshot. Carregar sem fixar uma revisão significa "o que quer que main aponte quando o cache de download falhar" — que é por que o mesmo script deriva ao longo dos meses conforme o fornecedor publica uma correção de tokenizer ou um ajuste de config. Fixe um hash de commit, registre-o ao lado dos seus resultados de avaliação e trate o diretório do modelo como um artefato com versão, exatamente como você faria com uma imagem de contêiner.
+
+Depois o formato. O Qwen3.8-27B é distribuído em safetensors bf16, e o safetensors é deliberadamente sem graça: um header JSON listando cada tensor com seu dtype, shape e faixa de bytes, seguido de um único blob contíguo. Carregar é um mapeamento de memória mais fatiamento, então nada é desserializado em objetos Python e nenhum código do arquivo chega a rodar. Os 54 GB de pesos em bf16 são divididos em shards com um arquivo de índice mapeando nomes de tensor para shards, que é como a lição 4.14 conseguiu abrir pesos reais e encontrar `model.layers.31.mlp.gate_proj.weight` sem carregar os outros cinquenta gigabytes. As consequências práticas são três: o carregamento é rápido porque as páginas chegam sob demanda, um checkpoint malicioso não pode executar no load como um pickle pode, e os nomes de tensor são uma interface pública estável da qual scripts de conversão e adaptadores LoRA dependem.
+
+Agora a parte que causa o bug relatado. O Qwen3.8-27B é um modelo de chat, e modelos de chat são treinados sobre um layout de string muito específico — marcadores de papel, fronteiras de turno e os special tokens que delimitam um bloco de thinking. Esse layout não está embutido nos pesos e não está na config do modelo. É um template Jinja distribuído *junto com o tokenizer*, e `apply_chat_template` é o que o renderiza. Você entrega uma lista de dicionários com papéis e conteúdos, ele devolve exatamente a string que o modelo foi treinado a continuar, e tokenizar essa string dá os ids para o forward pass. O modelo nunca vê um papel. Ele vê tokens.
+
+É aí que `enable_thinking` mora: é uma variável consumida pelo template, não um parâmetro do modelo e não um argumento do loop de geração. Defini-la como false faz o template renderizar um prompt cujo andaime suprime o bloco de thinking; defini-la como true (o padrão) renderiza a versão que convida a um. Pesos idênticos, forward pass idêntico, tokens de entrada diferentes. Então a sequência é: montar as mensagens, chamar o template com `add_generation_prompt=True` e sua escolha de thinking, tokenizar, gerar.
+
+```python
+ids = tok.apply_chat_template(messages, add_generation_prompt=True,
+                              enable_thinking=False, return_tensors="pt")
+out = model.generate(ids, temperature=0.7, top_p=0.80, top_k=20)
+```
+
+:::warning
+Montar a string do prompt na mão é a maneira mais comum de quebrar um modelo de chat, e ela falha em silêncio. Um prompt que é apenas *parecido* com o layout treinado ainda produz texto fluente, então nada quebra e nenhum erro aparece — você simplesmente obtém um modelo operando fora da distribuição em que foi instruction-tuned, com um botão de thinking que não faz nada porque nenhum template chegou a rodar. Renderize o template, depois logue a string renderizada uma vez e leia.
+:::
+
+O sampling é a segunda falha silenciosa. A chamada de geração acima define explicitamente o preset instruct do model card — temperature 0.7, top_p 0.80, top_k 20 — porque os padrões da biblioteca são da biblioteca, não deste modelo, e um `generation_config.json` no repositório pode definir alguns campos e deixar outros caírem no fallback. O thinking mode pede o preset mais frouxo: temperature 1.0, top_p 0.95, top_k 20. A lição 7.4 explica por que cadeias longas de raciocínio preferem a temperatura mais alta; o ponto aqui é operacional. Defina os três explicitamente, logue-os junto de cada resultado e nunca reporte uma comparação de qualidade em que os parâmetros de decoding foram herdados em vez de escolhidos.
+
+O loop de geração em si é o decode de referência da lição 8.1 embrulhado em contabilidade: ele acrescenta o token amostrado, mantém um objeto de cache entre passos, aplica os critérios de parada e devolve ids que você decodifica de volta para texto. Para este modelo esse objeto de cache está fazendo algo incomum. Dezesseis camadas precisam de keys e values por token que crescem; quarenta e oito precisam de um estado recorrente de tamanho fixo atualizado no lugar. Uma classe de cache híbrida precisa conter os dois.
+
+:::caveat
+Se o release que você instalou implementa esse cache híbrido corretamente é uma questão de versão, não de arquitetura, e precisa ser verificada em vez de suposta. O modo de falha nem sempre é uma exceção — um estado recorrente mal tratado pode produzir saída gramatical e errada. Confira que o modelo carrega sem cair em remote code que você não leu, rode um prompt curto e determinístico contra uma resposta sabidamente boa, e fixe o release.
+:::
+
+Nada disso é um serving stack. As requisições rodam uma depois da outra, memória é alocada por chamada, não há paginação nem continuous batching, e um segundo usuário concorrente espera. Isso é uma virtude para trabalho de corretude e uma desqualificação para produção, e é por isso que a lição 8.4 retoma o fio com o vLLM. O que você leva adiante é a disciplina: fixe a revisão, carregue safetensors, renderize o template, defina o preset e saiba qual dos quatro está mentindo antes de culpar o modelo.

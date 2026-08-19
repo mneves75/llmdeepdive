@@ -1,0 +1,110 @@
+---
+id: "5.10-gradient-checkpointing"
+track: "5-pretraining-at-scale"
+order: 10
+title: "Gradient checkpointing e a matemática da memória"
+summary: "O activation checkpointing troca compute por memória — e com hidden size 5120 e uma FFN de 17.408 de largura, as ativações de uma única sequência de 8.192 tokens fazem tudo que o sharding conquistou parecer pequeno."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.9-mixed-precision"]
+unlocks: ["5.11-learning-rate-schedules"]
+analogy: "Um caminhante numa trilha longa pode fotografar cada curva ou apenas os grandes entroncamentos. Fotografar tudo facilita o caminho de volta, mas lota o celular. Guardar só os entroncamentos economiza armazenamento; na volta, o caminhante precisa refazer cada trecho para reconstruir as curvas intermediárias. O checkpointing guarda entroncamentos de ativação selecionados e recomputa o caminho quando os gradientes viajam para trás."
+teachBack:
+  prompt: "Estime a memória de ativações salvas de uma sequência de 8.192 tokens pelas 64 camadas do Qwen3.8-27B, e depois mostre o que o checkpointing nas fronteiras de super-bloco muda."
+  modelAnswer: "Faça a estimativa sobre um modelo uniformemente de full attention com as dimensões deste; as 48 camadas DeltaNet do híbrido precisam ter suas ativações de treino custeadas à parte. Contando os tensores que o autograd retém numa camada — o residual stream e as cópias normalizadas com 5120 de largura, as projeções de attention não quadradas e os três tensores de FFN com 17.408 de largura — dá aproximadamente 98.300 valores por token por camada, cerca de 192 KiB em bf16. Ao longo de 8.192 tokens e 64 camadas isso é cerca de 96 GiB para uma única sequência com batch size um. Fazer checkpointing nas 16 fronteiras de super-bloco guarda apenas os hidden states de fronteira, 8.192 x 5120 x 2 bytes = 80 MiB cada, cerca de 1,25 GiB no total, mais o custo transitório de recomputar um super-bloco de quatro camadas, cerca de 6,0 GiB. A memória de pico de ativações cai de aproximadamente 96 GiB para menos de 8 GiB, ao preço de rodar a maior parte do forward pass uma segunda vez."
+quiz:
+  - question: "Estimar a memória de ativações como batch x sequência x hidden x camadas x 2 bytes dá cerca de 5 GiB para uma sequência de 8.192 tokens. Por que o número para um modelo uniformemente de full attention deste tamanho fica mais perto de 96 GiB?"
+    options: ["Essa fórmula conta só o residual stream; o autograd também retém as cópias normalizadas, as projeções de attention e três tensores de FFN com 17.408 de largura por camada, cerca de 19 vezes mais valores", "Porque os pesos são contados duas vezes", "Porque o bf16 usa 4 bytes por elemento", "Porque o KV cache é retido durante o treino"]
+    correctIndex: 0
+    explanation: "Os intermediários da FFN dominam: três tensores de largura 17.408 contra um residual stream de 5120 de largura, e é por isso que uma estimativa só do residual subestima por mais de uma ordem de magnitude."
+  - question: "A lição 5.9 manteve uma cópia master dos pesos em fp32. O activation checkpointing a reduz?"
+    options: ["Não — o checkpointing ataca apenas as ativações salvas, deixando parâmetros, gradientes e os 324 GB de estado do optimizer intocados", "Sim, pela metade, já que as fronteiras são guardadas em bf16", "Sim, porque a recomputação regenera os master weights", "Só quando combinado com loss scaling"]
+    correctIndex: 0
+    explanation: "As categorias são independentes: o sharding trata do estado persistente, o checkpointing trata das ativações, e um job pode ser limitado por qualquer um dos dois."
+  - question: "Por que o estado do gerador de números aleatórios precisa ser tratado durante a recomputação?"
+    options: ["Dropout e outras operações estocásticas precisam reproduzir máscaras compatíveis", "Ele muda os formatos dos parâmetros", "Ele aloca o tokenizer", "Ele substitui a loss"]
+    correctIndex: 0
+    explanation: "Um forward estocástico diferente durante o backward não reproduziria a computação cujos gradientes são exigidos."
+citations:
+  - title: "Training Deep Nets with Sublinear Memory Cost"
+    authors: "Tianqi Chen, Bing Xu, Chiyuan Zhang e Carlos Guestrin"
+    year: 2016
+    url: "https://arxiv.org/abs/1604.06174"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+A lição 5.7 baixou o estado persistente para cerca de 6,75 GB por rank num job ZeRO-3 de 64 vias. A lição 5.8 particionou as camadas. No papel, um modelo de 27 bilhões de parâmetros agora cabe num acelerador de 80 GB com folga enorme. Aí você sobe com uma sequência de 8.192 tokens e batch size um, e o job morre no primeiro backward pass. Nada no seu sharding estava errado. Você orçou a categoria errada.
+
+A backpropagation precisa de valores do forward pass. O autograd portanto retém ativações, cópias normalizadas, saídas de projeção e intermediários de attention até que suas funções de backward rodem, e num transformer profundo esses valores salvos rotineiramente excedem os pesos. O **activation checkpointing** — normalmente chamado de gradient checkpointing, embora nada nele envolva um arquivo em disco — reduz isso esquecendo e recomputando deliberadamente.
+
+Acerte o tamanho primeiro, porque a intuição que as pessoas carregam está muito errada. A estimativa tentadora conta o residual stream: batch vezes sequência vezes hidden vezes camadas vezes bytes do dtype.
+
+$$
+1\times 8192\times 5120\times 64\times 2\ \text{B}=5.37\times 10^{9}\ \text{B}\approx 5\ \text{GiB}.
+$$
+
+Cinco gibibytes. Confortável. Agora conte o que o autograd de fato guarda numa camada. Tome um modelo *uniformemente* de full attention com as dimensões deste — a conta real do híbrido exige custear as camadas DeltaNet à parte, o que é um exercício próprio; o que vem a seguir é o método e a ordem de grandeza. A entrada residual e sua cópia normalizada têm 5120 de largura cada. Numa camada de full attention as projeções não são quadradas: a projeção de query vai de 5120 para 12288, porque carrega a porta de saída junto com os 24 heads de dimensão 256 (lição 4.2); keys e values vão de 5120 para 1024 cada (4 KV heads), a saída da attention é 6144, e a projeção de saída retorna a 5120. Isso dá aproximadamente 35.800 valores por token. O bloco feed-forward é ainda maior: uma entrada normalizada de 5120 de largura, depois os tensores gate, up e do produto com gate, de largura 17.408 cada, depois uma saída de down-projection de 5120 — cerca de 62.500 valores. Somando:
+
+$$
+35{,}800+62{,}500\approx 98{,}300\ \text{valores por token por camada},
+$$
+
+$$
+98{,}300\times 2\ \text{B}\approx 196{,}600\ \text{B}\approx 192\ \text{KiB por token por camada}.
+$$
+
+Isso é 19 vezes o residual stream sozinho, e os três tensores de 17.408 de largura da FFN são a maior parte da diferença. Escale:
+
+$$
+8192\ \text{tokens}\times 64\ \text{camadas}\times 192\ \text{KiB}\approx 96\ \text{GiB}.
+$$
+
+Noventa e seis gibibytes de ativações salvas para uma sequência com batch size um — mais de dez vezes o estado persistente que seu sharding tanto se esforçou para reduzir, e mais do que um cartão de 80 GB comporta. Esse é o número do modelo uniformemente de attention que postulamos, e é com ele que se raciocina. Para o Qwen3.8-27B especificamente é uma aproximação de sinal desconhecido: a lição 4.16 mostrou que só 16 das suas 64 camadas são de full attention, e as outras 48 são Gated DeltaNet, cujas ativações de *treino* são uma contabilidade à parte — um estado de inferência de tamanho fixo não implica armazenamento barato no backward, porque o mixer recorrente ainda materializa intermediários por token que o autograd precisa guardar. A metade da FFN, que é a maior parte do total, é idêntica nas 64 camadas de qualquer forma. A estimativa só do residual errou por um fator de aproximadamente dezenove, e erra na direção que faz um job ser agendado e depois morto.
+
+Agora aplique o checkpointing, e deixe a arquitetura escolher a fronteira. Divida a rede em segmentos; durante o forward pass guarde apenas o tensor de fronteira de cada segmento em vez de tudo dentro dele; durante o backward, rode de novo o forward daquele segmento a partir da fronteira salva, reconstrua seus intermediários, compute os gradientes e libere-os. As 64 camadas deste modelo formam 16 super-blocos repetidos de três camadas de Gated DeltaNet mais uma camada de full attention, o que é uma segmentação natural e perfeitamente balanceada. Cada fronteira é um hidden state:
+
+$$
+8192\times 5120\times 2\ \text{B}=83{,}886{,}080\ \text{B}=80\ \text{MiB},
+$$
+
+$$
+80\ \text{MiB}\times 16\ \text{fronteiras}=1.25\ \text{GiB}.
+$$
+
+Durante o backward, um super-bloco é rematerializado por vez, custando o equivalente aos intermediários de quatro camadas — ainda precificados à taxa do modelo uniformemente de attention, e é por isso que o resultado abaixo é um teto para o híbrido real, não seu pico medido:
+
+$$
+4\times 8192\times 192\ \text{KiB}\approx 6.0\ \text{GiB}.
+$$
+
+A memória de pico de ativações vira aproximadamente $1.25+6.0\approx 7.3$ GiB em vez de 96 GiB — cerca de treze vezes menos, e é essa razão que se transfere para o modelo real, ainda que os dois números absolutos sejam os do hipotético — pago rodando a maior parte da computação do forward duas vezes.
+
+:::insight
+A granularidade dos segmentos é um botão, não um interruptor, e os dois termos se movem em direções opostas. Dezesseis segmentos grossos guardam poucas fronteiras e rematerializam muito; sessenta e quatro segmentos finos guardam 64 fronteiras (5 GiB) e rematerializam só uma camada por vez (cerca de 1,4 GiB). Ambos caem perto de 6 a 7 GiB aqui, mas com overhead de framework diferente e comportamento de sobreposição diferente. Meça os dois em vez de adotar um intervalo folclórico.
+:::
+
+O tradeoff é direto: menor pico de memória de ativações por computação extra. Não é simplesmente dobrar o tempo de treino, porque backward, comunicação e trabalho não checkpointado continuam de qualquer forma e a recomputação pode se sobrepor de modo diferente. Meça tempo de passo e throughput realizado, não o aumento teórico de FLOPs.
+
+Um orçamento de memória deve manter as categorias separadas:
+
+$$
+M_{peak}=M_{params}+M_{grads}+M_{optimizer}+M_{activations}+M_{temporary}+M_{allocator}.
+$$
+
+O checkpointing ataca $M_{activations}$ e nada mais. Ele não sharda parâmetros, não toca nos master weights em fp32 da lição 5.9, e deixa os 324 GB de estado do AdamW exatamente onde a lição 5.7 os encontrou. Um job dominado por estado do optimizer precisa de ZeRO ou FSDP; um job dominado por ativações de sequência longa precisa disto. A maioria das runs grandes é limitada por um de cada vez, e a categoria limitante muda conforme o comprimento da sequência cresce.
+
+O comprimento de sequência é onde este modelo fica interessante. A estimativa acima usou 8.192 tokens; o contexto nativo é 262.144. As ativações nas partes position-wise da rede crescem linearmente com $T$, então a mesma aritmética no contexto completo é trinta e duas vezes maior e absolutamente inviável sem checkpointing e o sequence parallelism da lição 5.8 juntos. Attention comum acrescentaria um termo quadrático em $T$ por cima, que é precisamente por que kernels de attention eficientes em memória, que nunca materializam a matriz completa de probabilidades, são obrigatórios nesses comprimentos — e por que só 16 das 64 camadas enfrentam esse termo, com as outras 48 varrendo posições com um estado recorrente de tamanho fixo.
+
+:::caveat
+Todo número desta lição é uma estimativa baseada em formatos e deve ser tratado como tal. Kernels fundidos mudam o que é retido, attention eficiente em memória remove intermediários que uma contagem ingênua inclui, o comportamento do alocador e a fragmentação acrescentam overhead real, e uma alegação como "o checkpointing economiza 60 por cento" é sem sentido sem batch, sequência, dtype, escolha de kernel, política de segmentos e quais categorias de memória foram contadas. Combine a aritmética de formatos de tensor com picos medidos do alocador; confie no segundo.
+:::
+
+Duas armadilhas de correção merecem ser nomeadas. Operações estocásticas precisam reproduzir sua aleatoriedade: se o dropout sorteou uma máscara no forward original e outra durante a recomputação, o backward derivaria uma função diferente, então utilitários de checkpoint dos frameworks preservam e restauram o estado do RNG a um custo pequeno. E módulos com estado, efeitos colaterais, caches mutáveis e chamadas externas dependentes de dados podem tornar a recomputação silenciosamente incorreta em vez de ruidosamente quebrada.
+
+A composição acrescenta o resto da complexidade. O pipeline parallelism faz a recomputação competir com outros microbatches pelos mesmos dispositivos. O FSDP pode precisar de um novo all-gather dos pesos durante a recomputação, a menos que os parâmetros tenham permanecido materializados, trocando comunicação por memória. Compiladores fundem e reordenam regiões de formas que mudam o que um segmento sequer é. A unidade efetiva é o escalonamento distribuído inteiro, nunca uma função isolada.
+
+O modelo mental duradouro é uma troca tempo–espaço: guarde estado de fronteira suficiente para reconstruir o grafo do forward, descarte o miolo volumoso e pague compute para recriá-lo pouco antes de seus gradientes serem necessários. A decisão decorre de uma decomposição medida de para onde a memória de fato foi — que, num modelo com um bloco feed-forward de 17.408 de largura, quase nunca é onde uma primeira estimativa a coloca.

@@ -1,0 +1,80 @@
+---
+id: "9.1-memory-bandwidth-vs-flops"
+track: "9-hardware-and-infrastructure"
+order: 1
+title: "Memory bandwidth vs FLOPs"
+summary: "An accelerator sells arithmetic and memory traffic separately; batch-1 decode of Qwen3.8-27B must read all 54 GB of bf16 weights per token, which caps it near 60 tokens per second on H100-class bandwidth."
+tier: "frontier"
+locale: "en"
+prerequisites: ["7.3-prefill-vs-decode-two-different-machines", "5.13-pretraining-costs"]
+unlocks: ["9.2-the-roofline-model", "9.3-kv-cache-sizing-and-memory-budgets"]
+analogy: "A restaurant kitchen has cooks and it has a single doorway to the pantry. Doubling the cooks does nothing for a dish that requires walking the entire pantry inventory through that doorway before one plate can leave. Some orders are cook-limited and some are doorway-limited, and the menu decides which. Arithmetic units are the cooks, memory bandwidth is the doorway, and single-stream decoding is the dish that empties the pantry for every plate."
+teachBack:
+  prompt: "Explain why adding arithmetic throughput does not speed up batch-1 decoding of Qwen3.8-27B, and derive the tokens-per-second ceiling that memory bandwidth imposes."
+  modelAnswer: "Producing one token at batch 1 requires every weight to be read from HBM exactly once, and Qwen3.8-27B in bf16 is about 54 GB of weights. On an H100 SXM with a vendor-reported peak HBM bandwidth near 3.35 TB/s, that read alone takes at least 54e9 divided by 3.35e12, about 16 milliseconds, which caps the step rate near 60 tokens per second before any attention, cache traffic, or kernel overhead is counted. The arithmetic performed against those bytes is roughly one operation per byte, while the machine needs a few hundred operations per byte to saturate its tensor cores, so the units are idle waiting on memory. More FLOPs shorten a phase that is not the bottleneck. Only fewer bytes per token, such as quantized weights, or more useful work per byte, such as batching many sequences behind one weight read, moves the ceiling."
+quiz:
+  - question: "Qwen3.8-27B decodes at batch 1 on an H100-class GPU. Which change raises the tokens-per-second ceiling?"
+    options: ["Serving 4-bit weights, cutting the per-token weight read from about 54 GB to roughly 14 to 16 GB", "Switching to a GPU with the same HBM bandwidth but double the tensor-core FLOPs", "Increasing the sampling temperature", "Enlarging the KV cache pool"]
+    correctIndex: 0
+    explanation: "The ceiling is set by bytes moved per token, so shrinking the weights shrinks the mandatory read; doubling arithmetic changes a resource that is already idle."
+  - question: "In lesson 7.3 arithmetic intensity for a weight matrix was approximated as the number of tokens processed per weight read. What does that make prefill on an 8,192-token prompt?"
+    options: ["Roughly 8,192 operations per weight byte, far above the machine balance point, so prefill is normally compute-limited", "Roughly one operation per weight byte, so prefill is bandwidth-limited", "Independent of prompt length", "Limited by the tokenizer"]
+    correctIndex: 0
+    explanation: "Every weight byte fetched during prefill serves all 8,192 positions at once, which is why prefill and decode sit on opposite sides of the same hardware."
+citations:
+  - title: "CUDA C++ Programming Guide"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/"
+  - title: "NVIDIA H100 Tensor Core GPU"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://www.nvidia.com/en-us/data-center/h100/"
+  - title: "Roofline: An Insightful Visual Performance Model for Multicore Architectures"
+    authors: "Samuel Williams, Andrew Waterman, and David Patterson"
+    year: 2009
+    url: "https://people.eecs.berkeley.edu/~kubitron/cs252/handouts/papers/RooflineVyNoYellow.pdf"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Rent a single H100-class GPU, load Qwen3.8-27B in bf16, open one chat window, and time the output. Tokens arrive at a few dozen per second while the card's specification sheet advertises arithmetic throughput in the petaflop range. Nothing is broken and nothing is misconfigured. The machine is simply being paid in the wrong currency.
+
+Every accelerator sells two things, and they are priced independently. The first is arithmetic: floating-point operations per second, delivered by tensor cores across the streaming multiprocessors. The second is memory traffic: bytes per second moved between high-bandwidth memory and those compute units. An H100 SXM module carries 80 GB of HBM3 at a vendor-reported peak near 3.35 TB/s, and its dense bf16 tensor-core rate is quoted on the order of a thousand teraflops. Treat both as vendor figures as of Aug 2026, measured under vendor conditions and essentially unreachable in a real kernel. Even so, their ratio is the number that matters, because it tells you how much arithmetic the machine wants for every byte it fetches:
+
+$$
+\frac{1\times10^{15}\ \text{FLOP/s}}{3.35\times10^{12}\ \text{B/s}} \approx 300\ \text{operations per byte}.
+$$
+
+Feed this machine fewer than a few hundred operations per byte and the tensor cores stall, waiting. That single ratio, the machine balance point, decides which currency any given kernel spends.
+
+Now the worked example. Lesson 7.3 established that decoding advances one position per sequence per step through every layer, and that at batch 1 the arithmetic intensity of a weight matrix is about one operation per weight byte. The bytes are not abstract. Qwen3.8-27B holds roughly 27 billion parameters in bfloat16, two bytes each, which is about 54 GB of weights, and generating a single token requires reading essentially all of them: every one of the 64 layers runs once, so every projection, every gated feed-forward matrix, the embedding lookup, and the untied language-model head are all touched. The floor on step time follows directly:
+
+$$
+t_{\text{step}} \ \ge\ \frac{54\times10^{9}\ \text{B}}{3.35\times10^{12}\ \text{B/s}} \ \approx\ 1.61\times10^{-2}\ \text{s} \ =\ 16.1\ \text{ms},
+$$
+
+$$
+\text{tokens per second} \ \le\ \frac{1}{16.1\times10^{-3}\ \text{s}} \ \approx\ 62.
+$$
+
+Call it about 60 tokens per second. This is not a benchmark and not a measurement anyone here made. It is an upper bound derived from a vendor bandwidth claim and a parameter count, and it ignores attention work, the growing key-value reads of lesson 7.2, DeltaNet state updates, kernel launch overhead, and every inefficiency that stands between peak and attained bandwidth. Real single-stream numbers land below it. The value of the bound is that no amount of engineering gets above it.
+
+Here is the wrong turn, and it is expensive enough that people make it with purchase orders. Decode feels slow, so the team concludes the GPU is out of arithmetic and specifies a part with more FLOPs. Run the arithmetic on the proposal instead. During those 16.1 milliseconds the card performs roughly two operations per parameter for the multiply-accumulate, about 54 billion operations in total, against a peak of a thousand teraflops. That works out to something like three tenths of one percent of the arithmetic the machine can deliver. The tensor cores are idle more than 99 percent of the step. Doubling them doubles the idleness. The correction is to attack bytes, not operations, and every effective decode remedy in this course is exactly that: 4-bit weights cut the mandatory read from about 54 GB to roughly 14 to 16 GB, batching amortizes one weight read across many sequences, and speculative decoding verifies several candidate tokens per read.
+
+Batching deserves its own line of arithmetic because it is the cheapest lever and the most misunderstood. Decoding 32 independent sequences together still reads the weights once per step, so the intensity rises from about one operation per byte to about 32. Total throughput rises roughly 32-fold while per-sequence latency barely moves. But 32 is still far below the 300 balance point, so the step remains bandwidth-limited, just usefully so. This is why serving economics and chat latency are different problems with different answers, and why a system tuned for one can look broken measured by the other.
+
+:::warning
+The utilization percentage reported by common monitoring tools is not arithmetic efficiency. It reports the fraction of sampled intervals during which any kernel was resident on the device, so a decode step that spends sixteen milliseconds waiting on HBM reads shows as fully utilized while the tensor cores do almost nothing. A card can sit at 100 percent utilization and 0.3 percent of peak FLOPs simultaneously. Lesson 9.2 gives the chart that separates the two, and profiling tools report achieved bandwidth and achieved arithmetic as distinct counters for exactly this reason.
+:::
+
+The training side of the ledger runs the other way, which is worth holding in mind alongside lesson 5.13. Pretraining cost is estimated as roughly six operations per parameter per token, a formula that counts FLOPs because pretraining processes enormous token batches and therefore lives far to the arithmetic-rich side of the balance point. The same weights that made training a FLOP-purchasing exercise make single-stream serving a bandwidth-purchasing one. One model, two hardware regimes, and a procurement decision that inverts depending on which phase you are paying for.
+
+:::caveat
+Both figures used here are vendor claims and should be treated as order-of-magnitude anchors, not specifications you can hold a system to. Peak HBM bandwidth is never fully attained, quoted FLOP rates frequently assume structured sparsity or a narrower numeric format than you plan to use, and the 54 GB weight figure omits activations, cache, and runtime overhead. Re-derive the bound with the numbers on the part you actually rent, then measure.
+:::
+
+The durable model is a two-currency machine. Ask of any kernel how many operations it performs per byte it must move, compare that to the machine's balance point, and you know before writing a line of optimization which resource you are short of. Lesson 9.2 turns that comparison into a single chart you can place every kernel on, and lesson 9.3 spends the other half of the hardware budget, the capacity rather than the bandwidth, on the key-value cache.

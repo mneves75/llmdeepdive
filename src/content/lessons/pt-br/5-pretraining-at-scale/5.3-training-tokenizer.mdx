@@ -1,0 +1,88 @@
+---
+id: "5.3-training-tokenizer"
+track: "5-pretraining-at-scale"
+order: 3
+title: "Treinando seu próprio tokenizer"
+summary: "Treinar um tokenizer fixa um vocabulário que todo checkpoint posterior precisa compartilhar; as 248.320 linhas do Qwen3.8-27B mostram como um tamanho-alvo é escolhido e depois preenchido para divisibilidade em tensor parallel."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.2-data-pipeline"]
+unlocks: ["5.4-kaplan-scaling-laws"]
+analogy: "Antes de imprimir um jornal multilíngue, uma fundição decide quais peças de tipo móvel fundir. Letras isoladas imprimem qualquer coisa, mas exigem muitas peças por palavra; palavras inteiras são eficientes até chegar uma palavra inédita. O treino de subwords estuda material representativo e funde fragmentos recorrentes. Uma vez que as prensas saem da fábrica, mudar o inventário de tipos muda cada número de gaveta, e as instruções de impressão de ontem não servem mais."
+teachBack:
+  prompt: "Explique como um tamanho-alvo de vocabulário é escolhido, por que a matriz de embedding do Qwen3.8-27B tem exatamente 248.320 linhas e por que esse número não pode ser mudado depois do treino."
+  modelAnswer: "Você escolhe um tamanho negociando fertilidade contra custo de matriz: um vocabulário maior encurta sequências e melhora a justiça multilíngue, mas cada linha custa parâmetros tanto no embedding quanto, quando os embeddings são untied, na output head. Em torno de um quarto de milhão de peças é o equilíbrio moderno para um modelo amplamente multilíngue. O valor exato 248.320 é então escolhido por divisibilidade, e não por linguística: ele fatora como 512 vezes 485, então divide igualmente por graus de tensor parallel até 512, o que um redondo 250.000 não faria. As linhas de padding não usadas são baratas. Depois do treino, o mapeamento é congelado porque a linha 42 do embedding só tem significado sob o mapeamento que atribuiu um token ao ID 42."
+quiz:
+  - question: "Por que o vocabulário do Qwen3.8-27B é 248.320 e não um redondo 250.000?"
+    options: ["248.320 = 512 x 485, então divide igualmente por graus de tensor parallel até 512", "É o número exato de palavras distintas no corpus", "Números maiores são mais lentos de indexar", "O tokenizer não pode exceder 2^18"]
+    correctIndex: 0
+    explanation: "O vocabulário é dividido entre ranks em tensor parallelism, então a contagem de linhas é preenchida até um número altamente divisível; 250.000 fatora como 16 x 15.625 e falha no grau 32."
+  - question: "Seguindo a lição 5.2, por que a amostra de treino do tokenizer precisa vir do corpus governado com seus limites de mistura aplicados?"
+    options: ["Uma amostra desbalanceada deixa uma fonte superamostrada monopolizar os merges e inflar permanentemente a fertilidade de outros idiomas", "Do contrário o tokenizer memorizaria respostas de benchmark", "Merges exigem bytes deduplicados para serem legais", "A filtragem acontece depois da tokenização"]
+    correctIndex: 0
+    explanation: "Treinar um tokenizer é barato, mas uma amostra enviesada assa uma ineficiência em todo checkpoint que aquele vocabulário venha a servir."
+  - question: "O que precisa permanecer estável ao carregar um checkpoint?"
+    options: ["O mapeamento token-para-ID e a semântica dos tokens especiais", "Apenas o tamanho do vocabulário", "Apenas a normalização para minúsculas", "A ordem dos batches de treino"]
+    correctIndex: 0
+    explanation: "A linha 42 do embedding só tem significado sob o mapeamento exato que atribuiu um token ao ID 42."
+citations:
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "Neural Machine Translation of Rare Words with Subword Units"
+    authors: "Rico Sennrich, Barry Haddow e Alexandra Birch"
+    year: 2016
+    url: "https://arxiv.org/abs/1508.07909"
+  - title: "SentencePiece: A simple and language independent subword tokenizer and detokenizer for Neural Text Processing"
+    authors: "Taku Kudo e John Richardson"
+    year: 2018
+    url: "https://arxiv.org/abs/1808.06226"
+updated: "2026-08-18"
+---
+
+Abra o config do Qwen3.8-27B e um número parece erro de digitação: `vocab_size: 248320`. Não 250.000, não 262.144, nenhum valor redondo que um humano escolheria. Alguém o escolheu deliberadamente, e reconstruir o porquê ensina quase tudo que o treino de um tokenizer envolve — porque a escolha foi feita duas vezes, uma pela linguística e uma pela aritmética.
+
+A metade linguística vem primeiro. Um modelo de linguagem nunca recebe texto bruto; o tokenizer mapeia texto para IDs inteiros e a tabela de embedding mapeia esses IDs para vetores de 5120 dimensões. Treinar esse tokenizer significa escolher uma amostra representativa do corpus governado da lição 5.2, com os limites de mistura já aplicados, e então aprender dela um inventário de tamanho fixo de peças de subword. Esquemas **byte-level** partem de bytes, de modo que qualquer entrada é representável; **BPE** funde repetidamente o par adjacente mais frequente, produzindo uma lista ordenada de merges; **unigram** começa com muitas peças candidatas e poda as que menos contribuem para um objetivo probabilístico. O SentencePiece consegue treinar sobre sentenças brutas e trata o espaço em branco explicitamente. Todos são compromissos entre unidades universais minúsculas e um dicionário impossível de palavras inteiras.
+
+O tamanho é a decisão de verdade, e é uma troca direta. Um vocabulário maior significa menos tokens por sentença, o que significa sequências mais curtas, menos trabalho de attention e — isto importa mais do que parece — tratamento mais justo de idiomas que um vocabulário pequeno e centrado no inglês trituraria em fragmentos. A lição 1.4 mediu esse efeito: o mesmo significado custa mais tokens, e portanto mais dinheiro a USD 0,45 por milhão de tokens de entrada, em português do que em inglês sob um tokenizer mal balanceado.
+
+Mas linhas não são de graça. Neste modelo o embedding e a output head são untied, o que o config declara sem rodeios como `tie_word_embeddings: false`. Então cada linha é paga duas vezes. Calcule o custo marginal:
+
+$$
+10{,}000\ \text{linhas}\times 5120 = 51.2\ \text{M params por matriz},
+$$
+
+$$
+51.2\ \text{M}\times 2\ \text{matrizes} = 102.4\ \text{M params} \times 2\ \text{B (bf16)} \approx 205\ \text{MB}.
+$$
+
+Dez mil entradas extras de vocabulário custam cerca de 205 MB de pesos. Escale isso para a tabela inteira: $248{,}320\times 5120\approx 1.271$ bilhão de parâmetros no embedding, outros 1,271 bilhão na head, aproximadamente 2,54 bilhões somados — em torno de 9% de um modelo de 27 bilhões de parâmetros gasto no mapeamento entre texto e vetores, antes que exista uma única camada de transformer.
+
+Agora a metade aritmética da escolha, que é por que o número não é redondo. Durante o treino, o tensor parallelism divide a dimensão do vocabulário entre ranks (lição 5.8), então a contagem de linhas precisa dividir igualmente pelo grau paralelo. Fatore o valor lançado:
+
+$$
+248{,}320 = 512\times 485 = 2^{9}\times 5\times 97.
+$$
+
+Ele divide limpo por 2, 4, 8, 16, 32, 64, 128, 256 e 512. Qualquer grau de tensor parallel que seja potência de dois até 512 recebe uma fatia igual: no grau 8, cada rank possui 31.040 linhas; no grau 32, 7.760 linhas; no grau 64, 3.880. Compare com a alternativa "óbvia":
+
+$$
+250{,}000 = 2^{4}\times 5^{6} = 16\times 15{,}625,
+$$
+
+que divide por 16 e então para. No grau 32 de tensor parallel você teria 7.812,5 linhas por rank — impossível — e o framework preencheria silenciosamente ou falharia ruidosamente no lançamento. Então o inventário aprendido pelo tokenizer é preenchido até um número altamente composto, e as linhas excedentes simplesmente nunca são emitidas. Elas custam alguns milhões de parâmetros e compram liberdade em todo layout paralelo futuro.
+
+:::insight
+Tamanho de vocabulário num config lançado são dois números usando um chapéu só: quantas peças o tokenizer de fato aprendeu, e quantas linhas a matriz tem depois do padding para divisibilidade. Raramente são iguais, e o config só reporta o segundo.
+:::
+
+O desvio clássico vem logo em seguida, e as pessoas realmente tentam isso: notando que algumas das 248.320 linhas nunca são produzidas, alguém propõe aparar essas linhas para recuperar memória. Duas coisas quebram. Primeiro, a economia é desprezível — algumas centenas de linhas não usadas são megabytes de um dígito contra 54 GB de pesos em bf16. Segundo, aparar destrói a divisibilidade que motivou o padding, então o grau 32 ou 256 de tensor parallel deixa de funcionar, e se o corte remover linhas do meio em vez da cauda ele desloca todo ID subsequente e invalida o embedding aprendido inteiro. Linhas de padding não são desperdício. Elas são a razão de o modelo poder ser shardeado de oito formas num nó e de 32 formas em quatro.
+
+:::warning
+A concepção equivocada mais comum é que um vocabulário maior é simplesmente melhor porque as sequências ficam mais curtas. É uma troca, não um ganho grátis. Passado um ponto, linhas extras vão para strings raras que aparecem um punhado de vezes no treino, então esses embeddings ficam perto da inicialização, o softmax sobre a output head fica mais caro, e você pagou aproximadamente 205 MB por 10.000 linhas por capacidade que o modelo nunca aprende a usar. Julgue um tamanho pela fertilidade medida por idioma e domínio em texto held-out, não pela contagem de linhas.
+:::
+
+Todo o resto sobre o treino de um tokenizer decorre do fato de o artefato ser permanente. Reserve tokens especiais — padding, fronteiras de sequência, marcadores de papel de chat, marcadores de modo de pensamento, marcadores de FIM — antes de congelar os IDs, porque acrescentar depois significa redimensionar embeddings e treinar uma linha fria, e inserir no meio corrompe toda associação posterior. Decida a normalização deliberadamente: Unicode pode escrever texto visualmente idêntico de várias formas, e dobrar caixa ou remover acentos encolhe um vocabulário ao custo de distinções que seu produto pode precisar. Avalie em amostras held-out, reportando fertilidade por idioma e domínio em vez de uma média global única, mais correção de ida e volta, expansão máxima adversarial e throughput de codificação. Inspecione exemplos reais na mão, porque a morfologia do português, acentos combinantes, sequências de emoji, texto CJK, escritas da direita para a esquerda, indentação e cadeias longas de dígitos falham cada uma de um jeito.
+
+Então congele e faça hash dos arquivos, guarde a versão do código de treino, as regras de normalização, o manifesto da amostra, o vocabulário, os merges, a tabela de tokens especiais e o relatório de avaliação, e teste que cada worker de dados produz IDs byte a byte idênticos para um conjunto dourado. Uma incompatibilidade silenciosa de versão do tokenizer deixará uma run treinar alegremente sobre entrada sem sentido enquanto a loss permanece finita e plausível — a falha silenciosa mais cara desta track.

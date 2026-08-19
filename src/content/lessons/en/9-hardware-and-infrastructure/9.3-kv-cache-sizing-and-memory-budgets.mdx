@@ -1,0 +1,92 @@
+---
+id: "9.3-kv-cache-sizing-and-memory-budgets"
+track: "9-hardware-and-infrastructure"
+order: 3
+title: "KV cache sizing and memory budgets"
+summary: "An 80 GB accelerator budgeted line by line for Qwen3.8-27B: weights, runtime reserve, the key-value pool at 64 KiB per token, the constant 72 MiB DeltaNet state per sequence, and the same budget redone at FP8."
+tier: "frontier"
+locale: "en"
+prerequisites: ["7.2-the-kv-cache", "9.1-memory-bandwidth-vs-flops"]
+unlocks: ["9.10-cost-per-token"]
+analogy: "A removals van has a stated capacity, but the usable space is what remains after the tail lift, the straps, the blankets, and the driver's own toolbox. Load planning that starts from the brochure figure ends with furniture on the pavement. A memory budget is the same exercise: the brochure says 80 GB, the weights are the piano, the runtime reserve is the toolbox nobody counted, and every extra passenger brings luggage that scales with the trip and a bag that does not."
+lab:
+  id: "kv-budget"
+  kind: "calculator"
+  budgetKb: 12
+teachBack:
+  prompt: "Budget an 80 GB accelerator for Qwen3.8-27B line by line and state how many 8,192-token conversations it serves concurrently, then redo the budget with FP8 weights and an FP8 cache."
+  modelAnswer: "An 80 GB part reports roughly 79.6 GiB usable. The bf16 weights are about 54 GB, which is 50.3 GiB, and a runtime reserve for the CUDA context, activations, workspace, and fragmentation takes on the order of 6 GiB, leaving about 23.3 GiB, or 23,859 MiB, as the key-value pool. Lesson 7.2 derived 64 KiB per token, so an 8,192-token conversation holds 512 MiB of cache, and each active sequence also holds roughly 72 MiB of Gated DeltaNet recurrent state, giving 584 MiB per sequence and about 40 concurrent conversations. One full 262,144-token sequence needs 16 GiB of cache plus the same 72 MiB, so the pool holds exactly one of those and no second. Redone with FP8 weights at about 27 GB, which is 25.15 GiB, and an FP8 cache at 32 KiB per token, the pool grows to roughly 48.45 GiB and each 8,192-token sequence costs 256 MiB of cache plus 72 MiB of state, giving about 151 concurrent conversations, and about six full-context sequences."
+quiz:
+  - question: "On an 80 GB accelerator running Qwen3.8-27B in bf16, why does the naive estimate of 48 concurrent 8,192-token conversations overshoot the realistic figure of about 40?"
+    options: ["It counts 80 GB as fully usable, ignores the runtime reserve, and omits the roughly 72 MiB of DeltaNet state each sequence carries", "It uses the wrong number of KV heads", "It assumes FP8 weights", "It forgets that only 16 layers cache"]
+    correctIndex: 0
+    explanation: "Brochure capacity is not usable capacity, the runtime needs several gibibytes before any cache is allocated, and the constant per-sequence recurrent state is real memory that the KV arithmetic alone never shows."
+  - question: "Lesson 7.2 derived Qwen3.8-27B's cache as 64 KiB per token rather than 256 KiB. Which architectural fact produces the smaller figure?"
+    options: ["Only the 16 full-attention layers cache keys and values; the other 48 Gated DeltaNet layers keep fixed-size state", "The cache is stored in FP8 by default", "Grouped-query attention removes the value tensors", "The vision tower shares the cache"]
+    correctIndex: 0
+    explanation: "Assuming all 64 layers cache quadruples the estimate; the hybrid layout means three quarters of the depth contributes no per-token cache at all."
+  - question: "Moving to FP8 weights and an FP8 cache raises concurrency from about 40 to about 151 sequences. What happens to the share of the budget taken by the DeltaNet state?"
+    options: ["It rises, because the constant 72 MiB per sequence stays fixed while everything around it shrinks", "It falls, because FP8 halves the state too", "It stays the same fraction", "It becomes zero"]
+    correctIndex: 0
+    explanation: "Ignoring the state overestimates bf16 concurrency by about 15 percent but FP8 concurrency by about 28 percent; a constant term grows in relative importance as the variable terms shrink."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+  - title: "vLLM Documentation"
+    authors: "vLLM Project"
+    year: 2026
+    url: "https://docs.vllm.ai"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+You have one 80 GB accelerator and a product requirement: serve Qwen3.8-27B to as many simultaneous conversations as the card allows, each with an 8,192-token window. Somebody in the room does the obvious subtraction, 80 minus 54 for the weights, announces 26 GB of cache, divides by the 64 KiB per token from lesson 7.2 to get about 397,000 cached tokens, divides again by 8,192, and reports that the card serves 48 users. That number is wrong by a fifth, and the failure mode is not a slow system but an out-of-memory crash under load. This lesson is the budget done properly, line by line, because everything downstream in this track prices against it.
+
+Start with usable capacity rather than brochure capacity. A part marketed as 80 GB carries 80 GiB-class HBM and reports roughly 79.6 GiB to the runtime once ECC and reserved firmware regions are taken out, so the number you can actually allocate is smaller than the number on the box. Doing the entire budget in one unit family is the only defence, so convert everything to gibibytes and stay there. The bf16 weights, about 54 GB from the canonical figure, are 50.3 GiB. Next comes a line the naive subtraction omits entirely: the runtime reserve. The driver context, activation buffers for the largest batch you intend to run, temporary workspace for the attention and feed-forward kernels, and allocator fragmentation together consume several gibibytes before a single token of cache exists. Six gibibytes is an illustrative and not especially generous figure; serving frameworks encode the same idea as a utilization fraction, defaulting to holding back roughly a tenth of the device. The remainder is the pool:
+
+$$
+79.6\ \text{GiB} - 50.3\ \text{GiB} - 6\ \text{GiB} \ =\ 23.3\ \text{GiB} \ =\ 23{,}859\ \text{MiB}.
+$$
+
+Now price one sequence, and price it completely. Lesson 7.2 derived the cache at 4 KiB per token per caching layer, 64 KiB per token across the 16 full-attention layers, and that derivation is not repeated here. An 8,192-token conversation therefore holds
+
+<Figure id="memory-budget" />
+
+$$
+8{,}192\ \text{tokens} \times 64\ \text{KiB} \ =\ 524{,}288\ \text{KiB} \ =\ 512\ \text{MiB}
+$$
+
+of keys and values. But the 48 Gated DeltaNet layers are not free either. Each keeps a recurrent state of roughly 1.5 MiB, about 72 MiB across the layers, and that state belongs to the sequence, not to the model. Every concurrent conversation carries its own copy. The true per-sequence cost is 512 plus 72, or 584 MiB, and the pool holds
+
+$$
+\frac{23{,}859\ \text{MiB}}{584\ \text{MiB}} \ \approx\ 40\ \text{concurrent sequences}.
+$$
+
+Forty, not forty-eight. The three corrections that closed the gap were the unit conversion, the runtime reserve, and the constant recurrent state, and each is individually small enough to be waved away, which is exactly why all three get waved away together.
+
+Push the same pool to the other extreme and the architecture's cost structure becomes vivid. A single sequence at the full 262,144-token native context holds 16 GiB of keys and values, which is 16,384 MiB, plus the same 72 MiB of state. The 23,859 MiB pool holds precisely one such conversation and cannot begin a second. At a middling 32,768 tokens each sequence costs 2,048 plus 72, or 2,120 MiB, and the card serves eleven. Concurrency on this hardware is not a fixed number; it is a function of the context length you promise your users, and promising the maximum promises single-tenancy.
+
+Redo the budget with FP8 weights and an FP8 cache, which is the standard first move when concurrency matters more than the last increment of quality. The weights halve to about 27 GB, or 25.15 GiB, and the cache halves to 32 KiB per token. The pool becomes 79.6 minus 25.15 minus 6, about 48.45 GiB or 49,613 MiB. Each 8,192-token sequence now costs 256 MiB of cache plus the unchanged 72 MiB of state, 328 MiB in total, so the card serves
+
+$$
+\frac{49{,}613\ \text{MiB}}{328\ \text{MiB}} \ \approx\ 151\ \text{concurrent sequences},
+$$
+
+and about six full-native-context conversations rather than one. Nearly a fourfold gain in concurrency from a single precision decision, which is why quantization appears in every serious capacity plan.
+
+There is a lesson hiding in the comparison. Omitting the DeltaNet state from the bf16 budget would have predicted 46 sequences instead of 40, an overestimate of about 15 percent. Omitting it from the FP8 budget predicts 193 instead of 151, an overestimate of about 28 percent. The state is constant, so as every variable term shrinks its relative weight grows. The 16 GiB versus 72 MiB contrast that makes the hybrid layout look almost free at full context inverts at high concurrency and short windows, where hundreds of copies of a constant become one of the larger lines in the budget.
+
+:::warning
+The most expensive mistake in this arithmetic is not any of the corrections above but reserving the maximum context for every admitted request. If the server allocates 16 GiB per sequence on the chance that a conversation might reach 262,144 tokens, the card admits one user regardless of how short the conversations actually are. Paged allocation, introduced in lesson 7.8, hands out fixed-size blocks on demand so a 300-token conversation holds 300 tokens of memory, and that single change is what turns a theoretical pool into 40 real users. Budget the average, page the peak, and admit requests against measured occupancy rather than declared limits.
+:::
+
+:::caveat
+Every figure here is an illustrative planning estimate as of Aug 2026, not a specification. The 72 MiB state is approximate and excludes the short convolution state, the six-gibibyte reserve depends heavily on framework, batch shape, and kernel choice, and quantized cache formats differ in whether they store scales per token, per head, or per block, which shifts the per-token cost by a few percent. Derive the budget for your stack, then verify by loading the model and reading the allocator, because the only trustworthy number is the one the runtime reports.
+:::
+
+Carry two habits out of this lesson. Budget in one unit family, and price a sequence completely rather than pricing only its cache. Lesson 9.4 changes the capacity line by changing the silicon, and lesson 9.10 turns these occupancy figures into cost per token.

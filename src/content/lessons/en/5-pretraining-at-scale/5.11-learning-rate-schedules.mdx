@@ -1,0 +1,92 @@
+---
+id: "5.11-learning-rate-schedules"
+track: "5-pretraining-at-scale"
+order: 11
+title: "Learning-rate schedules & warmup"
+summary: "A schedule controls update scale across a run, using warmup to survive unstable early statistics and decay to refine later learning — and it must be measured in tokens, because steps are not a stable unit."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.10-gradient-checkpointing"]
+unlocks: ["5.12-training-instabilities"]
+analogy: "A freight train does not leave a crowded station at full throttle. It builds speed while couplings take tension, cruises while the route is clear, then brakes gradually near the platform. Warmup protects fragile early optimization, the main schedule carries useful progress, and decay reduces disruptive updates near the end. The timetable must be measured in the same units as the journey."
+teachBack:
+  prompt: "Evaluate a cosine schedule at a given point by hand, and explain what breaks when a schedule is defined in steps and the global batch changes mid-run."
+  modelAnswer: "Cosine decay from peak to floor is eta(p) = eta_min + 0.5 (eta_max - eta_min)(1 + cos(pi p)) with p the fraction of the horizon completed. With a peak of 3e-4 and a floor of 3e-5, halfway through gives 0.5 x 2.7e-4 x 1 + 3e-5 = 1.65e-4. If the horizon is expressed in steps and the global batch later doubles, the same token budget is consumed in half the planned steps, so p only reaches 0.5 when the data runs out and the run ends at 1.65e-4 with none of the decay phase applied. Defining warmup and horizon in tokens keeps progress aligned with data exposure through changes in world size, accumulation, or batch."
+quiz:
+  - question: "A cosine schedule runs from a peak of 3e-4 to a floor of 3e-5. What is the learning rate exactly halfway through the decay horizon?"
+    options: ["1.65e-4", "1.5e-4", "3e-5", "2.605e-4"]
+    correctIndex: 0
+    explanation: "0.5 x (3e-4 - 3e-5) x (1 + cos(pi/2)) + 3e-5 = 1.35e-4 + 3e-5 = 1.65e-4; the quarter-way value is 2.605e-4."
+  - question: "You enable the super-block activation checkpointing of lesson 5.10, and step time rises by about 30 percent. How should a token-based schedule respond?"
+    options: ["Not at all — recomputation changes wall-clock time per step, not the tokens seen, and the schedule is indexed by tokens", "Halve the peak learning rate to compensate", "Extend warmup by 30 percent", "Switch from cosine to constant"]
+    correctIndex: 0
+    explanation: "That is precisely the advantage of a token-indexed schedule: memory and throughput decisions no longer perturb the optimization trajectory."
+  - question: "What does warmup change directly?"
+    options: ["The optimizer's learning rate over early updates", "The tokenizer vocabulary", "The number of model layers", "The causal mask direction"]
+    correctIndex: 0
+    explanation: "Warmup gradually raises update scale rather than applying the peak rate at the first step."
+citations:
+  - title: "Attention Is All You Need"
+    authors: "Ashish Vaswani et al."
+    year: 2017
+    url: "https://arxiv.org/abs/1706.03762"
+  - title: "Decoupled Weight Decay Regularization"
+    authors: "Ilya Loshchilov and Frank Hutter"
+    year: 2019
+    url: "https://arxiv.org/abs/1711.05101"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Halfway through a long pretraining run, the cluster grows. Twice as many nodes join, the global batch doubles from four million tokens per step to eight million, throughput improves beautifully, and everyone is pleased. The run finishes on schedule in token terms, the loss curve looks reasonable, and the final checkpoint is worse than it should be — noticeably worse on downstream evaluation than a smaller pilot predicted. The cause is not the data, the architecture, or the extra nodes. It is that the learning-rate schedule was written in steps.
+
+The optimizer turns gradients into parameter updates, but the **learning rate** sets their scale, and one constant rate rarely serves an entire run. Early training has uncalibrated activations and unreliable optimizer moments; the middle wants substantial progress; the end benefits from small, refining updates. A schedule encodes that changing risk.
+
+**Warmup** starts below the intended peak and rises over an initial interval. Linear warmup at step $t$ is simply
+
+$$
+\eta_t=\eta_{max}\frac{t}{T_{warmup}}
+$$
+
+for $t\le T_{warmup}$. The first updates stay restrained while normalization scales, gradient magnitudes, and Adam's moment estimates settle. Warmup does not repair an excessive peak; it only changes how that peak is approached.
+
+After warmup, **cosine decay** is the modern default. Writing $p$ for the fraction of the decay horizon completed,
+
+$$
+\eta(p)=\eta_{min}+\tfrac{1}{2}(\eta_{max}-\eta_{min})\bigl(1+\cos(\pi p)\bigr).
+$$
+
+Evaluate it once by hand with a peak of 3e-4 and a floor of 3e-5, a typical ten-percent minimum. At the quarter mark, $\cos(\pi/4)=0.7071$, so
+
+$$
+\eta=\tfrac{1}{2}(2.7\times 10^{-4})(1.7071)+3\times 10^{-5}=2.605\times 10^{-4}.
+$$
+
+At the halfway point, $\cos(\pi/2)=0$, so
+
+$$
+\eta=\tfrac{1}{2}(2.7\times 10^{-4})(1)+3\times 10^{-5}=1.65\times 10^{-4}.
+$$
+
+The curve is gentle near both ends and steepest in the middle, which is why it spends a long time near the peak and then a long time near the floor.
+
+Now return to the opening scenario with those numbers in hand. Suppose the plan was a two-trillion-token budget at four million tokens per step, giving 500,000 steps, and the scheduler's horizon was configured as 500,000 steps. Doubling the global batch to eight million tokens means the same two trillion tokens are consumed in 250,000 steps. The run ends when the data ends — at $p=0.5$ — with the learning rate still at 1.65e-4, having never entered the decay phase at all. Every refinement that the second half of a cosine provides simply did not happen, and nothing in the logs looked abnormal, because the rate followed its configured curve faithfully.
+
+:::warning
+This is the most common misconception about schedules: that a step is a unit of training progress. It is not. A step is a unit of *optimizer invocation*, and its token content depends on world size, microbatch, gradient accumulation, and padding. Define warmup and horizon in tokens — ideally effective loss-bearing tokens, excluding padding — and the schedule survives topology changes, restarts at a different scale, and the memory-throughput decisions of lesson 5.10, which alter step time without altering data exposure at all.
+:::
+
+The alternatives to cosine are worth knowing. **Linear decay** falls at a constant pace toward a chosen endpoint and makes remaining progress trivial to read off. **Inverse-square-root** decay, proportional to $t^{-1/2}$ after a warmup construction, was the original Transformer recipe and has the useful property of not requiring a declared horizon. **Constant-with-warmup** keeps the peak after ramp-up, which suits an uncertain total horizon but can leave late updates noisier than a nearly converged model wants. Endpoints matter as much as shapes: decaying exactly to zero assumes the run ends where planned, and extending it afterwards produces no learning unless the schedule is rewritten, while a nonzero floor preserves adaptation but keeps disturbing a settled model. Warm restarts, popular elsewhere, introduce deliberate rises and are rarely appropriate for an expensive single-pass pretraining run.
+
+:::caveat
+Learning-rate curves cannot be copied independently of optimizer, batch size, model scale, initialization, precision, clipping, and data mixture. The same numeric peak can be stable in one recipe and destructive in another, which is exactly why the peak rates and warmup lengths of published models are of limited use to you. For Qwen3.8-27B in particular there is no technical report: no peak, no warmup, no horizon, no token budget is published. What the config does show is the stability machinery the schedule cooperates with — RMSNorm with epsilon 1e-6 in a pre-norm residual stream, and gating in both layer types — which lesson 5.12 takes up.
+:::
+
+AdamW separates gradient-based optimization from weight decay, but the scheduler and the decay still interact, and parameters such as normalization scales and biases are usually excluded from decay entirely. Gradient clipping bounds an update driven by an outsized gradient before the optimizer step; it is a guardrail, not a substitute for a sane schedule. Scaling the global batch can justify adjusting the peak rate, but linear and square-root rules are heuristics with regime boundaries — larger batches reduce gradient noise and may want longer warmup or different optimizer tuning, so run pilot sweeps rather than extrapolating a rule across orders of magnitude.
+
+Log the realized rate at every step alongside token count, loss, gradient norm, optimizer statistics, and skipped mixed-precision updates. On resume, restore the scheduler's position: accidentally restarting warmup after a checkpoint changes the optimization path, and jumping to a wrong late-run rate manufactures exactly the kind of spike that lesson 5.12 has to diagnose. Overlaying the rate on the loss curve helps correlate instability with update scale, though correlation alone never proves the schedule caused a spike.
+
+The durable model is controlled momentum for learning. Warmup avoids wrenching an uncalibrated network, the central phase moves quickly through useful parameter space, and decay narrows the step as the run approaches its planned end. The schedule is part of the experiment specification and part of checkpoint state — not cosmetic optimizer configuration, and not something to express in a unit that changes when your cluster does.

@@ -1,0 +1,70 @@
+---
+id: "7.3-prefill-vs-decode-two-different-machines"
+track: "7-inference-and-efficiency"
+order: 3
+title: "Prefill vs decode: duas máquinas diferentes"
+summary: "O processamento de prompt do Qwen3.8-27B é rico em aritmética e paralelo, enquanto o decode em batch 1 relê 54 GB de pesos por token; suas 48 camadas de DeltaNet mantêm plano o tráfego de cache do decode."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["7.1-what-actually-happens-when-you-hit-send"]
+unlocks: ["7.7-flashattention-and-io-awareness", "7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+analogy: "Imprimir um livro inteiro e acrescentar uma linha personalizada são ambas tarefas de tinta sobre papel, mas pedem máquinas diferentes. A prensa prospera com uma folha grande e repetição paralela; reiniciar essa prensa por uma linha desperdiça sua capacidade. Uma impressora de etiquetas responde rápido, uma tira por vez, mas nunca alcança a vazão da prensa. O prefill é a prensa, processando muitas posições do prompt juntas. O decode é a impressora de etiquetas, produzindo uma posição nova por sequência sob um loop apertado de latência."
+teachBack:
+  prompt: "Contraste prefill e decode no Qwen3.8-27B em intensidade aritmética e tráfego de memória, e explique como as 48 camadas de DeltaNet mudam o perfil de tráfego do decode."
+  modelAnswer: "O prefill empurra todas as posições do prompt pelos pesos de uma vez, então cada byte de peso lido sustenta tantos multiply-adds quantos forem os tokens do prompt — alta intensidade aritmética, em geral limitada por compute, governando o time to first token. O decode avança uma posição por sequência por passo, então em batch 1 cada um dos cerca de 54 GB de bytes de peso em bf16 sustenta aproximadamente uma operação, tornando o passo limitado por banda e governando a inter-token latency. Do lado do cache, apenas as 16 camadas de full attention leem um histórico que cresce a 64 KiB por token (lição 7.2); as 48 camadas de Gated DeltaNet leem e atualizam cerca de 72 MiB de estado de tamanho fixo independentemente do comprimento do contexto, então três quartos da profundidade contribuem com tráfego constante, e não crescente, no decode."
+quiz:
+  - question: "Qual métrica visível ao usuário o prefill controla mais diretamente?"
+    options: ["Time to first token, já que ele abrange o processamento do prompt antes de existir qualquer saída", "Inter-token latency", "Tamanho do vocabulário do tokenizer", "Tempo de download dos pesos"]
+    correctIndex: 0
+    explanation: "Como a lição 7.1 traçou, o TTFT cobre admissão, tokenização e prefill; a cadência do decode define então a inter-token latency."
+  - question: "Por que o tráfego de memória do decode em 48 das 64 camadas do Qwen3.8-27B permanece plano conforme o contexto cresce?"
+    options: ["As camadas de Gated DeltaNet leem e atualizam um estado recorrente de tamanho fixo em vez de um histórico de KV crescente", "Essas camadas são puladas durante o decode", "Os pesos delas encolhem com o tempo", "Elas fazem cache apenas de um token a cada quatro"]
+    correctIndex: 0
+    explanation: "O estado do DeltaNet é cerca de 1,5 MiB por camada, aproximadamente 72 MiB no total, independente do comprimento da sequência; só as 16 camadas de attention leem um cache crescente."
+citations:
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "Roofline: An Insightful Visual Performance Model for Multicore Architectures"
+    authors: "Samuel Williams, Andrew Waterman e David Patterson"
+    year: 2009
+    url: "https://doi.org/10.1145/1498765.1498785"
+  - title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+    authors: "Tri Dao et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2205.14135"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-18"
+---
+
+Sirva o Qwen3.8-27B e observe os tempos: um prompt de 8.192 tokens é absorvido no tempo de ler esta oração, e então a resposta escorre token a token. Mesmos pesos, mesma GPU — e ainda assim as duas fases rodam a velocidades separadas por ordens de magnitude. Elas são, na prática, duas máquinas diferentes. O **prefill** processa o prompt e cria estado; o **decode** consome esse estado um token por vez.
+
+Durante o prefill, todas as posições do prompt atravessam a rede juntas. As camadas lineares multiplicam pesos por matrizes de ativação com uma dimensão de tokens na casa dos milhares; as 16 camadas de attention computam interações entre posições do prompt e escrevem keys e values, enquanto as 48 camadas de Gated DeltaNet condensam o prompt em seus estados recorrentes. Aceleradores adoram esse formato — paralelismo através de tokens, heads e entradas do batch — e prompts longos podem chegar perto do teto aritmético do hardware. A saída do prefill são os logits do primeiro token mais o estado populado, e é por isso que o comprimento do prompt e a eficiência dos kernels dominam o **time to first token**.
+
+O decode apresenta o formato oposto: uma posição nova por sequência ativa por passo, através de todas as camadas.
+
+Aqui está o desvio que a maioria toma quando o decode parece lento: supor que a GPU ficou sem aritmética e correr atrás de mais FLOPs. Rode as contas em vez disso. Para uma matriz de pesos com $P$ parâmetros em bf16 (2 bytes cada), processar $n$ tokens custa cerca de $2nP$ operações contra pelo menos $2P$ bytes de tráfego de pesos, então a **intensidade aritmética** é
+
+$$
+I \approx \frac{2\,n\,P}{2\,P} = n\ \text{operações por byte de peso}.
+$$
+
+O prefill com $n = 8{,}192$ posições de prompt realiza aproximadamente 8.192 operações úteis para cada byte de peso que busca. O decode em batch 1 tem $n = 1$: cerca de uma operação por byte. E os bytes são substanciais — os pesos em bf16 do Qwen3.8-27B somam cerca de 54 GB, essencialmente todos precisando fluir da memória a cada passo de decode. Uma operação por byte está muito abaixo do que qualquer acelerador moderno precisa para manter suas unidades aritméticas ocupadas, então o passo é limitado por banda de memória, não por compute. Acrescentar FLOPs não mudaria nada; o modelo roofline (Williams et al.) torna isso preciso, e a lição 9.1 transforma a leitura de 54 GB por token num teto explícito de tokens por segundo sob banda de memória classe H100. A correção, e não o palpite ingênuo, explica por que os remédios do decode são todos sobre bytes: pesos quantizados, batching para reaproveitar cada leitura de peso entre sequências, speculative decoding para verificar vários tokens por leitura.
+
+O segundo fluxo de tráfego do decode é o estado, e aqui o layout híbrido do Qwen3.8-27B muda o quadro clássico. Num modelo uniforme de attention, toda camada lê um histórico de KV que cresce com o contexto, então o decode fica progressivamente mais caro por token. Neste modelo só as 16 camadas de full attention fazem isso, lendo um cache que cresce aos 64 KiB por token derivados na lição 7.2 — ilustrativamente, a 100.000 tokens em cache essas camadas transmitem cerca de 6 GiB de K/V por passo. As 48 camadas de DeltaNet, em vez disso, leem e atualizam estados de tamanho fixo somando aproximadamente 72 MiB, os mesmos no token dez e no token 200.000. Três quartos da profundidade contribuem com tráfego constante de decode, então o custo cresce com o contexto muito mais devagar do que a contagem de camadas sozinha sugeriria — esse achatamento é exatamente o que a arquitetura comprou.
+
+O batching remodela os dois regimes. Sequências independentes decodificadas juntas compartilham cada leitura de peso, multiplicando o trabalho útil por byte; é por isso que o $n$ na fórmula de intensidade é, na verdade, tokens em voo, não apenas o comprimento do prompt. Mas batches não são de graça: esperar para formar um eleva a latência de fila, sequências terminam em momentos diferentes, e o continuous batching (lição 7.8) troca um retângulo estático por um conjunto móvel de passos de token que o scheduler precisa manter justo.
+
+As fases também interferem uma na outra. Um prefill grande monopoliza compute e banda exatamente quando requisições em decode precisam de sua cadência estável; o chunked prefill intercala pedaços de prompt entre passos de decode, e algumas implantações desagregam as fases em workers separados, pagando custos de transferência de KV para evitar a contenção.
+
+:::caveat
+"Prefill limitado por compute, decode limitado por banda" é um modelo de primeira ordem, não uma lei. Prompts minúsculos, batches de decode muito grandes, kernels quantizados e comprimentos de contexto extremos — onde as leituras de cache das 16 camadas de attention rivalizam com as leituras de pesos — podem todos mover o gargalo. Meça por fase antes de otimizar.
+:::
+
+As métricas devem respeitar essa divisão: registre queue time, duração do prefill e vazão de prompt separadamente do tempo de passo do decode e da vazão de saída, em percentis por comprimento de prompt e concorrência. Médias agregadas escondem alegremente um scheduler que alimenta jobs em lote enquanto deixa usuários interativos passando fome.
+
+O modelo mental durável: um processador paralelo de prompt entrega estado a um motor de tokens sensível à latência que sobretudo move memória. Tudo no resto desta track — attention ciente de IO, caches paginados, quantização, speculative decoding — é um ataque a um dos dois lados dessa fronteira.

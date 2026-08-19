@@ -1,0 +1,74 @@
+---
+id: "4.11-full-transformer-block"
+track: "4-transformer"
+order: 11
+title: "The classic block — and Qwen's two block types"
+summary: "A decoder block alternates a normalized mixing sublayer with a gated FFN on one residual stream; Qwen3.8-27B builds this interface in two flavors, attention and Gated DeltaNet."
+tier: "core"
+locale: "en"
+prerequisites: ["4.10-residuals-pre-norm-post-norm"]
+unlocks: ["4.12-transformer-families", "4.16-hybrid-layouts"]
+analogy: "A parcel travels on a conveyor through two stations per floor. At the communications station, clerks read its calibrated manifest and retrieve permitted notes from earlier parcels; the notes are added without discarding the contents. At the workshop station, another calibrated manifest drives a wide bank of gated tools, and that result is added too. In Qwen's building, most floors staff the communications station with a running-ledger clerk and every fourth floor with a full archive clerk — but the conveyor, manifests, and workshops are identical on every floor."
+teachBack:
+  prompt: "Trace one tensor through a pre-norm decoder block, then explain what Qwen3.8-27B keeps identical and what it swaps between its attention block and its DeltaNet block."
+  modelAnswer: "A B×T×5120 residual tensor is normalized by RMSNorm and enters the mixing sublayer; the update is added back, a second RMSNorm feeds the gated FFN (5120 to 17408 to 5120), and its output is added too, so shapes return to B×T×5120 and blocks stack. Qwen3.8-27B keeps this whole interface — pre-norm RMSNorm, residual additions, gated FFN — identical in all 64 layers and swaps only the mixer: 16 layers use gated attention with 24 query heads and 4 KV heads at head dimension 256, so Q projects 5120 to 12288 — a 6144 query state plus its gate — and K/V to 1024 each, while the other 48 layers use Gated DeltaNet, a fixed-size-state recurrent mixer."
+quiz:
+  - question: "In Qwen3.8-27B's attention block, how wide is the query state that enters attention, and why?"
+    options: ["6144, because 24 heads × head dimension 256 need not equal the hidden size 5120 — half of a 12288-wide gated projection", "5120, because projections in a Transformer are always square", "1024, the same as the key projection", "248320, the vocabulary size"]
+    correctIndex: 0
+    explanation: "Head count times head dimension sets the query state: 24 × 256 = 6144, and 4 × 256 = 1024 for keys and values. Because the layers are gated, q_proj itself emits 12288 and splits in half; the output projection maps the 6144-wide gated attention output back to 5120."
+  - question: "Which parts of the block does Qwen3.8-27B keep identical across all 64 layers?"
+    options: ["Pre-norm RMSNorm placement, the residual additions, and the gated FFN — only the mixing sublayer differs", "Nothing; every layer has a unique interface", "The mixer — attention appears in every layer", "Only the vocabulary embedding"]
+    correctIndex: 0
+    explanation: "Both block types are mixer-plus-FFN with the same residual and normalization contract; the swap is confined to the mixer."
+  - question: "Using the previous lesson's pre-norm pattern, which expression describes the first half of a Qwen block?"
+    options: ["x1 = x + Mixer(RMSNorm(x))", "x1 = RMSNorm(x + Mixer(x))", "x1 = Mixer(x) with the stream discarded", "x1 = RMSNorm(x) alone"]
+    correctIndex: 0
+    explanation: "Pre-norm calibrates the mixer's input while the residual path stays a bare addition; the FFN half repeats the same pattern on x1."
+citations:
+  - title: "Attention Is All You Need"
+    authors: "Ashish Vaswani et al."
+    year: 2017
+    url: "https://arxiv.org/abs/1706.03762"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+The pieces now assemble into one repeated interface. A decoder-only, pre-norm Transformer block receives a tensor $x$ of shape $B\times T\times d_{model}$ and returns a tensor of the same shape. Everything inside may expand, split into heads, or form attention matrices, but the boundary stays stable so dozens of blocks can stack. Conceptually, the block is two equations:
+
+$$
+x_1=x+\operatorname{Mixer}(\operatorname{Norm}(x)),
+$$
+
+$$
+x_2=x_1+\operatorname{FFN}(\operatorname{Norm}(x_1)).
+$$
+
+In the classic block the mixer is causal multi-head self-attention: normalized features are projected into $Q$, $K$, and $V$, reshaped into heads, compared with scaled dot products under a causal mask, mixed by softmax weights, concatenated, and projected back to $d_{model}$. The FFN branch normalizes the updated stream, expands it, gates or activates it, and projects back. Attention is **token mixing** — positions exchange information; the FFN is **channel mixing** — each position recombines its own features nonlinearly. Repeating the pair lets routes and transformations compose across depth.
+
+Now trace shapes through a real block, because this is where a confident wrong turn lives. Take Qwen3.8-27B's attention block, with hidden size 5120 and 24 query heads at head dimension 256. The reflex answer for the query projection is "5120 in, 5120 out — projections are square." Check it: width out equals heads times head dimension, $24\times 256 = 6144$. That is not 5120, and it is not a bug. That 6144 is the query state; because these layers are gated, the q_proj weight emits it twice over — 5120 → 12288 — and splits into a 6144 query and a 6144 gate (lesson 4.2). Keys and values, with only 4 KV heads under grouped-query attention, map 5120 → $4\times 256 = 1024$ each; and the output projection maps the concatenated 6144 back to 5120 so the update can rejoin the stream. Nothing in the architecture forces the head subspace to match the model width — only the block's *boundary* must return to 5120. If you "fix" a shape mismatch by forcing square projections, you have silently changed the architecture.
+
+:::warning
+The most common assembly misconception is that a Transformer's layers are interchangeable clones with square internal projections. Neither holds for real models: Qwen3.8-27B's attention projections are deliberately non-square (a 12,288-wide gated `q_proj` carrying a 6144 query state and its gate, and 1024 for K/V, against a 5120 stream), and its 64 layers are not all the same kind of block. A checkpoint only loads into the exact shapes and conventions that produced it.
+:::
+
+Here is the larger structural fact. Qwen3.8-27B contains **two block types**, and both are instances of the interface above. They share everything outside the mixer: pre-norm RMSNorm ($\epsilon=10^{-6}$) in the same positions, the same residual additions, and an identical SiLU-gated FFN expanding 5120 → 17,408 → 5120 at a cost of roughly 267 million parameters per layer.
+
+The **Attention block** is the classic design with modern refinements: gated attention using 24 query heads and 4 shared KV heads at head dimension 256, rotary position information applied to a 64-dimensional slice of each head, softmax scores over the causal past, an output projection from 6144 back to 5120. It can look at *any* earlier position with exact, content-addressed precision. Sixteen of the 64 layers are this block.
+
+The **DeltaNet block** replaces softmax attention entirely. Its mixer is Gated DeltaNet, a recurrent layer that carries a fixed-size matrix state from token to token, updating it with a gated delta rule rather than storing every past key and value. It never materializes a $T\times T$ score matrix and never grows memory with sequence length. Forty-eight of the 64 layers — three out of every four — are this block. Lesson 4.15 opens the mechanism; here, what matters is that from the residual stream's point of view the DeltaNet block is just another mixer honoring the same contract: read a normalized 5120-wide state, return a 5120-wide update.
+
+The two types alternate on a strict pattern: three DeltaNet blocks, then one Attention block, repeated 16 times down the stack. Why a hybrid at all is the subject of lesson 4.16; the assembly-level point is that the residual stream makes the mixture *possible*. Because no block owns the representation — each only adds a bounded update to a shared workspace — a recurrent mixer and an attention mixer can interleave freely, each reading whatever the other wrote.
+
+:::note
+The Signal Observatory on the explore page shows one classic attention block. In Qwen3.8-27B this exact block appears once every four layers; the other three replace attention with Gated DeltaNet (lesson 4.15).
+:::
+
+Around the stack sit the bookends. Token IDs index a 248,320 × 5120 embedding table before layer 0; a final RMSNorm follows layer 63; and the language-model head maps each final 5120-dimensional state to 248,320 logits. Qwen3.8-27B does **not** tie this head to the embedding table — they are separate matrices of about 1.271 billion parameters each — a fact you will meet again when reading the checkpoint in lesson 4.14.
+
+Memory behavior differs sharply between the block types. The attention block's score computation scales with context in conventional implementations, and at decode time it must retain past keys and values; the DeltaNet block carries only its fixed-size state regardless of length. The same stack therefore stresses hardware very differently depending on which sixteen layers you are measuring — a thread picked up in track 7.
+
+The assembled picture is compact: one stream, one contract, two mixers. Attention where exact long-range lookup earns its cost, DeltaNet where cheap constant-state mixing suffices, and an identical gated FFN doing the heavy transformation on every floor. Understanding the interface — not memorizing any one block's internals — is what lets you read a 64-layer heterogeneous model as easily as a uniform twelve-layer one.

@@ -1,0 +1,78 @@
+---
+id: "4.14-reading-real-weights"
+track: "4-transformer"
+order: 14
+title: "Lendo pesos reais: abrindo o checkpoint do Qwen3.8-27B"
+summary: "Os arquivos safetensors do Qwen3.8-27B são um mapa tipado de nomes de tensor para shapes, e cada entrada — embeddings não amarrados, projeções de attention não quadradas, trios da FFN gated, maquinaria de estado do DeltaNet — remete a uma lição."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["4.13-build-gpt-from-scratch"]
+unlocks: []
+analogy: "Abrir um checkpoint é como receber cada peça usinada de um relógio em bandejas etiquetadas. As dimensões de uma bandeja dizem se aquilo é engrenagem, mola ou eixo; os arranhões mostram uso, não propósito. Você pode inventariar peças e detectar uma engrenagem empenada, mas entender a marcação do tempo exige traçar como as peças se conectam. Nomes e shapes de tensor são as bandejas; a arquitetura que você passou esta track aprendendo é o diagrama de montagem."
+teachBack:
+  prompt: "Dada a listagem de safetensors do Qwen3.8-27B, explique como nomes e shapes de tensor identificam os embeddings não amarrados, as projeções de attention, a FFN gated e as camadas DeltaNet — e o que um shape sozinho não pode dizer."
+  modelAnswer: "A tabela de embedding e o lm_head aparecem ambos como tensores 248.320 por 5120 sob nomes diferentes, confirmando pesos não amarrados de cerca de 1,271B parâmetros cada. Numa camada de attention, q_proj é 12288 por 5120, porque estas camadas com porta empacotam a porta de saída na mesma matriz: 24 heads vezes head dimension 256, duas vezes. k_proj e v_proj são 1024 por 5120 (4 KV heads), e o_proj mapeia a saída de atenção de 6144, já escalada pela porta, de volta para 5120 — não quadrado por design. A FFN de cada camada contribui com projeções gate, up e down entre 5120 e 17.408. Camadas cujos tensores de mixer não são q/k/v/o, mas convolução e maquinaria de atualização de estado, são as 48 camadas Gated DeltaNet. Shapes verificam a arquitetura e pegam erros de conversão, mas não revelam semântica: isso exige ativações e intervenções."
+quiz:
+  - question: "Dois tensores no checkpoint têm shape idêntico 248.320×5120. O que a coexistência deles sob nomes diferentes prova?"
+    options: ["Os embeddings não são amarrados: a tabela de entrada e o lm_head são parâmetros separados de cerca de 1,271B cada", "O checkpoint está corrompido por duplicação", "O modelo amarra seus embeddings para economizar memória", "O vocabulário é armazenado duas vezes por velocidade"]
+    correctIndex: 0
+    explanation: "Um modelo amarrado guarda uma matriz dessas referenciada pelos dois papéis; o Qwen3.8-27B guarda duas, cerca de 2,54B parâmetros somados."
+  - question: "No GPT mínimo que você construiu na lição anterior, qual par de módulos corresponde a esses dois tensores 248.320×5120?"
+    options: ["token_embedding e language_head, que também eram matrizes separadas", "o buffer causal e o estado do otimizador", "norm_attention e norm_ffn", "get_batch e generate"]
+    correctIndex: 0
+    explanation: "O brinquedo também mantinha embedding e output head não amarrados, então a correspondência é direta — só os shapes mudaram de algumas dezenas de linhas para 248.320."
+  - question: "Você encontra q_proj com shape 12288×5120 e conclui que a conversão está quebrada, já que 24 heads × 256 dá 6144. Qual é o diagnóstico correto?"
+    options: ["Nada está quebrado: estas camadas têm porta, então q_proj emite 24 × 256 × 2 = 12288 e divide em uma query de 6144 e uma porta de 6144", "O tensor está transposto e precisa ser corrigido para 5120×5120", "O arquivo confundiu q_proj com a FFN", "A head dimension precisa ser igual ao hidden size dividido pela contagem de heads"]
+    correctIndex: 0
+    explanation: "A contagem de heads vezes a head dimension não precisa ser igual à largura do modelo; forçar a quadratura mudaria silenciosamente a arquitetura."
+citations:
+  - title: "A Mathematical Framework for Transformer Circuits"
+    authors: "Nelson Elhage et al."
+    year: 2021
+    url: "https://transformer-circuits.pub/2021/framework/index.html"
+  - title: "Interpretability in the Wild: a Circuit for Indirect Object Identification in GPT-2 Small"
+    authors: "Kevin Wang et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2211.00593"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Você construiu um Transformer; agora abra um que já foi enviado para produção. O Qwen3.8-27B é distribuído como arquivos **safetensors** fragmentados — um formato só de dados que mapeia nomes de parâmetro para arrays tipados, com um arquivo de índice dizendo ao loader qual shard guarda qual nome. Não existe relatório técnico dedicado a esse modelo; sua arquitetura é documentada pela configuração e pela linhagem herdada do Qwen3.5. Isso torna o próprio checkpoint uma evidência incomumente importante: os tensores são a verdade fundamental, e depois desta track você consegue ler cada um deles.
+
+O protocolo de leitura é sempre o mesmo. Recupere primeiro o contrato exato da arquitetura — configuração, tokenizer, convenções de nomes — depois liste nome, shape e dtype de cada tensor e mapeie-os para as equações do bloco. Os nomes seguem as convenções da Hugging Face para a classe de arquitetura do modelo; os índices de camada contam a partir de zero, e no layout três-para-um do Qwen3.8-27B a primeira camada de attention aparece no índice 3, depois de três camadas DeltaNet. Dois detalhes pegam as pessoas aqui. Este é um checkpoint multimodal, então a pilha de texto fica aninhada sob `model.language_model.` e a torre de visão sob `model.visual.`. Compare o prefixo de forma ancorada — `^model\.layers\.` não retorna nada aqui, e é esse o sinal para procurar o prefixo real. Um `model.layers.` sem âncora é pior que inútil: `language_model.layers.` termina exatamente com essa substring, então casa com todo tensor de texto e esconde justamente o aninhamento que você precisava notar. E `lm_head.weight` fica no nível de cima, sem prefixo, porque os embeddings não são amarrados. Uma fatia representativa da listagem tem esta cara (pesos armazenados com as linhas de saída primeiro; confira por amostragem contra o próprio índice do checkpoint antes de confiar em qualquer entrada):
+
+```text
+model.language_model.embed_tokens.weight               [248320, 5120]   lesson 1.5
+model.language_model.layers.0.linear_attn.*            DeltaNet tensors lesson 4.15
+model.language_model.layers.3.self_attn.q_proj.weight  [12288, 5120]    lessons 4.2, 4.5
+model.language_model.layers.3.self_attn.k_proj.weight  [1024, 5120]     lessons 4.2, 4.5
+model.language_model.layers.3.self_attn.v_proj.weight  [1024, 5120]     lessons 4.2, 4.5
+model.language_model.layers.3.self_attn.o_proj.weight  [5120, 6144]     lesson 4.5
+model.language_model.layers.3.mlp.gate_proj.weight     [17408, 5120]    lesson 4.9
+model.language_model.layers.3.mlp.up_proj.weight       [17408, 5120]    lesson 4.9
+model.language_model.layers.3.mlp.down_proj.weight     [5120, 17408]    lesson 4.9
+model.visual.blocks.*                                  vision tower
+lm_head.weight                                         [248320, 5120]   lesson 4.11
+```
+
+Percorra de cima a baixo e o curso inteiro se apresenta. `embed_tokens` é a tabela de 248.320 linhas da lição 1.5, um vetor de largura 5120 por entrada de vocabulário, cerca de 1,271 bilhão de parâmetros. O quarteto `self_attn` é a maquinaria multi-head da lição 4.5 vestindo seus shapes reais: a projeção de query emite $24\times 256\times 2 = 12288$ features — as queries e sua porta de saída intercaladas head a head — keys e values apenas $4\times 256 = 1024$ cada porque quatro KV heads servem a todos os vinte e quatro query heads, e `o_proj` dobra a saída de atenção de 6144, já escalada pela porta, de volta para o stream de 5120. O trio `mlp` é a FFN gated da lição 4.9 — gate e up expandindo para 17.408, down retornando, cerca de 267 milhões de parâmetros por camada. E `lm_head` fecha o ciclo da lição 4.11: uma *segunda* matriz 248.320 × 5120, não uma referência à primeira.
+
+Esse último ponto merece parágrafo próprio, porque é aí que um leitor confiante erra. Muitos modelos famosos amarram o output head à tabela de embedding — uma matriz, dois papéis — e um hábito comum é contar `lm_head` como gratuito. Faça a checagem: se os pesos fossem amarrados, o checkpoint guardaria um tensor referenciado pelos dois nomes, e a contabilidade total de parâmetros o incluiria uma vez. O Qwen3.8-27B guarda os dois tensores. Os embeddings **não são amarrados**: cerca de 1,271 bilhão de parâmetros entrando, outros ~1,271 bilhão saindo, aproximadamente 2,54 bilhões somados. Uma auditoria de parâmetros que assume amarração erra por mais de um bilhão — dinheiro de verdade em bf16.
+
+:::caveat
+Não assuma weight tying, e não assuma quadratura. As duas suposições produzem auditorias e conversões que parecem plausíveis e estão erradas. Um tensor pode até caber num shape de destino estando transposto ou mapeado para a convenção errada, produzindo uma falha de aparência fluente que nenhum erro de loader vai pegar. Shapes são evidência necessária, nunca suficiente.
+:::
+
+Agora percorra os índices de camada e algo mais estranho aparece: a maioria das camadas *não* tem nenhum tensor `self_attn`. As camadas 0, 1 e 2 carregam, em vez disso, uma família de maquinaria `linear_attn` — projeções para um tipo diferente de mixer, uma convolução curta cujo kernel abrange quatro posições e parâmetros que governam uma atualização de estado por passo. Essas são as camadas Gated DeltaNet: 48 das 64, três a cada quatro, exatamente como o layout prometia. Os nomes desses tensores vão parecer desconhecidos até a lição 4.15 abrir o mecanismo, e a lição 4.16 explicar por que o checkpoint intercala as duas famílias. Por ora, trate nomes desconhecidos como um arqueólogo trata uma ferramenta desconhecida: registre o shape, anote a camada a que pertence e resista a interpretá-lo antes de conhecer a equação a que ele serve. O que você já pode verificar é o padrão — três camadas de maquinaria de estado, uma camada de q/k/v/o, repetindo dezesseis vezes — e que toda camada, de qualquer um dos tipos, carrega o mesmo trio `mlp` e os vetores de escala do RMSNorm.
+
+Estatísticas básicas vêm em seguida, exatamente como em qualquer checkpoint: procure NaNs e infinitos, calcule normas e faixas por tensor, compare camadas entre si. Uma camada de zeros é um shard faltando; um vetor de norm numa escala absurda é um cast de dtype ruim; distribuições de Q, K, V que divergem radicalmente de uma conversão sabidamente boa expõem um erro de fatiamento. O Qwen3.8-27B é distribuído em bfloat16, então um leitor float32 que faz upcast silenciosamente é inofensivo, enquanto um que interpreta mal os bytes brutos não é. Histogramas mostram saúde, não significado: um peso grande não é um conceito importante, e girar uma base interna pode mudar cada coordenada preservando o comportamento.
+
+:::warning
+Nunca carregue um objeto serializado não confiável com um formato capaz de executar código arbitrário. Safetensors existe precisamente para ser só dados; prefira-o, verifique procedência e integridade e trate arquivos de pesos como entradas — não como fotos inofensivas.
+:::
+
+Para ir da estrutura à função, colete ativações sobre entradas controladas, pergunte o que um componente escreve no residual stream e intervenha — ablação, patching, projeção para fora — antes de afirmar causação. Esse é o trabalho da interpretabilidade, e ele se apoia no mapa que você acabou de fazer. A conclusão modesta é a poderosa: nomes e shapes revelam arquitetura, estatísticas revelam saúde, e este checkpoint em particular — embeddings não amarrados, attention não quadrada, trios de FFN gated e quarenta e oito camadas de maquinaria de estado ainda não explicada — acaba de lhe entregar a lista de leitura das próximas duas lições.

@@ -1,0 +1,70 @@
+---
+id: "6.2-supervised-fine-tuning-and-instruction-data"
+track: "6-post-training-and-alignment"
+order: 2
+title: "Supervised fine-tuning & instruction data"
+summary: "Supervised fine-tuning teaches a pretrained model an interaction protocol; in Qwen3.8-27B the artifact it produces is a chat template with a thinking segment and a per-request switch to turn that segment off."
+tier: "advanced"
+locale: "en"
+prerequisites: ["6.1-why-base-models-arent-assistants"]
+unlocks: ["6.3-lora-qlora-and-peft", "6.4-reward-models-and-human-preference-data"]
+analogy: "A concert pianist already has technique, repertoire, and musical hearing. Rehearsing for a specific chamber ensemble does not teach music from zero; it teaches when to enter, how loudly to play, how to follow the conductor, and how to end together. Instruction fine-tuning similarly preserves broad pretrained ability while rehearsing the interaction protocol the deployed model must follow."
+teachBack:
+  prompt: "Describe the SFT objective, explain why only response tokens usually enter the loss, and say what concrete artifact SFT produced in Qwen3.8-27B."
+  modelAnswer: "SFT applies ordinary next-token cross-entropy to curated conversations. The prompt stays in context but is masked out of the loss, so gradients push toward producing the assistant turn rather than toward predicting user text. The artifact it leaves behind is a protocol: Qwen3.8-27B ships a chat template that renders system, user, and assistant roles plus a delimited thinking segment, and a request-level switch, enable_thinking set to False, that suppresses that segment. The weights and the template are one contract; changing either without the other breaks the behaviour."
+quiz:
+  - question: "What makes SFT different from pretraining in practice?"
+    options: ["Curated instruction-response data and a loss focused on desired outputs", "A different definition of softmax", "No tokenization", "Weights are never updated"]
+    correctIndex: 0
+    explanation: "Both commonly use next-token cross-entropy, but SFT uses structured demonstrations chosen to teach the desired interaction behaviour."
+  - question: "Lesson 6.1 argued that a base model already possesses the capability it seems to lack. What follows for SFT data design?"
+    options: ["Volume of capability examples is the wrong lever; the demonstrations must show which behaviour to select by default", "Only very large SFT sets can install any behaviour", "SFT must reteach grammar and world knowledge from scratch", "The base checkpoint must be discarded before SFT"]
+    correctIndex: 0
+    explanation: "Behavioural underspecification is a selection problem. A few trustworthy demonstrations of the right default beat a large pile of examples the model could already produce when prompted."
+  - question: "Why is a large noisy instruction dataset not automatically better?"
+    options: ["The model learns systematic defects and overrepresented styles in the demonstrations", "More rows disable gradients", "Instruction data cannot contain text", "Large datasets always erase the tokenizer"]
+    correctIndex: 0
+    explanation: "Supervision directly rewards the supplied answers, so duplication, errors, and narrow templates can dominate behaviour."
+citations:
+  - title: "Training language models to follow instructions with human feedback"
+    authors: "Long Ouyang et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2203.02155"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Here is the artifact, before the theory. When you call Qwen3.8-27B you do not hand it a string; you hand it a conversation, and a chat template turns that conversation into one flat token sequence. Roles are rendered as marker tokens — system, user, assistant — around your text. By default the assistant turn begins with a delimited thinking segment before the answer proper. And the model card documents a request-level switch, enable_thinking set to False, which suppresses that segment. All of it — the markers, the segment, the switch — is post-training output. None of it exists in a pretrained checkpoint, and none of it is architecture. Those role markers are ordinary token ids drawn from the same 248,320-row vocabulary every other token comes from.
+
+**Supervised fine-tuning** (SFT) is where most of that protocol gets installed. It takes a pretrained checkpoint and continues training it on demonstrations of the desired behaviour: a system instruction, a user request, and an assistant response written or approved by a human. The goal is not to reteach grammar or world knowledge. Lesson 6.1 argued the capability is already present; SFT makes the conversational contract, the output patterns, and the task boundaries statistically familiar so the right behaviour becomes the default with no in-context demonstration.
+
+The loss is the same token-level cross-entropy used in causal pretraining, with one modification that carries most of the weight. Given conversation tokens $x_1,\ldots,x_T$,
+
+$$
+\mathcal{L}_{\text{SFT}}=-\sum_{t\in A}\log p_\theta\left(x_t\mid x_{<t}\right),
+$$
+
+where $A$ denotes the assistant-response positions. System and user tokens stay in the input context — the model must attend over them — but their loss is masked.
+
+Walk one record through the arithmetic, because the masking is where implementations quietly go wrong. Suppose the rendered conversation tokenizes to 460 positions: 18 template marker tokens, 96 system tokens, 226 user tokens, and 120 assistant tokens. The forward pass runs over all 460. The backward pass sums log-probabilities over 120 of them. Every gradient the optimizer sees therefore answers a single question — given everything before it, was this the right next token of the assistant's reply? — and never the question of what the user should have asked. If the conversation has three assistant turns, the mask follows role boundaries and covers all three, not merely the final suffix.
+
+Now the classic wrong turn: train on all 460 positions with no mask, on the theory that more supervised tokens must mean more learning. It trains fine. The loss drops. Then the deployed model finishes its answer and cheerfully writes the next user question, because you spent 340 of every 460 gradient signals teaching it to be a good predictor of user turns and template markers. The fix is not more data, it is the mask. Roughly three quarters of the tokens in a typical instruction record are context to be conditioned on, not behaviour to be imitated.
+
+An instruction example teaches far more than its literal answer. It demonstrates how to read a request, which assumptions to surface, what format to use, when to ask a clarifying question, and — critically — when to stop. A safety example teaches a bounded refusal followed by a benign alternative. A tool-use example teaches a structured call instead of prose. For a model like Qwen3.8-27B that ships two modes in one set of weights, the demonstrations must cover both branches: conversations that contain a thinking segment and conversations that do not, so that the switch actually selects a well-practised behaviour instead of pushing the model off its training distribution.
+
+:::insight
+The weights and the chat template are a single contract. Serving a post-trained checkpoint under a hand-rolled prompt format — right roles, wrong markers — is the most common self-inflicted quality regression in deployment, and it looks like a model problem rather than a formatting problem. Lesson 8.2 revisits this from the serving side.
+:::
+
+Data quality is therefore the central design problem, and it is not a volume problem. Thousands of near-duplicate templates create the illusion of scale while teaching a brittle surface pattern. Verbose demonstrations make the model verbose even when users ask for brevity. Answers with invented citations reward invention. Contradictory labels teach unstable boundaries. Filtering has to inspect prompts as well as responses, because a clean answer paired with an ambiguous instruction still teaches the wrong mapping. Mixture design matters for the same reason: if most examples are easy rewriting tasks, the model becomes pleasant without becoming better at reasoning or at composing several instructions. Hold out evaluation sets by task family and source, since a random split of duplicated records leaks across train and test.
+
+:::warning
+The most common misconception about SFT is that it adds knowledge. It does not, reliably. It reweights behaviour. Fine-tuning on a hundred documents about your product will not install those facts durably, and the polished, confident answers you get back are evidence of style transfer, not of retrieval. If the model must know something specific, put it in the context or in a tool, and use SFT to teach it how to use what you gave it.
+:::
+
+SFT also risks **catastrophic forgetting** when learning rates run high, training runs long, or the data is too homogeneous. The checkpoint slides toward the supervised distribution and loses probability mass on useful pretrained behaviour. Conservative optimization, broad mixtures, and evaluation against base capabilities expose the trade-off. Parameter-efficient methods (lesson 6.3) shrink which weights move, but they do not rescue bad supervision.
+
+Finally, SFT is not preference learning. A single target response says "imitate this" without saying how it compares to plausible alternatives, so token-level imitation over-penalizes harmless wording differences whenever several answers would have been fine. Preference methods teach relative ranking instead, and they normally run after SFT has established a stable conversation policy. A sound pipeline records dataset lineage, chat template, tokenizer, masking policy, mixture weights, optimizer configuration, and checkpoint ancestry — because when behaviour regresses six weeks later, exactly one of those changed.

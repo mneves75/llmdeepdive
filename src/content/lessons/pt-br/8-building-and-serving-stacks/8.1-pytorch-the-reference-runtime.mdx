@@ -1,0 +1,66 @@
+---
+id: "8.1-pytorch-the-reference-runtime"
+track: "8-building-and-serving-stacks"
+order: 1
+title: "PyTorch: o runtime de referência"
+summary: "O PyTorch em modo eager é a semântica que todo stack mais rápido precisa reproduzir; a árvore de módulos do Qwen3.8-27B é a arquitetura das lições anteriores tornada executável, alternando 48 mixers Gated DeltaNet com 16 camadas de attention."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["0.7-python-numpy-pytorch", "4.11-full-transformer-block", "7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+unlocks: ["8.2-huggingface-transformers-ecosystem", "8.3-torch-compile-and-cuda-graphs"]
+analogy: "Um relojoeiro mantém um relógio-mestre numa sala com temperatura controlada. Não é o relógio que alguém carrega no pulso; é lento de consultar e caro de abrigar. Todo relógio de pulso que sai da oficina é conferido contra ele, e quando dois relógios discordam é o mestre que decide qual está errado. O PyTorch eager é esse relógio-mestre para um modelo: ninguém serve tráfego de produção a partir dele, e todo engine que serve só está correto na medida em que continua concordando com ele."
+teachBack:
+  prompt: "Explique o que faz do PyTorch eager o runtime de referência e percorra a árvore de módulos do Qwen3.8-27B, nomeando quais submódulos se repetem nas 64 camadas do decoder e quais alternam."
+  modelAnswer: "O PyTorch eager executa o próprio código de modelagem do modelo uma operação por vez, numa ordem definida, sem fusão, graph capture, paginação ou maquinaria de batching no caminho, então sua saída define o que significa correto; todo engine mais rápido é uma otimização que precisa demonstrar concordância com ele. A árvore começa numa tabela de embedding de 248.320 linhas por 5120 colunas, depois 64 camadas de decoder, depois um RMSNorm final e uma lm_head não amarrada com cerca de 1,271 bilhão de parâmetros próprios. Dentro de cada camada do decoder duas coisas nunca mudam: dois RMSNorms com eps 1e-6 em torno de um fluxo residual pre-norm, e uma FFN com gating projetando de 5120 para 17408 e de volta. O que alterna é o token mixer: com full_attention_interval 4, cada quarta camada é gated attention com 24 query heads e 4 KV heads em head dimension 256, e as outras três são Gated DeltaNet com 48 value heads e 16 QK heads em head dimension 128 — 16 camadas de attention e 48 camadas DeltaNet no total."
+quiz:
+  - question: "O bloco clássico da lição 4.11 combina um token mixer com uma FFN position-wise. Percorrendo as 64 camadas de decoder do Qwen3.8-27B, o que permanece igual em todas elas?"
+    options: ["Os dois RMSNorms e a FFN com gating; só o token mixer alterna entre attention e Gated DeltaNet", "Nada — cada camada tem um shape diferente", "O token mixer; a FFN é que alterna", "Apenas a conexão residual"]
+    correctIndex: 0
+    explanation: "A FFN (5120 para 17408 para 5120) e o par de RMSNorm pre-norm são estruturalmente idênticos nas 64 camadas; o slot do mixer abriga gated attention uma vez a cada quatro camadas e Gated DeltaNet nas demais."
+  - question: "Nas camadas de attention, qual é a largura de saída do peso q_proj?"
+    options: ["12288, porque as camadas têm porta: 24 × 256 para as queries mais o mesmo de novo para a porta", "6144, porque 24 query heads em head dimension 256 dão 24 × 256", "5120, porque projeções são sempre quadradas", "17408, o intermediate size da FFN"]
+    correctIndex: 0
+    explanation: "attn_output_gate está ligado, então q_proj mapeia 5120 para 24 × 256 × 2 = 12288 e é dividida em uma query de 6144 e uma porta de 6144. o_proj leva a saída de atenção de 6144, já escalada pela porta, de volta para 5120; os 4 KV heads dão 4 × 256 = 1024."
+  - question: "Por que o PyTorch eager é um servidor de produção ruim para este modelo, mesmo sendo a referência?"
+    options: ["Ele despacha cada operação separadamente, aloca por requisição e não tem KV paginado nem continuous batching, então fica limitado por launches e desperdiça memória", "Ele calcula uma matemática diferente da dos serving engines", "Ele não consegue carregar pesos em bf16", "Ele só roda em CPU"]
+    correctIndex: 0
+    explanation: "O eager troca throughput por legibilidade; a maquinaria de serving das lições 7.8 e 8.4 é exatamente o que lhe falta."
+citations:
+  - title: "PyTorch Documentation"
+    authors: "PyTorch Foundation"
+    year: 2026
+    url: "https://pytorch.org/docs/stable/index.html"
+  - title: "Hugging Face Transformers Documentation"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/docs/transformers"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Dois engines respondem ao mesmo prompt com os mesmos pesos, a mesma seed e decoding guloso, e devolvem textos diferentes. Um dos dois está errado. Qual? Você não resolve essa discussão com benchmarks, e não resolve lendo o código-fonte de nenhum dos dois, porque ambos são milhares de linhas de escalonamento e seleção de kernel. Você resolve tendo uma referência — uma definição do que este modelo calcula que seja lenta, sem graça e inspecionável. Essa referência é o PyTorch eager rodando o próprio código de modelagem do modelo.
+
+Eager significa que cada operação executa quando a linha em Python roda. Nenhum graph é capturado, nada é fundido, nenhum kernel é escolhido para um padrão fundido que só existe na imaginação de um compilador. Uma multiplicação de matrizes é uma multiplicação de matrizes, na ordem escrita, sobre tensors que você pode imprimir. A lição 7.11 mandou você para cá exatamente por isso: antes de comparar stacks, você precisa de um oráculo, e o oráculo é o runtime com o menor número de peças móveis entre os parâmetros e os logits.
+
+Então percorra a árvore. Na base está uma tabela de embedding com 248.320 linhas de largura 5120 — a geometria da lição 1.5, cerca de 1,271 bilhão de parâmetros de pura consulta. Acima dela, 64 camadas de decoder. Acima delas, um RMSNorm final e uma lm_head que *não* é amarrada ao embedding, contribuindo outros 1,271 bilhão de parâmetros próprios. Ao lado de tudo isso, para entrada de imagem e vídeo, uma vision tower de 27 camadas com hidden size 1152 e patch size 16, cuja saída é projetada para 5120 de modo que os patches visuais entrem na mesma sequência em que vivem os tokens de texto (lição 4.17).
+
+Dentro de uma camada de decoder, duas coisas são invariantes. Há um fluxo residual pre-norm com RMSNorm em eps 1e-6 antes do mixer e antes da FFN (lições 2.8 e 4.10), e há uma feed-forward network com gating projetando de 5120 para 17408 e de volta (lição 4.9). É nessa FFN que a maior parte do modelo fisicamente está. O terceiro slot é o que muda. A config expõe `full_attention_interval: 4`, e o layout é dezesseis repetições de três camadas Gated DeltaNet seguidas de uma camada de gated attention — 48 mixers que carregam um estado recorrente de tamanho fixo (lição 4.15) e 16 que fazem attention quadrática completa com 24 query heads compartilhando 4 KV heads em head dimension 256 (lições 4.2 e 4.7).
+
+Aqui está o retorno concreto de ler uma árvore de módulos em vez de uma ficha técnica. Percorra as 64 camadas, pergunte a cada uma que tipo de mixer ela abriga, e conte: 16 de attention, 48 de DeltaNet. Essa contagem não é curiosidade — é a entrada da derivação de cache da lição 7.2. Dezesseis camadas guardam keys e values por token; quarenta e oito guardam um estado cujo tamanho não depende de quão longa a conversa fica. Os 64 KiB por token de que todo plano de capacidade desta track e da próxima depende é algo que você pode *verificar* percorrendo esta árvore, em vez de aceitar por fé.
+
+Agora a virada errada clássica, e é uma boa. Vindo do bloco uniforme da lição 4.11, onde hidden size é igual ao número de heads vezes a head dimension, você espera que toda projeção de attention seja quadrada: 5120 de entrada, 5120 de saída. Imprima os shapes e a projeção de query é 5120 para 12288. Seu primeiro instinto será que o checkpoint está corrompido ou que você leu a config errado. Nem um nem outro. Faça a conta: 24 query heads × 256 de head dimension = 6144, que simplesmente não é 5120. Os projetistas da Qwen desacoplaram a largura da attention da largura do residual, então `q_proj` alarga para 12288, divide por head em um query state de 6144 e uma porta de 6144, e `o_proj` estreita esses 6144 de volta para 5120, enquanto `k_proj` e `v_proj` produzem 4 × 256 = 1024 cada.
+
+:::warning
+Não "conserte" as projeções não quadradas. Remodelar a projeção de query para 5120 a fim de casar com o fluxo residual, ou supor que head dimension precisa ser hidden size dividido pelo número de heads, destrói o modelo silenciosamente. Quando o seu próprio código de divisão tensor-parallel, seleção de alvos de LoRA ou script de conversão afirma que as projeções são quadradas, é a afirmação que está errada.
+:::
+
+Com uma referência em mãos, comparar engines vira experimento em vez de opinião. Alimente os mesmos ids de token no eager e no engine sob teste, decodifique de forma gulosa e encontre a primeira posição em que o token amostrado difere. Depois pergunte se a divergência veio do tokenizer, do chat template, da configuração de sampling ou dos kernels. O que você não deve exigir é igualdade bit a bit: reduções em bf16 dependem da ordem de acumulação, então qualquer mudança de tiling ou de composição do batch perturba os últimos bits. A régua é concordância nos tokens sob decoding guloso e estatísticas de distribuição compatíveis sob sampling — não floats idênticos.
+
+:::caveat
+"Referência" é alvo móvel. O código de modelagem vive em um release específico do `transformers`, ou no próprio repositório do modelo quando a arquitetura é mais nova que a biblioteca. Fixe os dois e registre o par junto de qualquer comparação que você publicar. Para um modelo híbrido isso importa mais que o normal: um release antigo pode carregar os pesos e produzir lixo de aparência plausível porque trata as camadas DeltaNet como algo que elas não são.
+:::
+
+O eager é deliberadamente a ferramenta errada para serving. Cada operação paga um frame Python e um dispatch, nada funde, memória é alocada por requisição, e não há cache paginado nem continuous batching. O decode com batch 1 passa boa parte da vida esperando esse overhead em vez de esperando aritmética, que é exatamente o problema atacado pela lição 8.3. Guarde a imagem: os parâmetros são um dicionário de tensors, a árvore de módulos são as tracks 1 a 4 tornadas executáveis, e todo stack mais rápido desta track é uma alegação de equivalência com o que este runtime faz de forma lenta e honesta.

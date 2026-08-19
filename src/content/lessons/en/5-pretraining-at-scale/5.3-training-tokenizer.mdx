@@ -1,0 +1,88 @@
+---
+id: "5.3-training-tokenizer"
+track: "5-pretraining-at-scale"
+order: 3
+title: "Training your own tokenizer"
+summary: "Tokenizer training fixes a vocabulary every later checkpoint must share; Qwen3.8-27B's 248,320 rows show how a target size is chosen and then padded for tensor-parallel divisibility."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.2-data-pipeline"]
+unlocks: ["5.4-kaplan-scaling-laws"]
+analogy: "Before printing a multilingual newspaper, a foundry decides which movable-type pieces to cast. Single letters can print anything but require many pieces per word; whole words are efficient until an unseen word arrives. Subword training studies representative copy and casts recurring fragments. Once the presses ship, changing the type inventory changes every drawer number, so yesterday's printing instructions no longer fit."
+teachBack:
+  prompt: "Explain how a target vocabulary size is chosen, why Qwen3.8-27B's embedding matrix has exactly 248,320 rows, and why that number cannot be changed after training."
+  modelAnswer: "You pick a size by trading fertility against matrix cost: a larger vocabulary shortens sequences and improves multilingual fairness, but every row costs parameters in both the embedding and, when embeddings are untied, the output head. Around a quarter of a million pieces is the modern balance for a broadly multilingual model. The exact figure 248,320 is then chosen for divisibility rather than linguistics: it factors as 512 times 485, so it splits evenly across tensor-parallel degrees up to 512, which a round 250,000 would not. The unused padded rows are cheap. After training, the mapping is frozen because embedding row 42 has meaning only under the mapping that assigned a token to ID 42."
+quiz:
+  - question: "Why is Qwen3.8-27B's vocabulary 248,320 rather than a round 250,000?"
+    options: ["248,320 = 512 x 485, so it divides evenly across tensor-parallel degrees up to 512", "It is the exact number of distinct words in the corpus", "Larger numbers are slower to index", "The tokenizer cannot exceed 2^18"]
+    correctIndex: 0
+    explanation: "Vocabulary is split across ranks in tensor parallelism, so the row count is padded to a highly divisible number; 250,000 factors as 16 x 15,625 and fails at degree 32."
+  - question: "Following lesson 5.2, why must the tokenizer-training sample come from the governed corpus with its mixture caps applied?"
+    options: ["An unbalanced sample lets one oversampled source monopolize merges and permanently inflate fertility for other languages", "The tokenizer would otherwise memorize benchmark answers", "Merges require deduplicated bytes to be legal", "Filtering happens after tokenization"]
+    correctIndex: 0
+    explanation: "Tokenizer training is cheap, but a biased sample bakes an inefficiency into every checkpoint that vocabulary ever serves."
+  - question: "What must remain stable when loading a checkpoint?"
+    options: ["Token-to-ID mapping and special-token semantics", "Only the vocabulary size", "Only lowercase normalization", "The training batch order"]
+    correctIndex: 0
+    explanation: "Embedding row 42 has meaning only under the exact mapping that assigned a token to ID 42."
+citations:
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "Neural Machine Translation of Rare Words with Subword Units"
+    authors: "Rico Sennrich, Barry Haddow, and Alexandra Birch"
+    year: 2016
+    url: "https://arxiv.org/abs/1508.07909"
+  - title: "SentencePiece: A simple and language independent subword tokenizer and detokenizer for Neural Text Processing"
+    authors: "Taku Kudo and John Richardson"
+    year: 2018
+    url: "https://arxiv.org/abs/1808.06226"
+updated: "2026-08-18"
+---
+
+Open Qwen3.8-27B's config and one number looks like a typo: `vocab_size: 248320`. Not 250,000, not 262,144, not any round figure a human would choose. Somebody picked it deliberately, and reconstructing why teaches most of what tokenizer training involves — because the choice was made twice, once by linguistics and once by arithmetic.
+
+The linguistic half comes first. A language model never receives raw text; the tokenizer maps text to integer IDs and the embedding table maps those IDs to 5120-dimensional vectors. Training that tokenizer means choosing a representative sample from the governed corpus of lesson 5.2, with the mixture caps already applied, and then learning a fixed-size inventory of subword pieces from it. **Byte-level** schemes start from bytes so any input is representable; **BPE** repeatedly merges the most frequent adjacent pair, producing an ordered merge list; **unigram** starts from many candidate pieces and prunes those contributing least to a probabilistic objective. SentencePiece can train on raw sentences and treats whitespace explicitly. All of them are compromises between tiny universal units and an impossible full-word dictionary.
+
+Size is the real decision, and it is a direct trade. A larger vocabulary means fewer tokens per sentence, which means shorter sequences, less attention work, and — this matters more than it sounds — fairer treatment of languages that a small English-centric vocabulary would shred into fragments. Lesson 1.4 measured that effect: the same meaning costs more tokens, and therefore more money at USD 0.45 per million input tokens, in Portuguese than in English under a badly balanced tokenizer.
+
+But rows are not free. In this model the embedding and the output head are untied, which the config states plainly as `tie_word_embeddings: false`. So every row is paid for twice. Compute the marginal cost:
+
+$$
+10{,}000\ \text{rows}\times 5120 = 51.2\ \text{M params per matrix},
+$$
+
+$$
+51.2\ \text{M}\times 2\ \text{matrices} = 102.4\ \text{M params} \times 2\ \text{B (bf16)} \approx 205\ \text{MB}.
+$$
+
+Ten thousand extra vocabulary entries cost about 205 MB of weights. Scale that to the full table: $248{,}320\times 5120\approx 1.271$ billion parameters in the embedding, another 1.271 billion in the head, roughly 2.54 billion combined — around 9% of a 27-billion-parameter model spent on the mapping between text and vectors, before a single transformer layer exists.
+
+Now the arithmetic half of the choice, which is why the number is not round. During training, tensor parallelism splits the vocabulary dimension across ranks (lesson 5.8), so the row count must divide evenly by the parallel degree. Factor the shipped value:
+
+$$
+248{,}320 = 512\times 485 = 2^{9}\times 5\times 97.
+$$
+
+It divides cleanly by 2, 4, 8, 16, 32, 64, 128, 256, and 512. Any tensor-parallel degree that is a power of two up to 512 gets an equal slice: at degree 8, each rank owns 31,040 rows; at degree 32, 7,760 rows; at degree 64, 3,880. Compare the "obvious" alternative:
+
+$$
+250{,}000 = 2^{4}\times 5^{6} = 16\times 15{,}625,
+$$
+
+which divides by 16 and then stops. At tensor-parallel degree 32 you would get 7,812.5 rows per rank — impossible — and the framework would pad it silently or fail loudly at launch. So the tokenizer's learned inventory is padded up to a highly composite number, and the surplus rows are simply never emitted. They cost a few million parameters and buy freedom in every future parallel layout.
+
+:::insight
+Vocabulary size in a shipped config is two numbers wearing one hat: how many pieces the tokenizer actually learned, and how many rows the matrix has after padding for divisibility. They are rarely equal, and the config only reports the second.
+:::
+
+The classic wrong turn follows immediately, and people really do attempt it: noticing that some of the 248,320 rows are never produced, someone proposes trimming them to reclaim memory. Two things break. First, the saving is negligible — a few hundred unused rows is single-digit megabytes against 54 GB of bf16 weights. Second, trimming destroys the divisibility that motivated the padding, so tensor-parallel degree 32 or 256 stops working, and if the trim removes rows from the middle rather than the tail it shifts every subsequent ID and invalidates the entire learned embedding. Padded rows are not waste. They are the reason the model can be sharded eight ways on one node and 32 ways across four.
+
+:::warning
+The most common misconception is that a bigger vocabulary is simply better because sequences get shorter. It is a trade, not a free win. Beyond a point, extra rows go to rare strings that appear a handful of times in training, so those embeddings stay near their initialization, the softmax over the output head grows more expensive, and you have paid roughly 205 MB per 10,000 rows for capacity the model never learns to use. Judge a size by measured fertility per language and domain on held-out text, not by the row count.
+:::
+
+Everything else about tokenizer training follows from the fact that the artifact is permanent. Reserve special tokens — padding, sequence boundaries, chat-role markers, thinking-mode markers, FIM markers — before freezing IDs, because appending later means resizing embeddings and training a cold row, and inserting in the middle corrupts every association after it. Decide normalization deliberately: Unicode can spell visually identical text several ways, and case folding or accent stripping shrinks a vocabulary at the cost of distinctions your product may need. Evaluate on held-out samples, reporting fertility by language and domain rather than one global mean, plus round-trip correctness, adversarial maximum expansion, and encoding throughput. Inspect real examples by hand, because Portuguese morphology, combining accents, emoji sequences, CJK text, right-to-left scripts, indentation, and long digit strings each fail differently.
+
+Then freeze and hash the files, store the training-code version, normalization rules, sample manifest, vocabulary, merges, special-token table, and evaluation report, and test that every data worker produces byte-identical IDs for a golden set. A silent tokenizer-version mismatch will let a run train happily on meaningless input while the loss stays finite and plausible — the most expensive silent failure in this track.

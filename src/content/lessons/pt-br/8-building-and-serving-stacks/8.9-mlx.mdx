@@ -1,0 +1,63 @@
+---
+id: "8.9-mlx"
+track: "8-building-and-serving-stacks"
+order: 9
+title: "MLX"
+summary: "O framework de arrays da Apple: lazy evaluation, memória unificada e o mlx-lm rodando um Qwen3.8-27B de 4 bits num Mac de 32 a 64 GB — onde uma placa discreta de 24 GB fica sem espaço antes."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["8.7-llama-cpp-and-gguf", "7.9-quantization-i-int8-int4-the-basics"]
+unlocks: ["8.12-choosing-your-stack", "9.6-apple-silicon-unified-memory"]
+analogy: "Dois cozinheiros preparam o mesmo prato. Um tem um fogão enorme e potentíssimo numa sala separada e um corredor estreito até a despensa; cada ingrediente precisa atravessar o corredor antes de poder ser cozido, e o fogão fica ocioso sempre que o corredor está ocupado. O outro tem um fogão menor bem no meio da despensa — mais lento por panela, mas nada é carregado a lugar nenhum, e não existe prato grande demais para a sala. Memória unificada é a segunda cozinha."
+teachBack:
+  prompt: "Explique as duas decisões de design que definem o MLX, depois dimensione uma sessão do Qwen3.8-27B em 4 bits num Mac de 32 GB e diga honestamente onde uma GPU discreta de 24 GB ganha e onde ela perde."
+  modelAnswer: "O MLX é lazy e unificado. As operações constroem um grafo em vez de computar imediatamente, então resultados se materializam apenas quando um valor é de fato necessário ou quando a avaliação é forçada, o que permite ao framework fundir cadeias e pular temporários que ninguém lê. E os arrays vivem em memória compartilhada por CPU e GPU, então uma operação é escalonada num device sem cópia alguma — não existe etapa de transferência host para device. Para o Qwen3.8-27B em 4 bits os pesos são cerca de 14 a 16 GB. Num Mac de 32 GB, uma sessão de 32.768 tokens acrescenta 2 GiB de KV cache a 64 KiB por token da lição 7.2, cerca de 72 MiB de estado DeltaNet e um workspace de compute, aterrissando perto de 19 GB contra um limite de trabalho do Metal que por padrão é uma fração grande da RAM do sistema — cabe, sem muita folga. Uma máquina de 64 GB comporta o mesmo modelo com espaço para contexto longo ou um build de 8 bits. Uma placa discreta de 24 GB tem muito mais banda e vai decodificar mais rápido enquanto tudo couber, mas pesos mais um cache que cresce dividem esses mesmos 24 GB, e no momento em que não cabem o excedente atravessa o PCIe e o throughput colapsa. O Mac ganha no teto, a placa ganha na velocidade abaixo do teto."
+quiz:
+  - question: "Por que um Qwen3.8-27B de 4 bits precisa de cerca de 14 a 16 GB, e não exatamente 13,5 GB, segundo a lição 7.9?"
+    options: ["A quantization é por grupos: cada grupo de pesos carrega uma escala, e muitas vezes um zero point, armazenados junto dos códigos empacotados", "O MLX guarda uma cópia extra de cada tensor para o grafo lazy", "A GPU da Apple exige alinhamento de 8 bits para todo tensor", "A vision tower é sempre mantida em bf16"]
+    correctIndex: 0
+    explanation: "A lição 7.9 estabeleceu que formatos de poucos bits quantizam em grupos pequenos e precisam distribuir os metadados de escala por grupo, então os bits efetivos por peso sempre excedem a largura nominal."
+  - question: "No MLX, o que dispara a computação efetiva de uma expressão de array?"
+    options: ["A avaliação é lazy: o grafo é computado quando um valor é necessário ou quando a avaliação é forçada explicitamente", "Toda operação executa imediatamente na GPU, como no PyTorch eager", "A computação acontece só na saída do processo", "Só operações dentro de uma função compilada chegam a executar"]
+    correctIndex: 0
+    explanation: "A lazy evaluation é uma das duas escolhas definidoras do MLX; é o que permite ao framework fundir cadeias de operações e nunca materializar temporários que ninguém lê."
+citations:
+  - title: "MLX Documentation"
+    authors: "Apple Machine Learning Research"
+    year: 2026
+    url: "https://ml-explore.github.io/mlx/"
+  - title: "mlx-lm"
+    authors: "Apple Machine Learning Research e contributors"
+    year: 2024
+    url: "https://github.com/ml-explore/mlx-lm"
+updated: "2026-08-18"
+---
+
+Aqui vai uma questão de compra com resposta contraintuitiva. Você tem um orçamento e duas máquinas candidatas: um desktop com uma GPU discreta de 24 GB e um Mac com 32 GB de memória unificada. Você quer rodar o Qwen3.8-27B localmente em 4 bits, às vezes com documentos longos. A GPU tem várias vezes mais banda de memória e muito mais compute bruto. Qual máquina de fato roda o modelo? A resposta de banda e a resposta de capacidade discordam, e entender por quê é a razão de existir do MLX.
+
+O MLX é um framework de arrays feito para o Apple silicon, com uma API deliberadamente próxima do NumPy e uma camada de redes neurais próxima do PyTorch, então a maior parte do código de modelo se lê como você espera. Duas decisões de design o tornam diferente, e ambas decorrem do hardware.
+
+A primeira é a **lazy evaluation**. Escrever uma expressão no MLX não a computa. Ela registra um nó num grafo de computação, e o grafo é executado quando algum valor é genuinamente requerido — quando você o imprime, converte ou força a avaliação explicitamente. Isso não é um truque de performance aparafusado depois; é o modelo de execução padrão. O retorno é que cadeias de operações podem ser fundidas em menos kernels e arrays intermediários que ninguém lê nunca precisam ser materializados. O custo é que cronometrar uma linha de código não mede nada: o trabalho que você acha que acabou de fazer provavelmente ainda não aconteceu, o que derruba todo recém-chegado que faz benchmark de um forward pass.
+
+A segunda é a **memória unificada**, e é ela que responde à questão de compra. Num acelerador convencional, memória de host e memória de device são pools separados conectados por um barramento; um tensor existe num lugar, e usá-lo em outro significa uma cópia explícita. Arrays do MLX vivem em memória que tanto a CPU quanto a GPU endereçam diretamente. Uma operação é escalonada num device; o array não se move. Não existe `.to(device)` no modelo mental, não existe estágio de pinned memory e — criticamente — não existe teto definido por um orçamento separado de VRAM. O working set do modelo é limitado pela RAM do sistema e por quanto dela a GPU tem permissão de segurar, não por 24 GB soldados.
+
+Agora dimensione o Mac de 32 GB, passo a passo, com aritmética que você já domina. Pesos em 4 bits: 14 a 16 GB, porque as escalas por grupo da lição 7.9 fazem do meio byte nominal por peso um piso e nunca a taxa real. KV cache da lição 7.2: 64 KiB por token, então uma sessão de 32.768 tokens custa $32{,}768 \times 64\ \text{KiB} = 2\ \text{GiB}$. O estado recorrente Gated DeltaNet acrescenta cerca de 72 MiB por sequência, constante no comprimento. Workspace de compute e o tensor de logits sobre 248.320 linhas de vocabulário acrescentam da ordem de um gigabyte. Total perto de 19 GB, contra uma máquina cujo limite de trabalho da GPU é por padrão uma fração grande de 32 GB — cabe, com folga modesta e honesta. Vá para 64 GB e o mesmo modelo ganha espaço de verdade: uma janela mais longa, um build de 8 bits com fidelidade visivelmente melhor, ou várias sessões ao mesmo tempo.
+
+```
+mlx_lm.convert --hf-path Qwen/Qwen3.8-27B -q --q-bits 4 --mlx-path qwen3.8-27b-4bit
+mlx_lm.generate --model qwen3.8-27b-4bit --temp 0.7 --top-p 0.80 --prompt "..."
+```
+
+O pacote mlx-lm fornece as implementações dos modelos, o caminho de conversão e quantization a partir de um checkpoint do Hugging Face, a geração com os controles de sampling que o model card especifica, e um servidor local. Note as flags de sampling: o preset instruct do model card é temperature 0.7, top_p 0.80, top_k 20, e a mesma disciplina da lição 8.8 vale aqui — declare-os em vez de herdá-los.
+
+A virada errada clássica é a que a pergunta de abertura arma. O raciocínio corre assim: o fornecedor diz que este modelo precisa de 24 GB de VRAM no mínimo, minha placa tem exatamente 24 GB, logo minha placa é a máquina certa e o Mac de 32 GB com sua memória mais lenta é o remendo. Duas correções. Primeira, aquele número de 24 GB descreve os pesos de 4 bits como um piso, e pisos não incluem o cache. Na placa discreta, pesos e um KV cache que cresce competem pelos mesmos 24 GB; uma sessão de 65.536 tokens quer 4 GiB de cache sobre 16 GB de pesos mais workspace, e você está negociando com o teto. Ultrapasse-o e o excedente não degrada gentilmente — ele transborda pelo PCIe, e o decode, que é limitado por banda, despenca. Segunda, a vantagem do Mac não é ser rápido. Ele enfaticamente não é rápido em comparação: sua banda de memória está bem abaixo de uma pilha HBM de data center, e enquanto tudo couber em 24 GB a placa discreta vai decodificar mais rápido. A vantagem do Mac é que o teto é alto e macio. Compre a placa pela velocidade em contexto curto; compre a máquina unificada pelas sessões que a placa não consegue segurar de jeito nenhum.
+
+:::warning
+Memória unificada não é memória de graça. O working set endereçável pela GPU é uma fração configurável da RAM do sistema, e o sistema operacional, o seu navegador e os buffers do próprio framework estão dentro do mesmo pool. Empurrar um modelo até a beira da RAM física não falha de forma limpa — ele começa a fazer swap, e um loop de decode em swap é mais lento que o caminho só de CPU que você tentava evitar. Deixe folga deliberadamente, e lembre que a laziness do MLX faz o pico de memória chegar quando o grafo avalia, não quando você escreveu a linha.
+:::
+
+:::caveat
+Suporte de arquitetura é um fato por release aqui, exatamente como era na lição 8.7. O Qwen3.8-27B é híbrido, com 48 camadas Gated DeltaNet, e rodá-lo sob o mlx-lm exige que essa implementação exista na versão que você instalou. Confira antes de converter um checkpoint bf16 de 54 GB em um quantizado.
+:::
+
+A ideia durável é que a topologia de memória é uma escolha arquitetural com consequências que uma ficha técnica esconde. Grafos lazy compram fusão; memória unificada compra teto. A lição 9.6 leva a sério o lado da banda desse acordo e calcula quantos tokens por segundo o arranjo consegue de fato sustentar.

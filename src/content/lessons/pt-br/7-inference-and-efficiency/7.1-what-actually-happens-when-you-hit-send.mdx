@@ -1,0 +1,74 @@
+---
+id: "7.1-what-actually-happens-when-you-hit-send"
+track: "7-inference-and-efficiency"
+order: 1
+title: "O que realmente acontece quando você aperta enviar"
+summary: "Uma requisição real ao Qwen3.8-27B atravessa admissão, templating, tokenização, scheduling, prefill, um loop de decode token a token e detokenização antes de o texto chegar até você."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["4.2-self-attention"]
+unlocks: ["7.2-the-kv-cache", "7.3-prefill-vs-decode-two-different-machines"]
+analogy: "Um pedido de restaurante não é transportado diretamente da mesa para uma refeição pronta. A recepção admite o grupo, um garçom normaliza o pedido, o scheduler da cozinha agrupa pratos que compartilham equipamento, os cozinheiros preparam uma leva inicial e depois empratam os pratos seguintes um por vez. Garçons fazem streaming dos pratos até a mesa enquanto pedidos cancelados liberam ingredientes e bancada. Um servidor de inferência executa a mesma coreografia com requisições, tokens, batches de GPU e blocos de cache."
+teachBack:
+  prompt: "Acompanhe uma requisição ao Qwen3.8-27B da chegada HTTP até o primeiro token em streaming, nomeando o que o prefill produz e por que o decode é um loop em vez de uma única passagem."
+  modelAnswer: "O gateway autentica e valida, o chat template serializa os papéis incluindo as tags de thinking, e o tokenizer mapeia o texto em ids do vocabulário de 248.320 entradas. O scheduler admite a requisição contra um orçamento de KV cache. O prefill processa todas as posições do prompt em paralelo pelas 64 camadas: as 16 camadas de full attention gravam keys e values enquanto as 48 camadas de Gated DeltaNet condensam o prompt em estados de tamanho fixo. A posição final produz logits sobre 248.320 tokens; o sampler escolhe um; então o decode repete um forward pass por token de saída, reutilizando o estado em cache, até uma condição de parada, enquanto o servidor detokeniza e faz streaming incrementalmente."
+quiz:
+  - question: "Por que o prefill consegue processar todas as posições do prompt numa única passagem paralela?"
+    options: ["Self-attention causal permite que cada posição compute sua saída a partir das posições anteriores já conhecidas simultaneamente", "O prompt não contém attention", "O modelo pula suas camadas durante o prefill", "Tokens do prompt não exigem projeções"]
+    correctIndex: 0
+    explanation: "Todos os tokens do prompt são conhecidos de antemão, então a attention causal de cada posição sobre seu prefixo pode ser computada de uma vez — a propriedade de self-attention da lição 4.2."
+  - question: "Uma resposta de 500 tokens do Qwen3.8-27B exige quantos forward passes de decode?"
+    options: ["Cerca de 500 — um por token gerado", "Exatamente um", "Um por camada, ou seja, 64", "Nenhum; o prefill emite a resposta inteira"]
+    correctIndex: 0
+    explanation: "Cada passagem produz uma distribuição e um token amostrado, que é anexado antes da passagem seguinte."
+citations:
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+  - title: "Cloudflare Workers AI"
+    authors: "Cloudflare"
+    year: 2026
+    url: "https://developers.cloudflare.com/workers-ai/"
+updated: "2026-08-18"
+---
+
+Digite uma pergunta para o Qwen3.8-27B, aperte enviar, e cerca de um segundo depois palavras começam a fluir de volta. Entre esses dois momentos roda um pipeline específico e inspecionável — e como este curso fixa um único modelo-espécime, podemos traçá-lo concretamente. Os mesmos pesos rodam em duas casas típicas: um processo vLLM local servindo Qwen/Qwen3.8-27B na sua própria GPU, ou o Cloudflare Workers AI hospedando-o como @cf/qwen/qwen3.8-27b. O operador muda; o ciclo de vida, não.
+
+Primeiro, o edge. Um gateway autentica quem chama, confere cota, valida o schema da requisição e atribui um request ID. Limites de bytes, imagens, ferramentas e geração máxima são aplicados antes de qualquer trabalho caro. Rate limiting pertence aqui, não dentro de um prompt, e texto do usuário é dado não confiável desde o primeiro byte.
+
+Em seguida, a construção do prompt. A aplicação combina instruções de sistema, histórico e sua nova mensagem usando o chat template do checkpoint. O template do Qwen3.8-27B inclui as fronteiras de papéis e a marcação de thinking mode aprendidas no pós-treinamento; uma requisição pode desligar o raciocínio passando enable_thinking como false. Dois templates que renderizam de forma idêntica para um humano podem produzir sequências de tokens diferentes e comportamentos diferentes, então o template faz parte do contrato do modelo, não é decoração.
+
+O tokenizer então mapeia o texto montado em ids inteiros extraídos de um vocabulário de 248.320 entradas (com padding por paralelismo; a lição 1.2 explica por quê). O modelo nunca vê caracteres. Contagem de caracteres não é contagem de tokens, então os limites de entrada precisam ser verificados de novo após a tokenização.
+
+A requisição agora entra no scheduler. Os pesos ocupam memória aproximadamente fixa, mas cada sequência admitida também reivindica espaço crescente de cache de attention — a lição 7.2 deriva exatamente quanto por token para este modelo — de modo que uma requisição que caberia sozinha pode não caber ao lado do trabalho atual. Servidores modernos constroem batches contínuos, mesclando requisições em posições de geração diferentes em vez de esperar um batch fixo esvaziar.
+
+Então o modelo finalmente roda. Durante o prefill, todas as posições do prompt fluem pelas 64 camadas em paralelo. No Qwen3.8-27B essas camadas não são uniformes: as 16 camadas de full attention projetam e armazenam keys e values para cada posição do prompt, enquanto as 48 camadas de Gated DeltaNet condensam o prompt em estados recorrentes de tamanho fixo (a lição 4.16 cobre esse layout híbrido). A posição final do prompt produz logits — uma pontuação para cada uma das 248.320 entradas do vocabulário.
+
+Aqui está o desvio clássico: supor que essa única passagem grande produz a resposta inteira, de modo que o tempo de resposta seria de aproximadamente um forward pass. Não é. O sampler — em thinking mode, temperature 1.0, top-p 0.95, top-k 20, conforme o model card — seleciona um único token daqueles logits. Esse token é anexado ao contexto, e o modelo roda de novo para produzir o próximo. Uma resposta de 500 tokens significa cerca de 500 passagens de decode, cada uma reutilizando o estado em cache em vez de recomputar o prompt. A intuição de passagem única subestima o tempo de geração em duas a três ordens de magnitude, e corrigi-la explica por que o primeiro token chega rápido enquanto o resto chega numa cadência constante.
+
+O loop de decode também é onde o dinheiro é contado. No Workers AI, o Qwen3.8-27B custa, em ago. 2026, USD 0,45 por milhão de tokens de entrada e USD 3,20 por milhão de tokens de saída. Uma requisição ilustrativa com um prompt de 300 tokens e uma resposta de 500 tokens custa
+
+$$
+300 \times \frac{0.45}{10^{6}} + 500 \times \frac{3.20}{10^{6}} = 0.000135 + 0.0016 \approx 0.0017\ \text{USD},
+$$
+
+cerca de um quinto de centavo — com os tokens de saída contribuindo mais de dez vezes o custo da entrada. A assimetria de preço espelha a assimetria de trabalho que você acabou de traçar: cada token de saída é uma passagem completa pelo modelo.
+
+O streaming acontece em paralelo com o loop. O servidor detokeniza incrementalmente, e fronteiras de tokens não se alinham com caracteres nem com chunks UTF-8 válidos, então o buffer deve seguir o decoder do tokenizer. Stop sequences, parsers de tool calls e constraints de structured output podem atrasar ou suprimir bytes. Um cliente lento não pode prender memória ilimitada do servidor.
+
+:::insight
+"Latência do modelo" são várias métricas. Queue time revela pressão de capacidade; time to first token mede o caminho por admissão, tokenização e prefill; inter-token latency descreve a cadência do decode; o tempo ponta a ponta soma o comprimento da saída e a rede.
+:::
+
+O cancelamento viaja na direção oposta. Se você interrompe a geração ou a conexão cai, o decode deve parar prontamente, o trabalho enfileirado deve desaparecer e os blocos de cache devem voltar ao allocator com as contagens reais de tokens registradas para cobrança. Falhas de limpeza viram incidentes de capacidade sob carga.
+
+:::warning
+Texto do usuário é entrada não confiável em todo este pipeline. Ele jamais pode adquirir autoridade sobre credenciais, tenants ou ferramentas apenas por passar pelo template — um prompt é dado sendo processado, não instruções para a infraestrutura de serving.
+:::
+
+O modelo mental durável é um pipeline com um loop dentro. Tokenize uma vez, faça prefill uma vez, então decodifique um token por passagem até terminar, detokenizando ao longo do caminho. As duas próximas lições dão zoom nas duas metades desse loop: a memória que o decode reutiliza (7.2) e por que prefill e decode se comportam como duas máquinas diferentes (7.3).

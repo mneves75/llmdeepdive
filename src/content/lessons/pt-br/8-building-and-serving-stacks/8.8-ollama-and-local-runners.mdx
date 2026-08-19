@@ -1,0 +1,70 @@
+---
+id: "8.8-ollama-and-local-runners"
+track: "8-building-and-serving-stacks"
+order: 8
+title: "Ollama e runners locais"
+summary: "A camada de conveniência sobre o llama.cpp — biblioteca de modelos, Modelfile, API HTTP local — e como fixar o preset instruct do Qwen3.8-27B para que os padrões de um runner parem de sobrescrever o model card em silêncio."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["8.7-llama-cpp-and-gguf"]
+unlocks: ["8.12-choosing-your-stack"]
+analogy: "Um carro alugado vem pré-configurado por alguém que você nunca conheceu: espelhos, banco, ar-condicionado, presets de rádio e um tanque cheio no nível que o motorista anterior deixou. Ele sai dirigindo perfeitamente bem, e é justamente esse o perigo — você pode completar a viagem inteira sem notar que o banco está errado para você. Um runner local entrega padrões do mesmo jeito, e os padrões que mais importam são os que você nunca vê, porque o carro pegou assim mesmo."
+teachBack:
+  prompt: "Descreva o que um runner local acrescenta sobre o llama.cpp e depois mostre como fixar o preset oficial de sampling instruct do Qwen3.8-27B e uma janela de contexto utilizável, explicando o que dá errado se você não fizer isso."
+  modelAnswer: "Um runner como o Ollama envolve o engine llama.cpp com três coisas que o engine deliberadamente não tem: um registry para que um modelo seja buscado por nome e não por URL, um Modelfile que amarra um GGUF a um chat template, a um system prompt e a parâmetros de sampling, e um servidor HTTP local de vida longa que carrega e descarrega modelos sob demanda atrás de uma API compatível com OpenAI. Os padrões dele são dele, não do model card. O preset instruct publicado do Qwen3.8-27B é temperature 0.7, top_p 0.80, top_k 20; se a entrada do registry trouxer valores diferentes, você obtém um comportamento que o fornecedor nunca avaliou. A correção é um Modelfile com FROM na tag base e linhas PARAMETER para temperature, top_p, top_k e num_ctx, construído num modelo local nomeado com ollama create. A janela de contexto importa igualmente: runners assumem por padrão uma janela conservadora de alguns milhares de tokens contra o contexto nativo de 262.144 deste modelo, então um prompt longo é truncado pela frente em silêncio — e aumentar num_ctx custa 64 KiB de KV cache por token, da lição 7.2, então a janela é uma decisão de memória, não uma preferência."
+quiz:
+  - question: "Você puxa o Qwen3.8-27B num runner local e cola um documento de 40.000 tokens. A resposta é coerente, mas ignora a primeira metade. Qual é a causa mais provável?"
+    options: ["A janela de contexto padrão do runner é de alguns milhares de tokens, então o prompt foi truncado antes de o modelo vê-lo", "As camadas Gated DeltaNet esquecem tokens iniciais por construção", "O GGUF não consegue armazenar prompts com mais de 32.768 tokens", "O contexto de 262.144 do model card só vale para o checkpoint em bf16"]
+    correctIndex: 0
+    explanation: "Runners escolhem uma janela padrão conservadora porque a janela é uma promessa de memória; o contexto nativo de 262.144 do modelo só está disponível se você aumentá-la e pagar o custo de KV da lição 7.2."
+  - question: "Pela lição 8.7, o que um runner de fato baixa quando você pede um build de 4 bits deste modelo?"
+    options: ["Um contêiner GGUF cujo manifesto nomeia a arquitetura e dá a cada tensor o seu próprio tipo de quantization", "Um checkpoint safetensors que o runner quantiza no load", "Um arquivo comprimido de pesos PyTorch expandido em RAM", "Um engine CUDA compilado para a GPU local"]
+    correctIndex: 0
+    explanation: "O runner é uma camada de distribuição e configuração sobre o llama.cpp; o artefato que ele distribui é o contêiner GGUF autodescritivo da lição 8.7."
+citations:
+  - title: "Ollama Documentation"
+    authors: "Ollama"
+    year: 2026
+    url: "https://docs.ollama.com"
+  - title: "Ollama"
+    authors: "Ollama contributors"
+    year: 2023
+    url: "https://github.com/ollama/ollama"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Duas pessoas rodam o mesmo GGUF de 16 GB do Qwen3.8-27B no mesmo laptop, fazem a mesma pergunta e recebem respostas com temperamentos visivelmente diferentes — uma seca e literal, a outra prolixa e propensa a inventar detalhe. Nenhuma das duas editou um arquivo de config. A diferença é que uma delas está rodando o engine da lição 8.7 diretamente, com flags explícitas, e a outra está rodando o mesmo engine através de uma camada de conveniência que forneceu parâmetros de sampling em seu nome. Esta lição é sobre essa camada: o que ela genuinamente dá a você e o único hábito de configuração que a impede de mudar o seu modelo em silêncio.
+
+Um runner local como o Ollama não é um engine de inferência. É uma camada de distribuição, configuração e ciclo de vida embrulhada em torno de um — neste caso o stack llama.cpp e ggml. Ele contribui com três coisas que o engine deliberadamente não tem. Primeiro, um **registry**: modelos são endereçados por nome e tag em vez de por uma URL para um arquivo específico, então puxar um modelo é um comando e o runner resolve qual variante de quantization buscar para o seu hardware. Segundo, um **Modelfile**, uma pequena receita declarativa que amarra um GGUF a um chat template, um system prompt, sequências de parada e parâmetros de sampling, e que pode ser construída num novo modelo nomeado que herda de outro. Terceiro, um **servidor local**: um processo de vida longa na interface de loopback expondo uma API de chat, incluindo rotas compatíveis com OpenAI, que carrega um modelo na primeira requisição, mantém-no residente por um intervalo de keep-alive e o despeja para abrir espaço para outro. Essa última peça é o que faz um runner parecer diferente do engine — você para de pensar em processos e passa a pensar em nomes de modelo.
+
+O custo dessa conveniência é que agora existem padrões onde antes só havia as suas flags, e os padrões que você não escolheu são os que mordem. O Qwen3.8-27B publica dois presets de sampling no seu model card. Thinking mode, o comportamento padrão, espera temperature 1.0, top_p 0.95, top_k 20. Instruct mode — o caminho sem thinking — espera temperature 0.7, top_p 0.80, top_k 20. Não são sugestões estilísticas; são as configurações sob as quais o comportamento reportado pelo fornecedor foi produzido. Uma entrada de registry traz o que quer que o seu empacotador tenha posto no Modelfile, e não existe mecanismo que garanta que isso casa com o card. Se você implanta um assistente sobre padrões não examinados, você está avaliando uma configuração que ninguém documentou.
+
+Então fixe. Escreva um Modelfile que herda da tag baixada e declara cada parâmetro com que você se importa, depois construa um modelo local nomeado e use só esse nome a partir da sua aplicação.
+
+```
+FROM qwen3.8:27b
+PARAMETER temperature 0.7
+PARAMETER top_p 0.80
+PARAMETER top_k 20
+PARAMETER num_ctx 16384
+```
+
+Construa com `ollama create qwen3.8-27b-instruct -f Modelfile` e aponte o seu cliente para `qwen3.8-27b-instruct`. Quatro linhas, e agora a configuração de sampling é um artefato versionado no seu repositório em vez de uma propriedade da máquina que por acaso está servindo.
+
+Percorra o que cada linha compra. O trio temperature, top_p e top_k reproduz o preset instruct exatamente, então o comportamento casa com o regime do card e não com o gosto do empacotador — e se você quiser thinking mode, constrói um segundo modelo nomeado com 1.0 e 0.95, em vez de alternar valores na mão e esquecer. A linha `num_ctx` é a que as pessoas omitem, e é a mais consequente. Runners assumem por padrão uma janela conservadora medida em alguns milhares de tokens, contra o contexto nativo de 262.144 tokens deste modelo. Esse padrão não é preguiça: a janela é uma promessa de memória, porque comprimento de contexto vezes os 64 KiB por token da lição 7.2 é KV cache que o runner precisa reservar. Em 16.384 tokens o cache é 1 GiB, o que numa máquina de 24 GB ao lado de 16 GB de pesos é acessível. Em 262.144 tokens são 16 GiB, o que não é. Escolha a janela que a sua carga de fato usa e pague exatamente por ela.
+
+:::warning
+O equívoco mais comum sobre runners locais é achar que um prompt truncado se anuncia. Ele não se anuncia. Quando a sua entrada excede a janela configurada, o runner descarta o excedente — tipicamente o conteúdo mais antigo — e gera uma resposta perfeitamente fluente com o que sobrou. Não há erro, não há aviso na resposta e não há nada na saída que se leia como dano. Um modelo que "ignora as instruções no topo do meu documento" quase nunca é uma falha de raciocínio; é uma janela de contexto que ninguém configurou.
+:::
+
+Duas armadilhas menores decorrem do empilhamento. Opções por requisição enviadas pela API sobrescrevem parâmetros do Modelfile naquela requisição, o que é útil e também significa que um padrão perdido do lado do cliente pode desfazer a sua fixação cuidadosa — audite o que o seu SDK manda quando você não passa nada. E este modelo traz um thinking mode cujo comportamento é controlado pelo chat template e por um toggle por requisição, não pelo sampling sozinho; a chave do próprio model card é `enable_thinking`, e o runner expõe a sua flag equivalente, então confira a documentação atual pelo nome em vez de supor que abaixar a temperatura desligou o raciocínio. Não desligou. Só deixou o raciocínio menos variado.
+
+:::caveat
+Camadas de conveniência andam mais rápido que os engines abaixo delas, e o suporte a uma arquitetura nova aparece primeiro no engine. Se um modelo híbrido como este carrega sob um runner, o build de engine embutido no runner já implementa Gated DeltaNet — mas uma versão de runner anterior a esse suporte vai falhar no mesmo GGUF que funciona sob um binário atual do llama.cpp. Quando um pull falha de forma inexplicável, atualize o runner antes de culpar o arquivo.
+:::
+
+O hábito durável é pequeno: trate o runner como empacotamento, nunca como política. Ele decide onde o arquivo mora e como o servidor se comporta; você decide o preset de sampling, a janela de contexto e o system prompt, e escreve essas decisões num Modelfile que viaja junto com o seu código. A lição 8.12 põe este stack ao lado dos de classe servidor e pergunta quando a conveniência vale o seu teto.

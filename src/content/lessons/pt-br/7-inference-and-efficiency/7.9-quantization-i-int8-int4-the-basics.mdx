@@ -1,0 +1,65 @@
+---
+id: "7.9-quantization-i-int8-int4-the-basics"
+track: "7-inference-and-efficiency"
+order: 9
+title: "Quantization I: int8, int4, o básico"
+summary: "Quantization desce o Qwen3.8-27B por uma escada de memória de 54 GB rumo a 14-16 GB, trocando erro de arredondamento por alcance de hardware."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["7.3-prefill-vs-decode-two-different-machines"]
+unlocks: ["7.10-quantization-ii-gptq-awq-gguf-qat", "7.12-running-models-locally"]
+analogy: "Um topógrafo registra altitudes de montanhas. Anotar cada medição ao milímetro é volumoso; registrar cada uma como um entre alguns milhares de degraus relativos a um vale local é compacto. Regiões amplas precisam de degraus grosseiros, enquanto uma escala separada para cada pequeno quadrante do mapa acompanha o relevo de perto. Quantization igualmente mapeia pesos reais em códigos discretos, e o agrupamento escolhe se uma escala precisa cobrir uma cordilheira inteira ou apenas uma vizinhança."
+teachBack:
+  prompt: "Desça o Qwen3.8-27B pela escada de quantization, de bf16 até 4 bits, explique a mecânica de escala e zero point por trás de cada degrau e diga o que a escada não encolhe."
+  modelAnswer: "Em bf16 cada parâmetro custa dois bytes, dando a cifra de 54 GB que a matemática de orçamento do curso estabelece. Int8 guarda um byte por parâmetro, reduzindo os pesos pela metade, a cerca de 27 GB; 4 bits guardam meio byte, um piso de 13,5 GB que artefatos reais ultrapassam, ficando em torno de 14 a 16 GB porque escalas, zero points e tensores selecionados em precisão mais alta viajam junto. Cada degrau mapeia valores reais para códigos discretos por meio de uma escala, então arredondamento e clipping introduzem erro, e a granularidade dos grupos decide o quão bem as escalas acompanham as distribuições locais de pesos diante de outliers. A escada encolhe apenas os pesos: o KV cache continua acumulando a 64 KiB por token, como na lição 7.2, a menos que o próprio cache seja quantizado, e ganhos de velocidade exigem kernels que consumam o formato empacotado nativamente."
+quiz:
+  - question: "O que cria o erro de quantization?"
+    options: ["Arredondar valores para níveis discretos e fazer clipping de valores fora da faixa representada", "Tokenização sozinha", "Mascaramento causal", "Streaming HTTP"]
+    correctIndex: 0
+    explanation: "Um codebook finito não consegue representar todo valor real, e sua faixa finita pode fazer clipping dos extremos."
+  - question: "Usando a lição 7.3, por que quantization apenas de pesos ajuda mais o decode do que o prefill?"
+    options: ["Decode é limitado por largura de banda de memória ao ler os pesos a cada token, então encolher os bytes de peso ataca sua restrição dominante", "Prefill não faz multiplicações de matrizes", "Decode reexecuta a calibração a cada token", "Quantization aumenta o throughput aritmético apenas do prefill"]
+    correctIndex: 0
+    explanation: "A lição 7.3 mostrou que o decode movimenta aproximadamente todo o conjunto de pesos por token gerado; menos bytes armazenados significa menos bytes movidos exatamente onde a largura de banda é o gargalo."
+citations:
+  - title: "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models"
+    authors: "Guangxuan Xiao et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2211.10438"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Você quer rodar o Qwen3.8-27B, e o primeiro número que o recebe é 54 GB — a pegada de pesos em bf16 que a matemática de orçamento do curso estabelece (lições 7.2 e 9.3). Nenhuma GPU de consumo comporta isso, e mesmo uma placa de data center de 80 GB entrega a maior parte de si antes de alocar um único token de cache. **Quantization** é a resposta padrão: guardar cada parâmetro em menos bits mais um pouco de metadado de escala, e aceitar algum erro de aproximação em troca.
+
+A escada fica mais fácil de ver em bytes por parâmetro. bf16 gasta dois bytes em cada um dos cerca de 27 bilhões de parâmetros do modelo — o ponto de partida de 54 GB. Int8 gasta um byte: metade disso, cerca de **27 GB**. Int4 gasta meio byte: metade de novo, um **piso de 13,5 GB** — e artefatos reais de 4 bits pousam em torno de **14–16 GB**, porque escalas, zero points e tensores selecionados mantidos em precisão mais alta viajam ao lado dos códigos (o build comunitário GGUF Q4_K_M fica perto de 16 GB). Cada degrau aproximadamente dobra a variedade de hardware capaz de hospedar o modelo: 54 GB é território de acelerador de 80 GB ou sharding multi-GPU; por volta de 27 GB cabe em placas de 32–48 GB; 14–16 GB cabe numa GPU de consumo de 24 GB com espaço sobrando para cache. A afirmação do fornecedor de que o modelo roda em 24 GB de VRAM no mínimo se refere exatamente a esse degrau de 4 bits — um piso, não um ponto de operação confortável, como a lição 7.12 detalha.
+
+O que os degraus de fato fazem é mapear valores reais num codebook discreto. Na quantization uniforme simétrica, um valor real $x$ vira um código inteiro $q$ por meio de uma escala $s$:
+
+$$
+q=\operatorname{clip}\left(\operatorname{round}(x/s),q_{min},q_{max}\right),
+\qquad \hat{x}=s q.
+$$
+
+Variantes afins acrescentam um zero point para que a faixa representada não precise se distribuir simetricamente em torno de zero. O arredondamento mapeia muitos reais próximos para um mesmo código; o clipping mapeia extremos para a fronteira; a diferença entre $x$ e $\hat{x}$ é o erro de quantization.
+
+Dizer apenas int8 ou int4 é uma frase incompleta. Pergunte o que está quantizado — pesos, ativações ou o KV cache; em que granularidade — tensor inteiro, canal de saída, grupo ou token; se a representação é simétrica; e em que dtype os produtos são acumulados. Um formato de peso de 4 bits rotineiramente multiplica por ativações de 16 bits e acumula em precisão mais alta.
+
+A granularidade é o trade central. Uma escala por tensor é quase gratuita em metadado, mas precisa abranger a maior magnitude do tensor, então um único peso outlier torna o passo mais grosseiro para todos os valores comuns. Escalas por canal se adaptam a linhas ou colunas; a quantization por grupos fatia uma dimensão em blocos de, digamos, 32–128 valores, cada um com sua própria escala — melhor ajuste local, mais metadado, kernels mais complexos. Pesos e ativações também se comportam de modo diferente: pesos são fixos e podem ser calibrados offline, enquanto ativações dependem do prompt e podem carregar outliers violentos por canal. A contribuição do SmoothQuant foi um reescalonamento matematicamente equivalente que desloca a dificuldade de quantization das ativações para os pesos, facilitando esquemas conjuntos de pesos e ativações.
+
+Por que isso ajuda a velocidade e não só o espaço em disco? Lembre da lição 7.3: decode é memory-bound, movendo aproximadamente todo o conjunto de pesos por token gerado. Quantization apenas de pesos corta precisamente esses bytes. Aqui está o equívoco clássico: um runtime carrega um arquivo de 4 bits e então expande cada tensor para ponto flutuante em memória antes de calcular. O download foi pequeno; memória residente e largura de banda seguem inalteradas; tokens por segundo não se movem. A correção são kernels empacotados nativos que dequantizam tile a tile dentro da multiplicação, de modo que a forma compacta é o que de fato atravessa o barramento de memória. Sempre verifique qual caminho seu runtime tomou medindo a memória residente após o carregamento, e não lendo o nome do arquivo.
+
+:::warning
+Quantizar pesos não encolhe o KV cache. O cache do Qwen3.8-27B continua acumulando a 64 KiB por token em bf16 (lição 7.2), qualquer que seja a precisão dos pesos — um contexto longo pode fazer parecer irrelevante a economia de pesos conquistada a duras penas, a menos que o cache seja quantizado separadamente, com suas próprias questões de acurácia e suporte de kernel.
+:::
+
+:::caveat
+A largura de bits sozinha não prevê nem velocidade nem qualidade. Dois artefatos ambos rotulados como 4 bits podem diferir em tamanho de grupo, dados de calibração, empacotamento e suporte de kernel — e o arquivo menor pode ser o mais lento. Compare formatos exatos no seu hardware e nas suas tarefas.
+:::
+
+A perda de acurácia é desigual pela rede: algumas camadas e canais são muito mais sensíveis, e esquemas mistos mantêm embeddings, output heads ou tensores frágeis em precisão mais alta. Perplexidade é um sinal, mas validade de saída estruturada, comportamento multilíngue e estabilidade em contexto longo podem revelar falhas que as médias escondem. Conjuntos de calibração também importam — um quantizador ajustado em prompts curtos em inglês pode não preservar o comportamento em código ou em documentos de 100.000 tokens.
+
+O modelo durável é uma aproximação medida. Códigos discretos economizam capacidade e, com os kernels certos, largura de banda; escalas reconstroem magnitudes úteis; o agrupamento se adapta às estatísticas locais; acumuladores preservam faixa. A escada de 54 passando por 27 rumo a 14–16 GB é o que move o Qwen3.8-27B do data center para a sua mesa — e a lição 7.10 examina os algoritmos e formatos que constroem bem cada degrau.

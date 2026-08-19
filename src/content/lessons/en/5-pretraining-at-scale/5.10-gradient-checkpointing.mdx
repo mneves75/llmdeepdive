@@ -1,0 +1,110 @@
+---
+id: "5.10-gradient-checkpointing"
+track: "5-pretraining-at-scale"
+order: 10
+title: "Gradient checkpointing & memory maths"
+summary: "Activation checkpointing trades compute for memory — and at hidden size 5120 with a 17,408-wide FFN, the activations of one 8,192-token sequence dwarf everything sharding achieved."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.9-mixed-precision"]
+unlocks: ["5.11-learning-rate-schedules"]
+analogy: "A hiker crossing a long route can photograph every turn or only major trail junctions. Photographing everything makes the return route easy but fills the phone. Keeping only junctions saves storage; on the way back, the hiker must retrace each segment to reconstruct intermediate turns. Checkpointing stores selected activation junctions and recomputes the path when gradients travel backward."
+teachBack:
+  prompt: "Estimate the saved-activation memory of one 8,192-token sequence through Qwen3.8-27B's 64 layers, then show what checkpointing at super-block boundaries changes."
+  modelAnswer: "Work the estimate on a uniform full-attention model with this model's dimensions; the hybrid's 48 DeltaNet layers need their training activations costed separately. Counting the tensors autograd retains in one layer — the residual stream and normalized copies at 5120 wide, the non-square attention projections, and the three 17,408-wide FFN tensors — gives roughly 98,300 values per token per layer, about 192 KiB in bf16. Across 8,192 tokens and 64 layers that is about 96 GiB for a single sequence at batch size one. Checkpointing at the 16 super-block boundaries stores only the boundary hidden states, 8,192 x 5120 x 2 bytes = 80 MiB each, about 1.25 GiB in total, plus the transient cost of recomputing one four-layer super-block, about 6.0 GiB. Peak activation memory falls from roughly 96 GiB to under 8 GiB, at the price of running most of the forward pass a second time."
+quiz:
+  - question: "Estimating activation memory as batch x sequence x hidden x layers x 2 bytes gives about 5 GiB for one 8,192-token sequence. Why is the figure for a uniform full-attention model of this size closer to 96 GiB?"
+    options: ["That formula counts only the residual stream; autograd also retains the normalized copies, the attention projections, and three 17,408-wide FFN tensors per layer, about 19 times as many values", "Because the weights are counted twice", "Because bf16 uses 4 bytes per element", "Because the KV cache is retained during training"]
+    correctIndex: 0
+    explanation: "The FFN intermediates dominate: three tensors of width 17,408 against a 5120-wide residual stream, which is why a residual-only estimate underestimates by more than an order of magnitude."
+  - question: "Lesson 5.9 kept an fp32 master copy of the weights. Does activation checkpointing reduce it?"
+    options: ["No — checkpointing attacks saved activations only, leaving parameters, gradients, and the 324 GB of optimizer state untouched", "Yes, by half, since boundaries are stored in bf16", "Yes, because recomputation regenerates master weights", "Only when combined with loss scaling"]
+    correctIndex: 0
+    explanation: "The categories are independent: sharding addresses persistent state, checkpointing addresses activations, and a job can be limited by either."
+  - question: "Why must random-number state be handled during recomputation?"
+    options: ["Dropout and other stochastic operations must reproduce compatible masks", "It changes parameter shapes", "It allocates the tokenizer", "It replaces the loss"]
+    correctIndex: 0
+    explanation: "A different stochastic forward during backward would not reproduce the computation whose gradients are required."
+citations:
+  - title: "Training Deep Nets with Sublinear Memory Cost"
+    authors: "Tianqi Chen, Bing Xu, Chiyuan Zhang, and Carlos Guestrin"
+    year: 2016
+    url: "https://arxiv.org/abs/1604.06174"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Lesson 5.7 got persistent state down to about 6.75 GB per rank on a 64-way ZeRO-3 job. Lesson 5.8 partitioned the layers. On paper, a 27-billion-parameter model now fits an 80 GB accelerator with enormous headroom. Then you launch with an 8,192-token sequence and batch size one, and the job dies at the first backward pass. Nothing about your sharding was wrong. You budgeted the wrong category.
+
+Backpropagation needs values from the forward pass. Autograd therefore retains activations, normalized copies, projection outputs, and attention intermediates until their backward functions run, and in a deep transformer those saved values routinely exceed the weights. **Activation checkpointing** — usually called gradient checkpointing, though nothing about a file on disk is involved — reduces that by deliberately forgetting and recomputing.
+
+Get the size right first, because the intuition people carry is badly wrong. The tempting estimate counts the residual stream: batch times sequence times hidden times layers times dtype bytes.
+
+$$
+1\times 8192\times 5120\times 64\times 2\ \text{B}=5.37\times 10^{9}\ \text{B}\approx 5\ \text{GiB}.
+$$
+
+Five gibibytes. Comfortable. Now count what autograd actually keeps in one layer. Take a *uniform* full-attention model with this model's dimensions — the hybrid's real bill needs the DeltaNet layers costed separately, which is its own exercise; what follows is the method and the order of magnitude. The residual input and its normalized copy are 5120 wide each. In a full-attention layer the projections are non-square: the query projection goes 5120 to 12288, because it carries the output gate alongside the 24 heads at dimension 256 (lesson 4.2); keys and values are 5120 to 1024 each (4 KV heads), the attention output is 6144, and the output projection returns 5120. That is roughly 35,800 values per token. The feed-forward block is larger still: a 5120-wide normalized input, then gate, up, and gated-product tensors of width 17,408 apiece, then a 5120-wide down-projection output — about 62,500 values. Together:
+
+$$
+35{,}800+62{,}500\approx 98{,}300\ \text{values per token per layer},
+$$
+
+$$
+98{,}300\times 2\ \text{B}\approx 196{,}600\ \text{B}\approx 192\ \text{KiB per token per layer}.
+$$
+
+That is 19 times the residual stream alone, and the FFN's three 17,408-wide tensors are most of the difference. Scale it up:
+
+$$
+8192\ \text{tokens}\times 64\ \text{layers}\times 192\ \text{KiB}\approx 96\ \text{GiB}.
+$$
+
+Ninety-six gibibytes of saved activations for one sequence at batch size one — more than ten times the persistent state your sharding worked so hard to reduce, and more than an 80 GB card holds. That is the figure for the uniform-attention model we posited, and it is the number to reason with. For Qwen3.8-27B specifically it is an approximation of unknown sign: lesson 4.16 showed only 16 of its 64 layers are full attention, and the other 48 are Gated DeltaNet, whose *training* activations are a separate accounting — a fixed-size inference state does not imply cheap backward storage, because the recurrent mixer still materialises per-token intermediates that autograd must keep. The FFN half, which is most of the total, is identical in all 64 layers either way. The residual-only estimate was off by roughly a factor of nineteen, and it is off in the direction that gets a job scheduled and then killed.
+
+Now apply checkpointing, and let the architecture choose the boundary. Divide the network into segments; during the forward pass save only each segment's boundary tensor rather than everything inside it; during backward, rerun that segment's forward from the saved boundary, rebuild its intermediates, compute gradients, and release them. This model's 64 layers form 16 repeating super-blocks of three Gated DeltaNet layers plus one full-attention layer, which is a natural and perfectly balanced segmentation. Each boundary is one hidden state:
+
+$$
+8192\times 5120\times 2\ \text{B}=83{,}886{,}080\ \text{B}=80\ \text{MiB},
+$$
+
+$$
+80\ \text{MiB}\times 16\ \text{boundaries}=1.25\ \text{GiB}.
+$$
+
+During backward, one super-block is rematerialized at a time, costing four layers' worth of intermediates — still priced at the uniform-attention rate, which is why the result below is a ceiling for the real hybrid rather than its measured peak:
+
+$$
+4\times 8192\times 192\ \text{KiB}\approx 6.0\ \text{GiB}.
+$$
+
+Peak activation memory becomes roughly $1.25+6.0\approx 7.3$ GiB instead of 96 GiB — about a thirteenfold reduction, and the ratio is what transfers to the real model even though the two absolute figures are the hypothetical's — paid for by running most of the forward computation twice.
+
+:::insight
+Segment granularity is a dial, not a switch, and the two terms move in opposite directions. Sixteen coarse segments store few boundaries and rematerialize a lot; sixty-four fine segments store 64 boundaries (5 GiB) and rematerialize only one layer at a time (about 1.4 GiB). Both land near 6 to 7 GiB here, but with different framework overhead and different overlap behaviour. Measure both rather than adopting a folklore interval.
+:::
+
+The tradeoff is direct: lower peak activation memory for extra computation. It is not simply double training time, because backward, communication, and non-checkpointed work continue regardless and recomputation may overlap differently. Measure step time and realized throughput, not the theoretical FLOP increase.
+
+A memory budget should keep the categories separate:
+
+$$
+M_{peak}=M_{params}+M_{grads}+M_{optimizer}+M_{activations}+M_{temporary}+M_{allocator}.
+$$
+
+Checkpointing attacks $M_{activations}$ and nothing else. It does not shard parameters, it does not touch the fp32 master weights of lesson 5.9, and it leaves the 324 GB of AdamW state exactly where lesson 5.7 found it. A job dominated by optimizer state needs ZeRO or FSDP; a job dominated by long-sequence activations needs this. Most large runs are limited by one at a time, and the limiting category changes as sequence length grows.
+
+Sequence length is where this model gets interesting. The estimate above used 8,192 tokens; native context is 262,144. Activations in the position-wise parts of the network grow linearly with $T$, so the same arithmetic at full context is thirty-two times larger and utterly infeasible without both checkpointing and the sequence parallelism of lesson 5.8. Ordinary attention would add a term quadratic in $T$ on top, which is precisely why memory-efficient attention kernels that never materialize the full probability matrix are mandatory at these lengths — and why only 16 of the 64 layers face that term at all, the other 48 scanning positions with a fixed-size recurrent state.
+
+:::caveat
+Every number in this lesson is a shape-based estimate and should be treated as one. Fused kernels change what is retained, memory-efficient attention removes intermediates a naive count includes, allocator behaviour and fragmentation add real overhead, and a claim like "checkpointing saves 60 percent" is meaningless without batch, sequence, dtype, kernel choice, segment policy, and which memory categories were counted. Combine tensor-shape arithmetic with measured allocator peaks; trust the second one.
+:::
+
+Two correctness traps deserve naming. Stochastic operations must reproduce their randomness: if dropout drew one mask in the original forward and a different one during recomputation, backward would differentiate a different function, so framework checkpoint utilities preserve and restore RNG state at a small cost. And stateful modules, side effects, mutable caches, and data-dependent external calls can make recomputation silently incorrect rather than loudly broken.
+
+Composition adds the rest of the complexity. Pipeline parallelism makes recomputation compete with other microbatches for the same devices. FSDP may need to all-gather weights again during recompute unless parameters stayed materialized, trading communication against memory. Compilers fuse and reorder regions in ways that change what a segment even is. The effective unit is the whole distributed schedule, never an isolated function.
+
+The durable mental model is a time–space exchange: save enough boundary state to reconstruct the forward graph, discard the bulky middle, and pay compute to recreate it just before its gradients are needed. The decision follows from a measured breakdown of where memory actually went — which, for a model with a 17,408-wide feed-forward block, is almost never where a first estimate puts it.

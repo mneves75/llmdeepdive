@@ -1,0 +1,75 @@
+---
+id: "4.3-scaled-dot-product-attention"
+track: "4-transformer"
+order: 3
+title: "Scaled dot-product attention e o √d_k"
+summary: "Dividir os scores query–key pela raiz quadrada da dimensão deles mantém o softmax utilizável — no Qwen3.8-27B esse divisor é √256 = 16, e a matriz de scores em contexto completo motiva toda a track 7."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["4.2-self-attention"]
+unlocks: ["4.4-causal-masking"]
+analogy: "Suponha que jurados avaliem uma apresentação somando notas de muitas categorias independentes. Um espetáculo julgado em 256 categorias naturalmente acumula totais positivos e negativos maiores do que um julgado em quatro, mesmo que a qualidade por categoria não mude. Jogar esses totais brutos numa regra do tipo o vencedor leva tudo faria a planilha maior parecer absurdamente certa. Dividir pela raiz quadrada do número de categorias restaura uma escala comparável antes da votação final."
+teachBack:
+  prompt: "Derive por que a variância do produto escalar cresce com a dimensão das keys, informe o divisor de escala que o Qwen3.8-27B usa e explique quanto custa a matriz de scores em contexto completo."
+  modelAnswer: "Se as componentes de query e key são aproximadamente independentes, com média zero e variância unitária, cada produto contribui com variância próxima de um, então somar d_k produtos dá variância próxima de d_k e desvio padrão próximo da raiz quadrada de d_k. Dividir os scores por essa raiz mantém a magnitude típica estável, evitando que o softmax sature só porque o head ficou mais largo. O Qwen3.8-27B usa dimensão de head 256, então o divisor é a raiz quadrada de 256, que é 16. No contexto nativo de 262.144 tokens do modelo, a matriz de scores de um único head guarda 262.144 ao quadrado — cerca de 6,9 × 10^10 — entradas, e é por isso que attention exata em contexto longo precisa das técnicas de memória e de kernel da track 7."
+quiz:
+  - question: "O Qwen3.8-27B usa dimensão de head 256. Por quanto o modelo divide os scores brutos de attention?"
+    options: ["16, a raiz quadrada de 256", "256", "5120, o hidden size", "2, um para keys e um para values"]
+    correctIndex: 0
+    explanation: "Scaled dot-product attention divide pela raiz quadrada da dimensão de head: √256 = 16."
+  - question: "Os scores brutos são produzidos comparando quais dois tensores (lição 4.2)?"
+    options: ["Queries com keys", "Values com values", "Embeddings com o vocabulário", "Saídas de softmax com a máscara"]
+    correctIndex: 0
+    explanation: "A matriz de scores é QKᵀ: cada query faz produto escalar com cada key; values só entram depois do softmax."
+  - question: "Qual é o risco imediato de diferenças muito grandes entre scores antes do softmax?"
+    options: ["Uma distribuição saturada, quase one-hot, com gradientes pequenos", "Uma janela de contexto maior", "Regularização automática", "Quantização sem perdas"]
+    correctIndex: 0
+    explanation: "Grandes diferenças entre logits empurram as probabilidades do softmax para zero e um, região em que muitas derivadas ficam minúsculas."
+citations:
+  - title: "Attention Is All You Need"
+    authors: "Ashish Vaswani et al."
+    year: 2017
+    url: "https://arxiv.org/abs/1706.03762"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+A lição 4.2 deixou uma parte da fórmula de attention sem explicação: a misteriosa divisão por $\sqrt{d_k}$. O problema concreto que ela resolve aparece assim que a dimensão de head muda. Compare dois heads hipotéticos pontuando o mesmo par de tokens, um com 4 dimensões e outro com 256. Mesmo que cada feature individual carregue a mesma quantidade de sinal, o produto escalar do head largo soma 64 vezes mais termos, então seus scores brutos oscilam numa faixa muito maior. E alguma coisa logo adiante está prestes a ser muito sensível a essa faixa.
+
+Escreva um score como
+
+$$
+s = q \cdot k = \sum_{i=1}^{d_k} q_i k_i.
+$$
+
+Sob a intuição usada no artigo original do Transformer — componentes aproximadamente independentes, média zero, variância um —, cada produto $q_i k_i$ tem variância próxima de um, então a soma tem $\operatorname{Var}(s) \approx d_k$ e desvio padrão próximo de $\sqrt{d_k}$. Para os attention heads do Qwen3.8-27B, $d_k = 256$: os scores brutos típicos são da ordem de $\sqrt{256} = 16$ vezes maiores do que a contribuição de uma única feature, puramente por causa da largura.
+
+Por que isso importa? O softmax exponencia suas entradas, então escala é comportamento. A abordagem ingênua — jogar os scores brutos direto no softmax — funciona aceitavelmente para heads minúsculos e falha silenciosamente para os largos. Percorra isso com três keys. Suponha que o padrão de preferência "verdadeiro" seja suave: uma key duas vezes mais compatível que a seguinte. Em escala pequena os scores brutos poderiam ser $[0.5, 0.25, 0]$, e o softmax distribui peso significativo pelas três. Agora deixe o head de largura 256 inflar tudo pelo seu fator natural de 16: o mesmo padrão vira $[8, 4, 0]$. O softmax de $[8, 4, 0]$ coloca cerca de 98% do peso na primeira key — uma certeza quase do tipo o vencedor leva tudo que o modelo nunca conquistou, e na região saturada a maioria dos gradientes é quase zero, então o aprendizado trava exatamente onde deveria estar ajustando.
+
+A correção é dividir pelo desvio padrão que a largura introduziu:
+
+$$
+\operatorname{Attention}(Q,K,V)
+= \operatorname{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V.
+$$
+
+Com os números do Qwen, os scores inflados $[8, 4, 0]$ divididos por $\sqrt{256} = 16$ voltam a $[0.5, 0.25, 0]$ — o regime treinável. O divisor também pode ser lido como uma **temperatura** fixa de softmax $T = \sqrt{d_k} = 16$: uma escala escolhida uma vez a partir da geometria, em vez de exposta como um botão de ajuste. O modelo ainda pode aprender attention mais concentrada ou mais espalhada aumentando ou reduzindo as normas de query e key; a escala só remove o aguçamento automático que a largura sozinha causaria.
+
+:::caveat
+Pesos de attention escalados não são probabilidades calibradas sobre verdade ou importância. São pesos de roteamento normalizados dentro de um head, numa camada, moldados por representações aprendidas. O √d_k os mantém treináveis; não os torna significativos como confianças. E a história arrumadinha da variância vale na inicialização — redes treinadas violam as hipóteses de independência, e tudo bem, porque o trabalho do divisor era remover o crescimento *sistemático* com a dimensão, não impor variância unitária exata para sempre.
+:::
+
+Estabilidade numérica é uma correção separada e complementar. Na prática o softmax subtrai o máximo da linha antes de exponenciar, o que evita overflow sem mudar a distribuição resultante. A subtração do máximo resolve *representabilidade*; $\sqrt{d_k}$ resolve *saturação*. Você precisa das duas.
+
+Agora a segunda razão pela qual esta lição importa: o tamanho da coisa que está sendo normalizada. A matriz de scores tem uma entrada por par query–key. O comprimento de contexto nativo do Qwen3.8-27B é de 262.144 tokens. Em contexto completo, um head de uma camada pontua
+
+$$
+262{,}144 \times 262{,}144 = 2^{18} \times 2^{18} = 2^{36} \approx 6.9 \times 10^{10}
+$$
+
+pares query–key — cerca de 69 bilhões de entradas de score, antes de multiplicar pelos 24 query heads do modelo e antes de notar que 16 das suas 64 camadas rodam esse cálculo. Nada na divisão por √256 muda essa contagem; a escala conserta as *estatísticas* dos scores, não a *quantidade* deles. Essa é a conta quadrática da lição 4.1 tornada concreta, e é a motivação permanente da track 7: kernels no estilo FlashAttention que evitam materializar a matriz, o KV cache cuja aritmética aparece na lição 7.2 e o projeto grouped-query da lição 7.6 que o Qwen já embute no seu arranjo de 24 query heads e 4 KV heads. A resposta mais profunda do Qwen — substituir attention por completo em 48 das 64 camadas — chega na lição 4.15.
+
+A lição generaliza para além de um denominador. Sempre que uma soma reúne muitas contribuições aproximadamente independentes, sua magnitude típica cresce com o número de termos, e passá-la por uma não linearidade sensível muda o comportamento apenas porque a largura mudou. O Transformer compensa com uma escala derivada da variância — uma correção de dois caracteres na fórmula, estrutural em qualquer largura, de um head de brinquedo até 256.

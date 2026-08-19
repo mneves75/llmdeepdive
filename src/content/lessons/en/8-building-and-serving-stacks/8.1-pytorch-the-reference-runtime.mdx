@@ -1,0 +1,66 @@
+---
+id: "8.1-pytorch-the-reference-runtime"
+track: "8-building-and-serving-stacks"
+order: 1
+title: "PyTorch: the reference runtime"
+summary: "Eager PyTorch is the semantics every faster stack must reproduce; Qwen3.8-27B's module tree is the architecture lessons made executable, alternating 48 Gated DeltaNet mixers with 16 attention layers."
+tier: "advanced"
+locale: "en"
+prerequisites: ["0.7-python-numpy-pytorch", "4.11-full-transformer-block", "7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+unlocks: ["8.2-huggingface-transformers-ecosystem", "8.3-torch-compile-and-cuda-graphs"]
+analogy: "A watchmaker keeps one master clock in a temperature-controlled room. It is not the clock anyone carries; it is slow to consult and expensive to house. Every wristwatch that leaves the shop is checked against it, and when two watches disagree the master decides which one is wrong. Eager PyTorch is that master clock for a model: nobody serves production traffic from it, and every engine that does is only correct to the extent it still agrees with it."
+teachBack:
+  prompt: "Explain what makes eager PyTorch the reference runtime, and walk the module tree of Qwen3.8-27B naming which submodules repeat in all 64 decoder layers and which alternate."
+  modelAnswer: "Eager PyTorch executes the model's own modeling code one operation at a time, in a defined order, with no fusion, graph capture, paging, or batching machinery in the way, so its output defines what correct means; every faster engine is an optimization that must be shown to agree with it. The tree starts at an embedding table of 248,320 rows by 5120 columns, then 64 decoder layers, then a final RMSNorm and an untied lm_head of roughly 1.271B parameters of its own. Inside each decoder layer two things never change: two RMSNorms at eps 1e-6 around a pre-norm residual stream, and a gated FFN projecting 5120 up to 17408 and back. What alternates is the token mixer: with full_attention_interval 4, every fourth layer is gated attention with 24 query heads and 4 KV heads at head dimension 256, and the other three are Gated DeltaNet with 48 value heads and 16 QK heads at head dimension 128 — 16 attention layers and 48 DeltaNet layers in total."
+quiz:
+  - question: "The classic block of lesson 4.11 pairs a token mixer with a position-wise FFN. Walking Qwen3.8-27B's 64 decoder layers, what stays the same in every one of them?"
+    options: ["The two RMSNorms and the gated FFN; only the token mixer alternates between attention and Gated DeltaNet", "Nothing — every layer has a different shape", "The token mixer; the FFN alternates", "Only the residual connection"]
+    correctIndex: 0
+    explanation: "The FFN (5120 to 17408 to 5120) and the pre-norm RMSNorm pair are structurally identical in all 64 layers; the mixer slot holds gated attention once every four layers and Gated DeltaNet otherwise."
+  - question: "In the attention layers, what is the output width of the q_proj weight?"
+    options: ["12288, because the layers are gated: 24 × 256 for queries plus the same again for the gate", "6144, because 24 query heads at head dimension 256 give 24 × 256", "5120, because projections are always square", "17408, the FFN intermediate size"]
+    correctIndex: 0
+    explanation: "attn_output_gate is set, so q_proj maps 5120 to 24 × 256 × 2 = 12288 and is chunked into a 6144 query and a 6144 gate. o_proj maps the 6144-wide gated attention output back to 5120; the 4 KV heads give 4 × 256 = 1024."
+  - question: "Why is eager PyTorch a poor production server for this model even though it is the reference?"
+    options: ["It dispatches every operation separately, allocates per request, and has no paged KV or continuous batching, so it is launch-bound and memory-wasteful", "It computes different mathematics from the serving engines", "It cannot load bf16 weights", "It only runs on CPU"]
+    correctIndex: 0
+    explanation: "Eager trades throughput for legibility; the serving machinery of lessons 7.8 and 8.4 is exactly what it lacks."
+citations:
+  - title: "PyTorch Documentation"
+    authors: "PyTorch Foundation"
+    year: 2026
+    url: "https://pytorch.org/docs/stable/index.html"
+  - title: "Hugging Face Transformers Documentation"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/docs/transformers"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Two engines answer the same prompt with the same weights, the same seed, and greedy decoding, and they give you different text. One of them is wrong. Which one? You cannot settle that argument with benchmarks, and you cannot settle it by reading either engine's source, because both are thousands of lines of scheduling and kernel selection. You settle it by having a reference — a definition of what this model computes that is slow, boring, and inspectable. That reference is eager PyTorch running the model's own modeling code.
+
+Eager means each operation executes when the Python line runs. No graph is captured, nothing is fused, no kernel is chosen for a fused pattern that only exists in a compiler's imagination. A matrix multiply is a matrix multiply, in the order written, on tensors you can print. Lesson 7.11 sent you here for exactly this reason: before you compare stacks, you need an oracle, and the oracle is the runtime with the fewest moving parts between the parameters and the logits.
+
+So walk the tree. At the bottom sits an embedding table with 248,320 rows of width 5120 — lesson 1.5's geometry, roughly 1.271B parameters of pure lookup. Above it are 64 decoder layers. Above them a final RMSNorm and an lm_head that is *not* tied to the embedding, contributing another 1.271B parameters of its own. Alongside all of it, for image and video input, a vision tower of 27 layers at hidden size 1152 with patch size 16, whose output is projected to 5120 so that visual patches join the same sequence the text tokens live in (lesson 4.17).
+
+Inside a decoder layer, two things are invariant. There is a pre-norm residual stream with RMSNorm at eps 1e-6 before the mixer and before the FFN (lessons 2.8 and 4.10), and there is a gated feed-forward network projecting 5120 up to 17408 and back down (lesson 4.9). That FFN is where most of the model physically is. The third slot is the one that changes. The config exposes `full_attention_interval: 4`, and the layout is sixteen repetitions of three Gated DeltaNet layers followed by one gated attention layer — 48 mixers that carry a fixed-size recurrent state (lesson 4.15) and 16 that do full quadratic attention with 24 query heads sharing 4 KV heads at head dimension 256 (lessons 4.2 and 4.7).
+
+Here is the worked payoff of reading a module tree instead of a spec sheet. Loop over the 64 layers, ask each one what kind of mixer it holds, and count: 16 attention, 48 DeltaNet. That count is not trivia — it is the input to lesson 7.2's cache derivation. Sixteen layers hold per-token keys and values; forty-eight hold a state whose size does not depend on how long the conversation is. The 64 KiB per token that every capacity plan in this track and the next depends on is something you can *verify* by walking this tree, rather than something you take on faith.
+
+Now the classic wrong turn, and it is a good one. Coming from lesson 4.11's uniform block, where hidden size equals the number of heads times the head dimension, you expect every attention projection to be square: 5120 in, 5120 out. Print the shapes and the query projection is 5120 to 12288. Your first instinct will be that the checkpoint is corrupt or that you misread the config. Neither. Multiply it out: 24 query heads × 256 head dimension = 6144, which simply is not 5120 — and then double it, because these layers are gated and `q_proj` carries the gate in the same matrix (lesson 4.2). Qwen's designers decoupled the attention width from the residual width, so `q_proj` widens to 12288, splits per head into a 6144 query state and a 6144 gate, and `o_proj` narrows the 6144 back to 5120, while `k_proj` and `v_proj` produce 4 × 256 = 1024 each.
+
+:::warning
+Do not "fix" the non-square projections. Reshaping the query projection to 5120 to match the residual stream, or assuming head dimension must equal hidden size divided by head count, silently destroys the model. When your own tensor-parallel splitting, LoRA target selection, or conversion script asserts squareness, it is the assertion that is wrong.
+:::
+
+With a reference in hand, engine comparison becomes an experiment instead of an opinion. Feed the same token ids to eager and to the engine under test, decode greedily, and find the first position where the sampled token differs. Then ask whether the divergence came from the tokenizer, the chat template, the sampling configuration, or the kernels. What you must not demand is bitwise equality: bf16 reductions depend on accumulation order, so any change in tiling or batch composition perturbs the last bits. The bar is agreement on tokens under greedy decoding and matching distribution statistics under sampling — not identical floats.
+
+:::caveat
+"Reference" is a moving target. The modeling code lives in a specific `transformers` release, or in the model repository itself when the architecture is newer than the library. Pin both, and record the pair alongside any comparison you publish. For a hybrid model this matters more than usual: an older release may load the weights and produce plausible-looking garbage because it treats the DeltaNet layers as something they are not.
+:::
+
+Eager is deliberately the wrong tool for serving. Each operation pays a Python frame and a dispatch, nothing fuses, memory is allocated per request, and there is no paged cache or continuous batching. Batch-1 decode spends much of its life waiting on that overhead rather than on arithmetic, which is exactly the problem lesson 8.3 attacks. Keep the picture: the parameters are a dictionary of tensors, the module tree is tracks 1 through 4 made executable, and every faster stack in this track is a claim of equivalence to what this runtime does slowly and honestly.

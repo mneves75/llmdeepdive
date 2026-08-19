@@ -1,0 +1,77 @@
+---
+id: "6.11-distillation-making-small-models-punch-up"
+track: "6-post-training-and-alignment"
+order: 11
+title: "Distillation: making small models punch up"
+summary: "Knowledge distillation trains a smaller student from a teacher's outputs — the practical route from a 27B model that will never fit a phone to something that will, and the bridge from post-training into edge hardware."
+tier: "advanced"
+locale: "en"
+prerequisites: ["6.3-lora-qlora-and-peft"]
+unlocks: []
+analogy: "A master watchmaker cannot fit an entire workshop into a travel repair kit. Instead, she demonstrates representative repairs, explains decision points, and lets an apprentice practice on carefully chosen faults. The kit becomes excellent for its intended jobs without containing every machine in the workshop. A distilled student similarly compresses a teacher's behaviour into limited capacity; demonstrations and curriculum decide which skills survive the suitcase."
+teachBack:
+  prompt: "Distinguish logit distillation from sequence distillation, explain what an open-weights teacher makes possible, and say why quantizing the teacher is not an alternative to distilling it."
+  modelAnswer: "Logit distillation trains the student against the teacher's full probability distribution, whose non-target mass reveals which alternatives the teacher considers plausible. Sequence distillation trains on responses sampled or selected from the teacher, which is the only option when the teacher is served behind an API. Because Qwen3.8-27B ships open weights under Apache 2.0, the logits are available and both routes are open. Quantization is a different operation: it re-represents the same 27B parameters more compactly, taking the weights to roughly 14 to 16 GB at 4 bits, but the parameter count and the architecture are unchanged. Distillation instead trains a genuinely smaller parameterization, which is what a memory budget below the quantized floor requires."
+quiz:
+  - question: "What information do teacher logits provide beyond a single hard label?"
+    options: ["Relative probability assigned to alternative tokens", "A guarantee of factual truth", "The student's optimizer state", "A larger physical GPU"]
+    correctIndex: 0
+    explanation: "The soft distribution can reveal which alternatives the teacher considers similar or plausible, often called dark knowledge."
+  - question: "Lesson 6.3 put Qwen3.8-27B's 4-bit footprint at roughly 14 to 16 GB. Why does that not make quantization a substitute for distillation on a memory-constrained device?"
+    options: ["Quantization re-represents the same 27B parameters; below the quantized floor you need fewer parameters, which only a smaller student provides", "Quantized models cannot be served on mobile hardware at all", "Quantization removes the model's chat template", "A 4-bit model has no logits to learn from"]
+    correctIndex: 0
+    explanation: "The two techniques act on different axes. Quantization changes how weights are represented and bottoms out at a floor set by the parameter count; distillation changes what a smaller parameter count learns."
+  - question: "What is sequence-level distillation?"
+    options: ["Training a student on complete outputs generated or selected from a teacher", "Copying the teacher's hardware", "Removing all response tokens", "Using only random labels"]
+    correctIndex: 0
+    explanation: "Teacher-generated sequences become supervised targets, which is practical when internal logits are unavailable."
+citations:
+  - title: "Distilling the Knowledge in a Neural Network"
+    authors: "Geoffrey Hinton, Oriol Vinyals, and Jeff Dean"
+    year: 2015
+    url: "https://arxiv.org/abs/1503.02531"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+You have built something good on Qwen3.8-27B and now someone asks for it on a phone, offline. Do the arithmetic before answering. The weights are 54 GB in bf16. Quantized to 4 bits they come down to roughly 14 to 16 GB, and the vendor's "runs in 24 GB VRAM" claim refers to exactly that quantized form. A flagship handset's entire memory budget — shared with the operating system, the browser, and everything else the user has open — is well under that figure, and it is not close. There is no quantization level that rescues this, because quantization changes how 27B parameters are *stored*, never how many there are. If the target device cannot hold the quantized floor, you need a model with fewer parameters. Lesson 9.7 works through the edge hardware in detail; this lesson is about how you get a smaller model that is worth deploying.
+
+**Knowledge distillation** trains a student to imitate signals from a teacher, aiming to preserve useful behaviour at lower memory, latency, and serving cost. It is not compression: the student has a different parameterization and learns an approximation over a chosen distribution of inputs. What it can carry across is behaviour, and what it cannot carry across is capacity.
+
+The classic form uses teacher logits. A temperature $T$ softens the teacher's distribution, and the student minimizes a divergence from it, usually mixed with ordinary loss on ground-truth labels:
+
+$$
+\mathcal{L}=\lambda T^2\,\mathrm{KL}\left(p_T^{teacher}\,\|\,p_T^{student}\right)
++(1-\lambda)\mathcal{L}_{hard}.
+$$
+
+The non-target probabilities carry relational information. If the teacher assigns moderate mass to two semantically related tokens and almost none to the rest, the student learns something a one-hot label never encodes. This route is normally closed for frontier teachers served behind an API, which is why most practical distillation is sequence-level. Qwen3.8-27B is the exception that makes the choice real: it ships open weights under Apache 2.0, so its logits over all 248,320 vocabulary rows are yours to read. That is a genuine advantage of an open-weights teacher, though it comes with a storage problem of its own — cached soft targets over a quarter-million-row vocabulary are enormous, so implementations usually keep only the top few hundred entries per position.
+
+**Sequence distillation** is the other route: the teacher answers a curated prompt set, the outputs are filtered, verified, or ranked, and the student runs SFT on the survivors. Walk one build through, step by step, because the interesting decisions are all in the data generation.
+
+First, pick the mode and its preset. If you want the student to produce direct answers, generate with instruct mode — enable_thinking set to False, temperature 0.7, top_p 0.80, top_k 20. If you want reasoning traces in the curriculum, generate under the thinking preset of temperature 1.0, top_p 0.95, top_k 20. Off-preset generation produces a teacher distribution the vendor never shipped, and you would be distilling a model nobody validated.
+
+Second, verify before accepting. Wherever a checker exists — tests, an exact-answer comparison, a schema validator — run it and discard failures, exactly as lesson 6.8 argued for training signals. Filtering teacher output with the same teacher is circular approval and teaches its errors with extra confidence.
+
+Third, price it. Suppose 200,000 prompts averaging 800 output tokens: that is 160 million output tokens. Served through Cloudflare Workers AI at USD 3.20 per million output tokens, generation costs about USD 512, plus input tokens at USD 0.45 per million. Illustrative and specific to August 2026 pricing, but the shape is the point — synthetic curricula are cheap enough to iterate on and expensive enough that generating ten times more data than you filtered for is a real waste.
+
+Now the classic wrong turn, and it is tempting precisely because thinking mode makes it easy. The teacher produces long, articulate reasoning traces, so a team distils the traces into a small student expecting the student to reason too. What arrives is a student that has learned the *form* of a long trace without the capacity to run the search underneath it: fluent multi-step deliberation, confidently wrong conclusions, and a token bill several times higher than the direct-answer student it replaced. You paid for reasoning twice — once to generate the traces, once on every inference — and bought a worse model. The correction is to filter traces by outcome rather than by appearance, keeping only those whose final answer passed a checker, and to evaluate the student on accuracy per output token rather than on how much its traces resemble the teacher's. Often the right answer is that a small student should not reason aloud at all, and should instead be taught the direct answers that the teacher's reasoning produced.
+
+Prompt coverage defines what transfers. A curriculum full of arithmetic improves arithmetic and leaves multilingual instruction-following exactly where it was. Easy prompts saturate without touching the student's decision boundary; prompts far beyond the student's capacity become noise. Adaptive generation targets the cases where student and teacher disagree, or where external verification can separate the strategies that worked.
+
+:::warning
+Teacher outputs are not ground truth, and a distilled student inherits its teacher's mistakes with none of its teacher's ability to catch them. Hallucinations, unsafe completions, cultural bias, verbosity, and formatting tics all copy across cleanly. Worse, they arrive *without* the caveats: the teacher's hedged, uncertain answer becomes the student's flat assertion, because the student learned the words and not the uncertainty behind them. Use external tools, trusted datasets, independent judges, and human audits, and record teacher version, decoding settings, prompt source, filtering decisions, and date with every synthetic dataset.
+:::
+
+Capacity imposes a real ceiling, and it does not show up in an average benchmark score. A smaller student typically retains frequent surface behaviour while losing rare knowledge, long-context competence, multilingual nuance, and robust composition of several instructions. Evaluate by slice — capability, difficulty, language, safety boundary, prompt distribution — and compare against a student trained on original data, so improvements can be attributed to the teacher signal rather than to extra tokens.
+
+Distillation can be **offline**, from a fixed synthetic dataset, or **online**, querying the teacher as the student changes. Offline data is reproducible and cheap to reuse but goes stale as the student moves. Online teaching targets current errors at higher cost and worse reproducibility. Intermediate-feature distillation is available when architectures and activations are accessible, though matching internal representations tends to overconstrain a student whose geometry differs — and it is a poor fit here, since Qwen3.8-27B's hybrid arrangement of 48 Gated DeltaNet layers and 16 full-attention layers is unlikely to match whatever the student is.
+
+:::caveat
+Terms of service, model licences, privacy promises, and data rights govern whether you may generate from a teacher and train on the result. Apache 2.0 is unusually permissive on this specimen, which makes it a good teacher to learn on — but permissiveness is a property of this licence, not of open weights in general, and technical feasibility never grants legal permission.
+:::
+
+The techniques compose. Distil first, then quantize the student (lessons 7.9 and 7.10), or use teacher signals during quantization-aware training to recover what quantization cost. They solve different problems: distillation changes what a smaller model learns, quantization changes how its weights are represented, and the edge deployments in lesson 9.7 usually need both. The durable model is curriculum-driven behavioural transfer — the teacher supplies richer targets, the student compresses what fits inside its capacity, evaluation reveals what survived. A small model punches up not because it secretly contains the teacher, but because carefully chosen supervision spent its limited capacity on the behaviours that mattered.

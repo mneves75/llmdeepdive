@@ -1,0 +1,81 @@
+---
+id: "4.4-causal-masking"
+track: "4-transformer"
+order: 4
+title: "Causal masking & why order matters"
+summary: "A causal mask prevents next-token training from leaking the answer while allowing every prefix position to be trained in parallel — and it is why decode-time caching works at all."
+tier: "core"
+locale: "en"
+prerequisites: ["4.3-scaled-dot-product-attention"]
+unlocks: ["4.5-multi-head-attention"]
+analogy: "Picture an exam printed as a strip of paper. For question five, a sliding cover reveals only questions one through five and hides every later answer. The teacher can prepare one cover position for every question at once, so all questions are graded in parallel, but no question sees its future. A causal attention mask is that triangular set of covers applied to a score matrix."
+teachBack:
+  prompt: "Explain how a causal mask permits parallel training without future-token leakage, and why masking only the loss would not be enough."
+  modelAnswer: "Training supplies the whole token sequence, but a triangular causal mask sets attention logits from position i to positions greater than i to negative infinity before softmax, so their weights become exactly zero. Every row of the attention matrix is computed in the same batched operation while receiving information only from its prefix. Masking only the loss fails because even a position with no loss term can write future-token information into hidden states that earlier predictions read through attention; the mask must constrain information flow, not just which positions are graded. At decode time the same property means past keys and values are final and can be cached."
+quiz:
+  - question: "When is the causal mask applied in standard attention?"
+    options: ["To forbidden logits before softmax", "To values after the language-model loss", "To token IDs after sampling", "Only after backpropagation"]
+    correctIndex: 0
+    explanation: "Forbidden logits receive negative infinity or a sufficiently negative representable value so their softmax weights become zero."
+  - question: "Why does adding negative infinity to a logit zero out its attention weight (lesson 4.3)?"
+    options: ["Softmax exponentiates logits and exp(−∞) is 0, so the position gets zero normalized weight", "Negative numbers are deleted from memory", "The value vector is set to zero directly", "Because scores are divided by √d_k"]
+    correctIndex: 0
+    explanation: "Softmax turns each scaled logit s into exp(s) before normalizing; a logit of negative infinity exponentiates to zero and contributes nothing to the row."
+  - question: "Why can causal language models still train all positions in parallel?"
+    options: ["The whole triangular score matrix is computed in one batched operation", "Each position secretly reads the answer", "The mask removes all dependencies", "Training uses no sequence"]
+    correctIndex: 0
+    explanation: "The mask constrains information flow inside a matrix operation; it does not require a recurrent step for every position during training."
+citations:
+  - title: "Attention Is All You Need"
+    authors: "Ashish Vaswani et al."
+    year: 2017
+    url: "https://arxiv.org/abs/1706.03762"
+  - title: "Language Models are Unsupervised Multitask Learners"
+    authors: "Alec Radford et al."
+    year: 2019
+    url: "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Here is the trap every next-token trainer must avoid. Training data arrives as complete sequences: the model sees "The cache stores keys" all at once, yet it is being graded on predicting each token from only the ones before it. Self-attention, as built in lessons 4.2 and 4.3, lets every position read every other position. Left unconstrained, the position predicting "stores" would simply attend to "stores" sitting right there in the tensor, copy it forward, and achieve a spectacular training loss that means nothing. The model would learn to cheat, and generation — where the future genuinely does not exist yet — would collapse.
+
+Formally, a causal language model learns the factorization
+
+$$
+p(x_1,\ldots,x_n)=\prod_{i=1}^{n}p(x_i\mid x_{<i}),
+$$
+
+so the computation for position $i$ may depend on earlier tokens only. **Causal masking** makes attention obey that factorization while keeping training parallel.
+
+<Figure id="causal-mask" />
+
+Work it through on a real prompt. Take the four-word input "The cache stores keys" and, for this example, treat each word as one token (a real tokenizer, as lesson 1.2 showed, may split words further — Qwen3.8-27B's tokenizer draws from a 248,320-entry vocabulary, and the mask applies to its token positions whatever they turn out to be). Number the positions 1–4. The allowed-attention pattern is lower triangular:
+
+$$
+\begin{bmatrix}
+1&0&0&0\\
+1&1&0&0\\
+1&1&1&0\\
+1&1&1&1
+\end{bmatrix}.
+$$
+
+Row $i$ is the reading query position; column $j$ is the key being read. Position 1, "The," sees only itself. Position 2, "cache," sees "The" and itself. Position 3, "stores," sees "The cache stores" — and crucially not "keys," the very token its hidden state is about to predict. Position 4 sees everything. Implementations realize this with an additive mask: 0 on allowed entries, $-\infty$ on forbidden ones, added to $QK^\top/\sqrt{d_k}$ before softmax. Since $\exp(-\infty)=0$, forbidden positions get exactly zero weight — the same exponentiation mechanics from lesson 4.3, used here as an off switch. (In finite precision, libraries use the most negative representable value or a kernel flag; a casually chosen "large negative" constant can be insufficient in low-precision dtypes.)
+
+Now the classic wrong fix, because it is genuinely tempting. "Why mask attention at all? Just compute the loss only from each position's own prediction — future tokens have their own loss terms, so nothing is stolen." This masks the *grading*, not the *information*. Even with a perfectly per-position loss, unmasked attention lets position 3's hidden state absorb features of "keys" from position 4's representation at an earlier layer, or read position 4 directly. The leak is in the activations, not the loss. The correction: constrain the computation graph itself, which is exactly what the triangular mask does.
+
+:::warning
+The most common misconception: "the loss already handles causality." It does not. The training tensor may contain the future, but the computation graph for each prediction must not — and only an attention-level mask (not a loss-level one) enforces that. A related off-by-one lurks in target alignment: inputs `[BOS, cats, sleep]` pair with targets `[cats, sleep, EOS]`, and a position may attend to *itself* because its state predicts the *next* token, not its own input.
+:::
+
+The mask's payoff is a rare free lunch: sequential *information flow* with parallel *training computation*. All rows of the score matrix are computed in one batched operation, yet row 3 depends only on columns 1–3. An RNN enforces causality by executing in order; a Transformer enforces it by connectivity, and so trains every position of every sequence simultaneously.
+
+The same triangle explains decode. During generation the model holds a prefix, produces one token, appends it, repeats. Because the mask guarantees that position $j$'s key and value are read only by positions $\geq j$ — never revised by later ones — the per-position K and V computed while processing the prefix are final. They can be stored and reused instead of recomputed at every step. That storage is the KV cache; its full arithmetic for Qwen3.8-27B lands in lesson 7.2. In Qwen the mask story has one twist worth previewing: only its 16 full-attention layers implement causality with this triangular mask, while the other 48 Gated DeltaNet layers are causal by construction, processing tokens as an ordered recurrence (lesson 4.15).
+
+Keep the causal mask distinct from its neighbors. A **padding mask** hides placeholder positions when different-length sequences share a batch — invalid by length, not by order — and packed-document training may add a boundary mask so one document cannot attend into the previous one; a batch can need all of these at once. And causality is not the same as knowing *positions*: the triangle says which tokens are earlier, but distinguishing "dog bites man" from "man bites dog" among the visible tokens requires the positional information of lessons 4.6–4.8. Bidirectional encoders like BERT drop the triangle entirely and pay for it by being unable to generate left-to-right.
+
+The durable rule fits in one sentence: the training tensor may contain the future, but no prediction's computation may. A triangular matrix turns that rule into structure — preserving parallel training, protecting the objective, and quietly making fast decode possible.

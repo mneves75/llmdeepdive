@@ -1,0 +1,70 @@
+---
+id: "8.3-torch-compile-and-cuda-graphs"
+track: "8-building-and-serving-stacks"
+order: 3
+title: "torch.compile and CUDA graphs"
+summary: "Eager decode issues thousands of tiny kernel launches per token, so the CPU becomes the bottleneck; compilation fuses the work and graph capture replays the launches as one submission."
+tier: "advanced"
+locale: "en"
+prerequisites: ["8.1-pytorch-the-reference-runtime", "7.3-prefill-vs-decode-two-different-machines"]
+unlocks: []
+analogy: "A short-order cook who walks to the pass and shouts one instruction at a time keeps the line waiting between every step, no matter how fast the line cooks. Two fixes exist. Combine steps that share a pan, so there are fewer instructions. And write the whole ticket once, then hand the same ticket over on every repeat order instead of shouting it again. Compilation is the first fix; CUDA graph capture is the second."
+teachBack:
+  prompt: "Explain why batch-1 decode can be limited by kernel launch overhead rather than by arithmetic or bandwidth, and state what torch.compile and CUDA graph capture each remove."
+  modelAnswer: "Each operation in eager mode pays a Python frame, a dispatch, and a kernel launch on the CPU side. A 64-layer model issues on the order of a couple of thousand launches to produce one token, and at single-digit microseconds each that is milliseconds of host work per token, a ceiling that stands even with an infinitely fast GPU. It matters because lesson 7.3 already showed decode is not compute-bound: the GPU work per token is small, so the two ceilings land within a small factor of each other, and the moment quantization raises the bandwidth ceiling the launch ceiling becomes the binding one. torch.compile traces the model into a graph and generates fused kernels, cutting both memory traffic and the number of launches. CUDA graph capture records the remaining launch sequence once and replays it as a single submission, removing almost all per-launch host cost — at the price of requiring static shapes and static memory addresses."
+quiz:
+  - question: "From lesson 7.3, why is the decode phase the natural target for graph capture while prefill usually is not?"
+    options: ["Decode repeats a short, uniform step for every token, while prefill is compute-bound with input-dependent shapes that would force constant recapture", "Prefill has no kernels to capture", "Decode is compute-bound and prefill is memory-bound", "Graph capture only works on the first request"]
+    correctIndex: 0
+    explanation: "Lesson 7.3 split the two phases: prefill does large, shape-varying matrix work where launch overhead is amortized anyway, and decode does many tiny identical steps where it dominates."
+  - question: "What does CUDA graph capture require of the memory it touches?"
+    options: ["Static addresses — the replayed graph re-executes the recorded launches against the same buffers, so tensors cannot be reallocated between steps", "That all tensors be on the CPU", "That the model be quantized first", "Nothing; addresses are resolved at replay time"]
+    correctIndex: 0
+    explanation: "This is why serving engines pre-allocate KV blocks and keep the block table in a fixed device buffer they update in place, rather than allocating per step."
+  - question: "You wrap the model in torch.compile and time the very next call, which is slower than eager. What went wrong?"
+    options: ["The first call includes tracing and code generation; you measured the compiler, not the compiled model", "Compilation always makes models slower", "The weights were corrupted by compilation", "torch.compile does not support bf16"]
+    correctIndex: 0
+    explanation: "Warm up until compilation and any shape-driven recompiles have settled, then measure steady-state decode."
+citations:
+  - title: "torch.compiler Documentation"
+    authors: "PyTorch Foundation"
+    year: 2026
+    url: "https://pytorch.org/docs/stable/torch.compiler.html"
+  - title: "Accelerating Generative AI with PyTorch II: GPT, Fast"
+    authors: "PyTorch Team"
+    year: 2023
+    url: "https://pytorch.org/blog/accelerating-generative-ai-2/"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+You profile single-stream decode on Qwen3.8-27B and the trace is mostly holes. The GPU does a burst of work, idles, does another burst, idles again. Utilization sits low, the power draw never approaches the card's limit, and moving to a faster accelerator changes almost nothing. Nothing is broken. You have hit a bottleneck that is not on the GPU at all.
+
+Lesson 7.3 established the first half of the story: decode has terrible arithmetic intensity. To emit one token the machine streams a very large quantity of weights through the arithmetic units and performs a small number of operations on each byte, so bandwidth, not compute, sets the pace. This lesson adds the second half. Every operation in eager mode carries host-side cost before any arithmetic happens: a Python frame, a dispatch through the operator registry, argument checking, and finally a launch that hands a kernel to the driver.
+
+Count them. A single decoder layer in this model performs, roughly, two normalizations, the projections and the internals of its token mixer, three FFN matrix multiplies plus a gating multiply, and a handful of elementwise operations and reshapes — call it a few dozen kernels, and more in the DeltaNet layers, whose short convolution and recurrent state update are made of several small steps each. Take thirty as an illustrative average across 64 layers and you are issuing on the order of two thousand launches to produce one token. At a few microseconds of host time per launch, that is several milliseconds per token spent purely on dispatch. Turn it into a ceiling: eight milliseconds of host work per token caps you near 125 tokens per second regardless of what the GPU can do.
+
+Now compare the two ceilings honestly, because the naive version of this argument is wrong. At bf16, streaming the whole 27B-parameter weight set for every token puts the bandwidth ceiling in the tens of tokens per second on a top-end accelerator — *below* the launch ceiling. So at bf16 batch 1, launch overhead is not yet the binding constraint; it is a tax of a few tens of percent riding on top of a bandwidth wall. Here is the turn: quantize to 4-bit (lesson 7.9) and the bytes you must move per token fall by roughly a factor of four, so the bandwidth ceiling rises by roughly a factor of four. The launch ceiling does not move at all. The bottleneck changes hands. This is why "compile it" is optional advice for a bf16 27B model and mandatory advice for a quantized one, and why small models running on fast cards are almost always launch-bound.
+
+The first remedy is compilation. `torch.compile` traces the Python bytecode of the forward pass into a graph, guards that graph with assumptions about the tensors it saw (dtypes, shapes, device, and more), and lowers it to generated kernels. Two things get cheaper. Chains of elementwise work — normalization scaling, the SiLU gate multiply, residual adds — fuse into single kernels, which cuts both the launch count and the round trips to memory that made those operations expensive in the first place. And the whole traced region issues as compiled code rather than as re-interpreted Python.
+
+Guards are also where compilation goes wrong. When a guard fails the graph is recompiled, and decode changes the sequence length on every single step. A model that recompiles once per token is dramatically slower than eager and will look, in a naive benchmark, like compilation is useless. The corrected approach is to make the varying dimension dynamic so one graph covers many lengths, keep the shapes that must stay static in a small set of buckets, warm up until the recompile counter stops moving, and only then measure. Measuring the first call after compiling — the wrong turn almost everyone takes once — times the compiler rather than the model.
+
+The second remedy attacks what is left. Even a well-fused graph still issues a sequence of launches, and that sequence is *identical* on every decode step. CUDA graph capture records it once and replays the whole thing as a single submission, so the host issues one command instead of hundreds. The requirements are strict and they explain a great deal of serving-engine design. Shapes must be static, memory addresses must be static, and there can be no host synchronization or CPU-dependent control flow inside the captured region, because a replay does not re-run your Python — it re-executes recorded launches against recorded pointers.
+
+:::insight
+The static-address requirement is why paged KV caches (lesson 7.8) and graph capture coexist so comfortably. Paging looks like dynamic memory, but the blocks are pre-allocated once into a fixed pool and the per-step variation lives in a block table that the engine writes in place, at a fixed address. The captured graph reads the same buffer every time and simply finds different indices in it. Engines likewise capture a handful of batch-size buckets and pad the real batch up to the nearest one.
+:::
+
+:::caveat
+For this model, both remedies have a hybrid-architecture asterisk that must be checked per version rather than assumed. The Gated DeltaNet layers update a recurrent state in place across steps, which is exactly the pattern that either graph-captures beautifully — the state buffer is fixed and reused — or breaks the capture, if the implementation reallocates it or synchronizes to the host. Likewise a graph break inside the token mixer, from a data-dependent branch the tracer cannot see through, splits the compiled region and gives back most of the win. Read the recompile and graph-break counters before believing a speedup.
+:::
+
+:::warning
+Neither technique changes the mathematics, but both can change the output. Fusion alters accumulation order, and a compiled kernel may reduce in a different sequence from the eager one, so the last bits of bf16 results move and sampling can tie-break differently. That is expected and acceptable; what is not acceptable is discovering it during a customer incident. Re-run the differential test from lesson 8.1 against eager after every compilation-related change.
+:::
+
+Hold the accounting rather than the flags. Eager spends its time telling the GPU what to do; compilation reduces how much telling is needed, and graph capture reduces how often you have to tell it. Neither buys you a faster matrix multiply. They buy back the gaps in the trace — and the gaps are the whole reason a 27B model can leave a very expensive card mostly idle.

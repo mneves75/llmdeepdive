@@ -1,0 +1,76 @@
+---
+id: "8.5-sglang"
+track: "8-building-and-serving-stacks"
+order: 5
+title: "SGLang"
+summary: "When traffic is structured programs rather than isolated prompts, RadixAttention turns shared prefixes into shared memory and constrained decoding turns a schema into a guarantee."
+tier: "advanced"
+locale: "en"
+prerequisites: ["8.4-vllm"]
+unlocks: ["8.12-choosing-your-stack"]
+analogy: "A law firm does not retype the standard contract for every client. It keeps one master document and stores only each client's amendments, and two matters that begin identically share the same filed pages until the moment they diverge. Filing works because the shared part is byte-identical from the first page: change one word in the header and the two matters share nothing at all. RadixAttention files KV blocks the same way, matched on token ids from position one."
+teachBack:
+  prompt: "An agent issues 40 calls that all begin with the same 3,000-token system prompt and tool schema. Quantify what prefix sharing saves for Qwen3.8-27B, and name the one habit that destroys the saving entirely."
+  modelAnswer: "At 64 KiB of KV per token from lesson 7.2, a 3,000-token prefix costs about 188 MiB of cache. Without sharing, 40 calls hold 40 separate copies, about 7.3 GiB, and each call pays the prefill compute for those 3,000 tokens, 120,000 prefill tokens in total. With RadixAttention the prefix is stored once — about 188 MiB — and prefilled once, with each call keeping only the blocks for its own divergent suffix. The habit that destroys it is putting anything volatile at the top of the prompt: a timestamp, a request id, a shuffled tool list, or a per-user greeting. Matching is exact and prefix-anchored on token ids, so a single differing token in the first line reduces the shared prefix to nothing and every call pays full price."
+quiz:
+  - question: "Why must volatile content such as a timestamp go at the end of a prompt rather than the beginning?"
+    options: ["Prefix matching is exact and anchored at position one, so a differing early token means no blocks are shared at all", "Timestamps confuse the tokenizer", "The model reads prompts backwards", "Late tokens are cached but early ones are not"]
+    correctIndex: 0
+    explanation: "A radix tree over token ids only shares the common leading run; divergence at token one leaves an empty shared prefix, and everything after it is recomputed."
+  - question: "From lesson 8.4, what does saving KV memory through prefix sharing actually buy on a fixed card?"
+    options: ["A larger effective token pool, and therefore more concurrent sessions at the same context length", "More FLOPs per second", "A smaller model on disk", "Lower per-token bandwidth for the weights"]
+    correctIndex: 0
+    explanation: "Concurrency is pool size divided by tokens per session; recovering gibibytes of duplicated prefix raises the numerator without touching the weights."
+  - question: "What does grammar-constrained decoding guarantee, and what does it not?"
+    options: ["It guarantees output conforms to the schema, not that the content is correct or well-reasoned", "It guarantees factual accuracy", "It guarantees lower latency", "It guarantees the model used thinking mode"]
+    correctIndex: 0
+    explanation: "Masking disallowed tokens before sampling enforces shape only; a schema-valid object can still be wrong, so validation of meaning stays your job."
+citations:
+  - title: "SGLang Documentation"
+    authors: "SGLang Team"
+    year: 2026
+    url: "https://docs.sglang.ai"
+  - title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    authors: "Lianmin Zheng et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2312.07104"
+  - title: "SGLang Cookbook: Qwen3.8-27B"
+    authors: "SGLang Team"
+    year: 2026
+    url: "https://lmsysorg.mintlify.app/cookbook/autoregressive/Qwen/Qwen3.8-27B"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Your traffic is not what lesson 8.4 assumed. Instead of independent users asking independent questions, you are running an agent: one task fans out into forty model calls, each of which begins with the same system prompt, the same tool schemas, and the same few-shot examples — about three thousand tokens of identical preamble — and diverges only in the last paragraph. Every call must return a JSON object your code will parse. On a general-purpose engine this workload is quietly pathological, and understanding why is the whole reason SGLang exists.
+
+Price the waste with the number you already have. Lesson 7.2 established 64 KiB of KV per token for Qwen3.8-27B. A three-thousand-token preamble therefore occupies
+
+$$
+3{,}000 \times 64\ \text{KiB} = 187.5\ \text{MiB}
+$$
+
+of cache. Forty concurrent calls each holding their own copy come to roughly 7.3 GiB — on the fourteen-gibibyte pool we sized in lesson 8.4, that is more than half the machine's entire capacity spent storing forty identical things. The compute is just as bad: the preamble is prefilled forty times, one hundred and twenty thousand tokens of attention work to produce a prefix the engine already computed thirty-nine times that second.
+
+RadixAttention is the fix, and its shape follows from what the cache actually is. KV blocks are a function of the token ids that produced them and their positions, so two sequences that begin with the identical token run have identical blocks for that run. SGLang therefore organizes the block pool as a radix tree keyed on token ids: an arriving request walks the tree from the root, reuses every block along the longest matching path, and allocates only for the suffix where it diverges. Eviction is least-recently-used over that tree, so hot prefixes — your system prompt — stay resident while one-off conversations age out. In our example the preamble is stored once at about 188 MiB and prefilled once, recovering roughly seven gibibytes of pool and thirty-nine fortieths of the preamble's prefill cost.
+
+:::warning
+The classic wrong turn is to enable prefix sharing, measure no improvement, and conclude the feature does not work. Almost always the prompt begins with something volatile: a timestamp, a request or trace id, a per-user greeting, a tool list serialized in a different order each time, or a retrieved-document block whose ordering is not stable. Matching is exact and anchored at position one, so a single differing token at the top collapses the shared prefix to zero. Restructure the prompt so everything stable comes first and everything variable comes last, then measure the cache hit rate the engine reports rather than inferring it from latency.
+:::
+
+The second thing SGLang treats as first-class is that your forty calls are a *program*, not forty unrelated requests. They have dependencies, they fork and join, some of them are speculative branches you will discard. When the runtime knows the program structure it can schedule with that knowledge — keeping a branch's prefix pinned while its children run, batching the siblings, ordering work so that a shared parent is computed before the fork rather than forty times after it. An engine that only sees independent HTTP requests can recover some of this after the fact through prefix matching, but it cannot anticipate it.
+
+Structured output is the third piece, and it is what makes the JSON requirement a guarantee rather than a hope. Lesson 7.4 described sampling as drawing from the distribution over the vocabulary. Constrained decoding compiles your JSON schema or grammar into a state machine, and at every step masks the logits of every token that cannot legally follow the text so far before sampling happens. The model cannot emit a stray prose apology in front of the brace, cannot close an array it did not open, and cannot invent a field name outside the schema — not because it was asked nicely, but because those tokens had their probability set to zero. Two practical notes: compiling a grammar costs real time, so schemas should be reused and cached rather than constructed per request; and constraint applies only to shape.
+
+:::caveat
+Schema-valid is not correct. A constrained decode will happily produce a perfectly formed object whose fields are wrong, invented, or contradictory, and it will do so with more confidence than free-form text because the usual signal of a confused model — rambling — has been masked away. Keep semantic validation downstream. Constrained decoding removes parse errors from your incident list; it does not remove hallucination.
+:::
+
+The hybrid architecture adds a wrinkle to prefix sharing that is worth stating precisely, because it is the deepest thing in this lesson. Only the 16 full-attention layers store per-token KV blocks, which are exactly what a radix tree can share. The 48 Gated DeltaNet layers hold a fixed-size recurrent state that is a *summary* of everything processed so far — it has no per-token structure and cannot be indexed into or partially reused. For a request to resume from a shared prefix, the engine must therefore also have checkpointed the recurrent state at that prefix boundary and be able to restore it, roughly 72 MiB per checkpoint. That is cheap next to the 188 MiB of shared KV it unlocks, but it is a genuinely different mechanism from block sharing, and whether a given release implements it — rather than silently falling back to full recomputation, or worse, reusing blocks against a stale state — is a per-version question to verify, not to assume. SGLang publishes an official cookbook page for this exact model, which is the right starting point precisely because it pins the versions and settings the maintainers have exercised.
+
+One boundary rule survives all of this unchanged. Reuse is exact-match on token ids, so no content crosses between requests that did not already share it verbatim — but a cache hit is faster than a miss, and timing is observable. Treat cross-tenant prefix sharing as a decision to make deliberately, keep tenants in separate pools when the prompt itself is confidential, and re-read lesson 7.2's warning about cached keys and values being a rich record of what a user said.
+
+The map from lesson 7.11 said SGLang earns its place when your traffic is programs rather than prompts. Now you can say why in numbers: seven gibibytes of pool and thirty-nine redundant prefills recovered from one workload, and a JSON contract enforced at the sampler instead of hoped for in the prompt.

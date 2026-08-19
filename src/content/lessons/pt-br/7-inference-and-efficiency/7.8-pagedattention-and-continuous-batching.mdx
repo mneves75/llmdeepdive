@@ -1,0 +1,60 @@
+---
+id: "7.8-pagedattention-and-continuous-batching"
+track: "7-inference-and-efficiency"
+order: 8
+title: "PagedAttention e continuous batching"
+summary: "Alocação paginada do KV e escalonamento em nível de iteração decidem quantas conversas simultâneas com o Qwen3.8-27B uma GPU realmente comporta."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["7.2-the-kv-cache"]
+unlocks: ["7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+analogy: "Um hotel que exige um andar contíguo para cada grupo desperdiça quartos quando os grupos crescem de forma imprevisível. Um hotel paginado atribui blocos de quartos padronizados em qualquer ponto do prédio e entrega a cada grupo um diretório listando seus quartos em ordem. Continuous batching é a recepção ocupando imediatamente os quartos que vagam, em vez de esperar que todo grupo que chegou junto vá embora. O diretório acrescenta trabalho de consulta, mas a ocupação melhora drasticamente."
+teachBack:
+  prompt: "Explique por que reservar buffers de KV para o contexto máximo derruba a concorrência do Qwen3.8-27B numa GPU de 80 GB, como a alocação paginada muda a aritmética e o que continuous batching acrescenta."
+  modelAnswer: "Reservar o contexto nativo completo do Qwen por requisição significa 16 GiB de KV cache por sequência, e depois dos 54 GB de pesos em bf16 uma GPU de 80 GB tem só cerca de 24 GiB livres — um usuário. A alocação paginada guarda o KV em blocos de tamanho fixo atribuídos sob demanda e mapeados por uma block table por sequência, então cada requisição consome apenas o que já gerou: a 64 KiB por token, uma sequência de 32.768 tokens ocupa cerca de 2 GiB, e aproximadamente uma dúzia dessas sequências cabe no mesmo orçamento. Continuous batching então reescalona nas fronteiras de passo de token, admitindo requisições em espera conforme outras terminam, em vez de segurar o batch original até que seu membro mais lento conclua."
+quiz:
+  - question: "O que uma block table de sequência mapeia?"
+    options: ["Blocos lógicos do KV cache para blocos físicos de memória", "Palavras para regras gramaticais", "Usuários para pesos do modelo", "Recompensas para épocas do otimizador"]
+    correctIndex: 0
+    explanation: "A indireção permite que uma sequência lógica permaneça ordenada mesmo quando seus blocos de cache estão fisicamente espalhados."
+  - question: "Usando a cifra de 64 KiB por token da lição 7.2, quanto KV cache aproximadamente ocupa uma sequência de 32.768 tokens do Qwen3.8-27B em bf16?"
+    options: ["Cerca de 2 GiB", "Cerca de 16 GiB", "Cerca de 54 GB", "Cerca de 64 KiB no total"]
+    correctIndex: 0
+    explanation: "32.768 tokens vezes 64 KiB por token dá 2.097.152 KiB, ou seja, 2 GiB; 16 GiB corresponde ao contexto nativo completo de 262.144 tokens."
+citations:
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Você tem um acelerador de 80 GB e quer servir o Qwen3.8-27B ao maior número possível de usuários simultâneos. Os pesos ocupam 54 GB em bf16 (a lição 9.3 percorre o orçamento completo), e a lição 7.2 estabeleceu a conta de KV do modelo: apenas as 16 camadas de full attention guardam keys e values em cache, a 64 KiB por token, chegando a 16 GiB por sequência no contexto nativo completo de 262.144 tokens. A pergunta de serving é onde esse estado crescente e imprevisível deve morar.
+
+O equívoco clássico é a reserva contígua no máximo. Uma requisição poderia, em princípio, crescer até o contexto nativo, então reserve 16 GiB de antemão. Agora faça a aritmética: $80 - 54 = 26$ GB, cerca de 24 GiB, de memória livre depois dos pesos. Uma reserva de 16 GiB cabe. Sua GPU de 80 GB serve exatamente um usuário, e como um chat típico usa alguns milhares de tokens, quase toda essa reserva fica vazia. Reservar o comprimento atual, em vez disso, força os buffers a crescer, e crescimento significa realocação, cópias e fragmentação ao longo de dezenas de alocações de tamanhos diferentes.
+
+**PagedAttention**, introduzida com o vLLM em 2023, toma emprestada a ideia de memória virtual dos sistemas operacionais. As posições lógicas de KV de uma sequência são divididas em blocos de tamanho fixo — digamos 16 tokens, o que aos 64 KiB por token do Qwen dá um bloco físico redondo de 1 MiB. Blocos físicos moram em qualquer lugar do pool de cache; uma **block table** por sequência mapeia a ordem lógica para endereços físicos, e o kernel de attention segue o mapeamento ao ler keys e values. Quando uma sequência ultrapassa seu último bloco, o alocador lhe entrega outro bloco livre sem mover nada. O desperdício fica limitado à cauda não usada de um bloco por sequência, e não a uma reserva máxima inteira.
+
+Agora refaça o exemplo de capacidade com paginação. Suponha que seus usuários rodem sessões de documentos longos em torno de 32.768 tokens de contexto. Por sequência: $32{,}768 \times 64\ \text{KiB} = 2{,}097{,}152\ \text{KiB} = 2\ \text{GiB}$. O pool comporta cerca de 24 GiB, e $24 / 2 = 12$ sequências. Duas correções antes de prometer doze: cada sequência viva do Qwen também carrega o estado recorrente da Gated DeltaNet — cerca de 72 MiB, constante em relação ao comprimento, então doze sequências somam aproximadamente 0,85 GiB — e o runtime precisa de workspace de ativações e folga para o escalonador. Chame de dez a onze sessões de 32K simultâneas na prática. Contra o único usuário do esquema de reserva, isso é uma ordem de magnitude, só por política de alocação.
+
+A arquitetura híbrida acrescenta uma nuance que vale nomear. A paginação governa o KV crescente das 16 camadas de attention; o estado das 48 camadas DeltaNet é de tamanho fixo e por sequência, então um servidor consciente do híbrido administra dois pools com ciclos de vida diferentes. Como o vLLM lida com isso concretamente é território da lição 8.4.
+
+A indireção também habilita compartilhamento. Amostras paralelas, candidatos de beam ou requisições com um prefixo de prompt idêntico podem apontar para os mesmos blocos somente leitura; quando um ramo diverge, copy-on-write aloca um bloco novo para as posições alteradas, e contagens de referência decidem quando um bloco compartilhado volta ao pool.
+
+A alocação resolve onde o estado mora; **continuous batching** resolve quando cada requisição roda. Um batch estático agrupa requisições e roda até que todo membro termine, então uma resposta longa deixa as demais faixas ociosas. Continuous batching revisita a composição a cada fronteira de iteração: sequências concluídas ou canceladas saem, sequências em espera entram, as ativas avançam um token. O escalonador equilibra blocos livres, máximo de tokens por batch, prioridades e a mistura prefill/decode — muitas vezes fatiando prefills longos para que o prompt de 30.000 tokens de um recém-chegado não trave o próximo token de todo mundo. Como a capacidade é visível como blocos contáveis, e não como memória livre vaga, o controle de admissão pode raciocinar em blocos e recusar cedo com um erro claro, em vez de falhar já no meio da geração.
+
+:::caveat
+A paginação elimina o desperdício de reserva; ela não torna o KV mais barato. Cada token retido continua custando 64 KiB no Qwen3.8-27B, qualquer que seja o bloco em que ele viva. Se seus usuários realmente precisam de contextos de 262.144 tokens, nenhum alocador vai conjurar mais de uma sequência de 16 GiB a partir de um pool de 24 GiB — esse problema pede quantization, mais GPUs ou contextos efetivos mais curtos.
+:::
+
+:::warning
+Blocos de cache contêm dados derivados do contexto. Zere ou sobrescreva com segurança os blocos liberados, imponha isolamento entre tenants nos metadados da block table e faça o cancelamento decrementar as contagens de referência exatamente uma vez — um vazamento encolhe silenciosamente a capacidade de serving, enquanto reuso prematuro corrompe uma requisição com o estado de outra.
+:::
+
+Acompanhe as métricas operacionais que tornam essa maquinaria legível: blocos livres e usados, falhas de alocação, desperdício de cauda, taxa de acerto de prefixo, preempções, atraso de fila, time to first token e latência entre tokens, fatiadas por classe de requisição para que o throughput não esconda inanição.
+
+O modelo mental durável tem duas camadas. A alocação paginada transforma um cache crescente e irregular em blocos fixos mais um diretório lógico, de modo que a concorrência é definida pelo uso real, e não por reservas pessimistas. Continuous batching transforma o batch numa população viva que se reabastece a cada passo. Juntos, eles são a razão pela qual a diferença entre uma e onze sessões simultâneas do Qwen no mesmo silício é software.

@@ -1,0 +1,100 @@
+---
+id: "9.9-interconnects-and-clusters"
+track: "9-hardware-and-infrastructure"
+order: 9
+title: "Interconnects e clusters"
+summary: "Quando um modelo precisa de vários chips: NVLink contra PCIe contra InfiniBand, o volume de all-reduce por token implicado pelo hidden size 5120, e por que 4 KV heads limitam o grau de tensor parallel."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["5.8-model-parallelism", "9.4-nvidia-cuda-hopper-blackwell"]
+unlocks: ["9.10-cost-per-token"]
+analogy: "Quatro tradutores dividem um discurso, cada um pegando uma frase a cada quatro, e depois de cada sentença precisam parar e reconciliar para que o sentido compartilhado siga consistente. Acrescentar tradutores encurta a fatia de trabalho de cada um, mas não reduz o número de reconciliações — e se eles estiverem em prédios separados gritando pelas janelas, reconciliar custa mais que traduzir. O discurso termina mais rápido quando os tradutores estão numa sala só, e acrescentar um quinto no corredor torna tudo mais lento."
+teachBack:
+  prompt: "Calcule o payload de all-reduce por token decodificado para o Qwen3.8-27B em tensor parallel, explique por que dobrar a contagem de GPUs não dobra o throughput, e nomeie a dimensão do modelo que limita o grau limpo de tensor parallel."
+  modelAnswer: "No tensor parallelism estilo Megatron cada camada tem dois pontos onde resultados parciais precisam ser somados entre ranks — depois da projeção de saída da attention ou do DeltaNet e depois da projeção de descida da FFN. Cada reconciliação é sobre um vetor hidden: 5120 valores a 2 bytes são 10 KiB. Ao longo de 64 camadas isso dá 128 all-reduces por token carregando 1,25 MiB de payload, e um ring all-reduce move 2 vezes N menos 1 sobre N disso por rank, então 1,25 MiB com dois ranks e cerca de 1,875 MiB com quatro. Os bytes são triviais para o NVLink; o custo é latência, porque 128 sincronizações acontecem em série por token. O sharding corta pela metade a leitura de pesos por GPU a cada vez que N dobra, mas as 128 sincronizações não encolhem, então a comunicação cresce como fração do passo e os retornos diminuem. O limite é a contagem de KV heads: o Qwen3.8-27B tem 4 KV heads, então graus de tensor parallel acima de 4 precisam replicar KV heads entre ranks, duplicando o cache e abrindo mão da economia de memória que motivou o sharding."
+quiz:
+  - question: "A lição 5.8 descreveu tensor parallelism como dividir matrizes de pesos entre dispositivos. Para o Qwen3.8-27B, qual dimensão limita o grau limpo de tensor parallel em 4?"
+    options: ["Os 4 KV heads da grouped-query attention", "O hidden size 5120", "O tamanho intermediário 17408 da FFN", "O vocabulário com padding de 248.320"]
+    correctIndex: 0
+    explanation: "Hidden 5120, FFN 17408 e o vocabulário com padding de 248.320 todos dividem limpo por grandes potências de dois; só os 4 KV heads se esgotam primeiro, e além de 4 ranks eles precisam ser replicados."
+  - question: "Por que um payload de all-reduce de cerca de 1,9 MiB por token ainda limita o throughput num interconnect lento?"
+    options: ["Porque o custo é dominado pela latência de 128 sincronizações em série por token, e não pelos bytes", "Porque 1,9 MiB excede a bandwidth do PCIe", "Porque o payload precisa ser enviado a todo nó do cluster", "Porque o all-reduce exige transferir o KV cache inteiro"]
+    correctIndex: 0
+    explanation: "Em taxas interativas o agregado fica abaixo de 100 MiB/s, muito abaixo de qualquer fabric moderno; o que dói é que cada uma das 128 reconciliações é uma ida e volta bloqueante cujo custo fixo se acumula."
+citations:
+  - title: "NVIDIA NVLink and Data Center Networking"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://www.nvidia.com/en-us/data-center/"
+  - title: "NVIDIA Collective Communications Library (NCCL) Documentation"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/index.html"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+A lição 9.4 deixou você com um problema de dimensionamento. O Qwen3.8-27B em bf16 são 54 GB de pesos, e a lição 7.2 acrescenta até 16 GiB de KV cache para uma única sequência de comprimento máximo, então um único acelerador de 80 GB serve o modelo com muito pouco espaço para usuários. A correção óbvia é mais GPUs. A pergunta que esta lição responde é quanto isso de fato custa, porque o fio entre os chips tem um preço que não aparece em nenhuma ficha técnica que você estava consultando.
+
+A lição 5.8 estabeleceu o mecanismo. Sob tensor parallelism cada matriz de pesos é dividida entre ranks — heads de attention e de DeltaNet distribuídos de um jeito, as projeções de subida e descida da FFN de outro —, então cada rank computa um resultado parcial sobre sua fatia, e as fatias precisam ser somadas antes de o residual stream seguir. No arranjo padrão cada camada tem dois desses pontos de reconciliação: um depois da projeção de saída que segue o misturador de sequência, e um depois da projeção de descida da FFN. Cada reconciliação é um all-reduce sobre um único vetor hidden para o token que está sendo decodificado.
+
+Esse é o exemplo trabalhado inteiro, e ele é pequeno o bastante para fazer de cabeça. Hidden size 5120, bf16:
+
+$$
+5120 \times 2\ \text{B} = 10{,}240\ \text{B} = 10\ \text{KiB por reconciliação}.
+$$
+
+$$
+64\ \text{camadas} \times 2\ \text{reconciliações} = 128\ \text{all-reduces por token},
+$$
+
+$$
+128 \times 10\ \text{KiB} = 1{,}280\ \text{KiB} = 1.25\ \text{MiB de payload por token}.
+$$
+
+Um ring all-reduce coloca $\tfrac{2(N-1)}{N}$ vezes o payload no fio de cada rank, então duas GPUs movem 1,25 MiB por token e quatro movem cerca de 1,875 MiB. A uma taxa interativa de 50 tokens por segundo isso é menos de 100 MiB por segundo por rank — um erro de arredondamento diante das centenas de gigabytes por segundo do NVLink informadas pelo fabricante, e confortável até para PCIe.
+
+Então os bytes não são o problema, e é exatamente aqui que acontece o desvio errado clássico. Um engenheiro calcula esse payload, vê que é trivial, conclui que o interconnect é irrelevante, e compra quatro GPUs numa placa só com PCIe esperando quatro vezes o throughput de uma. O erro é medir a quantidade errada: 128 all-reduces por token não são uma transferência de 1,25 MiB, são 128 idas e voltas bloqueantes em série, e o que domina um coletivo pequeno é a latência, não a bandwidth.
+
+Coloque hipóteses declaradas sobre a latência — são hipóteses para tornar o formato visível, não números de fabricante — e refaça a aritmética. Digamos que um fabric rápido intranó custe cerca de 10 microssegundos por all-reduce pequeno e um lento cerca de 50. O tempo de leitura de pesos por token é a divisão da lição 9.1 com a fatia por GPU:
+
+$$
+N = 2:\quad \frac{27\ \text{GB}}{3.35\ \text{TB/s}} \approx 8.06\ \text{ms}, \qquad N = 4:\quad \frac{13.5\ \text{GB}}{3.35\ \text{TB/s}} \approx 4.03\ \text{ms}.
+$$
+
+A comunicação acrescenta um valor fixo de 128 vezes a latência por coletivo: 1,28 ms no fabric rápido, 6,4 ms no lento. Somando:
+
+$$
+N = 2\ \text{rápido}: 8.06 + 1.28 = 9.34\ \text{ms} \rightarrow 107\ \text{tok/s},
+$$
+
+$$
+N = 4\ \text{rápido}: 4.03 + 1.28 = 5.31\ \text{ms} \rightarrow 188\ \text{tok/s},
+$$
+
+$$
+N = 4\ \text{lento}: 4.03 + 6.40 = 10.43\ \text{ms} \rightarrow 96\ \text{tok/s}.
+$$
+
+Leia essas três linhas com atenção. Dobrar de duas para quatro GPUs no fabric rápido devolveu 1,76 vez, não 2 — o compute caiu pela metade enquanto a comunicação permaneceu fixa. E quatro GPUs no fabric lento são mais lentas que duas no rápido. O interconnect, e não a contagem de aceleradores, decidiu o resultado. É por isso que o NVLink existe como produto distinto do PCIe, por que o tensor parallelism é mantido dentro de um nó, e por que fabrics entre nós como InfiniBand ou RoCE ficam reservados às formas de paralelismo que reconciliam raramente — data parallelism, que sincroniza uma vez por passo de treinamento, ou pipeline parallelism sobre os 16 super-blocos do modelo, que passa uma ativação entre estágios em vez de reconciliar a cada camada.
+
+O prefill se comporta de forma oposta e vale ver por quê. Um prompt de 4.096 tokens roda todas as posições de uma vez, então os mesmos 128 coletivos carregam 4.096 vetores hidden cada:
+
+$$
+4096 \times 1.25\ \text{MiB} \approx 5\ \text{GiB de payload de all-reduce para um prefill}.
+$$
+
+Agora os bytes importam de verdade e a bandwidth governa, que é a divisão de arithmetic intensity da lição 7.3 reaparecendo na rede em vez da memória. O prefill é limitado por bandwidth sobre o fabric; o decode é limitado por latência sobre ele.
+
+:::warning
+O equívoco mais comum é que o grau de tensor parallel é um botão de ajuste livre. Ele é restringido pelas próprias formas do modelo. O Qwen3.8-27B tem 24 query heads e 4 KV heads; o intermediário da FFN é 17.408 e o vocabulário com padding é 248.320, todos os quais dividem limpo por 4, 8 e bem além — o padding de vocabulário da lição 5.3 existe precisamente para tornar isso verdade. A restrição efetiva são os 4 KV heads. No grau 4 cada rank possui exatamente um KV head e o cache faz sharding perfeito. No grau 8 os KV heads precisam ser replicados entre pares de ranks, então cada rank armazena uma duplicata das mesmas entradas de cache, e a economia de memória que motivou a divisão evapora em parte justo quando a fração de comunicação está subindo. O design de grouped-query da lição 7.6 que tornou o cache pequeno é o mesmo design que limita a contagem de shards.
+:::
+
+:::caveat
+Os números de latência acima são hipóteses declaradas para que você substitua pelas suas, e os 3,35 TB/s e as bandwidths de NVLink são especificações publicadas pelo fabricante, não medições feitas aqui. A contagem de 128 coletivos é um modelo de primeira ordem de um layout de tensor parallel padrão: implementações reais fundem, sobrepõem comunicação com computação, e podem reconciliar de forma diferente nas camadas de Gated DeltaNet. Perfile a sua própria configuração com a instrumentação da biblioteca de coletivos antes de se comprometer com uma topologia, e nunca cite esta aritmética como benchmark.
+:::
+
+A regra durável para projeto de cluster é que você deve colocar o paralelismo que reconcilia com mais frequência no fio mais rápido que possui, e nunca dividir um modelo através de uma fronteira que as dimensões dele próprio não dividem. Para este espécime isso significa tensor parallelism dentro de um nó, em grau 2 ou 4, sobre NVLink; todo o resto pela rede. A lição 9.10 pega essas configurações e finalmente as precifica.

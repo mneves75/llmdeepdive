@@ -1,0 +1,86 @@
+---
+id: "7.2-the-kv-cache"
+track: "7-inference-and-efficiency"
+order: 2
+title: "The KV cache"
+summary: "Autoregressive decoding stores past attention keys and values; in Qwen3.8-27B only the 16 full-attention layers cache, at 64 KiB per token and 16 GiB per full-length sequence."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.1-what-actually-happens-when-you-hit-send", "4.16-hybrid-layouts"]
+unlocks: ["7.6-mqa-gqa-and-mla", "7.8-pagedattention-and-continuous-batching"]
+analogy: "A courtroom stenographer keeps an indexed transcript of everything already said. When a new question arrives, the judge consults the transcript instead of asking every witness to repeat the hearing from the beginning. The transcript grows each turn and must preserve the exact order and case identity. The KV cache is that transcript for attention: prior keys are the index entries, prior values are the stored testimony, and the new query reads them."
+teachBack:
+  prompt: "Derive the KV-cache size of one full-length Qwen3.8-27B sequence, stating explicitly which layers cache and which do not, and contrast the result with the DeltaNet state."
+  modelAnswer: "Each cached layer stores, per past token, keys and values for the 4 KV heads at head dimension 256 in bf16: 4 × 256 × 2 (K and V) × 2 bytes = 4 KiB per token per layer. Only the 16 full-attention layers cache — the other 48 Gated DeltaNet layers keep fixed-size recurrent states instead — so per token the cache is 16 × 4 KiB = 64 KiB, and at the native 262,144-token context one sequence holds 64 KiB × 262,144 = 16 GiB. The 48 DeltaNet layers together hold only about 72 MiB, constant in sequence length, which is the architectural bargain of the hybrid layout."
+quiz:
+  - question: "In Qwen3.8-27B, which layers append keys and values to the cache during decode?"
+    options: ["Only the 16 full-attention layers; the 48 Gated DeltaNet layers keep fixed-size state instead", "All 64 layers", "Only the DeltaNet layers", "Only the vision tower"]
+    correctIndex: 0
+    explanation: "The hybrid layout from lesson 4.16 places one full-attention layer in every four; only those layers have per-token K/V to store."
+  - question: "Roughly how much KV-cache memory does one bf16 sequence at Qwen3.8-27B's full 262,144-token native context occupy?"
+    options: ["16 GiB", "64 GiB", "72 MiB", "54 GB"]
+    correctIndex: 0
+    explanation: "64 KiB per token × 262,144 tokens = 16 GiB; 64 GiB is the wrong-layer-count estimate, 72 MiB is the DeltaNet state, 54 GB is the bf16 weights."
+citations:
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-08-18"
+---
+
+Suppose you serve Qwen3.8-27B and a user opens a conversation that grows toward the model's native 262,144-token context. The weights are a fixed cost. What is not fixed is the memory that conversation holds hostage while it is active — and to size it, you need to know exactly what the KV cache is and, for this model, which layers actually keep one.
+
+A decoder-only model generates one token, appends it, and repeats. A naive implementation would rerun the entire network over the growing sequence at every step, redoing identical work on the prefix. The **KV cache** stores the attention states future tokens need, turning repeated computation into reusable memory. In one attention layer, every token produces query, key, and value projections. During causal decode only the newest position needs a new output: its query attends to cached keys and mixes cached values, while past queries are never needed again. So the cache retains past **keys and values**, and the new token computes only its own $q_t$, $k_t$, and $v_t$. For one head,
+
+$$
+o_t=\operatorname{softmax}\left(\frac{q_tK_{\leq t}^{\top}}{\sqrt{d_k}}\right)V_{\leq t},
+$$
+
+where the cached matrices grow as $k_t$ and $v_t$ are appended. This is a consequence of exact causal attention, not an approximation to it. Ignoring allocator overhead, the memory model is
+
+<Figure id="kv-cache-derivation" />
+
+$$
+\text{bytes}\approx 2\,L\,T\,H_{kv}\,D\,B,
+$$
+
+with the factor two for keys plus values, $L$ cached layers, $T$ positions, $H_{kv}$ KV heads, $D$ head dimension, and $B$ bytes per element.
+
+Now plug in Qwen3.8-27B — carefully, because there is a classic wrong turn here. The config says 64 layers, 4 KV heads, head dimension 256, bf16. Per token per layer: $4 \times 256 \times 2 \times 2\ \text{B} = 4096\ \text{B} = 4\ \text{KiB}$. Multiply by 64 layers and you get 256 KiB per token, and at full context $256\ \text{KiB} \times 262{,}144 = 64\ \text{GiB}$ for a single sequence — which, next to 54 GB of bf16 weights, would fill a 192 GB accelerator to the brim at two users and overflow it at three. That estimate is wrong, and wrong in an instructive way: it assumes every layer is an attention layer.
+
+Lesson 4.16 showed that only 16 of the 64 layers are full attention; the other 48 are Gated DeltaNet layers, which keep a fixed-size recurrent state and cache nothing per token. The correct derivation:
+
+$$
+4\ \text{KV heads} \times 256 \times 2\,(K{+}V) \times 2\ \text{B} = 4\ \text{KiB per token per layer},
+$$
+
+$$
+4\ \text{KiB} \times 16\ \text{caching layers} = 64\ \text{KiB per token},
+$$
+
+$$
+64\ \text{KiB} \times 262{,}144\ \text{tokens} = 16\ \text{GiB per sequence at full native context}.
+$$
+
+The wrong assumption quadrupled the answer. Sixteen gibibytes is still enormous — about a fifth of an 80 GB card for one conversation — but it is the real number, and every capacity plan in tracks 8 and 9 builds on it.
+
+The 48 DeltaNet layers are the counterpoint. Each holds roughly 1.5 MiB of recurrent state, about 72 MiB across all 48 — and that figure is **constant in sequence length**. Token one and token 262,144 cost DeltaNet the same memory. The 16 GiB-versus-72 MiB contrast is the central architectural argument of this course: Qwen's designers paid per-token memory in only a quarter of the layers and bought the rest of the depth at a flat rate.
+
+:::note
+The Signal Observatory on the explore page shows one classic attention block. In Qwen3.8-27B this exact block appears once every four layers; the other three replace attention with Gated DeltaNet (lesson 4.15).
+:::
+
+Even within the caching layers, the 4 KV heads are themselves a saving: the model asks 24 query heads to share 4 K/V heads (grouped-query attention), shrinking $H_{kv}$ and therefore cache size and decode bandwidth. Lesson 7.6 compares this choice against MQA and MLA numerically. Quantized cache formats shrink $B$; sliding windows shrink effective $T$ at the price of forgetting.
+
+Sizing is only half the engineering. Decode reads a long history to produce little new computation, so moving K/V data can dominate; kernels need friendly layouts while sequences grow unpredictably. Reserving every request's maximum 16 GiB up front would be ruinous; paged allocation hands out fixed-size blocks on demand instead (lesson 7.8). Prefix caching shares blocks between requests that begin with the exact same token sequence, such as a common system prompt — safe only under the same model, adapter, and positional treatment, and never across authorization boundaries.
+
+:::warning
+KV state is derived from user context and can be sensitive. Clear it when ownership ends, isolate tenants, bound retention, and never treat "it is only a tensor" as a privacy exemption — 16 GiB of cached keys and values is a rich representation of what a user said.
+:::
+
+One last correction to the intuition: the cache does not make decode constant-time in context. Prefix re-projection disappears, but each new query in the 16 attention layers still reads and attends over everything retained. The durable model is a transcript — computation already performed becomes memory, saving arithmetic at the price of growing bandwidth, capacity, lifecycle, and privacy responsibilities — kept, in this model, by only a quarter of the layers.

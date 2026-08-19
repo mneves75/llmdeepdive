@@ -1,0 +1,86 @@
+---
+id: "5.8-model-parallelism"
+track: "5-pretraining-at-scale"
+order: 8
+title: "Tensor, pipeline e sequence parallelism"
+summary: "Tensor, pipeline e sequence parallelism dividem dimensões de features, profundidade e posições — e no Qwen3.8-27B são as 4 KV heads, não o vocabulário nem a FFN, que limitam o grau limpo de tensor parallel."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.7-data-parallelism-zero-fsdp"]
+unlocks: ["5.9-mixed-precision"]
+analogy: "Um teatro pode dividir uma montagem de três formas. O tensor parallelism dá a seções da orquestra notas diferentes do mesmo acorde e depois combina o som. O pipeline parallelism atribui atos a palcos diferentes e move vários elencos como numa linha de montagem. O sequence parallelism dá a cada editor um trecho diferente do mesmo roteiro longo e depois troca informação quando uma cena precisa do contexto inteiro."
+teachBack:
+  prompt: "Descubra quais graus de tensor parallel dividem o Qwen3.8-27B de forma limpa, nomeie a restrição que amarra e explique como seus 16 super-blocos mapeiam em estágios de pipeline."
+  modelAnswer: "Toda dimensão de tensor parallel precisa dividir pelo grau. O vocabulário com padding de 248.320 fatora como 512 vezes 485, então divide até o grau 512. O intermediário de FFN de 17.408 é 1024 vezes 17, então divide até 1024. As 24 query heads dividem por 1, 2, 3, 4, 6, 8, 12 e 24. Mas há apenas 4 KV heads, então a divisão limpa para no grau 4; além disso um framework precisa replicar KV heads entre ranks, o que custa memória duplicada e comunicação extra sem economia alguma. Para pipelines, as 64 camadas formam 16 super-blocos repetidos de três camadas de Gated DeltaNet mais uma camada de full attention, então graus que dividem 16 dão estágios com composição idêntica e custo balanceado, enquanto um corte dentro de um super-bloco deixa estágios com misturas diferentes de camadas."
+quiz:
+  - question: "Qual grandeza amarra primeiro o grau limpo de tensor parallel do Qwen3.8-27B?"
+    options: ["As 4 KV heads — além do grau 4 elas precisam ser replicadas em vez de divididas", "O vocabulário de 248.320 linhas, que para no grau 16", "O intermediário de FFN de 17.408, que para no grau 8", "As 64 camadas, que param no grau 2"]
+    correctIndex: 0
+    explanation: "248.320 = 512 x 485 e 17.408 = 1024 x 17 dividem ambos muito além; a grouped-query attention deixa só 4 KV heads, então o grau 8 força replicação."
+  - question: "A lição 5.7 deixou cerca de 6,75 GB de estado persistente por rank sob ZeRO-3 em 64 ranks. Por que um time ainda poderia acrescentar tensor parallelism por cima?"
+    options: ["Shardear estado não sharda a computação de uma camada, então matrizes muito grandes e sequências longas ainda excedem o orçamento de compute e de ativações de um único rank", "Porque o ZeRO-3 não consegue shardear momentos do optimizer", "Porque o tensor parallelism elimina a necessidade de gradientes", "Porque o FSDP exige um grupo de tensor parallel"]
+    correctIndex: 0
+    explanation: "O FSDP materializa os parâmetros completos por módulo e pede que um rank execute a operação inteira; o tensor parallelism particiona a própria operação."
+  - question: "O que é uma bolha de pipeline?"
+    options: ["Tempo ocioso de estágio enquanto o pipeline enche, esvazia ou espera", "Uma probabilidade de attention", "Um byte de fallback do tokenizer", "Um momento do optimizer"]
+    correctIndex: 0
+    explanation: "Dependências e um número finito de microbatches deixam alguns estágios sem trabalho útil durante partes do escalonamento."
+citations:
+  - title: "Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism"
+    authors: "Mohammad Shoeybi et al."
+    year: 2019
+    url: "https://arxiv.org/abs/1909.08053"
+  - title: "GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism"
+    authors: "Yanping Huang et al."
+    year: 2019
+    url: "https://arxiv.org/abs/1811.06965"
+  - title: "DeepSpeed Ulysses: System Optimizations for Enabling Training of Extreme Long Sequence Transformer Models"
+    authors: "Sam Ade Jacobs et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.14509"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Seu cluster tem oito aceleradores por nó, então você põe o grau de tensor parallel em oito. É a escolha óbvia: oito é o nó, oito divide tudo que você conferiu, e o job sobe sem reclamar. Seis horas depois o perfil de memória parece errado — as projeções de key e value estão ocupando o mesmo espaço em cada rank em vez de um oitavo, e o tempo de coletivos por passo está mais alto do que seu modelo previa. Nada falhou. O framework silenciosamente fez a única coisa que podia.
+
+O fully sharded data parallelism distribui o *estado* do modelo, mas ainda pede que um rank execute as operações matriciais completas de um módulo depois de reunir seus parâmetros. Quando uma única camada é grande demais para computar, quando a profundidade excede o que um dispositivo consegue guardar de ponta a ponta, ou quando as sequências são longas o bastante para que as próprias posições precisem ser divididas, a computação precisa ser particionada. **Model parallelism** é a família de layouts que faz isso, ao longo de três eixos diferentes.
+
+**Tensor parallelism** divide uma operação através de dimensões de features. Para uma camada linear $Y=XW$, ranks podem possuir colunas de $W$ e produzir fatias diferentes da saída, ou possuir linhas e somar resultados parciais. As projeções do transformer são arranjadas em pares complementares column-parallel e row-parallel para que nenhum gather seja necessário entre operações adjacentes, e coletivos — all-reduce, all-gather, reduce-scatter — restauram o que o passo seguinte exigir. O requisito absoluto é divisibilidade: toda dimensão particionada precisa dividir igualmente pelo grau, ou ser preenchida até dividir.
+
+Então audite este modelo dimensão por dimensão. O vocabulário com padding é $248{,}320 = 512\times 485$, dividindo limpo em qualquer grau potência de dois até 512 — esse padding foi escolhido exatamente para isso, como a lição 5.3 mostrou. O intermediário de FFN é $17{,}408 = 1024\times 17$, dividindo até 1024; no grau 8 cada rank possui uma fatia $5120\times 2176$ da up-projection. As 24 query heads dividem por 1, 2, 3, 4, 6, 8, 12 e 24. Tudo até aqui suporta confortavelmente o grau 8.
+
+Aí você chega às KV heads. São quatro. A grouped-query attention — a decisão de serving da lição 5.6 — significa que 24 query heads compartilham apenas 4 key/value heads com dimensão de head 256, então as projeções de K e V são $5120\to 1024$ em vez de $5120\to 6144$. Quatro divide por 1, 2 e 4, e para. No grau 4 a divisão é exata: cada rank possui 6 query heads e 1 KV head, uma fatia $5120\to 1536$ de Q, uma fatia $5120\to 256$ de cada um de K e V, e uma fatia row-parallel $1536\to 5120$ da projeção de saída. No grau 8 não existe divisão exata, e os frameworks recorrem a replicar KV heads entre pares de ranks. O job roda, a matemática está correta, e você pagou por armazenamento duplicado de K/V e comunicação adicional em troca de nada.
+
+:::insight
+A restrição que amarra o grau de tensor parallel raramente é a que as pessoas conferem. Vocabulário e largura de FFN recebem padding generoso justamente porque alguém pensou em paralelismo; contagens de heads são escolhidas por economia de serving e acabam sendo o teto. Para este modelo esse teto é 4, e todo grau maior é uma decisão de replicação disfarçada.
+:::
+
+As camadas de Gated DeltaNet têm sua própria estrutura de heads — 48 value heads e 16 query/key heads, cada uma de dimensão 128 — então o divisor limpo delas é 16 para o caminho QK. Como 48 das 64 camadas são DeltaNet, um layout precisa satisfazer as duas estruturas ao mesmo tempo, e de novo o menor divisor vence.
+
+**Pipeline parallelism** particiona a profundidade em vez disso. Grupos consecutivos de camadas viram estágios; um microbatch flui pelo estágio 0, depois pelo estágio 1, e assim por diante, com ativações cruzando fronteiras de estágio e parâmetros ficando parados. Aqui a arquitetura é incomumente cooperativa. As 64 camadas não são um stack uniforme, mas 16 super-blocos repetidos, cada um com três camadas de DeltaNet seguidas de uma de full attention. Qualquer grau de pipeline que divida 16 — 2, 4, 8 ou 16 — dá estágios com composição idêntica de camadas. O grau de pipeline 4 põe 4 super-blocos, 16 camadas, em cada estágio, e todo estágio vê exatamente 12 camadas de DeltaNet e 4 de attention.
+
+Divida num grau que não divide 16 e o equilíbrio quebra: uma fronteira traçada dentro de um super-bloco deixa um estágio com mais camadas de full attention do que outro. Como camadas de attention e de DeltaNet têm perfis de compute diferentes e comportamento de memória diferente com o comprimento da sequência, composição desigual significa tempo de estágio desigual, e o estágio mais lento dita o ritmo de todos.
+
+Pipelines também têm **bolhas** — períodos ociosos durante o enchimento, o esvaziamento e esperas por dependência. Com $P$ estágios e $m$ microbatches, a fração de bolha do escalonamento clássico é cerca de
+
+$$
+\frac{P-1}{m+P-1},\qquad\text{então em } P=4,\ m=32:\ \frac{3}{35}\approx 8.6\%
+$$
+
+do tempo ideal perdido. Mais microbatches encolhem isso e aumentam o estado de ativações. Escalonamentos intercalados e activation checkpointing (lição 5.10) trocam memória, recomputação e tamanho de bolha entre si.
+
+**Sequence parallelism** particiona a dimensão de tokens. Normalização e FFNs position-wise processam fatias locais sem problema. A attention precisa de interação entre posições, então o sistema troca partições de query, key, value ou de heads; o DeepSpeed-Ulysses usa all-to-all para transpor entre partições de sequência e de heads, deixando cada rank computar attention completa para um subconjunto de heads antes de transpor de volta. Esse eixo importa mais para um modelo que anuncia 262.144 de contexto nativo, e note que só as 16 camadas de attention precisam da troca — as camadas de DeltaNet varrem posições com um estado recorrente de tamanho fixo.
+
+:::caveat
+"Sequence parallelism" nomeia mais de um algoritmo. Sempre pergunte quais tensores são shardeados, quais coletivos rodam e se a attention permanece exata, vira baseada em ring ou é aproximada. A mesma expressão em dois frameworks pode significar memória diferente e numérica diferente.
+:::
+
+Esses eixos se compõem em layouts 3D ou de dimensão ainda maior: grupos data-parallel entre réplicas, estágios de pipeline entre faixas de camadas, ranks de tensor parallel dentro de um estágio, sharding de sequência para contextos longos. O produto dos tamanhos de grupo precisa igualar o tamanho do mundo, e cada rank precisa de coordenadas determinísticas nessa grade. A composição também complica o checkpointing — o manifesto precisa registrar qual eixo particionou cada tensor, e mudar a topologia na retomada exige resharding em vez de reatribuir arquivos de rank.
+
+Meça a **model FLOPs utilization**, mas também tempo de coletivos, comunicação exposta, tempo ocioso de estágio, picos de memória e stragglers. Uma contagem teórica alta de FLOPs por trás de bolhas longas não é eficiência. Faça profiling nos comprimentos reais de sequência e de microbatch, porque um layout afinado para sequências de 4.096 tokens pode se comportar de forma muito diferente em 262.144.
+
+O mapa duradouro é por eixo: data parallelism divide exemplos, tensor parallelism divide computação de features, pipeline parallelism divide profundidade, sequence parallelism divide posições. Cada um faz um problema maior caber fabricando coordenação. A melhor topologia alinha a comunicação mais pesada com os links mais rápidos, mantém todo estágio fazendo trabalho útil e — a lição das 4 KV heads — respeita o divisor que a arquitetura de fato lhe dá, e não o que o hardware sugere.

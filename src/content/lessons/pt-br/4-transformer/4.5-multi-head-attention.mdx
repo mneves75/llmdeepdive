@@ -1,0 +1,80 @@
+---
+id: "4.5-multi-head-attention"
+track: "4-transformer"
+order: 5
+title: "Multi-head attention"
+summary: "Múltiplos attention heads criam subespaços de roteamento aprendidos em paralelo — 24 deles no Qwen3.8-27B, lendo de apenas 4 heads de key/value compartilhados."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["4.4-causal-masking"]
+unlocks: ["4.6-positional-encoding-sinusoidal-learned", "4.15-gated-deltanet"]
+analogy: "Um editor de cinema revisa a mesma cena em vários monitores sincronizados. Um monitor acompanha o diálogo, outro a continuidade, outro a iluminação e outro o movimento. Cada monitor só pode voltar até os quadros permitidos pela montagem, e cada um produz suas próprias anotações. Um editor-chefe concatena essas anotações e decide o que entra no corte. Vinte e quatro monitores oferecem pontos de vista úteis, mas comprar vinte e quatro monitores não garante vinte e quatro percepções distintas."
+teachBack:
+  prompt: "Descreva multi-head attention usando os números do Qwen3.8-27B, incluindo por que a contagem de query heads difere da de key/value heads, e por que heads são oportunidades e não papéis legíveis garantidos."
+  modelAnswer: "As camadas de attention do Qwen3.8-27B projetam o residual stream de largura 5120 em 24 query heads de dimensão 256 — um tensor de query de largura 6144 —, mas em apenas 4 heads de key/value, um K e um V de largura 1024. Cada query head roda attention escalada e mascarada causalmente no seu próprio subespaço de 256 dimensões, com grupos de 6 query heads compartilhando um KV head. As 24 saídas de head são concatenadas de volta a 6144 e uma projeção de saída as mapeia para 5120, para o residual stream. Projeções separadas permitem que os heads aprendam padrões de roteamento diferentes, mas a otimização pode tornar heads redundantes ou distribuir uma função por vários, então um head não corresponde automaticamente a um conceito linguístico limpo."
+quiz:
+  - question: "O Qwen3.8-27B tem 24 query heads, mas apenas 4 KV heads. Quantos query heads compartilham cada head de key/value?"
+    options: ["6, já que 24 ÷ 4 = 6", "24, todos eles", "4", "1, compartilhamento nunca acontece"]
+    correctIndex: 0
+    explanation: "Grouped-query attention divide os 24 query heads em 4 grupos de 24 ÷ 4 = 6, cada grupo lendo os mesmos K e V em cache — o projeto que a lição 7.6 analisa."
+  - question: "Num decoder como o Qwen3.8-27B, que restrição vale dentro do cálculo de attention de cada head (lição 4.4)?"
+    options: ["O causal mask — as posições de cada head só podem dar attention ao seu prefixo", "Heads podem ler tokens futuros desde que outros não leiam", "Só o primeiro head é mascarado", "A máscara é aplicada depois da projeção de saída"]
+    correctIndex: 0
+    explanation: "A máscara causal triangular é aplicada aos scores de cada head antes do softmax; dividir em heads muda os subespaços, não a regra de visibilidade."
+  - question: "Usar 24 heads garante 24 funções linguísticas distintas?"
+    options: ["Não, heads podem ser redundantes ou codificar features distribuídas", "Sim, por definição arquitetural", "Sim, se causal masking for usado", "Não, porque heads não têm pesos aprendidos"]
+    correctIndex: 0
+    explanation: "A arquitetura cria rotas parametrizadas separadas, mas não impõe uma interpretação de um conceito por head."
+citations:
+  - title: "Attention Is All You Need"
+    authors: "Ashish Vaswani et al."
+    year: 2017
+    url: "https://arxiv.org/abs/1706.03762"
+  - title: "Are Sixteen Heads Really Better than One?"
+    authors: "Paul Michel, Omer Levy e Graham Neubig"
+    year: 2019
+    url: "https://arxiv.org/abs/1905.10650"
+  - title: "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints"
+    authors: "Joshua Ainslie et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2305.13245"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Uma única operação de attention produz uma distribuição de scores por query e uma mistura de values. Agora dê a ela um trabalho realista. Em "O advogado que assinou o contrato que o estagiário redigiu foi demitido", a posição de "foi" precisa simultaneamente do seu sujeito ("advogado", oito tokens atrás), da informação de concordância (singular) e da fronteira da oração intercalada. Um único conjunto de projeções teria que comprimir todas essas noções diferentes de "relevante" num único espaço de similaridade — e um único softmax teria que expressar todas elas numa única ponderação. Alguma coisa vai ceder.
+
+A primeira correção ingênua é aumentar o head único: alargar as projeções para que o espaço de similaridade tenha lugar para tudo. Mas um produto escalar mais largo ainda produz *um* score por key e *uma* distribuição por query — uma posição não consegue simultaneamente dar attention concentrada no seu sujeito e difusa nas fronteiras de oração com um só conjunto de pesos. A correção não é um head mais largo, e sim *mais* heads: dividir a largura em subespaços independentes, cada um com suas próprias projeções, scores e softmax. Isso é **multi-head attention**.
+
+Eis o arranjo trabalhado para as camadas de Gated Attention do Qwen3.8-27B, continuando os shapes da lição 4.2. O residual stream tem 5120 dimensões. A camada forma $h = 24$ query heads de dimensão $d_{head} = 256$:
+
+$$
+24 \times 256 = 6144
+$$
+
+features de query por token, remodeladas num eixo de heads a partir da metade de query da projeção com porta $5120 \to 12288$ (lição 4.2) — $B \times T \times 6144$ virando $B \times h \times T \times 256$. Cada head $j$ então roda a maquinaria das lições 4.3 e 4.4 de forma independente, no seu próprio sistema de coordenadas de 256 dimensões:
+
+$$
+H_j=\operatorname{softmax}\left(\frac{Q_jK_j^\top}{\sqrt{256}}+M\right)V_j,
+$$
+
+com $M$ sendo o causal mask aplicado de forma idêntica dentro de cada head. As 24 saídas são concatenadas de volta à largura 6144, e a projeção de saída $W_O: 6144 \to 5120$ mistura informação *entre* heads antes de o resultado voltar ao residual stream. Essa mistura final importa: sem ela, as descobertas do head 7 ficariam presas na fatia do head 7 dentro da concatenação.
+
+Por que isso supera um único head grande com a mesma contagem de parâmetros? Porque "relevante" já não precisa significar uma coisa só. O subespaço de um head pode enfatizar proximidade posicional, o de outro pode casar features sintáticas, o de outro ainda pode acompanhar uma aspa aberta. Cada um ganha seu próprio softmax, então um head pode ficar quase one-hot no sujeito enquanto outro espalha peso por uma oração inteira. Camadas posteriores compõem essas rotas em comportamentos que nenhum head sozinho conseguiria expressar.
+
+Note, porém, o que o parágrafo acima *não* disse: que o head 3 é "o head de sintaxe". Michel, Levy e Neubig mostraram que, em modelos treinados, muitos heads podem ser podados com dano imediato limitado, enquanto um subconjunto menor é crítico; redundância ajuda a otimização e a robustez, e uma única função pode estar espalhada por heads e camadas. Vinte e quatro heads são vinte e quatro *oportunidades* de especialização, não vinte e quatro especialistas rotulados.
+
+:::caveat
+O equívoco comum é ler mapas de attention por head como explicação fiel — tirando a média dos pesos entre heads, ou batizando um head a partir de alguns exemplos escolhidos a dedo. Cada head tem sua própria projeção de value, e W_O pode amplificar, rotacionar ou cancelar o que um head escreveu, então "o head 12 deu attention ao verbo" é uma hipótese sobre roteamento que precisa de teste causal, não um fato arquitetural.
+:::
+
+Agora a assimetria que torna o arranjo desse modelo genuinamente moderno. Nada exige que o número de heads de key/value seja igual ao número de query heads. O Qwen3.8-27B tem 24 query heads, mas apenas **4 KV heads** — projeções de K e V de largura $4 \times 256 = 1024$, como a lição 4.2 calculou. Os 24 query heads são divididos em 4 grupos de $24 \div 4 = 6$, e os 6 heads de um grupo leem *os mesmos* tensores de key e value, mantendo cada um a sua query. Isso é **grouped-query attention** (GQA): 24 formas independentes de fazer perguntas, mas apenas 4 conjuntos armazenados de respostas. A motivação é memória em decode — menos KV heads significam proporcionalmente menos estado em cache por token — e a análise completa de custo e benefício, incluindo MQA num extremo e MLA além dele, é assunto da lição 7.6, com a aritmética do cache em si na lição 7.2.
+
+Uma sutileza de contagem de parâmetros sobrevive do projeto clássico: com largura total fixa, dividir em mais ou menos query heads quase não muda a contagem de parâmetros, já que as grandes projeções mantêm a mesma forma geral — o número de heads muda como a largura é *particionada*, junto com o comportamento dos kernels e a contabilidade da matriz de scores. O que a GQA muda é diferente: ela encolhe K e V em si, o que é uma redução real, paga com o custo de forçar grupos de heads a compartilhar os alvos de endereçamento.
+
+Multi-head attention também é o ponto de partida da outra metade da arquitetura do Qwen. A ideia de que uma camada deve misturar a sequência através de muitos canais paralelos, aprendidos e com gating não exige softmax attention alguma — as 48 camadas Gated DeltaNet do Qwen rodam 48 value heads próprios sobre um estado recorrente, em vez de uma matriz de scores. Esse mecanismo, e o motivo de o modelo manter apenas 16 camadas da attention completa descrita aqui, é a lição 4.15.
+
+A imagem duradoura: um banco de canais de comunicação aprendidos, cada um decidindo onde ler no seu próprio sistema de coordenadas, alimentando um misturador compartilhado. A arquitetura oferece especialização, redundância e composição — e, na sua forma de 2026, economiza na metade armazenada da conversa.

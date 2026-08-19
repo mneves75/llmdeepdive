@@ -1,0 +1,62 @@
+---
+id: "8.10-modular-max-mojo"
+track: "8-building-and-serving-stacks"
+order: 10
+title: "Modular MAX e Mojo"
+summary: "Um serving stack baseado em compilador de grafos e a linguagem de kernels sob ele: o que a fusão controlada pelo compilador e a portabilidade entre fornecedores prometem diante do engine Python do vLLM, e o que você precisa verificar antes de acreditar no discurso."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["8.4-vllm"]
+unlocks: ["8.12-choosing-your-stack"]
+analogy: "Duas orquestras tocam a mesma sinfonia. Uma é um conjunto de virtuoses, cada um com uma parte copiada à mão para o seu instrumento específico por um especialista que conhece aquele instrumento intimamente; soa magnífico, e reorquestrá-la para outro conjunto significa achar novos especialistas. A outra trabalha a partir de uma única partitura legível por máquina que o software de um maestro reorquestra para quaisquer instrumentos que apareçam. A segunda é mais portátil e mais consistente — e é tão boa quanto o software de reorquestração, que é mais jovem que os especialistas."
+teachBack:
+  prompt: "Contraste o modelo de serving compiler-first do MAX com o engine Python do vLLM sobre kernels escritos à mão, e liste o que você verificaria antes de comprometer o Qwen3.8-27B ao MAX."
+  modelAnswer: "O vLLM roda uma camada de orquestração em Python — scheduler, alocador de KV paginado, continuous batching — sobre o PyTorch e um conjunto de kernels CUDA e Triton escritos à mão. Melhorias de performance ali significam escrever ou ajustar kernels, e o backend de cada fornecedor é em boa medida um esforço separado. O MAX inverte o arranjo: o modelo é expresso como um grafo de computação, um compilador antecipado é dono da fusão, do escalonamento e do layout de memória, e o mesmo grafo é redirecionado para hardware NVIDIA e AMD sem reescritas específicas de fornecedor, com um servidor compatível com OpenAI por cima. Mojo é a linguagem em que os próprios kernels são escritos — uma linguagem de sistemas da família Python com tipos estáticos, ownership e primitivas explícitas de SIMD e tiling, compilada via MLIR, de modo que o compilador ainda tem estrutura sobre a qual raciocinar no nível mais interno. Antes de comprometer este modelo eu verificaria quatro coisas: que a arquitetura híbrida com camadas Gated DeltaNet está de fato implementada na biblioteca de grafos do release que eu tenho, e não meramente que transformers são suportados; que o meu formato de quantization está entre os suportados; que um benchmark equivalente contra o vLLM, com precisão, preset de decoding, comprimentos de sequência e concorrência idênticos, o favorece na minha carga e não na de um fornecedor; e que o meu time consegue absorver um ecossistema cujas APIs ainda estão em movimento."
+quiz:
+  - question: "Onde um stack compiler-first mais plausivelmente supera um stack de kernels ajustados à mão, e onde ele mais plausivelmente perde?"
+    options: ["Ganha onde overhead de lançamento e operações pequenas não fundidas dominam, como decode com batch baixo; perde onde um kernel de fornecedor já satura a banda de memória em batch alto", "Ganha em toda parte, porque compilação é estritamente melhor que código escrito à mão", "Ganha só em batch sizes muito grandes e perde nos pequenos", "Ganha na qualidade do texto gerado e perde em throughput"]
+    correctIndex: 0
+    explanation: "Fusão e escalonamento antecipado removem overhead por operação, o que importa mais quando o hardware fica ocioso entre kernels pequenos; quando um kernel ajustado à mão já é limitado por banda, sobra pouco para um compilador recuperar."
+  - question: "Lembrando a lição 8.4, quais responsabilidades do vLLM um serving stack ainda precisa prover mesmo que um compilador cuide da fusão de kernels?"
+    options: ["Continuous batching e alocação de KV cache paginado entre requisições concorrentes", "Tokenização da string de entrada", "Escolha da temperatura de sampling", "Download dos pesos a partir do hub de modelos"]
+    correctIndex: 0
+    explanation: "Escalonamento e gestão de memória de KV são preocupações da camada de serving, não de kernel; um compilador de grafos que funde operações perfeitamente ainda precisa de um scheduler decidindo quais sequências rodam em cada passo."
+citations:
+  - title: "MAX Documentation"
+    authors: "Modular"
+    year: 2026
+    url: "https://max.modular.com/"
+  - title: "Mojo Documentation"
+    authors: "Modular"
+    year: 2026
+    url: "https://docs.modular.com/mojo/"
+updated: "2026-08-18"
+---
+
+Você tem o Qwen3.8-27B rodando sob vLLM em hardware NVIDIA, e o seu time de infraestrutura anuncia que metade do próximo cluster será AMD. Nada muda no modelo. O que muda é que cada kernel CUDA escrito à mão no seu caminho de serving passa a ter uma contraparte que outra pessoa mantém num ritmo diferente, e o seu perfil de performance vira dois perfis. Esse é o problema que o stack da Modular ataca, e vale entendê-lo pelos seus méritos antes de decidir se a troca é a que você quer.
+
+Recorde o formato do que você já conhece da lição 8.4. O vLLM é um engine Python: um scheduler, um alocador de KV paginado e um loop de continuous batching orquestrando operações do PyTorch e um conjunto de kernels CUDA e Triton escritos à mão para as partes que importam. Esse design tem uma força específica e uma fraqueza específica. A força é que um especialista consegue escrever um kernel de attention que extrai quase tudo que uma geração específica de GPU oferece. A fraqueza é que a força não viaja: um novo fornecedor, uma nova arquitetura ou um novo tipo de camada significam novos kernels, escritos de novo, por alguém que conhece aquele alvo.
+
+O MAX propõe o arranjo oposto. Um modelo é expresso como um **grafo de computação**, e um compilador antecipado assume o que antes era território do autor de kernels — fusão de operadores, layout de memória, escalonamento do grafo no device — e emite código para qualquer acelerador suportado ao qual você apontar. Por cima fica uma camada de serving que fala uma API compatível com OpenAI, então da perspectiva de um cliente ela se encaixa no mesmo buraco que o vLLM ocupa. O discurso é que o mesmo grafo roda em NVIDIA e AMD sem reescrita específica de fornecedor, e que as decisões de fusão do compilador são sistemáticas em vez de dependentes de quais kernels um humano teve tempo de ajustar à mão.
+
+**Mojo** é a camada abaixo disso, e existe porque um compilador precisa de estrutura sobre a qual raciocinar no laço mais interno. Mojo é uma linguagem de sistemas da família Python: sintaxe familiar, mas com tipos estáticos, semântica de ownership e acesso explícito a larguras SIMD, tiling e hierarquia de memória, compilada via MLIR. A intenção é que um autor de kernels escreva uma attention fundida ou um matmul quantizado uma vez, numa linguagem que um compilador consegue especializar e redirecionar, em vez de escrevê-lo três vezes em três dialetos de fornecedor. Se essa intenção se realiza para um dado operador é uma questão empírica, não uma garantia de design — mas o design é coerente, e coloca a autoria de kernels e a compilação de grafos numa única toolchain, uma linhagem que remonta a Halide, TVM, XLA e Triton.
+
+Agora a parte honesta, porque uma lição de nível frontier que só repassa um discurso não vale a leitura. Este ecossistema é mais jovem que aqueles com que compete, e a juventude tem três consequências concretas para um modelo como o Qwen3.8-27B.
+
+A primeira é a **cobertura de modelos**, e é a que decide se o resto da conversa acontece. O Qwen3.8-27B não é um transformer comum. Suas 64 camadas são 48 camadas Gated DeltaNet intercaladas com 16 camadas de full attention, e ele carrega uma vision tower. "Suporta LLMs transformer" não implica suporte a uma camada de linear attention recorrente com atualização por delta rule com gating e uma convolução curta — isso é um operador distinto que precisa existir na biblioteca de grafos, estar correto e ser rápido. Confira a lista de modelos suportados do release exato que você pretende rodar, e trate uma arquitetura ausente como bloqueio e não como exercício de portabilidade, a menos que escrever kernels em Mojo seja genuinamente o projeto ao qual você se ofereceu.
+
+A segunda é a **cobertura de quantization**. Os formatos que você tem em disco — o GGUF da lição 8.7, um checkpoint AWQ ou GPTQ da lição 7.10 — não são universalmente consumíveis. Um stack que suporta um modelo em bf16 pode não suportá-lo na precisão que você de fato consegue bancar, e bf16 para este modelo significa 54 GB de pesos antes de qualquer cache.
+
+A terceira é a **maturidade da superfície**. APIs, flags de CLI e formatos de configuração num stack em movimento rápido se movem. Isso é um custo operacional real, e a resposta correta é precificá-lo, não fingir que não existe.
+
+:::warning
+O equívoco a nomear sem rodeios: "baseado em compilador" não significa "mais rápido". Um compilador ganha onde overhead por operação e trabalho não fundido dominam — muitos kernels pequenos, batch sizes baixos, decode limitado por lançamento, exatamente o regime que a lição 8.3 atacou com graph capture. Ele tem muito menos a recuperar onde um kernel de fornecedor ajustado à mão já satura a banda de memória, que é o regime do prefill em batch grande e da attention bem otimizada. Qualquer alegação de speedup uniforme entre regimes deveria levantar a sua sobrancelha, em qualquer direção que aponte.
+:::
+
+Então avalie-o como avaliaria qualquer candidato, com o raciocínio visível. Passo um: a biblioteca de grafos implementa esta arquitetura no release que você tem? Se não, pare. Passo dois: ela suporta a precisão que você consegue caber no seu hardware? Passo três: monte um benchmark equivalente — mesma revisão de modelo, mesma precisão, mesmo preset de decoding do model card, mesmos comprimentos de entrada e saída, mesma concorrência, mesma janela de medição — e rode contra a sua linha de base em vLLM. Passo quatro: pese o resultado contra a portabilidade que você está de fato comprando. Se a sua frota é e continuará sendo uma única geração NVIDIA, portabilidade entre fornecedores vale quase nada para você e o stack maduro ganha só no custo de ops. Se você é genuinamente heterogêneo, ou espera ser, um único grafo e uma única toolchain entre fornecedores é uma vantagem estrutural que uma comparação de velocidade por kernel não captura.
+
+:::caveat
+Nenhum benchmark independente de terceiros do Qwen3.8-27B neste stack é citado aqui porque nenhum está estabelecido nas fontes em que este curso se apoia. Números de throughput publicados pelo fornecedor são peças de marketing até alguém reproduzi-los na sua carga — trate-os como hipótese que vale testar, nunca como número a partir do qual planejar capacidade.
+:::
+
+A ideia durável é uma questão de fronteira: quem é dono da otimização, o humano ou o compilador? Todo stack desta track responde isso em algum ponto dessa linha, e a lição 8.12 põe todos eles lado a lado de uma vez.

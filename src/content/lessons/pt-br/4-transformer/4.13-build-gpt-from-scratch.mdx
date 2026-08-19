@@ -1,0 +1,217 @@
+---
+id: "4.13-build-gpt-from-scratch"
+track: "4-transformer"
+order: 13
+title: "Construa um GPT do zero: a baseline uniforme"
+summary: "Um programa PyTorch completo, de arquivo único, treina um pequeno Transformer causal — a baseline uniforme contra a qual uma instância em produção como o Qwen3.8-27B pode ser medida, degrau por degrau."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["4.12-transformer-families"]
+unlocks: ["4.14-reading-real-weights", "5.1-pretraining-objectives"]
+analogy: "Monte uma prensa tipográfica de mesa antes de visitar uma gráfica industrial de jornal. A versão de mesa tem gavetinhas de tipos, duas estações de attention, uma prensa feed-forward e um otimizador de manivela. Ela não vai imprimir um grande jornal, mas cada engrenagem se move pela mesma razão que sua contraparte industrial — e, depois de girar a manivela você mesmo, as diferenças da gráfica saltam aos olhos como engenharia deliberada, e não como mistério."
+teachBack:
+  prompt: "Trace um batch de treino pelo GPT mínimo, dos IDs inteiros de token até a cross-entropy, e depois cite três formas pelas quais o Qwen3.8-27B se afasta dessa baseline uniforme além do puro tamanho."
+  modelAnswer: "IDs inteiros indexam embeddings de token e de posição, produzindo estados B×T×C. Cada bloco idêntico aplica attention multi-head causal normalizada e uma atualização feed-forward através de conexões residuais; uma norm final e uma projeção de vocabulário produzem logits B×T×V, e os logits achatados contra os targets deslocados dão a cross-entropy do próximo token. A geração reutiliza o mesmo forward pass, amostrando da última posição. O Qwen3.8-27B se afasta ao usar RMSNorm em vez de LayerNorm, posições rotativas em vez de uma tabela de posição aprendida, uma FFN gated com SiLU em vez de uma FFN GELU sem gate, grouped-query attention com projeções não quadradas e — de forma mais estrutural — ao substituir attention por Gated DeltaNet em 48 das suas 64 camadas, de modo que a pilha não é uniforme de jeito nenhum."
+quiz:
+  - question: "Por que a máscara triangular é registrada como buffer?"
+    options: ["Ela acompanha o módulo entre devices mas não é treinável", "Ela vira um parâmetro do otimizador", "Ela armazena o texto gerado", "Ela substitui os embeddings de posição"]
+    correctIndex: 0
+    explanation: "Buffers são salvos com o estado do módulo e se movem com ele, enquanto gradientes e atualizações do otimizador não são computados para eles."
+  - question: "Usando os cinco eixos da lição anterior, como o GPT mínimo é classificado?"
+    options: ["Decoder-only, objetivo de próximo token, denso, mixer de attention uniforme, apenas texto", "Encoder–decoder com cross-attention, denso, híbrido", "Mixture-of-experts decoder-only, multimodal", "Encoder-only com objetivo de corrupção"]
+    correctIndex: 0
+    explanation: "Ele tem uma pilha causal treinada em predição do próximo token, cada token paga cada FFN, cada camada usa o mesmo mixer de attention e ele lê apenas texto — a baseline uniforme em todos os eixos."
+  - question: "No topo de 27B da escada de parâmetros, qual componente guarda mais parâmetros?"
+    options: ["As FFNs gated, cerca de 17B ao longo das 64 camadas", "A tabela de embedding de tokens sozinha", "As máscaras causais", "O schedule de learning rate do otimizador"]
+    correctIndex: 0
+    explanation: "A cerca de 267M por camada vezes 64 camadas, as FFNs guardam aproximadamente 17B dos ~27B; o embedding e o lm_head não amarrados somam cerca de 1,271B cada."
+citations:
+  - title: "Improving Language Understanding by Generative Pre-Training"
+    authors: "Alec Radford et al."
+    year: 2018
+    url: "https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf"
+  - title: "nanoGPT"
+    authors: "Andrej Karpathy"
+    year: 2022
+    url: "https://github.com/karpathy/nanoGPT"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+O jeito mais rápido de tornar o Transformer concreto é implementar um. O programa abaixo é deliberadamente pequeno, mas completo: ele cria um tokenizer de caracteres, amostra batches de treino, implementa self-attention multi-head causal, empilha blocos residuais, minimiza a cross-entropy do próximo token e gera texto. Usa PyTorch para tensores e diferenciação automática, mas nenhum módulo Transformer de alto nível.
+
+Chame o que ele constrói de **baseline uniforme**: cada camada é o mesmo bloco, o mixer de cada bloco é a mesma attention, as posições vêm de uma única tabela aprendida e a norm é o LayerNorm clássico. Este é o esqueleto pedagógico que a track inteira montou — e é exatamente o quadro de que você precisa para apreciar uma instância em produção como o Qwen3.8-27B, que se afasta da uniformidade de propósito em quase toda junta. Primeiro construa a baseline; os desvios vêm no fim.
+
+Salve o bloco como `minimal_gpt.py`, instale o PyTorch com o comando documentado para a sua plataforma em `pytorch.org` e rode `python minimal_gpt.py`. Ele treina em CPU numa execução curta e educativa. O corpus minúsculo e repetido e a rede pequena foram escolhidos para inspecionabilidade, não para qualidade de linguagem. O programa imprime losses medidas; seus valores exatos podem variar conforme a versão do PyTorch e o hardware.
+
+```python
+"""A complete, minimal character-level GPT. Run: python minimal_gpt.py"""
+
+from dataclasses import dataclass
+
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+
+
+torch.manual_seed(42)
+device = torch.device("cpu")  # Portable baseline; change deliberately if desired.
+
+# A real training corpus, kept inside the file so the example is self-contained.
+text = ("attention routes information; residual streams preserve it.\n" * 200)
+chars = sorted(set(text))
+stoi = {character: index for index, character in enumerate(chars)}
+itos = {index: character for character, index in stoi.items()}
+data = torch.tensor([stoi[character] for character in text], dtype=torch.long)
+
+
+@dataclass(frozen=True)
+class Config:
+    vocab_size: int = len(chars)
+    block_size: int = 32
+    batch_size: int = 16
+    n_embed: int = 64
+    n_head: int = 4
+    n_layer: int = 2
+
+
+config = Config()
+split = int(0.9 * len(data))
+train_data, validation_data = data[:split], data[split:]
+
+
+def get_batch(source: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return prefixes x and their one-position-shifted next-token targets y."""
+    starts = torch.randint(len(source) - config.block_size - 1, (config.batch_size,))
+    x = torch.stack([source[i : i + config.block_size] for i in starts])
+    y = torch.stack([source[i + 1 : i + config.block_size + 1] for i in starts])
+    return x.to(device), y.to(device)
+
+
+class AttentionHead(nn.Module):
+    def __init__(self, head_size: int) -> None:
+        super().__init__()
+        self.key = nn.Linear(config.n_embed, head_size, bias=False)
+        self.query = nn.Linear(config.n_embed, head_size, bias=False)
+        self.value = nn.Linear(config.n_embed, head_size, bias=False)
+        # This lower triangle moves with the model but receives no gradients.
+        self.register_buffer("causal", torch.tril(torch.ones(config.block_size, config.block_size)))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _, time, _ = x.shape
+        key, query, value = self.key(x), self.query(x), self.value(x)
+        # (B,T,H) @ (B,H,T) -> (B,T,T): every query scores every key.
+        weights = query @ key.transpose(-2, -1) * (key.shape[-1] ** -0.5)
+        weights = weights.masked_fill(self.causal[:time, :time] == 0, float("-inf"))
+        weights = F.softmax(weights, dim=-1)
+        return weights @ value  # (B,T,T) @ (B,T,H) -> (B,T,H)
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        head_size = config.n_embed // config.n_head
+        self.heads = nn.ModuleList(
+            [AttentionHead(head_size) for _ in range(config.n_head)]
+        )
+        self.output = nn.Linear(config.n_embed, config.n_embed)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Heads route independently; concatenation restores the model width.
+        return self.output(torch.cat([head(x) for head in self.heads], dim=-1))
+
+
+class FeedForward(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(config.n_embed, 4 * config.n_embed),
+            nn.GELU(),
+            nn.Linear(4 * config.n_embed, config.n_embed),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
+
+
+class Block(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attention = MultiHeadAttention()
+        self.feed_forward = FeedForward()
+        self.norm_attention = nn.LayerNorm(config.n_embed)
+        self.norm_ffn = nn.LayerNorm(config.n_embed)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Pre-norm residual updates: communicate first, transform second.
+        x = x + self.attention(self.norm_attention(x))
+        x = x + self.feed_forward(self.norm_ffn(x))
+        return x
+
+
+class MiniGPT(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.token_embedding = nn.Embedding(config.vocab_size, config.n_embed)
+        self.position_embedding = nn.Embedding(config.block_size, config.n_embed)
+        self.blocks = nn.Sequential(*[Block() for _ in range(config.n_layer)])
+        self.final_norm = nn.LayerNorm(config.n_embed)
+        self.language_head = nn.Linear(config.n_embed, config.vocab_size)
+
+    def forward(
+        self, indices: torch.Tensor, targets: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        _, time = indices.shape
+        positions = torch.arange(time, device=indices.device)
+        x = self.token_embedding(indices) + self.position_embedding(positions)
+        x = self.blocks(x)
+        logits = self.language_head(self.final_norm(x))  # (B,T,V)
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits.reshape(-1, config.vocab_size), targets.reshape(-1)
+            )
+        return logits, loss
+
+    @torch.no_grad()
+    def generate(self, indices: torch.Tensor, new_tokens: int) -> torch.Tensor:
+        for _ in range(new_tokens):
+            context = indices[:, -config.block_size :]
+            logits, _ = self(context)
+            probabilities = F.softmax(logits[:, -1, :], dim=-1)
+            next_token = torch.multinomial(probabilities, num_samples=1)
+            indices = torch.cat((indices, next_token), dim=1)
+        return indices
+
+
+model = MiniGPT().to(device)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
+
+for step in range(301):
+    inputs, targets = get_batch(train_data)
+    _, loss = model(inputs, targets)
+    if loss is None:
+        raise RuntimeError("training targets must produce a loss")
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+    if step % 100 == 0:
+        print(f"step {step}: train loss {loss.item():.4f}")
+
+seed = torch.zeros((1, 1), dtype=torch.long, device=device)
+generated = model.generate(seed, new_tokens=160)[0].tolist()
+print("".join(itos[index] for index in generated))
+```
+
+Leia o código seguindo os shapes. `indices` é $B\times T$. A busca de token e de posição produz $B\times T\times C$. Cada head projeta $C$ features para $H=C/h$, forma uma matriz de scores $T\times T$ por item do batch, aplica a máscara triangular inferior e mistura os values. Concatenar os $h$ heads restaura $C$. A FFN expande para $4C$ e volta para $C$. Toda soma residual, portanto, tem shape compatível. O target é a entrada deslocada em uma posição; a cross-entropy compara os logits de vocabulário em cada posição com o caractere seguinte real; o AdamW atualiza os parâmetros enquanto o buffer causal permanece fixo. A geração usa o mesmo forward pass sem targets, amostrando dos logits da última posição e cortando pelo limite de contexto.
+
+Um detalhe incidental merece destaque: `language_head` é uma matriz separada de `token_embedding` — este brinquedo não amarra seu output head à sua tabela de embedding. O Qwen3.8-27B também não amarra, a um custo imensamente maior; guarde esse pensamento para a escada abaixo e para a lição 4.14, onde as duas matrizes não amarradas aparecem no checkpoint como tensores separados.
+
+:::caveat
+O equívoco clássico neste ponto é que um modelo de produção é "este programa com matrizes maiores". Tamanho é a menor das diferenças. O Qwen3.8-27B troca LayerNorm por RMSNorm, a tabela de posição aprendida por rotary embeddings, a FFN GELU sem gate por uma com gate SiLU, full multi-head attention por grouped-query attention com projeções não quadradas — e, estruturalmente, abandona a própria uniformidade, substituindo attention por Gated DeltaNet em 48 das 64 camadas. Escalar uma baseline e enviar uma instância para produção são atos de engenharia diferentes.
+:::
+
+Agora suba a escada de parâmetros desta mesa até o chão de fábrica, e deixe cada degrau ser um número que você pode conferir. O brinquedo: um vocabulário de caracteres com algumas dezenas de entradas, largura 64, duas camadas, uma FFN $4\times$ sem gate — bem menos de um milhão de parâmetros, pequeno o bastante para a loss impressa se mover em segundos. Primeiro degrau, largura: o residual stream do Qwen3.8-27B tem 5120 de largura, oitenta vezes os 64 do brinquedo, e o custo de parâmetros nos blocos densos cresce aproximadamente com o *quadrado* da largura. Segundo degrau, profundidade: 64 camadas contra as duas do brinquedo. Terceiro degrau, vocabulário: 248.320 linhas contra algumas dezenas, de modo que só a tabela de embedding chega a cerca de 1,271 bilhão de parâmetros — e, como o head não é amarrado, a matriz de saída é outros ~1,271 bilhão, cerca de 2,54 bilhões antes que qualquer bloco faça qualquer trabalho. Quarto degrau, os blocos: a FFN gated de cada camada guarda cerca de 267 milhões de parâmetros, e 64 delas totalizam aproximadamente 17 bilhões — a maior linha isolada do orçamento, como a lição 4.9 estabeleceu. O restante do orçamento de ~27 bilhões cobre as camadas de mistura — dezesseis blocos de attention com suas projeções de largura 6144 e 1024, quarenta e oito blocos DeltaNet — mais a torre de visão que permite ao modelo ler imagens (lição 4.17). Cada degrau é a mesma aritmética que você acabou de fazer sobre `Config`: linhas vezes colunas, somadas sobre os módulos nomeados. A fábrica é maior que a prensa de mesa por um fator de dezenas de milhares, mas seu inventário se faz com a multiplicação que você já sabe fazer à mão.

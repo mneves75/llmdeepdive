@@ -1,0 +1,61 @@
+---
+id: "8.7-llama-cpp-and-gguf"
+track: "8-building-and-serving-stacks"
+order: 7
+title: "llama.cpp and GGUF"
+summary: "The single-file inference engine and the self-describing container behind it: how GGUF packs a quantized Qwen3.8-27B into roughly 16 GB, what the quant ladder trades away, and which machines actually run the artifact."
+tier: "advanced"
+locale: "en"
+prerequisites: ["7.10-quantization-ii-gptq-awq-gguf-qat", "7.12-running-models-locally"]
+unlocks: ["8.8-ollama-and-local-runners", "8.9-mlx"]
+analogy: "A shipping container is not a way of making cargo smaller. It is a standard box with a manifest bolted to the door: what is inside, in what units, packed by whom, and which cranes can lift it. Any port that reads the manifest can unload it without opening the box first. GGUF is that container for model weights — the compression happened before packing, and the manifest is what lets a runtime refuse a load it cannot honour instead of failing halfway through."
+teachBack:
+  prompt: "Explain what GGUF actually is, distinguish it from a quantization method, and size a Q4_K_M Qwen3.8-27B deployment on a 24 GB GPU and on a 16 GB one."
+  modelAnswer: "GGUF is a container format, not a compression algorithm: one file holding a key-value metadata header — architecture name, hyperparameters, tokenizer, chat template — followed by tensor data, where each tensor carries its own quantization type. The compression is done by the k-quant schemes named in the tensor types, and a single file mixes several of them, keeping sensitive tensors at higher precision. For Qwen3.8-27B the community Q4_K_M artifact is about 16 GB, which is roughly 4.7 effective bits per weight rather than a flat 4. On a 24 GB card the whole file offloads to the device, leaving around 8 GB for KV cache at 64 KiB per token from lesson 7.2, the roughly 72 MiB DeltaNet state, and compute buffers — comfortable at 8,192 tokens, tight past 65,536. On a 16 GB card the weights alone do not leave room for cache and workspace, so some layers stay on the CPU and every decoded token crosses the PCIe bus, which is a bandwidth cliff rather than a graceful degradation."
+quiz:
+  - question: "A file named Qwen3.8-27B-Q4_K_M.gguf is 16 GB. What does the Q4_K_M part describe?"
+    options: ["The dominant quantization scheme of the tensors inside; the container itself stores a type per tensor and mixes several", "The GGUF format version, which fixes 4-bit for every tensor", "A compression applied to the whole file, decompressed at load time", "The number of layers kept in 4-bit while the rest stay bf16 on disk"]
+    correctIndex: 0
+    explanation: "GGUF is a container with per-tensor quantization types. Q4_K_M names the mix a converter chose, and the file happily contains higher-precision tensors alongside the 4-bit ones."
+  - question: "Using lesson 7.10's effective-bits reasoning, why is the Q4_K_M artifact about 16 GB rather than the 13.5 GB implied by 27 billion parameters at half a byte each?"
+    options: ["Block scales, super-block metadata, and tensors deliberately kept at higher precision push the effective rate to roughly 4.7 bits per weight", "GGUF stores a bf16 copy of every tensor for fallback", "The tokenizer and chat template occupy 2.5 GB of the header", "Four-bit codes are padded to whole bytes on disk"]
+    correctIndex: 0
+    explanation: "Lesson 7.10 showed that real quantized artifacts pay for their scales and keep chosen tensors — output projections, embeddings — at more bits, so the effective rate always exceeds the nominal one."
+citations:
+  - title: "llama.cpp"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+You downloaded one file. It is about 16 GB, its name ends in Q4_K_M.gguf, and it claims to be Qwen3.8-27B. Lesson 7.12 told you which rung of the quantization ladder that is; this lesson opens the box. What is inside a GGUF, why does a 27-billion-parameter model land at 16 GB and not 13.5, and what has to be true about your machine before the file is worth the download?
+
+Start with the engine, because the format exists to serve it. llama.cpp is an inference runtime written in C and C++ with no Python runtime dependency, built on the ggml tensor library. Its defining constraint is that a model must be one artifact and one binary, runnable on a laptop CPU, an Apple GPU through Metal, an NVIDIA GPU through CUDA, or a cross-vendor path through Vulkan, with the same file in every case. That constraint produced GGUF.
+
+A GGUF file is a **container**, and the single most common misunderstanding is to treat it as a compression method. It is not. The layout is a header of typed key-value metadata followed by a tensor directory followed by the tensor bytes. The metadata names the architecture, the hyperparameters a runtime needs to build the compute graph, the full tokenizer including merges and special tokens, and the chat template. The tensor directory gives every tensor a name, a shape, an offset, and — this is the important part — **its own quantization type**. A GGUF is therefore self-describing and mmap-able: the runtime maps the file, reads the manifest, decides before allocating anything whether it can build this graph, and pages weights in from disk rather than copying them through a loader.
+
+The compression lives in those per-tensor types, and they form a ladder. Q8_0 is a straightforward 8-bit block scheme, close to lossless in practice and about half the bf16 size. The k-quants — Q6_K, Q5_K_M, Q4_K_M, Q4_K_S, Q3_K_M, down to Q2_K — use a super-block structure in which small blocks of weights share a scale and the scales themselves are quantized against a block-level scale, which is how they buy precision at low bit rates. The trailing letter is a mix policy rather than a bit width: an M variant keeps tensors the converter considers sensitive at a higher type than the S variant does. That is why the arithmetic from lesson 7.10 works out. Nominally 4 bits over 27 billion parameters gives $27\text{e}9 \times 0.5 = 13.5$ GB; the scales, the super-block metadata, and the deliberately-preserved tensors raise the effective rate to roughly 4.7 bits, and the artifact lands near 16 GB. The gap is not waste. It is the reason the file is still usable.
+
+Now size the machine, step by step, using lesson 7.2's cache arithmetic. Weights resident: about 16 GB. KV cache: 64 KiB per token, so an 8,192-token session costs 512 MiB and a 65,536-token session costs 4 GiB. Gated DeltaNet recurrent state: roughly 72 MiB per sequence, flat in length. Compute buffers, the logit tensor over 248,320 vocabulary rows, and the graph workspace: order of one to a few GB depending on batch and backend. On a 24 GB device the whole model offloads and an 8K session sits near 18 GB with headroom; push toward 64K and you are negotiating with the ceiling. On a 32 GB unified-memory Mac the same picture holds with more room to grow. On a 16 GB card the weights alone leave nothing for cache, so you offload only some layers and the rest execute on the CPU.
+
+```
+llama-server -m Qwen3.8-27B-Q4_K_M.gguf -ngl 99 -c 8192 \
+  --temp 0.7 --top-p 0.80 --top-k 20
+```
+
+That partial-offload case is the classic wrong turn, and it deserves correcting properly. The reasoning goes: 16 GB of weights, a 16 GB card, therefore a fit, and if not quite, `-ngl` will offload most layers and the CPU handles the remainder at a small penalty. The penalty is not small. Decode is bandwidth-bound — every token reads essentially all resident weight bytes — so the layers left on the host are read at system-memory speed and their activations cross PCIe twice per token. A configuration at ninety percent offload does not run at ninety percent of the speed; the slow tenth sets the pace for the whole forward pass. The honest conclusion is that 16 GB of device memory means either a smaller quantization rung with real quality loss, or accepting CPU-class throughput, not that the model fits.
+
+:::warning
+A GGUF loads only if llama.cpp implements the architecture its metadata names. Qwen3.8-27B is a hybrid — 48 Gated DeltaNet layers interleaved with 16 full-attention layers — and support for a new layer type arrives in a specific release, not by osmosis. Check the repository for that architecture and match your binary's version to the converter's before spending an hour on a 16 GB download. A file being valid GGUF says nothing about whether your build can execute it.
+:::
+
+:::caveat
+Community quantizations are third-party artifacts. The same model at the same nominal rung, converted by two people with different mix policies and different calibration data, can differ measurably on your task. Verify hashes and provenance, and treat quality as something you measure on your own prompts rather than something the filename promises.
+:::
+
+The durable idea is separation of concerns. The quantizer decided how many bits each tensor deserves; the container recorded those decisions in a manifest a runtime can read before committing memory; the engine builds a graph if it recognises the architecture and refuses if it does not. Everything downstream in this track — the convenience runners in lesson 8.8, and the comparison with Apple's own path in lesson 8.9 — is built on that one file and that one manifest.

@@ -1,0 +1,78 @@
+---
+id: "5.12-training-instabilities"
+track: "5-pretraining-at-scale"
+order: 12
+title: "When training goes wrong: spikes, divergence, NaNs"
+summary: "Reliable pretraining reads anomalies quantitatively rather than dramatically, preserves forensic state, and treats normalization and gating as the stability devices they are."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.11-learning-rate-schedules"]
+unlocks: ["5.13-pretraining-costs"]
+analogy: "An intensive-care monitor does not summarize a patient with one heartbeat average. It watches rhythm, pressure, oxygen, sensor faults, and medication timing; when an alarm fires, clinicians preserve the chart and identify whether the patient changed or the sensor failed. A training dashboard needs the same discipline: loss is one vital sign, and a blind restart can erase the evidence."
+teachBack:
+  prompt: "Show how to read a loss spike quantitatively against the uniform baseline and the per-rank distribution, and name the architectural devices that make a hybrid stack stable."
+  modelAnswer: "Cross-entropy is interpretable in nats: a jump from 2.05 to 2.90 means average probability on the correct token fell from about 0.129 to about 0.055, while an uninformed model over 248,320 classes would sit at 12.42 nats. So a fractional-nat bump is a hard batch, not a reset; a climb toward double digits is real divergence. The averaged loss must never be read alone, because with 64 ranks a single rank at 40.0 while the rest sit at 2.0 shows up as a global mean of only 2.59. Architecturally, RMSNorm with epsilon 1e-6 in a pre-norm residual stream keeps activation scale bounded through 64 layers, the gated feed-forward multiplies a SiLU gate against the up-projection so the block can suppress its own output, and Gated DeltaNet's gate controls how much is written to and decayed from the recurrent state, which is the fix for the unbounded state growth that made naive RNNs diverge."
+quiz:
+  - question: "On a 64-rank job, 63 ranks report loss 2.0 and one reports 40.0. What does the averaged loss show?"
+    options: ["About 2.59 — a modest bump that completely hides a catastrophic single-rank failure", "About 40.0, since the maximum dominates", "About 21.0, the midpoint", "Nothing, because averaging is undefined with outliers"]
+    correctIndex: 0
+    explanation: "(63 x 2.0 + 40) / 64 = 166 / 64 = 2.59, which is why per-rank diagnostics matter more than the global mean."
+  - question: "Lesson 5.11 defined schedules in tokens and warned about resume. Which spike does a mishandled resume typically produce?"
+    options: ["A jump at the exact step of the restart, because the scheduler restarted warmup or resumed at the wrong point on the decay curve", "A slow drift over the following 100,000 steps", "A non-finite value in the tokenizer", "A change in vocabulary size"]
+    correctIndex: 0
+    explanation: "Restart-aligned spikes point at scheduler, optimizer, or data-cursor state rather than at the data itself."
+  - question: "Why is waiting for a NaN a poor divergence detector?"
+    options: ["A run can be persistently worsening while every value remains finite, so the trajectory has failed long before arithmetic does", "NaN values are always caused by hardware", "NaN cannot propagate through backward", "Finite losses never diverge"]
+    correctIndex: 0
+    explanation: "Non-finite arithmetic is a late propagation symptom; divergence is a property of the trajectory, visible in loss, gradient norms, and activation norms first."
+citations:
+  - title: "PaLM: Scaling Language Modeling with Pathways"
+    authors: "Aakanksha Chowdhery et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2204.02311"
+  - title: "Mixed Precision Training"
+    authors: "Paulius Micikevicius et al."
+    year: 2018
+    url: "https://arxiv.org/abs/1710.03740"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Two weeks into a run, the dashboard shows the averaged training loss stepping from 2.05 to 2.59 and staying there. It is not dramatic. Nobody would call it a catastrophe. The on-call engineer notes it, sees no NaN, and lets the job continue. Six hours and a considerable amount of cluster time later, someone opens the per-rank view and finds that 63 ranks are training normally at 2.0 while rank 41 has been sitting at 40.0 since the moment of the step. The global mean was never lying; it was averaging.
+
+Do that arithmetic, because it is the whole reason per-rank telemetry exists:
+
+$$
+\frac{63\times 2.0+40.0}{64}=\frac{166}{64}=2.59.
+$$
+
+One rank in complete failure moves the headline number by half a nat. Sixteen times more ranks, and it would move it by three hundredths. Averaging is a low-pass filter on exactly the signal you most need, and the larger the job, the more effectively it hides the thing that killed it.
+
+The second half of reading anomalies well is knowing what a nat is worth. From lesson 5.1, cross-entropy is $-\ln p(\text{correct token})$, and an uninformed model spreading mass uniformly over 248,320 classes sits at $\ln 248{,}320\approx 12.42$ nats. So calibrate any spike against that ceiling. A jump from 2.05 to 2.90 means the average probability assigned to the true next token fell from $e^{-2.05}\approx 0.129$ to $e^{-2.90}\approx 0.055$ — a factor of 2.3, unpleasant but recoverable, and still enormously better than uninformed. A climb through 6, 9, and toward 12.42 is something else entirely: that is a model losing everything it learned. The shape of a loss curve is ambiguous; its distance from the uniform baseline is not.
+
+With that calibration in place, the vocabulary of failures becomes usable. A **loss spike** is a sudden rise followed by recovery or escalation. It can come from a genuinely difficult batch, corrupted tokenization, an abrupt mixture change, a scheduler problem, exploding activations, a precision overflow, or a rank feeding invalid values downstream. The shape alone identifies none of these; compare token-level losses, per-rank values, gradient norms, activation norms, and the input manifest before forming a hypothesis. Spikes aligned exactly with a restart point at scheduler, optimizer, or data-cursor state rather than at the data, which is why lesson 5.11 insisted that scheduler position is checkpoint state.
+
+**Divergence** means the trajectory stops returning to its previous range and worsens persistently. Excessive learning rate, inadequate warmup, poor initialization, corrupted optimizer state, repeated pathological data, or a precision recipe pushed outside its stable range all contribute. Crucially, a model can remain entirely finite while already diverging — which makes "wait until something becomes NaN" a detector that fires long after the run was worth saving.
+
+**NaN** and infinity are terminal arithmetic signals, not diagnoses. Trace the first non-finite tensor with hooks or anomaly instrumentation rather than reasoning backwards from where it surfaced, because later layers spread the value within a single forward pass and the first report is usually far downstream of the cause. Softmax overflow, division by zero, invalid square roots, fp16 range, gradient reduction, and optimizer updates are all candidates. Under the mixed-precision recipe of lesson 5.9 the fp16 case is mechanical: the format's maximum is 65,504, so with a loss scale of 65,536 any gradient above roughly 1.0 overflows to infinity, and the scaler's job is to detect that, skip the step, and halve the scale to 32,768 — which is a controlled response, not an incident.
+
+:::warning
+Do not build an unbounded "skip bad batch" rule. It converts every category of failure into silence: a parser regression, an entire broken source, or a deliberately poisoned shard can be discarded invisibly while the run reports success and the data distribution quietly changes underneath the objective. Skipping must be bounded, categorized, counted, and alerted, and a rising skip rate is itself an incident.
+:::
+
+Architecture is part of the stability story, and this model's config shows the devices plainly. **RMSNorm with epsilon 1e-6 in a pre-norm residual stream** is the baseline: normalizing before each sublayer and adding into an unnormalized residual keeps activation scale from compounding across 64 layers, which is what made very deep stacks trainable in the first place. The **gated feed-forward** multiplies a SiLU-activated gate against the up-projection before the 17,408-wide intermediate is projected back down, so a block can attenuate its own contribution rather than being forced to emit something. And the gate in **Gated DeltaNet** governs how much each step writes into and decays out of the fixed-size recurrent state — precisely the control that lesson 3.2 identified as missing from naive recurrent networks, whose states grew or vanished without bound. A hybrid stack that carries recurrent state through 48 of its 64 layers would be a stability nightmare without it.
+
+:::caveat
+None of that reasoning is a published claim about how this particular run behaved. There is no technical report for Qwen3.8-27B, so no loss curves, spike incidents, restart counts, or recovery procedures are available for it. The config tells you which stability devices are present in the architecture; it tells you nothing about whether the run needed them, and inferring a smooth run from a clean config is not evidence.
+:::
+
+The forensic sequence itself is unglamorous and works. At every checkpoint, retain enough to reproduce closely: model, optimizer, scheduler, loss scaler, random-number generators, data-loader cursor, mixture state, topology, code revision, configuration, and recent infrastructure events such as node replacement or network retry. Log stable document and batch identifiers without copying sensitive text into general logs. When something fires, start from the last known-good checkpoint and replay the same batch. If the failure reproduces, rerun it on one device in a wider dtype and validate token ranges, masks, sequence boundaries, targets, and sample weights. If it does not reproduce, look at nondeterminism, collectives, memory corruption, and hardware telemetry, and compare a healthy rank against the failing one.
+
+Recovery depends on which of those it was. Quarantine a provably corrupt sample under an auditable data policy. Lower the loss scale for an fp16 overflow. Restore optimizer state if it is corrupt. A temporary reduction in learning rate can carry a run past an optimization spike, but making it permanent creates a new experiment that must be described as one. Rolling back weights without rolling back the data cursor either repeats the trigger or conceals it.
+
+Preventive controls are cheaper than any of this: gradient clipping, stable normalization, conservative initialization, adequate warmup, finite-value checks at selected boundaries, input validation, checksum-protected checkpoints, and canary pilots. Too many synchronous checks cost throughput, so pair cheap high-frequency signals with occasional deep probes. Annotate loss curves with checkpoints, restarts, topology changes, mixture transitions, and rate changes, and compare against tokens processed rather than wall-clock timestamps.
+
+The operating principle is to fail visibly and recover reproducibly. Spikes are symptoms, non-finite values are propagation, divergence is a trajectory — and a serious training system can trace each of them to data, numerics, optimization, or infrastructure, then demonstrate that the resumed run returns to the path it was on.

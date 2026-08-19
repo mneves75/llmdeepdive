@@ -1,0 +1,80 @@
+---
+id: "8.4-vllm"
+track: "8-building-and-serving-stacks"
+order: 4
+title: "vLLM"
+summary: "Dimensionando um deployment real do Qwen3.8-27B: como --gpu-memory-utilization e --max-model-len decidem juntos o pool de KV, e o que os 64 KiB por token da lição 7.2 compram numa única placa de 80 GB."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["7.8-pagedattention-and-continuous-batching", "8.1-pytorch-the-reference-runtime"]
+unlocks: ["8.5-sglang", "8.6-tensorrt-llm"]
+analogy: "O operador de um estacionamento não pergunta quantos carros existem; pergunta quantas vagas sobram depois das colunas estruturais, das rampas e do corredor de incêndio. Reservar uma vaga de comprimento máximo para cada veículo que chega, caso um deles seja um ônibus, esvazia o estacionamento. As configurações de memória do vLLM são exatamente essa conta: os pesos são as colunas, o workspace é o corredor de incêndio, e --max-model-len decide qual o comprimento máximo de vaga que um único veículo pode reivindicar."
+teachBack:
+  prompt: "Dimensione --gpu-memory-utilization e --max-model-len para o Qwen3.8-27B numa única GPU de 80 GB, mostrando a aritmética e dizendo o que falha se você fixar o comprimento de contexto no máximo nativo do modelo."
+  modelAnswer: "Com --gpu-memory-utilization 0.90 o engine pode usar cerca de 72 GB da placa de 80 GB. Os pesos em bf16 tomam 54 GB, deixando cerca de 18 GB. Buffers de ativação, pools de CUDA graph e o estado recorrente por sequência das camadas DeltaNet precisam sair daí, então reserve uns 3 GB e chame o pool de KV de cerca de 14 GiB. A 64 KiB por token da lição 7.2, esse pool comporta cerca de 229.000 tokens de contexto de attention no total, compartilhados entre todas as sequências vivas. Uma única sequência no contexto nativo de 262.144 tokens precisaria de 16 GiB sozinha, mais que o pool inteiro, então definir --max-model-len 262144 falha na inicialização em vez de degradar graciosamente. Definir 32768 custa 2 GiB por sequência totalmente estendida, o que acomoda cerca de sete sessões simultâneas de comprimento máximo e bem mais das típicas, porque a paginação só cobra pelos tokens efetivamente gerados."
+quiz:
+  - question: "Pela lição 7.8, por que a paginação permite a um servidor admitir muito mais sessões do que a aritmética de comprimento máximo sugere?"
+    options: ["Os blocos são alocados conforme os tokens são produzidos, então uma sessão que usa 4K de um limite de 32K paga por 4K", "Porque o KV cache é comprimido", "Porque sessões encerradas guardam sua memória para reuso", "Porque o modelo encurta prompts longos automaticamente"]
+    correctIndex: 0
+    explanation: "Reservar o máximo de cada requisição é exatamente o desperdício que o PagedAttention remove; o limite delimita uma sessão, ele não a cobra antecipadamente."
+  - question: "Por que subir --gpu-memory-utilization para 0.98 a fim de aumentar o pool de KV tende a sair pela culatra?"
+    options: ["A fração precisa cobrir também picos de ativação, pools de graph capture, fragmentação e a diferença entre GB e GiB, então o engine fica sem memória durante o warm-up ou sob uma rajada", "A flag é ignorada acima de 0.95", "Isso desativa o continuous batching", "Isso força o modelo para float32"]
+    correctIndex: 0
+    explanation: "A fração de utilização é um orçamento para tudo que o engine aloca, não só para o cache; os últimos poucos por cento são a folga que impede um pico de tráfego de virar um out-of-memory."
+  - question: "Quais camadas do Qwen3.8-27B contribuem para o pool de KV paginado?"
+    options: ["Apenas as 16 camadas de full attention, a 4 KiB por token cada; as 48 camadas DeltaNet guardam um estado de tamanho fixo", "Todas as 64 camadas igualmente", "Apenas a vision tower", "Apenas a primeira e a última camada"]
+    correctIndex: 0
+    explanation: "A lição 7.2 derivou 64 KiB por token a partir de 16 camadas que cacheiam; as camadas recorrentes custam uma constante por sequência em vez de um custo por token."
+citations:
+  - title: "vLLM Documentation"
+    authors: "vLLM Project"
+    year: 2026
+    url: "https://docs.vllm.ai"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Você tem uma GPU de 80 GB, uma cópia do Qwen3.8-27B e um pedido para levantar uma API de chat interna para talvez quarenta engenheiros. Dois números decidem se isso funciona: quanto da placa o engine pode reivindicar e quão longa uma única conversa pode ficar. Erre numa direção e o servidor se recusa a iniciar; erre na outra e ele morre na primeira rajada real de tráfego. Esta lição faz essa aritmética de dimensionamento explicitamente, porque todo o resto sobre o vLLM — a API no formato OpenAI, o scheduler, as métricas — é documentação que você pode ler, e esta é a parte que as pessoas erram.
+
+O vLLM existe por causa da lição 7.8. Seu scheduler admite e aposenta requisições nas fronteiras de iteração em vez de segurar um batch fixo até o membro mais lento terminar, e seu cache é paginado: blocos de tamanho fixo entregues conforme os tokens são produzidos, de modo que uma sessão que para em quatro mil tokens nunca pagou pelos trinta e dois mil que lhe eram permitidos. O trabalho do engine na inicialização é decidir de que tamanho esse pool de blocos deve ser, e ele faz isso por subtração em vez de perguntar a você.
+
+Acompanhe a subtração na nossa placa. A flag `--gpu-memory-utilization` é uma fração da memória *total* do device que o engine pode usar para tudo que aloca. Em 0.90 numa placa de 80 GB isso são cerca de 72 GB — repare que este é um ponto de partida menor que o orçamento de placa inteira de que a lição 9.3 parte, porque a flag deliberadamente deixa o resto do device não reivindicado. Daí saem primeiro os pesos: 54 GB em bf16, o valor que a lição 7.2 ancora. Sobram cerca de 18 GB. Mas o pool não é 18 GB, porque o mesmo orçamento precisa cobrir ainda buffers de ativação na largura de pico do prefill, os pools de memória que o CUDA graph capture fixa (lição 8.3), fragmentação do alocador e — específico deste modelo — o estado recorrente das 48 camadas Gated DeltaNet, cerca de 72 MiB por sequência viva, cobrado por sequência e não por token. Reserve uns 3 GB para tudo isso e o pool de KV utilizável fica em cerca de 14 GiB.
+
+Agora converta memória em capacidade usando o único número em que esta track inteira se apoia. A lição 7.2 derivou 64 KiB de KV por token para este modelo, porque apenas 16 das 64 camadas cacheiam alguma coisa. Então o pool comporta
+
+$$
+\frac{14\ \text{GiB}}{64\ \text{KiB por token}} = 229{,}376\ \text{tokens}
+$$
+
+de contexto de attention, agrupados entre todas as sequências vivas naquele instante. Essa é a capacidade real da máquina, e é o número sobre o qual raciocinar — não "quantos usuários", que depende inteiramente de quão longas são as conversas deles.
+
+O que nos leva a `--max-model-len`. O movimento ingênuo é fixá-lo em 262144, o contexto nativo do modelo, sob o argumento de que um limite é de graça até alguém usá-lo. Não é de graça, e a falha é imediata: uma única sequência de 262.144 tokens precisaria de 16 GiB de KV sozinha, mais que os 14 GiB do pool inteiro, então o engine não consegue garantir que sequer uma requisição no máximo declarado consiga terminar. Ele recusa na inicialização com uma mensagem dizendo que o pool é pequeno demais para o contexto pedido — o que é o comportamento correto, e muito mais gentil que aceitar a configuração e travar depois.
+
+Fixe em algo que o pool consiga de fato honrar. Em 32768, uma sequência que corre até o limite custa $32{,}768 \times 64\ \text{KiB} = 2\ \text{GiB}$, então o pool comporta sete dessas sequências máximas. Na prática você vai servir bem mais que sete usuários simultâneos, porque a paginação cobra pelos tokens produzidos e não pelos tokens permitidos, e uma API interna de quarenta pessoas consiste sobretudo em trocas curtas. O número de comprimento máximo é o seu pior caso, não a sua expectativa.
+
+```
+vllm serve Qwen/Qwen3.8-27B \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.90
+```
+
+Não confie mais na estimativa acima do que no engine. O vLLM imprime o tamanho do pool de KV que efetivamente alocou e a concorrência máxima que isso implica no comprimento de contexto escolhido. Leia essa linha, compare com a sua aritmética e reconcilie qualquer diferença grande antes de fazer benchmark de qualquer coisa — uma discrepância normalmente significa que a reserva de workspace ou a contabilidade do estado recorrente é diferente do que você supôs.
+
+:::warning
+A segunda virada errada clássica é combater um pool pequeno subindo `--gpu-memory-utilization` rumo a 0.98. Parece funcionar: o pool cresce, o log de inicialização fica mais bonito e os testes curtos passam. Então chega uma rajada, o prefill atinge sua largura de ativação de pico num prompt longo enquanto os pools de graph capture estão fixados, e o processo é morto por falta de memória — levando junto todas as sessões em voo. Aqueles últimos poucos por cento não são desperdício; são a folga que absorve a diferença entre média e pico. Note também que o runtime reporta menos que o número da caixa depois de descontadas ECC e regiões reservadas (a lição 9.3 faz essa subtração), então vários por cento da folga aparente nunca estiveram lá.
+:::
+
+Se você genuinamente precisa do contexto completo de 262.144 tokens, nenhuma flag o conjura a partir de uma placa só. As opções honestas são mais memória ou menos bytes: fazer sharding em duas GPUs com tensor parallelism para que tanto os pesos quanto o cache se dividam (lição 5.8 para a mecânica, lição 9.9 para o custo de interconexão), ou encolher o custo por token com um formato de KV quantizado, que troca um pouco de fidelidade por um aumento proporcional em todos os números de capacidade acima.
+
+:::caveat
+Tudo aqui pressupõe que o seu release do vLLM realmente suporta esta arquitetura, e o suporte é específico de versão de um jeito que não acontece com modelos comuns. Um modelo híbrido precisa de um block manager que lide com dois tipos de memória ao mesmo tempo — blocos paginados por token para 16 camadas e estado recorrente fixo por sequência para 48 — e os engines ganharam essa capacidade em momentos diferentes para tipos diferentes de camada. Verifique na sua versão exata antes de ler qualquer benchmark: confirme que o modelo carrega e então rode o teste diferencial da lição 8.1 contra o PyTorch eager num prompt curto e determinístico. Um engine que trata mal o estado recorrente em silêncio produz texto fluente e errado com excelente throughput.
+:::
+
+Leve a subtração, não as flags. Memória total vezes a fração de utilização, menos pesos, menos workspace, é igual ao pool; o pool dividido por 64 KiB é a sua capacidade em tokens; `--max-model-len` limita a maior reivindicação individual contra ele e precisa caber dentro dele pelo menos uma vez. Todo outro stack desta track faz a mesma subtração com nomes diferentes, que é exatamente por que a lição 8.5 pode agora focar no que o SGLang acrescenta em vez de repetir o que ele compartilha.

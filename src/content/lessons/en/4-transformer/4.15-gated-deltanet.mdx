@@ -1,0 +1,74 @@
+---
+id: "4.15-gated-deltanet"
+track: "4-transformer"
+order: 15
+title: "Gated DeltaNet: the mixer in 48 of 64 layers"
+summary: "Qwen3.8-27B's dominant sequence mixer is a fixed-size matrix memory updated by a gated delta rule — read what the key currently retrieves, write only the correction, and let a learned gate forget."
+tier: "core"
+locale: "en"
+prerequisites: ["3.6-linear-attention-fast-weights", "4.5-multi-head-attention"]
+unlocks: ["4.16-hybrid-layouts"]
+analogy: "Attention keeps an infinite filing cabinet: every note ever received is stored, and each question searches the whole cabinet. Gated DeltaNet keeps one fixed-size whiteboard. Before writing a note under a heading, the clerk reads what that heading currently says and erases it in proportion to how firmly the new note is written — so headings are corrected, not piled up. Each step, a dial also fades the whole board slightly. The board never grows; what changes is how skillfully it is edited."
+teachBack:
+  prompt: "Write the gated delta-rule update, explain why it beats purely additive fast-weight memory, and give Qwen3.8-27B's DeltaNet head configuration and its reason for dominating the layer count."
+  modelAnswer: "The state is a matrix S updated per token as S_t = S_{t-1}(alpha_t(I - beta_t k_t k_t^T)) + beta_t v_t k_t^T, with output S_t q_t: the k k^T term first removes what key k_t currently retrieves (scaled by write strength beta_t), the outer product writes the new association, and the gate alpha_t applies learned, data-dependent decay. Additive fast weights only accumulate outer products, so rewriting a key sums old and new values; the delta rule replaces them, making the memory error-correcting. In Qwen3.8-27B the layer uses 16 QK heads and 48 V heads at head dimension 128, so three value heads share each addressing head, plus a short causal convolution of kernel 4 before the recurrence. It fills 48 of the 64 layers because its state is fixed-size regardless of context length, leaving exact unbounded lookup to the 16 attention layers."
+quiz:
+  - question: "In lesson 3.6's additive fast-weight memory, writing value v1 and later v2 under the same unit key k makes S k retrieve v1 + v2. What does the delta rule retrieve after the second write, with write strength one?"
+    options: ["v2 exactly, because the update first subtracts what k currently retrieves before writing", "v1 + v2, unchanged from the additive case", "v1, because the first write is permanent", "Zero, because the writes cancel"]
+    correctIndex: 0
+    explanation: "The (I − k kᵀ) factor erases the memory's current answer for k — here v1 — and the outer-product term writes v2, so the association is replaced rather than accumulated."
+  - question: "What is Qwen3.8-27B's Gated DeltaNet head configuration?"
+    options: ["16 QK heads and 48 V heads, all at head dimension 128, so three value heads share each addressing head", "24 query heads and 4 KV heads at dimension 256", "64 identical heads at dimension 5120", "One head per layer with no sharing"]
+    correctIndex: 0
+    explanation: "DeltaNet inverts the familiar GQA asymmetry: addressing (QK) is shared, content (V) is plentiful. The 24/4-at-256 configuration belongs to the attention layers, not DeltaNet."
+  - question: "What does the short convolution with kernel 4 contribute before the recurrence?"
+    options: ["A cheap local mix over the last few positions, letting the state update see short-range patterns the per-token recurrence would miss", "The global softmax over all past tokens", "Positional rotation of query-key pairs", "Compression of the vocabulary"]
+    correctIndex: 0
+    explanation: "The depthwise causal convolution spans four positions, giving each step access to a small local window before the fixed-size state takes over."
+citations:
+  - title: "Gated Delta Networks: Improving Mamba2 with Delta Rule"
+    authors: "Songlin Yang, Jan Kautz, and Ali Hatamizadeh"
+    year: 2024
+    url: "https://arxiv.org/abs/2412.06464"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Attention answers every question by re-reading the entire past: each new token's query scans all stored keys, and the store grows without bound. Lesson 3.6 showed the alternative — linear attention as a recurrent network whose state is a single matrix of fast weights, written by outer products and read by queries — and also showed its flaw: a memory you can only *add to* is a memory that interferes with itself. Qwen3.8-27B bets most of its depth on the repaired version. Forty-eight of its sixty-four layers mix tokens not with attention but with **Gated DeltaNet**, and this lesson opens that mixer.
+
+Start from the failure, concretely. Additive fast weights maintain $S_t = S_{t-1} + v_t k_t^{\top}$ and answer queries with $S_t q_t$. Store "the capital is Paris" under key $k$, and later — the government moved — store "the capital is Brasília" under the *same* key. Step through the naive update: after the first write, $S k = v_{\text{Paris}}$ (take $k$ unit-norm). After the second, $S k = v_{\text{Paris}} + v_{\text{Brasília}}$. The memory now retrieves a superposition of a stale fact and a fresh one, and every further reuse of the key deepens the pile. Nothing in the additive rule can ever *remove* information.
+
+The **delta rule** fixes the update by reading before writing. First ask the memory what it currently returns for the incoming key: $\hat v = S_{t-1}k_t$. Then write only the *error*, scaled by a data-dependent write strength $\beta_t \in (0,1)$:
+
+$$
+S_t \;=\; S_{t-1} + \beta_t\,(v_t - S_{t-1}k_t)\,k_t^{\top}
+\;=\; S_{t-1}\bigl(I - \beta_t\,k_t k_t^{\top}\bigr) + \beta_t\,v_t k_t^{\top}.
+$$
+
+Rerun the capital example with $\beta = 1$: the $(I - k k^{\top})$ factor erases exactly what $k$ retrieved — $v_{\text{Paris}}$ — and the outer product writes $v_{\text{Brasília}}$ in its place. Retrieval now returns the current fact, cleanly. The memory has become *error-correcting*: writes are replacements along the key's direction, and $\beta_t$ lets the model choose, per token, between leaving the slot alone ($\beta\to 0$) and overwriting it ($\beta\to 1$).
+
+One repair remains. The delta rule edits one key direction per step, so stale content on directions never revisited lingers forever. **Gating** adds learned, uniform forgetting — the matured form of the gate idea from lesson 3.3 — through a per-step decay $\alpha_t \in (0,1)$:
+
+$$
+S_t \;=\; S_{t-1}\bigl(\alpha_t\,(I - \beta_t\,k_t k_t^{\top})\bigr) + \beta_t\,v_t k_t^{\top},
+\qquad o_t = S_t\,q_t.
+$$
+
+This is the Gated DeltaNet update of Yang, Kautz, and Hatamizadeh: precise targeted erasure from the delta rule, global fade from the gate, both computed from the token itself. The output side reads the edited board with a query, exactly as in linear attention.
+
+Now the Qwen3.8-27B instantiation. Each DeltaNet layer runs the recurrence in heads, but with an asymmetry that inverts the one you know from attention: **16 QK heads and 48 V heads, all at head dimension 128**. In the attention layers, grouped-query attention shares a few KV heads among many query heads; here, addressing is the shared commodity — each QK head's keys and queries serve *three* value heads, so the layer maintains 48 separate $128\times 128$ state boards indexed by 16 addressing schemes. Content capacity is plentiful; addressing machinery is economized. Before any of this, the projected sequences pass through a short causal depthwise convolution with **kernel 4**, giving each update a cheap glimpse of the last few positions — local patterns like token bigrams need not consume the recurrent state at all.
+
+Why give this mixer 48 of 64 layers? Because its cost profile is the mirror image of attention's. The state per layer is a fixed set of $128\times128$ matrices — about 1.5 MiB per layer that does not grow whether the context holds one hundred tokens or 262,144 (lesson 7.2 puts exact numbers on this and on attention's contrasting bill). Decoding advances the state in constant time per token. And because the update is linear in $S$, training can process sequences in parallel chunks rather than strictly step by step. What the fixed-size board *cannot* do is guarantee exact recall of an arbitrary token from half a million steps ago — it is a lossy, learned compression. Qwen therefore does not use DeltaNet everywhere: every fourth layer keeps full attention, and the division of labor between the two is the subject of lesson 4.16.
+
+:::warning
+The classic misconception: "recurrent means it fails like the RNNs of lesson 3.2 — vanishing gradients, no parallel training." Gated DeltaNet is recurrent in *state*, not in squashing nonlinearities: the update is linear in $S$ with data-dependent coefficients, which permits chunked parallel training, and the gates perform learned forgetting rather than saturating activation. Equally wrong is the reverse assumption that it is "attention, but compressed" — no score matrix over the past ever exists, even implicitly. It is a different mixer with a different contract.
+:::
+
+:::note
+The Signal Observatory on the explore page shows one classic attention block. In Qwen3.8-27B this exact block appears once every four layers; the other three replace attention with Gated DeltaNet (lesson 4.15).
+:::
+
+From the residual stream's perspective, none of this drama is visible. The DeltaNet layer reads a normalized 5120-wide state, runs conv, projections, recurrence, and output gating, and adds back a 5120-wide update — the same contract every mixer honors. The checkpoint tensors you could not yet name in lesson 4.14 — the `linear_attn` projections, the kernel-4 convolution, the decay parameters — are precisely the machinery of $\alpha_t$, $\beta_t$, $k_t$, $v_t$, $q_t$ you can now read. What remains is the architectural question: given one mixer that is exact but expensive and one that is cheap but lossy, in what ratio do you mix them, and why three to one? That is the next lesson.

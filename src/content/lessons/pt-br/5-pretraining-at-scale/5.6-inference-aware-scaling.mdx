@@ -1,0 +1,92 @@
+---
+id: "5.6-inference-aware-scaling"
+track: "5-pretraining-at-scale"
+order: 6
+title: "Scaling laws III: inference-aware e over-training"
+summary: "Quando a demanda de implantação importa, decisões de tempo de treino compram economias permanentes de serving — e o layout híbrido 3:1 e as 4 KV heads do Qwen3.8-27B são esse princípio escrito na própria arquitetura."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.5-chinchilla-compute-optimality"]
+unlocks: ["5.7-data-parallelism-zero-fsdp"]
+analogy: "Uma transportadora pode comprar uma van grande que atinge a capacidade-alvo após uma preparação curta, ou passar mais tempo afinando uma van elétrica menor que torna cada rota futura mais barata. Se ela fizer dez entregas, a preparação domina. Se fizer um bilhão, o custo de operação domina. Inference-aware scaling acrescenta a contagem de rotas de vida útil a uma decisão que o scaling só de treino trata como uma corrida única."
+teachBack:
+  prompt: "Explique inference-aware scaling e depois mostre como a grouped-query attention e o layout híbrido 3:1 do Qwen3.8-27B a implementam como arquitetura, e não como orçamento de tokens."
+  modelAnswer: "O compute de treino é pago uma vez; o compute de inferência é pago por token servido, então em demanda alta o ótimo se desloca para modelos mais baratos por requisição. A alavanca usual é fazer over-training de um modelo menor. A segunda alavanca, menos discutida, é o formato arquitetural com contagem de parâmetros fixa. O Qwen3.8-27B puxa as duas alavancas arquiteturais: 24 query heads compartilham apenas 4 KV heads, dividindo o cache por camada por seis, e só 16 das suas 64 camadas são full attention, dividindo o número de camadas que fazem cache por quatro. Uma versão hipotética do mesmo modelo, toda de attention e toda multi-head, guardaria cerca de 384 GiB de KV cache para uma sequência de comprimento total, contra os 16 GiB derivados na lição 7.2 — uma diferença de 24 vezes escolhida em tempo de projeto e coletada em toda requisição daí em diante."
+quiz:
+  - question: "Um Qwen3.8-27B contrafactual com 24 KV heads em todas as 64 camadas faria cache de 24 KiB por token por camada. Quanto vale de KV cache uma sequência completa de 262.144 tokens, e como isso se compara ao modelo lançado?"
+    options: ["Cerca de 384 GiB, aproximadamente 24 vezes os 16 GiB do modelo lançado", "Cerca de 16 GiB, idêntico ao modelo lançado", "Cerca de 72 MiB, igualando o estado do DeltaNet", "Cerca de 54 GB, igualando os pesos"]
+    correctIndex: 0
+    explanation: "64 camadas x 24 KiB = 1,5 MiB por token; x 262.144 tokens = 384 GiB. A grouped-query attention fornece um fator de 6 e o layout híbrido 3:1 outro fator de 4."
+  - question: "A lição 5.5 definiu over-training em relação a um ponto Chinchilla. Por que isso não é uma crítica a um modelo treinado muito além dele?"
+    options: ["O ótimo de Chinchilla minimiza a loss apenas para um orçamento de treino fixo, e nada diz sobre o custo de serving ao longo da vida", "Porque a loss deixa de cair além desse ponto", "Porque o piso irredutível se move", "Porque a contagem de tokens não é publicada"]
+    correctIndex: 0
+    explanation: "Tokens extras além do ótimo de compute de treino compram um modelo permanentemente menor para uma qualidade-alvo; isso é um objetivo diferente, não um erro."
+  - question: "Qual variável nova muda mais diretamente o ótimo inference-aware?"
+    options: ["A demanda de inferência esperada ao longo da vida", "A grafia do nome do modelo", "O número de entradas de citação", "A ordem dos arquivos de treino"]
+    correctIndex: 0
+    explanation: "Custos recorrentes por token pesam mais conforme cresce o número de tokens ou requisições servidos."
+citations:
+  - title: "Beyond Chinchilla-Optimal: Accounting for Inference in Language Model Scaling Laws"
+    authors: "Nikhil Sardana, Jacob Portes, Sasha Doubov e Jonathan Frankle"
+    year: 2024
+    url: "https://arxiv.org/abs/2401.00448"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints"
+    authors: "Joshua Ainslie et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2305.13245"
+updated: "2026-08-18"
+---
+
+A otimalidade de compute de treino pergunta como obter a menor loss de um orçamento fixo de pretraining. Um modelo implantado tem uma vida muito mais longa do que essa pergunta imagina. O treino acontece uma vez. A inferência acontece para cada prompt e cada token gerado, em cada réplica, enquanto o checkpoint for servido. Se a demanda for grande, a conta recorrente faz a conta única parecer minúscula, e o alvo da otimização precisa incluir as duas.
+
+O enquadramento padrão escreve o custo de vida como
+
+$$
+C_{life}=C_{train}(N,D)+R\,C_{infer}(N,L),
+$$
+
+com $R$ o volume esperado de inferência e $L$ capturando comprimentos de prompt e de saída. Sardana e colaboradores modificaram a análise no estilo Chinchilla exatamente nessas linhas, treinaram modelos em razões altas de token por parâmetro para validar o comportamento e reportaram que uma demanda de inferência suficientemente grande desloca a solução preferida na direção de modelos menores treinados em mais dados. O ponto de cruzamento deles é condicional aos seus custos, ajustes e suposições de workload — mas a direção é estrutural, não incidental.
+
+Essa é a versão de inference-aware scaling que todo mundo cita, e ela trata $N$ como a única alavanca: escolha menos parâmetros, alimente mais tokens, aceite uma conta de treino maior em troca de um forward pass mais barato para sempre. A lição 5.5 percorreu essa aritmética. Ela é real, e é metade da história.
+
+A metade que é pulada é que $C_{infer}$ não é função apenas da contagem de parâmetros. Com 27 bilhões de parâmetros fixos você pode construir arquiteturas cujos custos de serving diferem por mais de uma ordem de magnitude, porque uma requisição servida paga por três coisas: ler os pesos, computar as camadas e guardar o estado por requisição. Só a primeira escala limpo com $N$. A terceira — o KV cache — depende inteiramente de decisões sobre heads e tipos de camada, e é onde o Qwen3.8-27B deixa sua posição óbvia.
+
+Leve o contrafactual a sério e os números ficam concretos. Suponha que o mesmo modelo de 27B tivesse sido construído da forma convencional: full attention em todas as 64 camadas, e multi-head attention com tantas KV heads quantas query heads, ou seja, 24 KV heads com dimensão de head 256 em vez das 4 lançadas. Por token por camada com cache isso é
+
+$$
+24\ \text{KV heads}\times 256\times 2\,(K{+}V)\times 2\ \text{B}=24{,}576\ \text{B}=24\ \text{KiB},
+$$
+
+e com todas as 64 camadas fazendo cache,
+
+$$
+24\ \text{KiB}\times 64=1{,}536\ \text{KiB}=1.5\ \text{MiB por token},
+$$
+
+$$
+1.5\ \text{MiB}\times 262{,}144\ \text{tokens}=384\ \text{GiB por sequência}.
+$$
+
+Trezentos e oitenta e quatro gibibytes, para uma conversa, no comprimento de contexto nativo do modelo. Isso não cabe em nenhum acelerador vendido hoje; não cabe em quatro. O modelo lançado guarda 16 GiB para a mesma sequência — a lição 7.2 deriva esse número e o assume — o que é um fator de 24 menor.
+
+De onde veio o 24? Duas decisões arquiteturais independentes, multiplicadas. A grouped-query attention deixa 24 query heads compartilharem 4 KV heads, dividindo o cache por camada por seis. O layout híbrido 3:1 significa que só 16 das 64 camadas são full attention — as outras 48 são Gated DeltaNet, mantendo um estado recorrente de tamanho fixo de cerca de 1,5 MiB cada, aproximadamente 72 MiB no total e **constante no comprimento da sequência** — dividindo o número de camadas que fazem cache por quatro. Seis vezes quatro é vinte e quatro.
+
+:::insight
+As duas decisões tinham de ser tomadas antes do primeiro passo de gradiente e nunca poderiam ser revistas depois. Você não consegue adaptar grouped-query attention a um modelo multi-head já treinado, e certamente não consegue converter três quartos de um stack de attention treinado em camadas de DeltaNet. É isso que as torna **scaling** inference-aware em vez de otimização de inferência: o custo foi comprometido em tempo de treino, em troca de um desconto coletado em toda requisição pela vida dos pesos.
+:::
+
+A mesma lógica atravessa o resto do projeto. Só 16 camadas pagam o custo de attention que cresce com o comprimento da sequência, então o modelo anuncia um contexto nativo de 262.144 tokens e até um milhão com YaRN sem que a curva de memória exploda. A contagem de parâmetros fica em 27 bilhões, o que põe os pesos em bf16 em 54 GB — desconfortável num cartão de 80 GB depois que você soma o cache, confortável num de 192 GB, e alcançável a aproximadamente 14 a 16 GB sob quantização de quatro bits da comunidade, que é a diferença entre "só datacenter" e "uma workstation". Nada disso é acidental, e nada disso melhora a loss de treino.
+
+:::warning
+A concepção equivocada mais comum aqui é que inference-aware scaling significa "treine um modelo menor". A contagem de parâmetros é a alavanca que as pessoas conhecem, e é a mais grosseira disponível. Com $N$ fixo, o layout de heads, a composição de camadas, o tratamento de contexto e a presença de um drafter nativo como a multi-token prediction mudam o custo de serving por fatores que fazem os poucos por cento de qualidade dessas escolhas parecerem irrisórios. Se a sua análise inference-aware só varia $N$, você está otimizando um eixo de um espaço de projeto com pelo menos quatro.
+:::
+
+Honestidade sobre o que é e o que não é conhecido importa aqui tanto quanto em qualquer ponto desta track. Os fatos arquiteturais acima são verificáveis no model card e no config. O raciocínio atribuído a eles é inferência a partir do projeto, não uma justificativa publicada — não existe relatório técnico deste modelo, e o time nunca declarou suas suposições de serving, orçamento de tokens ou modelo de custo. O que você pode dizer com confiança é que a arquitetura lançada é a que você escolheria se o custo de serving dominasse seu objetivo, e não é a que escolheria se apenas a loss de treino dominasse.
+
+As ressalvas usuais continuam valendo. Previsões de $R$ erram com frequência nas duas direções, então reporte sensibilidade ao longo de cenários de demanda em vez de uma estimativa pontual. Loss de validação equivalente não garante qualidade equivalente sob latência, factualidade, comportamento multilíngue ou responsividade a post-training. A disponibilidade de dados restringe a alavanca de over-training: tokens únicos extras de alta qualidade podem simplesmente não existir, e repetir dados muda o objetivo efetivo e eleva o risco de memorização. A cadência de atualização também importa — um checkpoint substituído no mês que vem acumula muito menos inferência de vida útil do que um servido por anos.
+
+O princípio duradouro é otimizar a vida do sistema em vez de uma única run. O Chinchilla pergunta como gastar um orçamento de pretraining. Inference-aware scaling pergunta o que deve existir depois do treino, dado quão frequentemente será usado — e a resposta é expressa em tokens, em parâmetros e, o que é mais consequente, no formato das próprias camadas.

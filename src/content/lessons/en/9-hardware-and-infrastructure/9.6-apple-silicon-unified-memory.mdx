@@ -1,0 +1,70 @@
+---
+id: "9.6-apple-silicon-unified-memory"
+track: "9-hardware-and-infrastructure"
+order: 6
+title: "Apple silicon and unified memory"
+summary: "Why a consumer desktop can hold a 27B model at all: one physical memory pool shared by CPU and GPU, and a vendor-reported bandwidth figure that sets the single-stream token ceiling."
+tier: "frontier"
+locale: "en"
+prerequisites: ["8.9-mlx", "9.1-memory-bandwidth-vs-flops"]
+unlocks: ["9.10-cost-per-token"]
+analogy: "A restaurant with a separate storeroom sends a runner to fetch every crate, and the corridor between storeroom and kitchen sets the pace no matter how fast the chefs work. A restaurant built with the pantry inside the kitchen has no corridor at all — the cooks simply reach. Unified memory is the second building: the model's weights are not copied to the accelerator, they are already where the accelerator reads. But the pantry still has shelves of finite depth, and each cook can still only carry so much per trip, which is why capacity and reach speed remain two separate questions."
+teachBack:
+  prompt: "Explain what unified memory removes from the local-inference picture, then use a vendor-reported bandwidth figure to compute an upper bound on single-stream tokens per second for a 4-bit Qwen3.8-27B artifact, and say why the result is a ceiling rather than a prediction."
+  modelAnswer: "On a discrete GPU the weights live in host RAM and must be staged across a PCIe boundary into device VRAM, so the accelerator's usable capacity is its own VRAM, not the machine's RAM. Apple silicon exposes one physical pool addressed by CPU and GPU alike, so a 16 GB 4-bit artifact simply resides in system memory and the GPU reads it in place — the reason a machine with 64 GB of RAM can hold a model that no 24 GB card holds. Bandwidth is the separate question. Taking Apple's reported figure of roughly 800 GB/s for an Ultra-class part and lesson 9.1's rule that batch-1 decode must read essentially every weight byte per token, the bound is 800 divided by 16, about 50 tokens per second. It is a ceiling because it counts only weight traffic at 100 percent bandwidth efficiency, ignoring KV-cache reads, activation traffic, kernel launch overhead, thermal throttling and the fact that no real kernel saturates the bus."
+quiz:
+  - question: "Applying lesson 9.1's roofline reasoning, what does a large unified-memory capacity by itself guarantee about generation speed?"
+    options: ["Nothing — capacity decides whether the model loads, bandwidth divided by bytes-read-per-token decides the speed ceiling", "Speed scales linearly with installed RAM", "It guarantees the model runs at least as fast as on a discrete GPU of the same capacity", "It removes the per-token weight read entirely"]
+    correctIndex: 0
+    explanation: "Lesson 9.1 separated the two axes: bytes moved per token divided into bandwidth gives the batch-1 ceiling, and installed capacity appears nowhere in that quotient."
+  - question: "Why can a 64 GB Apple silicon machine hold a model that a 24 GB discrete GPU cannot, even when both machines have 64 GB of RAM installed?"
+    options: ["The GPU's usable pool is its own VRAM behind a PCIe boundary; on unified memory the GPU addresses the same physical pool as the CPU", "Apple silicon compresses weights automatically", "The discrete GPU cannot read 4-bit formats", "Unified memory stores weights at lower precision"]
+    correctIndex: 0
+    explanation: "The constraint on the discrete card is not the machine's RAM but the memory attached to the accelerator; unified memory deletes that distinction, which is the whole architectural point of this lesson."
+citations:
+  - title: "Metal — Apple Developer"
+    authors: "Apple Inc."
+    year: 2026
+    url: "https://developer.apple.com/metal/"
+  - title: "MLX Documentation"
+    authors: "Apple Machine Learning Research"
+    year: 2026
+    url: "https://ml-explore.github.io/mlx/"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Lesson 7.12 left a loose end. It sized a 4-bit Qwen3.8-27B build at roughly 16 GB and observed that unified-memory machines "punch above their apparent class" — but did not say why, or how far. That is this lesson, and the answer splits cleanly into two questions that beginners routinely fuse into one: can the model load, and how fast will it run.
+
+The loading question is architectural. On a conventional workstation the model file is read into host RAM, then copied across a PCIe boundary into the discrete GPU's own VRAM, and it is that VRAM — not the machine's memory — that must hold the resident weights. A machine with 128 GB of RAM and a 24 GB card is, for this purpose, a 24 GB machine. Apple silicon removes the boundary: the CPU, the GPU and the neural engine address one physical pool, and a tensor produced by one is visible to the others without a copy. Apple documents this as the unified memory architecture underlying Metal, and MLX is built directly on the property — arrays live in shared memory, and an operation is dispatched to a device rather than a buffer being shipped to one. So a 16 GB artifact on a machine with 64 GB of unified memory is simply resident. Nothing is staged, nothing is duplicated, and the KV cache from lesson 7.2 draws on the same pool rather than competing for a smaller private one.
+
+The speed question is the roofline of lesson 9.1, unchanged. Batch-one decode is memory-bound: producing one token requires reading essentially every resident weight byte once, so the ceiling is bandwidth divided by bytes-per-token. Apple reports a memory bandwidth of roughly 800 GB/s for its Ultra-class desktop parts. Take that vendor figure and the 16 GB artifact:
+
+$$
+\frac{800\ \text{GB/s}}{16\ \text{GB per token}} = 50\ \text{tokens per second}.
+$$
+
+Fifty tokens per second, single stream, as an upper bound. Every word of that qualification is load-bearing. The arithmetic assumes perfect bandwidth utilization, counts only weight traffic, and ignores KV-cache reads, activation movement, kernel launch overhead, and the sustained-versus-burst thermal behaviour that lesson 7.12 warned about. A measured figure will be lower, and how much lower is an empirical question this lesson does not answer for you. What the bound does give you is a hard statement in the other direction: no runtime, no compiler, no clever kernel will exceed it while the weights stay 16 GB and the bus stays 800 GB/s.
+
+Here is the classic wrong turn, and it is a purchase-sized mistake. A buyer reads that an Ultra-class machine can be configured with 192 GB of unified memory, notes that lesson 7.12 put bf16 weights at 54 GB, and concludes: excellent, I will skip quantization entirely and run the model at full precision on my desk. The capacity claim is correct — 54 GB fits in 192 GB with room for a long context. The speed conclusion does not follow, because the same divisor now has a much bigger numerator:
+
+$$
+\frac{800\ \text{GB/s}}{54\ \text{GB per token}} \approx 14.8\ \text{tokens per second}.
+$$
+
+Under fifteen tokens per second as a ceiling, meaning something meaningfully slower in practice — slower than most people will tolerate for interactive use. Capacity bought the ability to load bf16; it bought no speed at all. Quantization on this hardware is not a concession to a small machine, it is the lever that moves the bound, and the ladder of lesson 7.9 reads differently here: each halving of the artifact roughly doubles the ceiling.
+
+:::warning
+The most common misconception about unified memory is that a large pool substitutes for bandwidth. It does not. Capacity and bandwidth are independent specifications, and two machines with identical installed memory can differ by nearly an order of magnitude in bandwidth across a vendor's product line — entry-class parts sit far below the Ultra-class figure used above. Before buying for local inference, read the bandwidth number on the vendor page, not the memory number in the marketing headline, and redo the division yourself.
+:::
+
+Two second-order effects deserve naming. First, the cache is not free of the same pool: at lesson 7.2's 64 KiB per token, a 32,768-token conversation adds 2 GiB of resident KV state, and every byte of it is also read during decode, so long contexts erode the ceiling as well as the capacity. Second, the roughly 72 MiB of Gated DeltaNet recurrent state is constant in sequence length, which makes the hybrid architecture unusually well-suited to a fixed-size memory budget — a machine that is comfortable at 8,000 tokens is not four times less comfortable at 32,000 in the way a pure-attention model of the same size would be.
+
+:::caveat
+Every hardware figure in this lesson is a vendor-reported specification, not a measurement taken here, and the 50 and 14.8 tokens per second results are roofline bounds derived from those specifications. Treat them as the number a real benchmark must fall below, and follow lesson 7.12's benchmarking discipline — record runtime version, quantization, context length and thermal state — before quoting any throughput of your own.
+:::
+
+The durable point is that Apple silicon did not repeal the bandwidth wall of lesson 9.1; it removed a different wall. The PCIe staging boundary that makes discrete-GPU capacity a hard cliff is gone, so the question "does it fit" gets a generous answer on consumer hardware. The question "how fast" is answered by exactly the same division as every other chip in this track, and lesson 9.10 will turn both answers into a monthly bill.

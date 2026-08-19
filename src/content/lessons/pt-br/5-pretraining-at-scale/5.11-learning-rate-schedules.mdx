@@ -1,0 +1,92 @@
+---
+id: "5.11-learning-rate-schedules"
+track: "5-pretraining-at-scale"
+order: 11
+title: "Schedules de learning rate e warmup"
+summary: "Um schedule controla a escala dos updates ao longo de uma run, usando warmup para sobreviver às estatísticas instáveis do início e decaimento para refinar o aprendizado tardio — e precisa ser medido em tokens, porque steps não são uma unidade estável."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.10-gradient-checkpointing"]
+unlocks: ["5.12-training-instabilities"]
+analogy: "Um trem de carga não deixa uma estação lotada a todo vapor. Ele ganha velocidade enquanto os engates recebem tensão, viaja em cruzeiro enquanto a via está livre, e então freia gradualmente perto da plataforma. O warmup protege a otimização frágil do início, o schedule principal carrega o progresso útil, e o decaimento reduz updates disruptivos perto do fim. O horário precisa ser medido nas mesmas unidades que a viagem."
+teachBack:
+  prompt: "Avalie um schedule cosseno num dado ponto à mão, e explique o que quebra quando um schedule é definido em steps e o batch global muda no meio da run."
+  modelAnswer: "O decaimento cosseno do pico até o piso é eta(p) = eta_min + 0,5 (eta_max - eta_min)(1 + cos(pi p)), com p a fração do horizonte completada. Com um pico de 3e-4 e um piso de 3e-5, na metade do caminho isso dá 0,5 x 2,7e-4 x 1 + 3e-5 = 1,65e-4. Se o horizonte for expresso em steps e o batch global depois dobrar, o mesmo orçamento de tokens é consumido em metade dos steps planejados, então p só chega a 0,5 quando os dados acabam e a run termina em 1,65e-4 sem nenhuma fase de decaimento aplicada. Definir warmup e horizonte em tokens mantém o progresso alinhado à exposição aos dados através de mudanças de tamanho de mundo, acumulação ou batch."
+quiz:
+  - question: "Um schedule cosseno vai de um pico de 3e-4 até um piso de 3e-5. Qual é o learning rate exatamente na metade do horizonte de decaimento?"
+    options: ["1,65e-4", "1,5e-4", "3e-5", "2,605e-4"]
+    correctIndex: 0
+    explanation: "0,5 x (3e-4 - 3e-5) x (1 + cos(pi/2)) + 3e-5 = 1,35e-4 + 3e-5 = 1,65e-4; o valor a um quarto do caminho é 2,605e-4."
+  - question: "Você liga o activation checkpointing por super-bloco da lição 5.10, e o tempo de passo sobe cerca de 30 por cento. Como um schedule baseado em tokens deve responder?"
+    options: ["De jeito nenhum — a recomputação muda o tempo de relógio por passo, não os tokens vistos, e o schedule é indexado por tokens", "Reduzir o learning rate de pico à metade para compensar", "Estender o warmup em 30 por cento", "Trocar cosseno por constante"]
+    correctIndex: 0
+    explanation: "Essa é precisamente a vantagem de um schedule indexado por tokens: decisões de memória e throughput deixam de perturbar a trajetória de otimização."
+  - question: "O que o warmup muda diretamente?"
+    options: ["O learning rate do optimizer ao longo dos primeiros updates", "O vocabulário do tokenizer", "O número de camadas do modelo", "A direção da máscara causal"]
+    correctIndex: 0
+    explanation: "O warmup eleva gradualmente a escala dos updates em vez de aplicar o valor de pico já no primeiro passo."
+citations:
+  - title: "Attention Is All You Need"
+    authors: "Ashish Vaswani et al."
+    year: 2017
+    url: "https://arxiv.org/abs/1706.03762"
+  - title: "Decoupled Weight Decay Regularization"
+    authors: "Ilya Loshchilov e Frank Hutter"
+    year: 2019
+    url: "https://arxiv.org/abs/1711.05101"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Na metade de uma run longa de pretraining, o cluster cresce. O dobro de nós entra, o batch global dobra de quatro milhões de tokens por passo para oito milhões, o throughput melhora lindamente, e todo mundo fica satisfeito. A run termina no prazo em termos de tokens, a curva de loss parece razoável, e o checkpoint final é pior do que deveria — perceptivelmente pior na avaliação downstream do que um piloto menor previu. A causa não são os dados, nem a arquitetura, nem os nós extras. É que o schedule de learning rate foi escrito em steps.
+
+O optimizer transforma gradientes em updates de parâmetro, mas o **learning rate** define a escala deles, e um único valor constante raramente serve a uma run inteira. O início do treino tem ativações descalibradas e momentos do optimizer pouco confiáveis; o meio quer progresso substancial; o fim se beneficia de updates pequenos e refinadores. Um schedule codifica esse risco variável.
+
+O **warmup** começa abaixo do pico pretendido e sobe ao longo de um intervalo inicial. O warmup linear no passo $t$ é simplesmente
+
+$$
+\eta_t=\eta_{max}\frac{t}{T_{warmup}}
+$$
+
+para $t\le T_{warmup}$. Os primeiros updates ficam contidos enquanto escalas de normalização, magnitudes de gradiente e as estimativas de momento do Adam se assentam. O warmup não conserta um pico excessivo; ele só muda como esse pico é alcançado.
+
+Depois do warmup, o **decaimento cosseno** é o padrão moderno. Escrevendo $p$ para a fração do horizonte de decaimento completada,
+
+$$
+\eta(p)=\eta_{min}+\tfrac{1}{2}(\eta_{max}-\eta_{min})\bigl(1+\cos(\pi p)\bigr).
+$$
+
+Avalie isso uma vez à mão com um pico de 3e-4 e um piso de 3e-5, um mínimo típico de dez por cento. Na marca de um quarto, $\cos(\pi/4)=0.7071$, então
+
+$$
+\eta=\tfrac{1}{2}(2.7\times 10^{-4})(1.7071)+3\times 10^{-5}=2.605\times 10^{-4}.
+$$
+
+Na metade do caminho, $\cos(\pi/2)=0$, então
+
+$$
+\eta=\tfrac{1}{2}(2.7\times 10^{-4})(1)+3\times 10^{-5}=1.65\times 10^{-4}.
+$$
+
+A curva é suave perto das duas pontas e mais íngreme no meio, que é por que ela passa muito tempo perto do pico e depois muito tempo perto do piso.
+
+Agora volte ao cenário de abertura com esses números na mão. Suponha que o plano fosse um orçamento de dois trilhões de tokens a quatro milhões de tokens por passo, dando 500.000 steps, e que o horizonte do scheduler estivesse configurado como 500.000 steps. Dobrar o batch global para oito milhões de tokens significa que os mesmos dois trilhões de tokens são consumidos em 250.000 steps. A run termina quando os dados terminam — em $p=0.5$ — com o learning rate ainda em 1,65e-4, sem nunca ter entrado na fase de decaimento. Todo o refinamento que a segunda metade de um cosseno proporciona simplesmente não aconteceu, e nada nos logs pareceu anormal, porque a taxa seguiu fielmente a curva configurada.
+
+:::warning
+Esta é a concepção equivocada mais comum sobre schedules: que um step é uma unidade de progresso de treino. Não é. Um step é uma unidade de *invocação do optimizer*, e seu conteúdo em tokens depende do tamanho do mundo, do microbatch, da acumulação de gradientes e do padding. Defina warmup e horizonte em tokens — idealmente tokens efetivos que carregam loss, excluindo padding — e o schedule sobrevive a mudanças de topologia, reinícios em outra escala e às decisões de memória e throughput da lição 5.10, que alteram o tempo de passo sem alterar em nada a exposição aos dados.
+:::
+
+Vale conhecer as alternativas ao cosseno. O **decaimento linear** cai a um ritmo constante em direção a um ponto final escolhido e torna trivial ler quanto de progresso resta. O decaimento por **raiz quadrada inversa**, proporcional a $t^{-1/2}$ após uma construção de warmup, foi a receita original do Transformer e tem a propriedade útil de não exigir um horizonte declarado. **Constante com warmup** mantém o pico depois da rampa, o que serve a um horizonte total incerto, mas pode deixar os updates tardios mais ruidosos do que um modelo quase convergido gostaria. Os pontos finais importam tanto quanto os formatos: decair exatamente até zero pressupõe que a run termina onde foi planejada, e estendê-la depois não produz aprendizado a menos que o schedule seja reescrito, enquanto um piso não nulo preserva adaptação mas continua perturbando um modelo já assentado. Warm restarts, populares em outros contextos, introduzem subidas deliberadas e raramente são apropriados para uma run cara de pretraining de passagem única.
+
+:::caveat
+Curvas de learning rate não podem ser copiadas independentemente de optimizer, tamanho de batch, escala do modelo, inicialização, precisão, clipping e mistura de dados. O mesmo pico numérico pode ser estável numa receita e destrutivo em outra, que é exatamente por que os picos e comprimentos de warmup de modelos publicados são de uso limitado para você. Para o Qwen3.8-27B em particular não existe relatório técnico: nenhum pico, nenhum warmup, nenhum horizonte, nenhum orçamento de tokens é publicado. O que o config de fato mostra é a maquinaria de estabilidade com a qual o schedule coopera — RMSNorm com epsilon 1e-6 num residual stream pre-norm, e gating nos dois tipos de camada — que a lição 5.12 retoma.
+:::
+
+O AdamW separa a otimização baseada em gradiente do weight decay, mas o scheduler e o decay ainda interagem, e parâmetros como escalas de normalização e biases costumam ser excluídos do decay inteiramente. O gradient clipping limita um update dirigido por um gradiente descomunal antes do passo do optimizer; é um guarda-corpo, não substituto de um schedule sensato. Escalar o batch global pode justificar ajustar o pico, mas regras lineares e de raiz quadrada são heurísticas com fronteiras de regime — batches maiores reduzem o ruído de gradiente e podem querer warmup mais longo ou outra afinação do optimizer, então rode varreduras piloto em vez de extrapolar uma regra por ordens de magnitude.
+
+Registre a taxa realizada em cada passo junto com contagem de tokens, loss, norma de gradiente, estatísticas do optimizer e updates pulados de mixed precision. Na retomada, restaure a posição do scheduler: reiniciar o warmup por acidente depois de um checkpoint muda o caminho de otimização, e saltar para uma taxa errada de fim de run fabrica exatamente o tipo de spike que a lição 5.12 precisa diagnosticar. Sobrepor a taxa à curva de loss ajuda a correlacionar instabilidade com escala de update, embora correlação sozinha nunca prove que o schedule causou um spike.
+
+O modelo duradouro é o de momento controlado para o aprendizado. O warmup evita sacudir uma rede descalibrada, a fase central se move rápido por um espaço de parâmetros útil, e o decaimento estreita o passo conforme a run se aproxima do fim planejado. O schedule é parte da especificação do experimento e parte do estado do checkpoint — não configuração cosmética do optimizer, e não algo a expressar numa unidade que muda quando seu cluster muda.

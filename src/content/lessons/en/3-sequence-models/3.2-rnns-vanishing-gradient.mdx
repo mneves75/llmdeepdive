@@ -1,0 +1,72 @@
+---
+id: "3.2-rnns-vanishing-gradient"
+track: "3-sequence-models"
+order: 2
+title: "RNNs, fixed-size state, and the vanishing gradient"
+summary: "A recurrent network is the fixed-size-state answer to lesson 3.1 — the design that lost to attention on trainability, and that Qwen3.8-27B now runs in 48 of its 64 layers."
+tier: "core"
+locale: "en"
+prerequisites: ["3.1-modelling-sequences"]
+unlocks: ["3.3-lstm-gru-gates", "3.6-linear-attention-fast-weights"]
+analogy: "A message crosses fifty people in a whisper chain. Each person applies the same habit: soften loud words, emphasize familiar ones, and pass a shortened summary. If every handoff retains eighty percent of a detail, after many steps it nearly disappears; if every handoff amplifies it, the message blows up. An RNN's backward signal crosses repeated transformations in the same way, so long-distance credit depends on a product of local sensitivities."
+teachBack:
+  prompt: "Describe the RNN as an answer to the state question, show why backpropagation through time produces a product of Jacobians, and distinguish what clipping fixes from what it cannot."
+  modelAnswer: "An RNN computes h_t = φ(W_hh h_{t−1} + W_xh x_t + b) with one shared transition, so its carried state is a fixed-size vector and per-token cost is constant in length. Learning that an early token caused a late error requires backpropagation through time, whose derivative from a late state to an early one is a product of one Jacobian per intervening step. If the relevant factors sit below one the product decays geometrically toward zero and distant credit vanishes; above one it grows and the run destabilizes. Gradient clipping bounds the magnitude after differentiation, so it controls explosion but cannot recreate a signal already multiplied to zero — the two failures need different fixes, which is why gates and additive state paths came next."
+quiz:
+  - question: "Lesson 3.1 framed architectures by how much state they carry between tokens. Where does a plain RNN sit on that axis?"
+    options: ["At the fixed-size end — one bounded vector carried forward, constant memory and constant work per token at any sequence length", "At the store-everything end", "It carries no state at all", "Its state grows linearly with the vocabulary"]
+    correctIndex: 0
+    explanation: "That constancy is the whole appeal, and it is also what imposes the information ceiling lesson 3.1 counted out."
+  - question: "Why does the gradient from a late loss to an early RNN state involve many multiplications?"
+    options: ["The hidden state passes through the same transition once per step, and the chain rule multiplies one Jacobian per step", "Every token has its own optimizer", "The labels are multiplied together", "Softmax stores the sequence"]
+    correctIndex: 0
+    explanation: "Unrolling turns sequence length into depth, so time and depth create identical products of local derivatives."
+  - question: "What does gradient clipping actually address?"
+    options: ["Exploding gradient magnitude only — it bounds a large update but cannot restore a vanished one", "Both vanishing and exploding gradients", "Missing training labels", "Tokenizer coverage"]
+    correctIndex: 0
+    explanation: "Clipping is applied after differentiation, so a signal already multiplied toward zero is still zero after clipping."
+citations:
+  - title: "Learning long-term dependencies with gradient descent is difficult"
+    authors: "Yoshua Bengio, Patrice Simard, and Paolo Frasconi"
+    year: 1994
+    url: "https://doi.org/10.1109/72.279181"
+  - title: "Qwen3.8-27B Model Card"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+updated: "2026-08-18"
+---
+
+Lesson 3.1 posed the state question and sketched two extreme answers. This lesson takes the fixed-size answer seriously, finds out exactly why it lost the 2017 argument, and then reports something surprising: the design that lost now runs in three quarters of the layers of this course's model.
+
+A **recurrent neural network** is the minimal implementation of a bounded carried state:
+
+$$
+h_t=\phi(W_{hh}h_{t-1}+W_{xh}x_t+b),\qquad y_t=W_{hy}h_t+c.
+$$
+
+One transition, reused at every position. Read it as a sequence *mixer*: information from position 12 reaches position 40,000 only by having survived inside $h$ through 39,988 applications of the same function. Memory is constant, work per token is constant, and nothing is stored per position. Lesson 3.1's arithmetic already told you the price — the bounded channel — so this lesson is about the second price, which turned out to be worse.
+
+Unroll the equations and something important becomes visible: an RNN over a sequence of length $T$ *is* a network of depth $T$ whose layers share parameters. Sequence time and network depth are the same axis. Everything lesson 2.8 said about compounding scale across 64 layers applies here across 40,000 steps.
+
+To learn that an early token caused a late error, training uses **backpropagation through time**: unroll the graph, differentiate, and accumulate gradient contributions from every use of the shared matrices. The derivative from state $h_T$ back to state $h_k$ contains one Jacobian per intervening step, multiplied together.
+
+Put numbers on it, in the simplest possible setting. Take a scalar recurrence $h_t=\tanh(w\,h_{t-1}+x_t)$. Each step contributes a factor of $w\cdot\tanh'(\cdot)$, and since $\tanh'$ is at most one, the factor is at most $|w|$. Set $w=0.5$ and look across 50 steps: the product is at most $0.5^{50}\approx8.9\times10^{-16}$. In bf16 arithmetic that is indistinguishable from zero. The early state receives no usable information about how it should change to reduce a loss fifty steps later — the **vanishing-gradient** problem. Now set $w=1.5$ instead. The product reaches $1.5^{50}\approx6.4\times10^{8}$, and a single update multiplies the parameters by a factor large enough to destroy the run: **exploding gradients**. Between these lies a narrow band, and $\tanh$ makes it narrower still, because a saturated unit contributes a derivative near zero and drags the product down even when $w$ is well chosen.
+
+Note carefully what has and has not failed. The *forward* state may still carry usable information about the distant past. What breaks is credit assignment: training cannot discover which early computation to change. This is why the problem is invisible in a forward-pass diagram and fatal in practice.
+
+Here is the classic wrong turn, and it is nearly universal among people meeting these two failures for the first time. Training explodes, you add gradient clipping, the run stabilizes, and you conclude the gradient pathology is handled. It is not. **Gradient clipping** rescales a gradient whose norm exceeds a threshold — it acts *after* differentiation, on the magnitude. That genuinely fixes explosion, and it is standard practice for good reason. It does absolutely nothing for vanishing, because rescaling a vector of size $10^{-15}$ to a bounded norm does not restore the information those fifteen orders of magnitude destroyed; it merely amplifies whatever numerical noise survived. The diagnostic that separates the two: run a synthetic task with a single relevant marker placed at increasing distances from the prediction, and plot both accuracy and the gradient norm at the marker against distance. If the curve collapses toward chance with clipping enabled, distant credit was never restored, and no amount of clipping threshold tuning will change that.
+
+Mitigations that do address vanishing attack the product itself rather than its output. Orthogonal initialization keeps the recurrent Jacobian near norm-preserving at the start. Truncated backpropagation shortens the unrolled window, which saves memory and compute while explicitly capping how far credit can travel — a real limitation that belongs in the reported model, not a free optimization. Additive state paths, which lesson 3.3 builds with gates, let a component travel across steps without passing through a full nonlinear transformation each time. And attention, arriving in lesson 3.5, sidesteps the chain entirely by creating a direct edge between distant positions.
+
+Attention won, and it won on two counts at once: it removed the long product from the gradient path, and it made training parallel across positions, since every position's representation can be computed simultaneously rather than waiting for its predecessor. Sequential execution was arguably the more decisive defeat — a design that cannot saturate a modern accelerator during training loses regardless of its other merits.
+
+:::warning
+The most common misconception is that this makes recurrence a historical curiosity, a chapter you read before the real material. That is wrong as a matter of current fact. Qwen3.8-27B, released in August 2026, builds 48 of its 64 layers as Gated DeltaNet — layers that carry a fixed-size recurrent state and cache nothing per token — and keeps full attention in only 16, one in every four (Qwen3.8-27B Model Card, 2026). Three quarters of a frontier model is recurrent. What lost in 2017 was not the fixed-state idea; it was the naive vector state, the multiplicative-only transition, and the sequential training loop.
+:::
+
+:::insight
+Each of those three defeats got answered separately, and the rest of this track is the answer. Lesson 3.3 replaces the raw multiplicative transition with learned gates and an additive state path, so a component can persist without being re-multiplied at every step. Lesson 3.6 replaces the vector state with a *matrix* of associations and shows that the resulting update is associative — which makes the recurrence parallelizable during training, removing the last structural objection — and replaces the additive write with an error-correcting one so old entries can be overwritten instead of superposed. Lesson 4.15 assembles the result. Read the rest of this track as a repair job on the design you just watched fail.
+:::
+
+The arithmetic that makes it worth repairing is the one from lesson 3.1. A fixed-size state costs the same at token one and at token 262,144; in Qwen3.8-27B the recurrent layers hold roughly 72 MiB of state in total, flat in sequence length, while the attention layers' stored keys and values reach 16 GiB at full context, as lesson 7.2 derives. That gap is why anyone bothered to fix the RNN, and it is worth carrying into the next four lessons.

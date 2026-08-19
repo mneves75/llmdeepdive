@@ -1,0 +1,63 @@
+---
+id: "8.9-mlx"
+track: "8-building-and-serving-stacks"
+order: 9
+title: "MLX"
+summary: "Apple's array framework: lazy evaluation, unified memory, and mlx-lm running a 4-bit Qwen3.8-27B on a 32 to 64 GB Mac — where a discrete 24 GB card runs out of room first."
+tier: "advanced"
+locale: "en"
+prerequisites: ["8.7-llama-cpp-and-gguf", "7.9-quantization-i-int8-int4-the-basics"]
+unlocks: ["8.12-choosing-your-stack", "9.6-apple-silicon-unified-memory"]
+analogy: "Two chefs cook the same dish. One has a huge, blazing-fast stove in a separate room and a narrow corridor to the pantry; every ingredient must be carried through the corridor before it can be cooked, and the stove idles whenever the corridor is busy. The other has a smaller stove standing in the middle of the pantry — slower per pan, but nothing is ever carried anywhere, and there is no dish too large for the room. Unified memory is the second kitchen."
+teachBack:
+  prompt: "Explain MLX's two defining design choices, then size a 4-bit Qwen3.8-27B session on a 32 GB Mac and say honestly where a discrete 24 GB GPU wins and where it loses."
+  modelAnswer: "MLX is lazy and unified. Operations build a graph instead of computing immediately, so results materialise only when a value is actually needed or evaluation is forced, letting the framework fuse chains and skip temporaries that nothing reads. And arrays live in memory shared by CPU and GPU, so an operation is scheduled on a device without any copy — there is no host-to-device transfer step at all. For Qwen3.8-27B at 4 bits the weights are about 14 to 16 GB. On a 32 GB Mac, a 32,768-token session adds 2 GiB of KV cache at 64 KiB per token from lesson 7.2, roughly 72 MiB of DeltaNet state, and a compute workspace, landing near 19 GB against a Metal working limit that defaults to a large fraction of system RAM — it fits, without much slack. A 64 GB machine holds the same model with room for long context or an 8-bit build. A discrete 24 GB card has far more bandwidth and will decode faster while everything fits, but weights plus a growing cache share that same 24 GB, and the moment they do not fit the overflow crosses PCIe and throughput collapses. The Mac wins on ceiling, the card wins on speed below the ceiling."
+quiz:
+  - question: "Why does a 4-bit Qwen3.8-27B need roughly 14 to 16 GB rather than exactly 13.5 GB, per lesson 7.9?"
+    options: ["Quantization is group-wise: each group of weights carries a scale, and often a zero point, stored alongside the packed codes", "MLX stores an extra copy of each tensor for the lazy graph", "Apple's GPU requires 8-bit alignment for every tensor", "The vision tower is always kept in bf16"]
+    correctIndex: 0
+    explanation: "Lesson 7.9 established that low-bit formats quantize in small groups and must ship the per-group scale metadata, so the effective bits per weight always exceed the nominal bit width."
+  - question: "In MLX, what triggers the actual computation of an array expression?"
+    options: ["Evaluation is lazy: the graph is computed when a value is needed or evaluation is explicitly forced", "Every operation executes immediately on the GPU, as in eager PyTorch", "Computation happens only at process exit", "Only operations inside a compiled function ever execute"]
+    correctIndex: 0
+    explanation: "Lazy evaluation is one of MLX's two defining choices; it is what lets the framework fuse operation chains and never materialise temporaries nothing reads."
+citations:
+  - title: "MLX Documentation"
+    authors: "Apple Machine Learning Research"
+    year: 2026
+    url: "https://ml-explore.github.io/mlx/"
+  - title: "mlx-lm"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2024
+    url: "https://github.com/ml-explore/mlx-lm"
+updated: "2026-08-18"
+---
+
+Here is a purchasing question with a counterintuitive answer. You have a budget, and two candidate machines: a desktop with a 24 GB discrete GPU, and a Mac with 32 GB of unified memory. You want to run Qwen3.8-27B locally at 4 bits, sometimes with long documents. The GPU has several times the memory bandwidth and vastly more raw compute. Which machine actually runs the model? The bandwidth answer and the capacity answer disagree, and understanding why is the whole point of MLX.
+
+MLX is an array framework built for Apple silicon, with an API deliberately close to NumPy and a neural-network layer close to PyTorch, so most model code reads as you expect. Two design decisions make it different, and both follow from the hardware.
+
+The first is **lazy evaluation**. Writing an expression in MLX does not compute it. It records a node in a computation graph, and the graph is executed when some value is genuinely required — when you print it, convert it, or force evaluation explicitly. This is not a performance trick bolted on; it is the default execution model. The payoff is that chains of operations can be fused into fewer kernels and intermediate arrays that nothing ever reads need never be materialised at all. The cost is that timing a line of code measures nothing: the work you think you just did has probably not happened yet, which trips up every newcomer benchmarking a forward pass.
+
+The second is **unified memory**, and this is the one that answers the purchasing question. On a conventional accelerator, host memory and device memory are separate pools connected by a bus; a tensor exists in one place, and using it elsewhere means an explicit copy. MLX arrays live in memory that both the CPU and the GPU address directly. An operation is scheduled onto a device; the array does not move. There is no `.to(device)` in the mental model, no pinned-memory staging, and — critically — no ceiling defined by a separate VRAM budget. The model's working set is bounded by system RAM and by how much of it the GPU is permitted to hold, not by a soldered 24 GB.
+
+Now size the 32 GB Mac, step by step, using arithmetic you already own. Weights at 4 bits: 14 to 16 GB, because lesson 7.9's group-wise scales mean the nominal half-byte per weight is a floor and never the real rate. KV cache from lesson 7.2: 64 KiB per token, so a 32,768-token session costs $32{,}768 \times 64\ \text{KiB} = 2\ \text{GiB}$. The Gated DeltaNet recurrent state adds about 72 MiB per sequence, flat in length. Compute workspace and the logit tensor over 248,320 vocabulary rows add on the order of a gigabyte. Total near 19 GB, against a machine whose GPU working limit defaults to a large fraction of 32 GB — it fits, with modest and honest slack. Move to 64 GB and the same model gains real room: a longer window, an 8-bit build with visibly better fidelity, or several sessions at once.
+
+```
+mlx_lm.convert --hf-path Qwen/Qwen3.8-27B -q --q-bits 4 --mlx-path qwen3.8-27b-4bit
+mlx_lm.generate --model qwen3.8-27b-4bit --temp 0.7 --top-p 0.80 --prompt "..."
+```
+
+The mlx-lm package supplies the model implementations, the conversion and quantization path from a Hugging Face checkpoint, generation with the sampling controls the model card specifies, and a local server. Note the sampling flags: the instruct preset from the model card is temperature 0.7, top_p 0.80, top_k 20, and the same discipline from lesson 8.8 applies here — state them rather than inherit them.
+
+The classic wrong turn is the one the opening question sets up. The reasoning runs: the vendor says this model needs 24 GB of VRAM minimum, my card has exactly 24 GB, therefore my card is the right machine and the 32 GB Mac with its slower memory is the compromise. Two corrections. First, that 24 GB figure describes the 4-bit weights as a floor, and floors do not include the cache. On the discrete card, weights and a growing KV cache compete for the same 24 GB; a 65,536-token session wants 4 GiB of cache on top of 16 GB of weights plus workspace, and you are negotiating with the ceiling. Exceed it and the overflow does not degrade gently — it spills across PCIe, and decode, which is bandwidth-bound, falls off a cliff. Second, the Mac's advantage is not that it is fast. It is emphatically not fast by comparison: its memory bandwidth is well below a data-center HBM stack, and while everything fits in 24 GB the discrete card will decode faster. The Mac's advantage is that the ceiling is high and soft. Buy the card for speed at short context; buy the unified machine for the sessions the card cannot hold at all.
+
+:::warning
+Unified memory is not free memory. The GPU's addressable working set is a configurable fraction of system RAM, and the operating system, your browser, and the framework's own buffers are inside the same pool. Pushing a model to the edge of physical RAM does not fail cleanly — it swaps, and a swapping decode loop is slower than the CPU-only path you were trying to avoid. Leave headroom deliberately, and remember that MLX's laziness means peak memory arrives when the graph evaluates, not when you wrote the line.
+:::
+
+:::caveat
+Architecture support is a per-release fact here exactly as it was in lesson 8.7. Qwen3.8-27B is a hybrid with 48 Gated DeltaNet layers, and running it under mlx-lm requires that implementation to exist in the version you installed. Check before converting a 54 GB bf16 checkpoint into a quantized one.
+:::
+
+The durable idea is that memory topology is an architectural choice with consequences a spec sheet hides. Lazy graphs buy fusion; unified memory buys a ceiling. Lesson 9.6 takes the bandwidth side of this bargain seriously and works out what tokens per second the arrangement can actually sustain.
