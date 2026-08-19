@@ -24,6 +24,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unset the check warns rather than passing quietly, because a rule that
   silently did not run is worse than one that is absent.
 
+### Changed
+
+- `compatibility_date` moved to 2026-08-19, the date this deploy was actually
+  tested against the live edge.
+
 ## [0.5.0] — 2026-08-19
 
 Initial public release.
