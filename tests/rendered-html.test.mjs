@@ -249,3 +249,69 @@ test('explorer annotation live regions accept dynamic text without invalid list 
     )
   }
 })
+
+/**
+ * Every lesson's visible date must be the date its frontmatter states.
+ *
+ * `updated: coerce.date()` turns `2026-08-19` into UTC midnight, and formatting
+ * that with `toLocaleDateString(locale)` renders it in the BUILD MACHINE's
+ * timezone. Built from São Paulo (UTC-3) every one of the 212 lesson pages
+ * showed the previous day, in both locales, while the `datetime` attribute
+ * beside it stayed correct — so the page contradicted itself and no gate looked.
+ *
+ * The second failure is worse than the cosmetic one: the emitted HTML depended
+ * on where it was built, so CI in UTC and a maintainer's laptop produced
+ * different bytes for the same commit. A site whose whole performance argument
+ * is byte-identical static assets cannot have a build that is a function of the
+ * builder's clock.
+ *
+ * Asserting the rendered text against the `datetime` attribute pins the visible
+ * bug, but only where the build machine is west of UTC. A CI runner in UTC
+ * renders the same string with or without the fix, so that assertion alone
+ * would go green on the very configuration most likely to run it. The source
+ * assertion below is what makes the guard hold everywhere: it pins the
+ * mechanism rather than one machine's output.
+ */
+test('the lesson date formatter is pinned to UTC rather than the build machine', () => {
+  const layout = readFileSync(join('src', 'layouts', 'Lesson.astro'), 'utf8')
+  const render = layout.split('\n').find((line) => line.includes('<time datetime='))
+  assert.ok(render, 'Lesson.astro no longer renders the updated date in a recognisable <time>')
+  assert.match(
+    render,
+    /toLocaleDateString\([^)]*timeZone:\s*'UTC'/,
+    'the visible lesson date must be formatted with timeZone: UTC — without it the ' +
+      'rendered day depends on where the site was built, and a UTC CI runner cannot detect that',
+  )
+
+  // The mechanism this guards, demonstrated rather than asserted: the same
+  // instant formats to two different calendar days depending on the zone.
+  const midnightUtc = new Date('2026-08-19T00:00:00.000Z')
+  assert.notEqual(
+    midnightUtc.toLocaleDateString('en', { timeZone: 'America/Sao_Paulo' }),
+    midnightUtc.toLocaleDateString('en', { timeZone: 'UTC' }),
+    'expected a frontmatter date at UTC midnight to fall on the previous day in São Paulo',
+  )
+})
+test('a lesson renders the date its frontmatter states, independent of build timezone', () => {
+  const lessons = pages().filter((p) => p.route.includes('/lessons/'))
+  assert.ok(lessons.length > 100, `expected the lesson corpus, found ${lessons.length} pages`)
+
+  for (const page of lessons) {
+    const match = page.html.match(/<time datetime="([^"]+)"[^>]*>([^<]+)<\/time>/)
+    assert.ok(match, `${page.route}: no <time> element carrying the updated date`)
+
+    const [, iso, shown] = match
+    const [year, month, day] = iso.slice(0, 10).split('-').map(Number)
+    const digits = shown.match(/\d+/g)?.map(Number) ?? []
+
+    assert.ok(
+      digits.includes(day) && digits.includes(year),
+      `${page.route}: shows "${shown}" but datetime says ${iso.slice(0, 10)} — ` +
+        'format the date in UTC, not in the build machine’s zone',
+    )
+    assert.ok(
+      digits.includes(month),
+      `${page.route}: shows "${shown}", which does not carry month ${month} from ${iso.slice(0, 10)}`,
+    )
+  }
+})
