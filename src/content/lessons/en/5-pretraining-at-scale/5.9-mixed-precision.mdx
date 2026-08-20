@@ -11,10 +11,10 @@ unlocks: ["5.10-gradient-checkpointing"]
 analogy: "A survey crew carries pocket rulers for routine measurements and a calibrated laboratory instrument for tiny tolerances and final totals. A pocket ruler is faster to carry but has limited range and detail. Mixed precision assigns cheap rulers to large matrix work while keeping accumulation, normalization, or master records where extra range matters. Using one ruler everywhere is simpler, but can overflow a mountain or round a hair to zero."
 teachBack:
   prompt: "Explain why Qwen3.8-27B's 54 GB of bf16 weights implies a much larger training footprint, and compare fp16, bf16, and fp8 in range, precision, and required safeguards."
-  modelAnswer: "The shipped safetensors are bf16, so 27 billion parameters at 2 bytes give 54 GB. Training cannot use only that copy: bf16 has 8 explicit fraction bits, so the smallest relative step near a weight of 1.0 is about 1/256, and a typical update of order 1e-5 rounds away entirely. Training therefore keeps an fp32 master copy at 4 bytes per parameter, 108 GB, where updates accumulate, and casts down to bf16 for the forward pass. fp16 has more fraction bits but a much narrower exponent range and needs dynamic loss scaling. bf16 keeps the fp32 exponent width with a coarser mantissa and usually needs no loss scaling. fp8 trades further precision or range for throughput and requires per-tensor or per-block scaling, wider accumulation, and hardware-aware recipes."
+  modelAnswer: "The shipped safetensors are bf16, so 27 billion parameters at 2 bytes give 54 GB. Training cannot use only that copy: bf16 has 7 explicit fraction bits, so the smallest relative step near a weight of 1.0 is about 1/128, and a typical update of order 1e-5 rounds away entirely. Training therefore keeps an fp32 master copy at 4 bytes per parameter, 108 GB, where updates accumulate, and casts down to bf16 for the forward pass. fp16 has more fraction bits but a much narrower exponent range and needs dynamic loss scaling. bf16 keeps the fp32 exponent width with a coarser mantissa and usually needs no loss scaling. fp8 trades further precision or range for throughput and requires per-tensor or per-block scaling, wider accumulation, and hardware-aware recipes."
 quiz:
   - question: "Qwen3.8-27B's safetensors are bf16, totalling 54 GB. Why can training not simply update those tensors in place?"
-    options: ["bf16's 8 explicit fraction bits make the smallest step near 1.0 about 1/256, so an update of order 1e-5 rounds to nothing and the weight never moves", "bf16 cannot represent negative numbers", "bf16 has a narrower exponent range than fp16", "Safetensors files are read-only by design"]
+    options: ["bf16's 7 explicit fraction bits make the smallest step near 1.0 about 1/128, so an update of order 1e-5 rounds to nothing and the weight never moves", "bf16 cannot represent negative numbers", "bf16 has a narrower exponent range than fp16", "Safetensors files are read-only by design"]
     correctIndex: 0
     explanation: "Small updates are swamped by the coarse mantissa, so an fp32 master copy of 108 GB accumulates them and the bf16 copy is regenerated from it."
   - question: "Lesson 5.8 partitioned one logical tensor across tensor-parallel ranks. What does that imply for fp8 scaling factors?"
@@ -48,7 +48,7 @@ Start with what a floating-point format is buying. Bits divide among sign, expon
 Coarse how? An fp16 or bf16 value carries an implicit leading one, so bf16's 7 explicit fraction bits give 8 bits of significand. Near a weight of magnitude 1.0, the smallest representable step is therefore
 
 $$
-2^{-8}=\frac{1}{256}\approx 0.0039.
+2^{-7}=\frac{1}{128}\approx 0.0078.
 $$
 
 Now consider a realistic optimizer update. Late in training with a decayed learning rate, a typical parameter change is of order $10^{-5}$ relative to the weight. Add it directly to a bf16 weight of 1.0:
@@ -57,7 +57,7 @@ $$
 1.0+0.00001 = 1.00001 \longrightarrow \text{rounds back to } 1.0,
 $$
 
-because the next representable bf16 value above 1.0 is 1.00390625, and 1.00001 is nowhere near halfway there. The update does not shrink. It vanishes. Repeat that for 100,000 steps and the weight has still not moved, even though the accumulated intended change was about 1.0 — a full unit of drift, silently discarded one step at a time. This is *swamping*, and it is the reason mixed-precision training exists.
+because the next representable bf16 value above 1.0 is 1.0078125, and 1.00001 is nowhere near halfway there. The update does not shrink. It vanishes. Repeat that for 100,000 steps and the weight has still not moved, even though the accumulated intended change was about 1.0 — a full unit of drift, silently discarded one step at a time. This is *swamping*, and it is the reason mixed-precision training exists.
 
 The fix is a **master copy** in fp32. Updates accumulate there, where the significand is 24 bits and $10^{-5}$ is representable against 1.0 with room to spare, and the bf16 tensors used in the forward pass are regenerated from it. The cost is explicit:
 
@@ -65,7 +65,9 @@ $$
 27\times 10^{9}\times 4\ \text{B}=108\ \text{GB},
 $$
 
-exactly twice the shipped weights, and it is the largest single line in the 324 GB of AdamW state that lesson 5.7 budgeted. Together with bf16 parameters, bf16 gradients, and the two fp32 moments, the recipe costs about 16 bytes per parameter. Training everything in fp32 instead would cost about 20 bytes per parameter — 540 GB — and would forfeit the accelerator's fast reduced-precision matrix units. Mixed precision buys back roughly 100 GB and a large multiple of throughput, while keeping the one copy where rounding would be fatal.
+exactly twice the shipped weights, and one of the three equal 108 GB lines that make up the 324 GB of AdamW state lesson 5.7 budgeted — master copy, first moment, second moment. Together with bf16 parameters and bf16 gradients, the recipe costs about 16 bytes per parameter.
+
+Now the comparison that is usually stated wrongly. Training everything in fp32 — 4 bytes each for weights, gradients, and the two moments — also costs 16 bytes per parameter. **Mixed precision does not shrink the persistent optimizer footprint at all.** What it buys is the accelerator's fast reduced-precision matrix units, roughly half the bandwidth on every weight and gradient it moves, and activations stored at 2 bytes rather than 4 — which is the memory that actually dominates a long-context step, as lesson 5.10 works out. Keeping the fp32 master copy is what makes all of that safe.
 
 :::warning
 The most common misconception is that bf16's fp32-width exponent makes the master copy unnecessary — "no overflow, no underflow, so why keep 108 GB around?" Range was never the problem the master copy solves. Precision is. bf16 handles enormous and tiny magnitudes gracefully and still cannot represent the *sum* of a large weight and a small update, because the two differ by more than 8 significand bits. Dropping master weights produces a run that trains normally at first, when updates are large relative to weights, and then quietly stops learning as the learning rate decays.

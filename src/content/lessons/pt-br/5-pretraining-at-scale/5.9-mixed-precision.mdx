@@ -11,10 +11,10 @@ unlocks: ["5.10-gradient-checkpointing"]
 analogy: "Uma equipe de topografia carrega réguas de bolso para medidas de rotina e um instrumento de laboratório calibrado para tolerâncias minúsculas e totais finais. Uma régua de bolso é mais rápida de carregar, mas tem alcance e detalhe limitados. A mixed precision atribui réguas baratas ao grande trabalho matricial enquanto mantém acumulação, normalização ou registros master onde o alcance extra importa. Usar uma régua só em tudo é mais simples, mas pode transbordar uma montanha ou arredondar um fio de cabelo a zero."
 teachBack:
   prompt: "Explique por que os 54 GB de pesos bf16 do Qwen3.8-27B implicam uma pegada de treino muito maior, e compare fp16, bf16 e fp8 em alcance, precisão e salvaguardas necessárias."
-  modelAnswer: "Os safetensors lançados são bf16, então 27 bilhões de parâmetros a 2 bytes dão 54 GB. O treino não pode usar só essa cópia: o bf16 tem 8 bits explícitos de fração, então o menor passo relativo perto de um peso de 1,0 é cerca de 1/256, e um update típico da ordem de 1e-5 é arredondado inteiramente para fora. Por isso o treino mantém uma cópia master em fp32 a 4 bytes por parâmetro, 108 GB, onde os updates se acumulam, e faz cast para baixo até bf16 para o forward pass. O fp16 tem mais bits de fração, mas um alcance de expoente muito mais estreito e precisa de dynamic loss scaling. O bf16 mantém a largura de expoente do fp32 com uma mantissa mais grosseira e em geral não precisa de loss scaling. O fp8 troca ainda mais precisão ou alcance por throughput e exige escalonamento por tensor ou por bloco, acumulação mais larga e receitas cientes do hardware."
+  modelAnswer: "Os safetensors lançados são bf16, então 27 bilhões de parâmetros a 2 bytes dão 54 GB. O treino não pode usar só essa cópia: o bf16 tem 7 bits explícitos de fração, então o menor passo relativo perto de um peso de 1,0 é cerca de 1/128, e um update típico da ordem de 1e-5 é arredondado inteiramente para fora. Por isso o treino mantém uma cópia master em fp32 a 4 bytes por parâmetro, 108 GB, onde os updates se acumulam, e faz cast para baixo até bf16 para o forward pass. O fp16 tem mais bits de fração, mas um alcance de expoente muito mais estreito e precisa de dynamic loss scaling. O bf16 mantém a largura de expoente do fp32 com uma mantissa mais grosseira e em geral não precisa de loss scaling. O fp8 troca ainda mais precisão ou alcance por throughput e exige escalonamento por tensor ou por bloco, acumulação mais larga e receitas cientes do hardware."
 quiz:
   - question: "Os safetensors do Qwen3.8-27B são bf16, totalizando 54 GB. Por que o treino não pode simplesmente atualizar esses tensores no lugar?"
-    options: ["Os 8 bits explícitos de fração do bf16 fazem o menor passo perto de 1,0 ser cerca de 1/256, então um update da ordem de 1e-5 arredonda para nada e o peso nunca se move", "O bf16 não consegue representar números negativos", "O bf16 tem um alcance de expoente mais estreito que o fp16", "Arquivos safetensors são somente leitura por projeto"]
+    options: ["Os 7 bits explícitos de fração do bf16 fazem o menor passo perto de 1,0 ser cerca de 1/128, então um update da ordem de 1e-5 arredonda para nada e o peso nunca se move", "O bf16 não consegue representar números negativos", "O bf16 tem um alcance de expoente mais estreito que o fp16", "Arquivos safetensors são somente leitura por projeto"]
     correctIndex: 0
     explanation: "Updates pequenos são engolidos pela mantissa grosseira, então uma cópia master em fp32 de 108 GB os acumula e a cópia bf16 é regenerada a partir dela."
   - question: "A lição 5.8 particionou um tensor lógico entre ranks de tensor parallel. O que isso implica para os fatores de escala do fp8?"
@@ -48,7 +48,7 @@ Comece pelo que um formato de ponto flutuante está comprando. Os bits se divide
 Grosseiro como? Um valor fp16 ou bf16 carrega um um implícito à esquerda, então os 7 bits explícitos de fração do bf16 dão 8 bits de significando. Perto de um peso de magnitude 1,0, o menor passo representável é portanto
 
 $$
-2^{-8}=\frac{1}{256}\approx 0.0039.
+2^{-7}=\frac{1}{128}\approx 0.0078.
 $$
 
 Agora considere um update realista do optimizer. Tarde no treino, com um learning rate já decaído, uma mudança típica de parâmetro é da ordem de $10^{-5}$ relativa ao peso. Some isso diretamente a um peso bf16 de 1,0:
@@ -57,7 +57,7 @@ $$
 1.0+0.00001 = 1.00001 \longrightarrow \text{arredonda de volta para } 1.0,
 $$
 
-porque o próximo valor bf16 representável acima de 1,0 é 1,00390625, e 1,00001 não está nem perto da metade do caminho. O update não encolhe. Ele desaparece. Repita isso por 100.000 passos e o peso continua sem se mover, ainda que a mudança pretendida acumulada fosse de cerca de 1,0 — uma unidade inteira de deriva, silenciosamente descartada um passo por vez. Isso é *swamping*, e é a razão de o treino em mixed precision existir.
+porque o próximo valor bf16 representável acima de 1,0 é 1,0078125, e 1,00001 não está nem perto da metade do caminho. O update não encolhe. Ele desaparece. Repita isso por 100.000 passos e o peso continua sem se mover, ainda que a mudança pretendida acumulada fosse de cerca de 1,0 — uma unidade inteira de deriva, silenciosamente descartada um passo por vez. Isso é *swamping*, e é a razão de o treino em mixed precision existir.
 
 A correção é uma **cópia master** em fp32. Os updates se acumulam ali, onde o significando tem 24 bits e $10^{-5}$ é representável contra 1,0 com folga, e os tensores bf16 usados no forward pass são regenerados a partir dela. O custo é explícito:
 
@@ -65,7 +65,9 @@ $$
 27\times 10^{9}\times 4\ \text{B}=108\ \text{GB},
 $$
 
-exatamente o dobro dos pesos lançados, e é a maior linha isolada dos 324 GB de estado do AdamW que a lição 5.7 orçou. Junto com parâmetros bf16, gradientes bf16 e os dois momentos em fp32, a receita custa cerca de 16 bytes por parâmetro. Treinar tudo em fp32 custaria cerca de 20 bytes por parâmetro — 540 GB — e abriria mão das unidades matriciais rápidas de precisão reduzida do acelerador. A mixed precision recompra aproximadamente 100 GB e um múltiplo grande de throughput, mantendo a única cópia onde o arredondamento seria fatal.
+exatamente o dobro dos pesos lançados, e uma das três linhas iguais de 108 GB que compõem os 324 GB de estado do AdamW que a lição 5.7 orçou — cópia master, primeiro momento, segundo momento. Junto com parâmetros bf16 e gradientes bf16, a receita custa cerca de 16 bytes por parâmetro.
+
+Agora a comparação que costuma ser feita errado. Treinar tudo em fp32 — 4 bytes para cada um: pesos, gradientes e os dois momentos — também custa 16 bytes por parâmetro. **A mixed precision não reduz em nada a pegada persistente do otimizador.** O que ela compra são as unidades matriciais rápidas de precisão reduzida do acelerador, aproximadamente metade da largura de banda em cada peso e gradiente que move, e activations armazenadas em 2 bytes em vez de 4 — que é a memória que de fato domina um passo de contexto longo, como a lição 5.10 desenvolve. Manter a cópia master em fp32 é o que torna tudo isso seguro.
 
 :::warning
 A concepção equivocada mais comum é que o expoente com largura de fp32 do bf16 torna a cópia master desnecessária — "sem overflow, sem underflow, então por que manter 108 GB por perto?". Alcance nunca foi o problema que a cópia master resolve. Precisão é. O bf16 lida com magnitudes enormes e minúsculas com elegância e mesmo assim não consegue representar a *soma* de um peso grande com um update pequeno, porque os dois diferem por mais de 8 bits de significando. Descartar os master weights produz uma run que treina normalmente no começo, quando os updates são grandes em relação aos pesos, e depois silenciosamente para de aprender conforme o learning rate decai.
