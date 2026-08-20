@@ -301,17 +301,20 @@ test('a lesson renders the date its frontmatter states, independent of build tim
     assert.ok(match, `${page.route}: no <time> element carrying the updated date`)
 
     const [, iso, shown] = match
-    const [year, month, day] = iso.slice(0, 10).split('-').map(Number)
-    const digits = shown.match(/\d+/g)?.map(Number) ?? []
 
-    assert.ok(
-      digits.includes(day) && digits.includes(year),
-      `${page.route}: shows "${shown}" but datetime says ${iso.slice(0, 10)} — ` +
+    // Compare the whole rendered string, not a bag of digits. A membership
+    // check passes on a date whose day equals its month — 2026-08-08 shifted
+    // back to 08-07 still offers an 8 (from the month) and the year — so it
+    // would wave through exactly the bug it exists to catch, on any lesson
+    // unlucky enough to carry such a date.
+    const locale = page.route.startsWith('/pt-br/') ? 'pt-br' : 'en'
+    const expected = new Date(iso).toLocaleDateString(locale, { timeZone: 'UTC' })
+
+    assert.equal(
+      shown,
+      expected,
+      `${page.route}: shows "${shown}" but ${iso.slice(0, 10)} in UTC is "${expected}" — ` +
         'format the date in UTC, not in the build machine’s zone',
-    )
-    assert.ok(
-      digits.includes(month),
-      `${page.route}: shows "${shown}", which does not carry month ${month} from ${iso.slice(0, 10)}`,
     )
   }
 })

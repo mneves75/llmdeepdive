@@ -70,6 +70,18 @@
   blocks. Set `auto_install: false` on the RUM site (dashboard: Web Analytics →
   Manage site → Advanced options → Disable). Nothing leaks meanwhile — the
   script never executes — but the config claims analytics that do not exist.
+
+  Confirmed still live on 2026-08-19, after the 0.6.0 production deploy. It
+  cannot be fixed from this repo: wrangler's OAuth token returns
+  `10000 Authentication error` against `/accounts/{id}/rum/site_info/list`, so
+  this needs the dashboard or an API token scoped for RUM. Verify in one
+  command — the browser headers are load-bearing, because the edge does not
+  inject for a bare `curl`:
+
+  ```bash
+  curl -s https://llmdeepdive.com/ \
+    -H 'User-Agent: Mozilla/5.0' -H 'Accept: text/html' | grep -c cloudflareinsights
+  ```
 - Product facts and non-visual constraints are captured separately in
   `PRODUCT.md`.
 - The only canonical public site is `https://llmdeepdive.com/`.

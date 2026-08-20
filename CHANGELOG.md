@@ -18,10 +18,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from the IQ formats, and closes with the procedure for comparing two artifacts
   on your own machine.
 - **Two figures on 7.13**, and `LLAMA_CPP_QUANT_BENCH` in `model-facts.ts` to
-  feed them. The plot carries llama.cpp's published Llama-3.1-8B measurements —
-  explicitly not Qwen3.8-27B numbers — and shows decode throughput climbing as
-  bits fall while prefill stays flat, which is lesson 7.3's split measured
-  rather than asserted.
+  feed them. The plot carries llama.cpp's whole published Llama-3.1-8B table —
+  explicitly not Qwen3.8-27B numbers — and it is deliberately the *whole* table,
+  because an earlier four-row version happened to be monotonic and made the
+  figure argue a law the full data denies. What it actually shows: every
+  quantized build decodes two to three times faster than F16 (lesson 7.3's
+  memory-bound decode, measured), prompt processing never improves and in fact
+  slips from 923 to 709 tokens per second, and below about 8 bits size stops
+  predicting speed entirely — `Q2_K_S` at 2.97 bpw is the fastest artifact in
+  the table, beating every 4-bit build.
 - Chat templates as **separately distributed, swappable artifacts** in 8.2,
   plus tool calling as a format the template renders and the harness parses.
 - `mlx-community`, mlx-lm's mixed recipes and `--target-bpw` in 8.9; the IQ

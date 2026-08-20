@@ -22,9 +22,10 @@ const benchPoints = (
 
 /**
  * Look a benchmark row up by the name it is labelled with, never by position.
- * A mark carries a hard-coded caption ("Q4_K_M · 4.8944 bpw"); pinning it to an
- * array index means inserting a row silently moves the caption onto a different
- * measurement, and the figure would then disagree with its own data table.
+ * A mark carries a hard-coded label naming one method, so pinning it to an array
+ * index means inserting a row silently moves that label onto a different
+ * measurement — and the figure would then disagree with its own data table.
+ * The table has already grown from 4 rows to 16 once; it will grow again.
  */
 const benchRow = (method: string) => {
   const row = LLAMA_CPP_QUANT_BENCH.find((candidate) => candidate.method === method)
