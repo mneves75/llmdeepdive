@@ -161,18 +161,33 @@ export const QWEN = {
  * weight is the one quantity readers meet on the Hub and nowhere in the course,
  * and because the effect it has on decode is only convincing when measured.
  *
- * Two facts the table is used to teach, both visible in the columns:
+ * **The whole published table ships here, not a chosen slice.** An earlier
+ * version carried four rows, and those four happened to be monotonic in both
+ * columns — which made the figure argue "fewer bits, faster decode" as a smooth
+ * law. The full table says something more useful and less tidy, so it is the
+ * full table that ships.
+ *
+ * Three facts it teaches, all visible in the columns:
  *
  * 1. **The name is not the bit width.** `Q4_K_M` stores 4.8944 bits per weight,
  *    not 4; `Q8_0` stores 8.5008, not 8. Block scales, super-block metadata and
  *    deliberately protected tensors are counted in, which is why a community
  *    artifact labelled `3.8bpw` is being *more* precise than one labelled
  *    `4bit`, not less.
- * 2. **Quantization buys decode, not prefill.** Text generation climbs from
- *    29.17 to 79.73 tokens per second as bits fall, while prompt processing
- *    stays inside 821.81–923.49. That is lesson 7.3's split — decode is
- *    memory-bound, prefill is compute-bound — as a measurement rather than an
- *    assertion.
+ * 2. **Quantizing at all is what buys decode.** Text generation roughly doubles
+ *    to triples against F16's 29.17 t/s the moment the weights shrink — lesson
+ *    7.3's memory-bound decode, measured rather than asserted.
+ * 3. **Below 8 bits, size stops predicting speed.** The ordering is not
+ *    monotonic, and not only across format families: `Q3_K_S` (3.6429 bpw)
+ *    decodes at 69.84 while the LARGER `Q4_K_S` (4.6672) reaches 76.71, and
+ *    `Q2_K_S` at 2.9697 bpw is the fastest row in the table at 90.01. Kernel
+ *    efficiency dominates byte count in that range. Any lesson drawing a
+ *    smooth "smaller is faster" law from this data is reading a slice of it.
+ *
+ * Prefill tells the opposite story and is worth stating exactly: it does not
+ * improve with quantization and slightly degrades, from F16's 923.49 down to
+ * 708.71 for IQ3_XS, because dequantization is extra arithmetic in a
+ * compute-bound regime.
  *
  * Bits per weight is **model-dependent**: it shifts with how much of a
  * checkpoint is embedding and which tensors a recipe protects. Lesson 8.7's
@@ -195,7 +210,19 @@ export interface QuantBenchRow {
 
 export const LLAMA_CPP_QUANT_BENCH = [
   { method: 'IQ1_S', bitsPerWeight: 2.0042, sizeGib: 1.87, prefillTokensPerSecond: 858.88, decodeTokensPerSecond: 79.73 },
+  { method: 'IQ1_M', bitsPerWeight: 2.146, sizeGib: 2.01, prefillTokensPerSecond: 847.99, decodeTokensPerSecond: 72.92 },
+  { method: 'IQ2_M', bitsPerWeight: 2.9294, sizeGib: 2.74, prefillTokensPerSecond: 787.68, decodeTokensPerSecond: 74.44 },
+  { method: 'Q2_K_S', bitsPerWeight: 2.9697, sizeGib: 2.78, prefillTokensPerSecond: 798.91, decodeTokensPerSecond: 90.01 },
+  { method: 'IQ3_XS', bitsPerWeight: 3.4977, sizeGib: 3.27, prefillTokensPerSecond: 708.71, decodeTokensPerSecond: 71.67 },
+  { method: 'Q3_K_S', bitsPerWeight: 3.6429, sizeGib: 3.41, prefillTokensPerSecond: 752.17, decodeTokensPerSecond: 69.84 },
+  { method: 'IQ3_S', bitsPerWeight: 3.6606, sizeGib: 3.42, prefillTokensPerSecond: 798.78, decodeTokensPerSecond: 69.31 },
+  { method: 'Q3_K_M', bitsPerWeight: 3.996, sizeGib: 3.74, prefillTokensPerSecond: 783.44, decodeTokensPerSecond: 71.68 },
+  { method: 'Q3_K_L', bitsPerWeight: 4.2979, sizeGib: 4.02, prefillTokensPerSecond: 761.17, decodeTokensPerSecond: 69.38 },
+  { method: 'IQ4_XS', bitsPerWeight: 4.4597, sizeGib: 4.17, prefillTokensPerSecond: 771.8, decodeTokensPerSecond: 77.51 },
+  { method: 'Q4_K_S', bitsPerWeight: 4.6672, sizeGib: 4.36, prefillTokensPerSecond: 818.55, decodeTokensPerSecond: 76.71 },
+  { method: 'IQ4_NL', bitsPerWeight: 4.6818, sizeGib: 4.38, prefillTokensPerSecond: 806.03, decodeTokensPerSecond: 76.63 },
   { method: 'Q4_K_M', bitsPerWeight: 4.8944, sizeGib: 4.58, prefillTokensPerSecond: 821.81, decodeTokensPerSecond: 71.93 },
+  { method: 'Q5_K_S', bitsPerWeight: 5.5704, sizeGib: 5.21, prefillTokensPerSecond: 752.52, decodeTokensPerSecond: 69.53 },
   { method: 'Q8_0', bitsPerWeight: 8.5008, sizeGib: 7.95, prefillTokensPerSecond: 865.09, decodeTokensPerSecond: 50.93 },
   { method: 'F16', bitsPerWeight: 16.0005, sizeGib: 14.96, prefillTokensPerSecond: 923.49, decodeTokensPerSecond: 29.17 },
 ] as const satisfies readonly QuantBenchRow[]

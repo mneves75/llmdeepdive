@@ -148,16 +148,16 @@ export const TRACK_7_FIGURES = {
         {
           label: { en: 'Base model', 'pt-br': 'Modelo base' },
           detail: {
-            en: 'Qwen3.8-27B — the weights this was derived from. Standard.',
-            'pt-br': 'Qwen3.8-27B — os pesos de onde isto derivou. Padronizado.',
+            en: 'Qwen3.8-27B — the weights this was derived from. Same to everyone.',
+            'pt-br': 'Qwen3.8-27B — os pesos de onde isto derivou. Igual para todos.',
           },
           pigment: 'accent',
         },
         {
           label: { en: 'Container format', 'pt-br': 'Formato de contêiner' },
           detail: {
-            en: 'MLX or GGUF — which runtimes can load it at all. Standard.',
-            'pt-br': 'MLX ou GGUF — quais runtimes conseguem carregá-lo. Padronizado.',
+            en: 'MLX or GGUF — which runtimes can load it at all. Same to everyone.',
+            'pt-br': 'MLX ou GGUF — quais runtimes conseguem carregá-lo. Igual para todos.',
           },
           pigment: 'accent',
         },
@@ -196,8 +196,8 @@ export const TRACK_7_FIGURES = {
       'pt-br': `O que menos bits realmente compram (${LLAMA_CPP_QUANT_BENCH_MODEL})`,
     },
     caption: {
-      en: `Measured on ${LLAMA_CPP_QUANT_BENCH_MODEL}, not on Qwen3.8-27B. Decode nearly triples as bits per weight fall from 16 to 2, because decode is memory-bound. Prefill is compute-bound and stays flat — it is the one thing quantization does not fix. Note also that Q4_K_M measures 4.8944 bits per weight, not 4: the label rounds, the number does not.`,
-      'pt-br': `Medido em ${LLAMA_CPP_QUANT_BENCH_MODEL}, não no Qwen3.8-27B. O decode quase triplica conforme os bits por peso caem de 16 para 2, porque o decode é limitado por memória. O prefill é limitado por computação e permanece plano — é a única coisa que a quantization não resolve. Note também que Q4_K_M mede 4,8944 bits por peso, não 4: o rótulo arredonda, o número não.`,
+      en: `Measured on ${LLAMA_CPP_QUANT_BENCH_MODEL}, not on Qwen3.8-27B. Quantizing at all is what buys decode: every quantized build beats F16's 29.17 tokens per second by two to three times, because decode is memory-bound. But below 8 bits the line stops descending tidily — Q2_K_S at 2.97 bpw is the fastest row here, and Q4_K_S outruns the smaller Q3_K_S — so in that range kernel efficiency decides speed, not size. Prefill is compute-bound and never improves; it slips from 923 to 709 tokens per second, because dequantizing is extra arithmetic.`,
+      'pt-br': `Medido em ${LLAMA_CPP_QUANT_BENCH_MODEL}, não no Qwen3.8-27B. Quantizar já é o que compra decode: todo build quantizado supera os 29,17 tokens por segundo do F16 em duas a três vezes, porque o decode é limitado por memória. Mas abaixo de 8 bits a linha para de descer de forma organizada — o Q2_K_S, com 2,97 bpw, é a linha mais rápida daqui, e o Q4_K_S supera o menor Q3_K_S —, então nessa faixa quem decide a velocidade é a eficiência do kernel, não o tamanho. O prefill é limitado por computação e nunca melhora; ele cai de 923 para 709 tokens por segundo, porque desquantizar é aritmética extra.`,
     },
     body: {
       kind: 'plot',
@@ -233,7 +233,7 @@ export const TRACK_7_FIGURES = {
           marks: [
             {
               at: [benchRow('Q4_K_M').bitsPerWeight, benchRow('Q4_K_M').decodeTokensPerSecond],
-              label: { en: 'Q4_K_M · 4.8944 bpw', 'pt-br': 'Q4_K_M · 4,8944 bpw' },
+              label: { en: 'Q4_K_M', 'pt-br': 'Q4_K_M' },
             },
           ],
         },
