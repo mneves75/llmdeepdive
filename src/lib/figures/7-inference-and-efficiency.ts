@@ -20,6 +20,18 @@ const benchPoints = (
 ): readonly (readonly [number, number])[] =>
   LLAMA_CPP_QUANT_BENCH.map((row) => [row.bitsPerWeight, row[metric]] as const)
 
+/**
+ * Look a benchmark row up by the name it is labelled with, never by position.
+ * A mark carries a hard-coded caption ("Q4_K_M · 4.8944 bpw"); pinning it to an
+ * array index means inserting a row silently moves the caption onto a different
+ * measurement, and the figure would then disagree with its own data table.
+ */
+const benchRow = (method: string) => {
+  const row = LLAMA_CPP_QUANT_BENCH.find((candidate) => candidate.method === method)
+  if (!row) throw new Error(`no benchmark row named ${method} in LLAMA_CPP_QUANT_BENCH`)
+  return row
+}
+
 export const TRACK_7_FIGURES = {
   /**
    * 7.2 owns the KV-cache derivation for the whole course. The figure walks the
@@ -106,9 +118,10 @@ export const TRACK_7_FIGURES = {
 
   /**
    * 7.13 teaches artifact literacy, and this is the artifact: a repository name.
-   * A `flow` rather than prose because the point is that the name has FIELDS —
-   * five of them, in a fixed order, three standardised and two invented by
-   * whoever uploaded it.
+   * A `flow` rather than prose because these clues do arrive in a rough order —
+   * but they are clues, NOT fields. A Hub id is free text, real names omit any
+   * of them, and only two of the five mean the same thing to every publisher.
+   * Presenting them as a fixed schema would teach a parser that does not exist.
    */
   'quant-repo-name-anatomy': {
     lesson: '7.13-choosing-and-judging-a-community-quant',
@@ -192,7 +205,10 @@ export const TRACK_7_FIGURES = {
         label: { en: 'Bits per weight', 'pt-br': 'Bits por peso' },
         scale: 'linear',
         min: 0,
-        max: 16,
+        // 17, not 16: F16 measures 16.0005 bpw, so a domain ending at exactly 16
+        // excludes the very point the figure has to plot. Ticks are unchanged
+        // (0, 5, 10, 15) because the 1/2/5 step lands on 5 either way.
+        max: 17,
         unit: 'bpw',
       },
       /**
@@ -216,7 +232,7 @@ export const TRACK_7_FIGURES = {
           points: benchPoints('decodeTokensPerSecond'),
           marks: [
             {
-              at: [LLAMA_CPP_QUANT_BENCH[1].bitsPerWeight, LLAMA_CPP_QUANT_BENCH[1].decodeTokensPerSecond],
+              at: [benchRow('Q4_K_M').bitsPerWeight, benchRow('Q4_K_M').decodeTokensPerSecond],
               label: { en: 'Q4_K_M · 4.8944 bpw', 'pt-br': 'Q4_K_M · 4,8944 bpw' },
             },
           ],
@@ -227,7 +243,7 @@ export const TRACK_7_FIGURES = {
           points: benchPoints('prefillTokensPerSecond'),
           marks: [
             {
-              at: [LLAMA_CPP_QUANT_BENCH[3].bitsPerWeight, LLAMA_CPP_QUANT_BENCH[3].prefillTokensPerSecond],
+              at: [benchRow('F16').bitsPerWeight, benchRow('F16').prefillTokensPerSecond],
               label: { en: 'F16 baseline', 'pt-br': 'Linha de base F16' },
             },
           ],
