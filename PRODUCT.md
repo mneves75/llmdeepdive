@@ -43,7 +43,7 @@ The interface supports light, dark, and operating-system themes.
 
 ## Capabilities and Constraints
 
-- 105 current lessons in each of English and pt-BR across ten ordered tracks,
+- 106 current lessons in each of English and pt-BR across ten ordered tracks,
 - two interactive labs (memory budget, cost per token) that server-render their
   defaults and stay usable without JavaScript,
   with parity enforced at build time.

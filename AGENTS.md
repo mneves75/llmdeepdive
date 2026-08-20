@@ -312,6 +312,20 @@ compute must never be stated. The KV-cache arithmetic is derived once in lesson
 than re-deriving, because four parallel writers produced three different budgets
 for the same card before this rule existed.
 
+Both halves of that rule have been broken since, and a review sweep found them:
+7.11 re-derived the 80 GB budget with the very subtraction 9.3 opens by calling
+wrong, and three lessons plus a quiz asserted a training corpus or a
+post-training stage the model card does not document. When you touch a number
+about this model, check whether another lesson owns it; when you describe how it
+was made, check that the model card actually says so.
+
+**Not every number in `model-facts.ts` is a Qwen number.** `LLAMA_CPP_QUANT_BENCH`
+holds llama.cpp's published Llama-3.1-8B quantization measurements, used by
+lesson 7.13's figures. They live there for the same reason everything else does —
+one owner, visible provenance — but no lesson, caption or label may present them
+as describing the course model. Bits per weight is model-dependent: 8.7's ~4.7 bpw
+for a 16 GB Qwen build and the 4.8944 measured on Llama-3.1-8B are both correct.
+
 Comparison tables are supported: GFM tables render, and `rehypeTableScroll`
 (`src/lib/markdown/tables.mjs`) wraps each one in a focusable, labelled,
 horizontally scrollable region so a wide table never makes the page scroll.

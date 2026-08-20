@@ -2,6 +2,26 @@
 
 ## Current Direction
 
+- **0.6.0 added lesson 7.13 and then found the corpus was wrong in thirty-odd
+  places.** The lesson closes a real gap — the course taught every mechanism
+  behind a Hub quantization and none of the vocabulary printed on one (`bpw`,
+  `imatrix`, IQ formats, `mlx-community`, mixed recipes and `--target-bpw`) — but
+  the more valuable output was the review sweep it triggered. Nine fresh-context
+  readers over all ten tracks in both locales found: the `q_proj` 6144 regression
+  still alive in four places; five arithmetic errors including a finite-difference
+  cost off by a factor of a thousand; bf16's ULP stated as `2^-8` throughout 5.9;
+  a 100 GB mixed-precision saving that does not exist; a dimensionally invalid
+  matrix composition; three forbidden training claims; an ownership violation in
+  7.11; and a roofline lesson whose frontmatter contradicted its own body.
+  **Every content gate was green the whole time.**
+- **A site-wide date bug shipped in 0.5.0 and no gate could see it.**
+  `toLocaleDateString(locale)` formatted a UTC-midnight frontmatter date in the
+  build machine's zone, so all 212 pages read one day early from São Paulo — and
+  the HTML depended on where it was built. Found by opening the page, not by any
+  check. Fixed with `timeZone: 'UTC'`, guarded by a test that asserts the
+  *mechanism* rather than the rendered string, because a UTC CI runner produces
+  the correct output with the bug still present.
+
 - **0.5.1 corrected the course's most-repeated architectural number.** Six
   lessons said `q_proj` maps 5120 → 6144. These are *gated* attention layers:
   `attn_output_gate: true`, and `Qwen3_5Attention` subclasses
@@ -95,6 +115,12 @@
   C and streams native MXFP4 experts from storage. It is not bundled with the
   site, and upstream memory/performance figures must not be repeated without a
   revision-specific source.
+- **A review sweep is worth more than another gate.** 0.6.0's nine fresh-context
+  readers found thirty-odd real defects — wrong arithmetic, a wrong float format,
+  forbidden claims, an ownership violation — across a corpus where every gate was
+  green. Gates prove format. Only a reader with fresh context proves truth, and
+  the cheapest version is one reader per track, reporting findings rather than
+  editing, with every finding re-verified against a primary source before a fix.
 - **Green gates are not evidence of a working feature.** All ten gates passed
   while 21 of the explorer's 26 lesson links 404'd. Any feature whose
   correctness depends on a value matching something else (a lesson id, a route,

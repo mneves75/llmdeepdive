@@ -5,7 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-19
+
 ### Added
+
+- **Lesson 7.13, "Choosing and judging a community quant".** The course taught
+  every mechanism behind a Hub quantization and none of the vocabulary printed
+  on one. The new lesson reads a repository name field by field, introduces
+  **bpw** as the name for the effective rate lesson 7.9 already computed,
+  explains why it is fractional (metadata is counted in, and mixed recipes
+  assign different widths per layer), separates importance-matrix calibration
+  from the IQ formats, and closes with the procedure for comparing two artifacts
+  on your own machine.
+- **Two figures on 7.13**, and `LLAMA_CPP_QUANT_BENCH` in `model-facts.ts` to
+  feed them. The plot carries llama.cpp's published Llama-3.1-8B measurements —
+  explicitly not Qwen3.8-27B numbers — and shows decode throughput climbing as
+  bits fall while prefill stays flat, which is lesson 7.3's split measured
+  rather than asserted.
+- Chat templates as **separately distributed, swappable artifacts** in 8.2,
+  plus tool calling as a format the template renders and the harness parses.
+- `mlx-community`, mlx-lm's mixed recipes and `--target-bpw` in 8.9; the IQ
+  family and the imatrix-versus-IQ distinction in 8.7.
 
 - **`pnpm privacy` — a gate for what a public repo leaks that is not a secret.**
   The full-history Gitleaks scan passed on every commit while an absolute home
@@ -23,6 +43,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exists to prevent. Names are injected through `PRIVATE_REFS_NAMES`; when it is
   unset the check warns rather than passing quietly, because a rule that
   silently did not run is worse than one that is absent.
+
+### Fixed
+
+- **Every lesson on the site showed a date one day early.** `coerce.date()`
+  reads frontmatter as UTC midnight and `toLocaleDateString(locale)` rendered it
+  in the *build machine's* zone, so all 212 pages were off by one from São Paulo
+  — and the emitted HTML depended on where it was built, which a byte-identical
+  static site cannot afford. Formatting is pinned to UTC, with a regression test
+  that pins the mechanism rather than one machine's output.
+- **A corpus-wide review pass corrected more than thirty verified defects
+  across all ten tracks**, in both locales. The largest classes: the `q_proj` 6144 regression
+  had survived in 0.4, 4.13, 7.6 and a 4.11 quiz explanation (the weight is
+  5120→12288, split per head); five arithmetic errors (finite-difference cost
+  in 2.5, `1.1^64` in 2.8, an epsilon ratio in 2.8, a softmax in 3.5, a
+  rematerialization figure in 5.10); bf16's ULP stated as `2^-8` throughout 5.9
+  when bfloat16 has seven explicit fraction bits; a claimed 100 GB saving from
+  mixed precision that does not exist, since pure fp32 AdamW costs the same 16
+  bytes per parameter; a dimensionally invalid matrix composition in 2.2; three
+  statements about Qwen3.8-27B's training corpus and post-training that the
+  model card does not support; 7.11 re-deriving the memory budget 9.3 owns using
+  the very subtraction 9.3 stages as the classic error; and a roofline claim in
+  9.2 whose frontmatter and quiz contradicted the lesson body.
+- A missing decision table and a dropped cross-reference in pt-BR (7.11, 0.6).
 
 ### Changed
 

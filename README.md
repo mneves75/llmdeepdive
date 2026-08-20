@@ -71,7 +71,7 @@ a GLB-based one would.
 
 ## Current scale
 
-210 lessons live (105 English, 105 Portuguese) across tracks 0–9, with full
+212 lessons live (106 English, 106 Portuguese) across tracks 0–9, with full
 parity enforced by the build. Tracks 0–7 carry the model from first principles
 to efficient inference; track 8 covers the serving stacks that run it (PyTorch,
 Transformers, vLLM, SGLang, TensorRT-LLM, llama.cpp, Ollama, MLX, Modular MAX)
