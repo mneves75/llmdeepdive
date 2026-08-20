@@ -6,8 +6,19 @@
  *
  * Every number here comes from `~/lib/model-facts`. Nothing is derived locally.
  */
-import { QWEN, QWEN_COMMON_MISTAKE } from '~/lib/model-facts'
+import {
+  LLAMA_CPP_QUANT_BENCH,
+  LLAMA_CPP_QUANT_BENCH_MODEL,
+  QWEN,
+  QWEN_COMMON_MISTAKE,
+} from '~/lib/model-facts'
 import type { Figure } from './types'
+
+/** The benchmark rows as plot points, so neither series can drift from the other. */
+const benchPoints = (
+  metric: 'prefillTokensPerSecond' | 'decodeTokensPerSecond',
+): readonly (readonly [number, number])[] =>
+  LLAMA_CPP_QUANT_BENCH.map((row) => [row.bitsPerWeight, row[metric]] as const)
 
 export const TRACK_7_FIGURES = {
   /**
@@ -91,5 +102,137 @@ export const TRACK_7_FIGURES = {
         },
       },
     ],
+  },
+
+  /**
+   * 7.13 teaches artifact literacy, and this is the artifact: a repository name.
+   * A `flow` rather than prose because the point is that the name has FIELDS —
+   * five of them, in a fixed order, three standardised and two invented by
+   * whoever uploaded it.
+   */
+  'quant-repo-name-anatomy': {
+    lesson: '7.13-choosing-and-judging-a-community-quant',
+    title: {
+      en: 'Clues a quant repository name may carry',
+      'pt-br': 'Pistas que o nome de um repositório de quant pode carregar',
+    },
+    caption: {
+      en: 'Not a standard and not a fixed format — a repository id is free text, and real names omit any of these. Where they do appear, only the base model and the container format mean the same thing to everyone: the recipe label is whatever the publisher chose to call it, and bits per weight is the one clue that is a measurement.',
+      'pt-br':
+        'Não é um padrão nem um formato fixo — um id de repositório é texto livre, e nomes reais omitem qualquer uma destas. Onde aparecem, apenas o modelo base e o formato de contêiner significam o mesmo para todo mundo: o rótulo da receita é o que o publicador decidiu chamá-lo, e bits por peso é a única pista que é uma medição.',
+    },
+    body: {
+      kind: 'flow',
+      steps: [
+        {
+          label: { en: 'Publisher', 'pt-br': 'Publicador' },
+          detail: {
+            en: 'mlx-community, or one person. An org name is not a quality signal.',
+            'pt-br': 'mlx-community, ou uma pessoa. Nome de organização não é sinal de qualidade.',
+          },
+          pigment: 'muted',
+        },
+        {
+          label: { en: 'Base model', 'pt-br': 'Modelo base' },
+          detail: {
+            en: 'Qwen3.8-27B — the weights this was derived from. Standard.',
+            'pt-br': 'Qwen3.8-27B — os pesos de onde isto derivou. Padronizado.',
+          },
+          pigment: 'accent',
+        },
+        {
+          label: { en: 'Container format', 'pt-br': 'Formato de contêiner' },
+          detail: {
+            en: 'MLX or GGUF — which runtimes can load it at all. Standard.',
+            'pt-br': 'MLX ou GGUF — quais runtimes conseguem carregá-lo. Padronizado.',
+          },
+          pigment: 'accent',
+        },
+        {
+          label: { en: 'Recipe label', 'pt-br': 'Rótulo da receita' },
+          detail: {
+            en: 'iQ, oQ4e, 4bit. Only GGUF’s Q and IQ names mean anything outside their author’s head.',
+            'pt-br':
+              'iQ, oQ4e, 4bit. Só os nomes Q e IQ do GGUF significam algo fora da cabeça do autor.',
+          },
+          pigment: 'coral',
+        },
+        {
+          label: { en: 'Bits per weight', 'pt-br': 'Bits por peso' },
+          detail: {
+            en: '3.8bpw — an average over every tensor, metadata included. A number, not a name.',
+            'pt-br': '3.8bpw — média sobre cada tensor, metadados inclusos. Um número, não um nome.',
+          },
+          pigment: 'kelp',
+        },
+      ],
+    },
+  },
+
+  /**
+   * The lesson's evidence. Two series on ONE log axis rather than two plots or a
+   * ratio: 29.17 and 923.49 tokens per second cannot share a linear axis, and
+   * normalising them to a baseline would hide the raw numbers a reader needs in
+   * order to check the source. The divergence IS the figure — one line falls,
+   * the other does not move.
+   */
+  'bpw-vs-throughput': {
+    lesson: '7.13-choosing-and-judging-a-community-quant',
+    title: {
+      en: `What fewer bits actually buy (${LLAMA_CPP_QUANT_BENCH_MODEL})`,
+      'pt-br': `O que menos bits realmente compram (${LLAMA_CPP_QUANT_BENCH_MODEL})`,
+    },
+    caption: {
+      en: `Measured on ${LLAMA_CPP_QUANT_BENCH_MODEL}, not on Qwen3.8-27B. Decode nearly triples as bits per weight fall from 16 to 2, because decode is memory-bound. Prefill is compute-bound and stays flat — it is the one thing quantization does not fix. Note also that Q4_K_M measures 4.8944 bits per weight, not 4: the label rounds, the number does not.`,
+      'pt-br': `Medido em ${LLAMA_CPP_QUANT_BENCH_MODEL}, não no Qwen3.8-27B. O decode quase triplica conforme os bits por peso caem de 16 para 2, porque o decode é limitado por memória. O prefill é limitado por computação e permanece plano — é a única coisa que a quantization não resolve. Note também que Q4_K_M mede 4,8944 bits por peso, não 4: o rótulo arredonda, o número não.`,
+    },
+    body: {
+      kind: 'plot',
+      xAxis: {
+        label: { en: 'Bits per weight', 'pt-br': 'Bits por peso' },
+        scale: 'linear',
+        min: 0,
+        max: 16,
+        unit: 'bpw',
+      },
+      /**
+       * Domain 10..2000, not 20..1000, and the margin is the whole point. The
+       * tight domain put prefill within 3% of the frame's top edge — drawn,
+       * technically correct, and invisible against the border — while the 1,000
+       * tick landed at exactly 100% and was clipped away. A log axis needs a
+       * decade of air above and below the data or the reader sees one series.
+       */
+      yAxis: {
+        label: { en: 'Throughput', 'pt-br': 'Vazão' },
+        scale: 'log',
+        min: 10,
+        max: 2000,
+        unit: 'tok/s',
+      },
+      series: [
+        {
+          label: { en: 'Decode (generation)', 'pt-br': 'Decode (geração)' },
+          pigment: 'accent',
+          points: benchPoints('decodeTokensPerSecond'),
+          marks: [
+            {
+              at: [LLAMA_CPP_QUANT_BENCH[1].bitsPerWeight, LLAMA_CPP_QUANT_BENCH[1].decodeTokensPerSecond],
+              label: { en: 'Q4_K_M · 4.8944 bpw', 'pt-br': 'Q4_K_M · 4,8944 bpw' },
+            },
+          ],
+        },
+        {
+          label: { en: 'Prefill (prompt processing)', 'pt-br': 'Prefill (processamento do prompt)' },
+          pigment: 'muted',
+          points: benchPoints('prefillTokensPerSecond'),
+          marks: [
+            {
+              at: [LLAMA_CPP_QUANT_BENCH[3].bitsPerWeight, LLAMA_CPP_QUANT_BENCH[3].prefillTokensPerSecond],
+              label: { en: 'F16 baseline', 'pt-br': 'Linha de base F16' },
+            },
+          ],
+        },
+      ],
+    },
   },
 } as const satisfies Record<string, Figure>

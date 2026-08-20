@@ -27,7 +27,7 @@
  */
 
 /** Where a number came from, so a reviewer can check it without leaving the file. */
-export type FactSource = 'config' | 'card' | 'derived'
+export type FactSource = 'config' | 'card' | 'derived' | 'measured'
 
 export interface ModelFact {
   readonly value: number
@@ -148,6 +148,60 @@ export const QWEN = {
   paramsTotal: fact(27e9, 'parameters', 'card', 'marketed ~27B, includes the vision tower'),
   weightsGbBf16: fact(54, 'GB', 'derived', '27e9 parameters x 2 B'),
 } as const satisfies Record<string, ModelFact>
+
+/**
+ * One published quantization benchmark, kept here for the same reason every
+ * other number is: so a figure never invents one and a reviewer never has to
+ * leave this file to check it.
+ *
+ * ## These are NOT Qwen3.8-27B numbers
+ *
+ * They are measured on **Llama-3.1-8B**, and no lesson, caption or label may
+ * present them as describing the course model. They are here because bits per
+ * weight is the one quantity readers meet on the Hub and nowhere in the course,
+ * and because the effect it has on decode is only convincing when measured.
+ *
+ * Two facts the table is used to teach, both visible in the columns:
+ *
+ * 1. **The name is not the bit width.** `Q4_K_M` stores 4.8944 bits per weight,
+ *    not 4; `Q8_0` stores 8.5008, not 8. Block scales, super-block metadata and
+ *    deliberately protected tensors are counted in, which is why a community
+ *    artifact labelled `3.8bpw` is being *more* precise than one labelled
+ *    `4bit`, not less.
+ * 2. **Quantization buys decode, not prefill.** Text generation climbs from
+ *    29.17 to 79.73 tokens per second as bits fall, while prompt processing
+ *    stays inside 821.81–923.49. That is lesson 7.3's split — decode is
+ *    memory-bound, prefill is compute-bound — as a measurement rather than an
+ *    assertion.
+ *
+ * Bits per weight is **model-dependent**: it shifts with how much of a
+ * checkpoint is embedding and which tensors a recipe protects. Lesson 8.7's
+ * ~4.7 bpw for a 16 GB Q4_K_M build of Qwen3.8-27B and the 4.8944 below are
+ * both right, for different models. Neither generalises.
+ *
+ * Provenance: llama.cpp `tools/quantize/README.md`, fetched 2026-08-19.
+ * https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md
+ */
+export interface QuantBenchRow {
+  /** The quantization type as llama.cpp names it. Notation, never localised. */
+  readonly method: string
+  readonly bitsPerWeight: number
+  readonly sizeGib: number
+  /** Prompt processing, 512 tokens. Compute-bound; barely moves with bit width. */
+  readonly prefillTokensPerSecond: number
+  /** Text generation, 128 tokens. Memory-bound; this is what quantization buys. */
+  readonly decodeTokensPerSecond: number
+}
+
+export const LLAMA_CPP_QUANT_BENCH = [
+  { method: 'IQ1_S', bitsPerWeight: 2.0042, sizeGib: 1.87, prefillTokensPerSecond: 858.88, decodeTokensPerSecond: 79.73 },
+  { method: 'Q4_K_M', bitsPerWeight: 4.8944, sizeGib: 4.58, prefillTokensPerSecond: 821.81, decodeTokensPerSecond: 71.93 },
+  { method: 'Q8_0', bitsPerWeight: 8.5008, sizeGib: 7.95, prefillTokensPerSecond: 865.09, decodeTokensPerSecond: 50.93 },
+  { method: 'F16', bitsPerWeight: 16.0005, sizeGib: 14.96, prefillTokensPerSecond: 923.49, decodeTokensPerSecond: 29.17 },
+] as const satisfies readonly QuantBenchRow[]
+
+/** The model the rows above were measured on. Stated wherever they are shown. */
+export const LLAMA_CPP_QUANT_BENCH_MODEL = 'Llama-3.1-8B'
 
 /**
  * The instructive wrong turn in lesson 7.2: assuming every layer caches KV.
