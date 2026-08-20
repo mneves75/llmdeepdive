@@ -5,13 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-19
+
+### Fixed
+
+- **Lesson 7.13's graded frontmatter still argued the position 0.6.0 corrected.**
+  Rewriting the body left the teach-back opening "The name carries five fields"
+  against a body that now says a free-text repository id carries clues rather
+  than fields; left a quiz asking why quantizing leaves prompt processing
+  "roughly unchanged" when the shipped table shows it slipping from 923 to 709
+  tokens per second; and left another quiz explanation pairing Llama-3.1-8B's
+  4.8944 bpw with "a 27-billion-parameter model" in one sentence — the exact
+  conflation the lesson's own note warns against. Frontmatter is graded content;
+  it has to move with the prose.
+- The 0.6.0 changelog entry described the throughput figure as showing "prefill
+  stays flat", which is the claim 0.6.0 corrected before shipping.
+- The date regression test compared a bag of digits, so it would have passed a
+  lesson whose day equals its month (2026-08-08 rendered as 08-07 still offers
+  an 8 from the month). It compares the whole rendered string against the same
+  UTC formatting now; reverting the fix trips two assertions instead of one.
+
 ## [0.6.0] — 2026-08-19
 
 ### Added
 
 - **Lesson 7.13, "Choosing and judging a community quant".** The course taught
   every mechanism behind a Hub quantization and none of the vocabulary printed
-  on one. The new lesson reads a repository name field by field, introduces
+  on one. The new lesson reads a repository name for the clues it may carry, introduces
   **bpw** as the name for the effective rate lesson 7.9 already computed,
   explains why it is fractional (metadata is counted in, and mixed recipes
   assign different widths per layer), separates importance-matrix calibration
