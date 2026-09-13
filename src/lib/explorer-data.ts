@@ -78,12 +78,12 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Order', 'pt-br': 'Ordem' },
     tagline: { en: 'Attention has no sense of sequence', 'pt-br': 'A atenção não percebe sequência' },
     summary: {
-      en: 'Self-attention is permutation-invariant: without this, "dog bites man" and "man bites dog" are the same input. RoPE encodes position as a rotation, which is why it extrapolates further than the alternatives.',
+      en: 'Unmasked self-attention without positional signals is permutation-equivariant: reordering the token vectors reorders the corresponding outputs, so the layer cannot encode where each token appeared. RoPE injects relative position by rotating queries and keys.',
       'pt-br':
-        'A auto-atenção é invariante a permutação: sem isso, "cão morde homem" e "homem morde cão" são a mesma entrada. RoPE codifica posição como rotação, e por isso extrapola melhor que as alternativas.',
+        'A auto-atenção sem máscara nem sinais posicionais é equivariante a permutação: reordenar os vetores dos tokens reordena as saídas correspondentes, então a camada não consegue codificar onde cada token apareceu. O RoPE injeta posição relativa ao rotacionar queries e keys.',
     },
     facts: {
-      params: 'Zero (RoPE, ALiBi) or vocab-sized (learned)',
+      params: 'Zero (RoPE, ALiBi) or max positions × d_model (learned)',
       cost: 'Fused into the attention projection',
       introduced: 'Vaswani et al., 2017; RoPE: Su et al., 2021',
       variants: 'Sinusoidal · learned · RoPE · ALiBi · NoPE',

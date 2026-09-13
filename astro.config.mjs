@@ -11,6 +11,7 @@ import rehypeKatex from 'rehype-katex'
 import rehypeSlug from 'rehype-slug'
 import rehypeAutolinkHeadings from 'rehype-autolink-headings'
 import { remarkCallouts } from './src/lib/markdown/callouts.mjs'
+import { rehypeMathScroll } from './src/lib/markdown/math-scroll.mjs'
 import { rehypeTableScroll } from './src/lib/markdown/tables.mjs'
 
 export const SITE = 'https://llmdeepdive.com'
@@ -19,7 +20,7 @@ export default defineConfig({
   site: SITE,
   // Static output. No @astrojs/cloudflare adapter: that adapter exists for
   // on-demand rendering. Serving `dist/` straight from Workers Static Assets
-  // means an HTML request never starts an isolate. See docs/adr/0002.
+  // means an HTML request never starts an isolate. See AGENTS.md, Static-only architecture.
   output: 'static',
   trailingSlash: 'always',
   build: { format: 'directory' },
@@ -61,6 +62,7 @@ export default defineConfig({
         // native in every current browser, needs no stylesheet and no font
         // download, and is what a screen reader wants to read anyway.
         [rehypeKatex, { output: 'mathml' }],
+        rehypeMathScroll,
         rehypeSlug,
         [rehypeAutolinkHeadings, { behavior: 'wrap', properties: { className: 'heading-anchor' } }],
         rehypeTableScroll,

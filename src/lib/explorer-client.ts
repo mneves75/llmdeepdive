@@ -38,6 +38,20 @@ export function mountExplorer(root: HTMLElement): Cleanup {
   const calloutLabel = root.querySelector<HTMLElement>('[data-callout-label]')
   const calloutDetail = root.querySelector<HTMLElement>('[data-callout-detail]')
   const annotations = root.querySelector<HTMLElement>('#specimen-annotations')
+  const isolateBtn = root.querySelector<HTMLButtonElement>('[data-tool="isolate"]')
+  const resetBtn = root.querySelector<HTMLButtonElement>('[data-tool="reset"]')
+  const rotate = root.querySelector<HTMLInputElement>('[data-tool="autorotate"]')
+
+  const setStageControlsEnabled = (enabled: boolean): void => {
+    if (isolateBtn) isolateBtn.disabled = !enabled
+    if (resetBtn) resetBtn.disabled = !enabled
+    if (rotate) rotate.disabled = !enabled
+  }
+
+  // Server markup starts disabled for no-JS. Reset it here too so remounting a
+  // previously enhanced explorer cannot expose tools before its new stage is
+  // usable.
+  setStageControlsEnabled(false)
 
   const cleanups: Cleanup[] = []
   let bundle: StageBundle | null = null
@@ -103,7 +117,6 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     bundle.markers.select(spec?.id ?? null)
     showCallout(spec)
 
-    const isolateBtn = root.querySelector<HTMLButtonElement>('[data-tool="isolate"]')
     if (isolateBtn?.getAttribute('aria-pressed') === 'true') {
       if (spec) bundle.scene.isolate(spec.id)
       else {
@@ -201,7 +214,6 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       showCallout(spec)
       if (spec && COMPONENTS.some((item) => item.id === spec.id)) setComponent(spec.id, false)
 
-      const isolateBtn = root.querySelector<HTMLButtonElement>('[data-tool="isolate"]')
       if (isolateBtn?.getAttribute('aria-pressed') === 'true') {
         if (spec) scene.isolate(spec.id)
         else {
@@ -244,7 +256,6 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     )
 
     // Tools
-    const isolateBtn = root.querySelector<HTMLButtonElement>('[data-tool="isolate"]')
     on(isolateBtn, 'click', () => {
       if (!isolateBtn) return
       const pressed = isolateBtn.getAttribute('aria-pressed') !== 'true'
@@ -254,7 +265,6 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       stage.invalidate()
     })
 
-    const resetBtn = root.querySelector<HTMLButtonElement>('[data-tool="reset"]')
     on(resetBtn, 'click', () => {
       scene.isolate(null)
       isolateBtn?.setAttribute('aria-pressed', 'false')
@@ -262,7 +272,6 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       setComponent(COMPONENTS[0]?.id ?? componentId)
     })
 
-    const rotate = root.querySelector<HTMLInputElement>('[data-tool="autorotate"]')
     if (rotate) {
       rotate.checked = stage.autoRotate
       on(rotate, 'change', () => stage.setAutoRotate(rotate.checked))
@@ -273,9 +282,13 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     pendingStage = null
     pendingMarkers = null
     cleanups.push(() => {
+      setStageControlsEnabled(false)
       markers.dispose()
       stage.dispose()
     })
+    // Enabling is the final boot action. Every early return and every rejected
+    // import/construction path therefore leaves the native controls disabled.
+    setStageControlsEnabled(true)
   }
 
   // Gate the import on visibility: the three.js chunk is never fetched for a

@@ -1,6 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { STRUCTURAL_RULES, namesFromEnv, scanText } from '../scripts/private-refs.mjs'
+
+const PRIVATE_REFS_SCRIPT = resolve('scripts/private-refs.mjs')
+
+function runGit(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+}
 
 // Every fixture here is synthetic. The real strings this gate was written for
 // must not be re-committed to demonstrate that it catches them — that would
@@ -95,4 +106,33 @@ test('regex metacharacters in a name are escaped, not interpreted', () => {
   const rule = namesFromEnv('a.c')
   assert.deepEqual(scanText('a.c', [rule]).map((f) => f.hit), ['a.c'])
   assert.deepEqual(scanText('abc', [rule]), [], '"." must be literal, not a wildcard')
+})
+
+test('command fails closed without echoing private file or commit-metadata matches', () => {
+  const repository = mkdtempSync(join(tmpdir(), 'llmdeepdive-private-refs-'))
+  const fileMatch = '/Users/redactionfixture'
+  const metadataMatch = 'redaction-fixture.workers.dev'
+  try {
+    runGit(repository, ['init', '--quiet'])
+    runGit(repository, ['config', 'user.name', 'Fixture Author'])
+    runGit(repository, ['config', 'user.email', 'noreply@github.com'])
+    writeFileSync(join(repository, 'lesson.txt'), `checkout = "${fileMatch}/project"\n`)
+    runGit(repository, ['add', 'lesson.txt'])
+    runGit(repository, ['commit', '--quiet', '-m', `deploy ${metadataMatch}`])
+
+    const result = spawnSync(process.execPath, [PRIVATE_REFS_SCRIPT], {
+      cwd: repository,
+      encoding: 'utf8',
+      env: { ...process.env, PRIVATE_REFS_NAMES: '' },
+    })
+    const output = result.stdout + result.stderr
+
+    assert.equal(result.status, 1, output)
+    assert.match(output, /lesson\.txt: machine-local-path/u)
+    assert.match(output, /subject: account-subdomain/u)
+    assert.equal(output.includes(fileMatch), false, 'file-content match reached command output')
+    assert.equal(output.includes(metadataMatch), false, 'commit-metadata match reached command output')
+  } finally {
+    rmSync(repository, { recursive: true, force: true })
+  }
 })

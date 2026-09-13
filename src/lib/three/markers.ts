@@ -293,7 +293,9 @@ export class MarkerLayer {
     if (this.markers.length === 0) return null
     const ids = this.markers.map((m) => m.spec.id)
     const current = this.selectedId ? ids.indexOf(this.selectedId) : -1
-    const next = (current + delta + ids.length) % ids.length
+    const next = current < 0
+      ? (delta < 0 ? ids.length - 1 : 0)
+      : (current + delta + ids.length) % ids.length
     const spec = this.markers[next]?.spec ?? null
     this.selectedId = spec?.id ?? null
     return spec

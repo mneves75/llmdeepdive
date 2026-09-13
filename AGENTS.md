@@ -37,6 +37,14 @@ pnpm deploy:staging
 Worker sits on an account-specific `*.workers.dev` subdomain. `production` and
 `local` are fixed; `--base <url>` overrides any of them.
 
+## Verification
+
+Verify your work after each meaningful change. For visual tasks, inspect the
+actual output using browser screenshots, 3D renders from multiple angles, or
+video playback.
+
+Fix issues and check again before finishing. Report anything you couldn't verify.
+
 ## Working in parallel
 
 Concurrent content sessions must **not** each run `pnpm build` — several running

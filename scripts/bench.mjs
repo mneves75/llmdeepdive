@@ -297,6 +297,10 @@ async function main() {
       const again = await measure(new URL(row.route, base).href, args.iter, row.marker)
       const confirmedP95 = Math.max(0, again.p95 - rtt)
       row.confirmP95 = confirmedP95
+      row.confirmStatusFailures = again.statusFailures
+      row.confirmMarkerFailures = again.markerFailures
+      row.okStatus = row.okStatus && again.statusFailures === 0
+      row.okMarker = row.okMarker && again.markerFailures === 0
       row.okBudget = confirmedP95 < budget
       const wasFailure = !row.ok
       row.ok = row.okStatus && row.okMarker && row.okBudget
@@ -305,6 +309,9 @@ async function main() {
         `  ${row.ok ? 'CLEARED' : 'CONFIRMED'} ${row.route.padEnd(34)} ` +
           `first p95=${row.serverP95.toFixed(1)}ms · again p95=${confirmedP95.toFixed(1)}ms`,
       )
+      if (again.statusFailures > 0 || again.markerFailures > 0) {
+        console.log(`    confirmation bad-status-samples=${again.statusFailures} · marker-missing-samples=${again.markerFailures}`)
+      }
     }
   }
 

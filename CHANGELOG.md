@@ -3,7 +3,21 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.6.3] — 2026-09-13
+
+### Fixed
+
+- Wide formulas, long headings and tensor names now stay within narrow screens; plot labels remain readable in mobile Safari, and the 3D explorer keeps its dimensions after resizing.
+- Teach-back answers render native MathML, report storage failures honestly, and complete a lesson only after the answer is saved and the quiz passes.
+- Calculators validate empty, negative and out-of-range inputs, accept continuous numeric values, localize their output, and explain when the memory pool cannot fit one sequence.
+- Search keyboard navigation wraps correctly; explorer keyboard navigation starts at the correct end, and 3D controls remain disabled until rendering is available.
+- Bilingual training-cost calculations, Transformers and MLX examples, quantization comparisons and explorer explanations now agree with their cited sources.
+- Navigation language labels, curriculum counts and social-card metadata now describe the content accurately.
+- Benchmark confirmation requests retain HTTP and page-identity failures; privacy diagnostics identify violations without printing the private values.
+
+### Changed
+
+- Contributor instructions include every content and privacy gate, and the assistant contract requires checking rendered output after meaningful visual changes.
 
 ## [0.6.2] — 2026-09-13
 

@@ -122,8 +122,8 @@ function scanTrackedFiles(rules) {
     } catch {
       continue // in the index but not the worktree
     }
-    for (const { rule, hit, why } of scanText(text, rules)) {
-      failures.push(`${file}: ${rule} "${hit}" — ${why}`)
+    for (const { rule, why } of scanText(text, rules)) {
+      failures.push(`${file}: ${rule} — ${why}`)
     }
   }
   return { failures, scanned: files.length }
@@ -143,8 +143,8 @@ function scanCommitMetadata(rules) {
       ['body', body],
     ]
     for (const [field, value] of fields) {
-      for (const { rule, hit, why } of scanText(value ?? '', rules)) {
-        failures.push(`${sha.slice(0, 8)} ${field}: ${rule} "${hit}" — ${why}`)
+      for (const { rule, why } of scanText(value ?? '', rules)) {
+        failures.push(`${sha.slice(0, 8)} ${field}: ${rule} — ${why}`)
       }
     }
   }

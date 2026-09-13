@@ -100,8 +100,8 @@ Full local gate:
 ```bash
 pnpm build && pnpm typecheck && pnpm lint && pnpm test
 pnpm content:parity && pnpm content:stubs && pnpm content:graph
-pnpm content:citations && pnpm content:assets && pnpm a11y:contrast
-pnpm budget && pnpm privacy && pnpm audit --audit-level=high
+pnpm content:citations && pnpm content:assets && pnpm content:figures
+pnpm a11y:contrast && pnpm budget && pnpm privacy && pnpm audit --audit-level=high
 ```
 
 CI runs the same checks plus a full-history Gitleaks scan.

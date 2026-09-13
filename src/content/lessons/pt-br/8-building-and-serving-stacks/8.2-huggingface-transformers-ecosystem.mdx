@@ -11,7 +11,7 @@ unlocks: ["8.4-vllm"]
 analogy: "Uma sala de concertos não entrega o compositor. Ela entrega uma edição impressa da partitura, um bibliotecário que distribui a revisão certa, um maestro que decide andamento e dinâmica e um contrarregra que diz quando a peça acaba. A culpa por uma execução ruim costuma cair sobre o compositor e costuma pertencer a um dos outros três. O Hub, o safetensors, o chat template e o loop de geração são esses três papéis em torno do Qwen3.8-27B."
 teachBack:
   prompt: "Trace uma requisição de chat através do stack Transformers e explique precisamente onde enable_thinking faz efeito, e por que chamá-lo de configuração do modelo está errado."
-  modelAnswer: "Uma lista de mensagens com papel e conteúdo vai para o apply_chat_template do tokenizer, que renderiza o template Jinja do modelo — guardado com o tokenizer, não com os pesos — em uma única string carregando exatamente os special tokens com que o modelo foi treinado, e então a tokeniza em ids. Esses ids vão para generate(), que roda o forward pass repetidamente, amostra com os parâmetros de decoding que você fornecer, mantém o cache e para em um stop token ou no limite de comprimento. enable_thinking é um argumento de apply_chat_template: ele muda qual andaime o template emite e, portanto, quais tokens o modelo recebe. Os pesos, a config e o forward pass são byte a byte idênticos nos dois casos. Se você montar a string do prompt na mão, ou passar a flag para generate() em vez de para o template, ela não faz absolutamente nada e você vai concluir que o modelo a ignora."
+  modelAnswer: "Uma lista de mensagens com papel e conteúdo vai para o apply_chat_template do tokenizer, que renderiza o template Jinja do modelo — guardado com o tokenizer, não com os pesos — em uma única string carregando exatamente os special tokens com que o modelo foi treinado, e então a tokeniza. O Transformers atual devolve um BatchEncoding com input_ids e attention_mask, e generate() recebe esse mapeamento, roda o forward pass repetidamente, faz sampling quando do_sample=True com os parâmetros de decoding fornecidos, mantém o cache e para em um stop token ou no limite de comprimento. enable_thinking é um argumento de apply_chat_template: ele muda qual andaime o template emite e, portanto, quais tokens o modelo recebe. Os pesos, a config e o forward pass são byte a byte idênticos nos dois casos. Se você montar a string do prompt na mão, ou passar a flag para generate() em vez de para o template, ela não faz absolutamente nada e você vai concluir que o modelo a ignora."
 quiz:
   - question: "Por que carregar safetensors não executa código arbitrário, ao contrário de um checkpoint em pickle?"
     options: ["O arquivo é um header JSON com nomes, dtypes, shapes e offsets de bytes seguido de um blob plano de tensors, então carregar é mapear memória e fatiar","Ele é criptografado","Ele roda o código em um sandbox","Ele converte tudo para float32 antes"]
@@ -30,6 +30,10 @@ citations:
     authors: "Hugging Face"
     year: 2026
     url: "https://huggingface.co/docs/transformers"
+  - title: "Transformers v5 Migration Guide — apply_chat_template returns BatchEncoding"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://github.com/huggingface/transformers/blob/856157a2f3e9594954310df18fdccc31ffddebe9/MIGRATION_GUIDE_V5.md#4-apply_chat_template-returns-batchencoding"
   - title: "safetensors Documentation"
     authors: "Hugging Face"
     year: 2026
@@ -38,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-20"
+updated: "2026-09-13"
 ---
 
 Um colega relata que o Qwen3.8-27B "ignora o botão de thinking" — ele desliga, o modelo raciocina mesmo assim, e a flag parece decorativa. Outro relata que o mesmo script dava respostas diferentes no mês passado e hoje dá outras, sem nenhuma mudança de código. Os dois bugs são reais, nenhum está no modelo, e ambos vivem na fina camada de encanamento entre os pesos no Hub e o texto na tela. Essa camada tem quatro partes: quais bytes você baixou, como eles foram carregados, como sua conversa virou uma string e como os tokens foram amostrados. A lição 8.1 deu o runtime; esta lição dá tudo que está enrolado em volta dele.
@@ -49,14 +53,29 @@ Depois o formato. O Qwen3.8-27B é distribuído em safetensors bf16, e o safeten
 
 Agora a parte que causa o bug relatado. O Qwen3.8-27B é um modelo de chat, e modelos de chat são treinados sobre um layout de string muito específico — marcadores de papel, fronteiras de turno e os special tokens que delimitam um bloco de thinking. Esse layout não está embutido nos pesos e não está na config do modelo. É um template Jinja distribuído *junto com o tokenizer*, e `apply_chat_template` é o que o renderiza. Você entrega uma lista de dicionários com papéis e conteúdos, ele devolve exatamente a string que o modelo foi treinado a continuar, e tokenizar essa string dá os ids para o forward pass. O modelo nunca vê um papel. Ele vê tokens.
 
-É aí que `enable_thinking` mora: é uma variável consumida pelo template, não um parâmetro do modelo e não um argumento do loop de geração. Defini-la como false faz o template renderizar um prompt cujo andaime suprime o bloco de thinking; defini-la como true (o padrão) renderiza a versão que convida a um. Pesos idênticos, forward pass idêntico, tokens de entrada diferentes. Então a sequência é: montar as mensagens, chamar o template com `add_generation_prompt=True` e sua escolha de thinking, tokenizar, gerar.
+É aí que `enable_thinking` mora: é uma variável consumida pelo template, não um parâmetro do modelo e não um argumento do loop de geração. Defini-la como false faz o template renderizar um prompt cujo andaime suprime o bloco de thinking; defini-la como true (o padrão) renderiza a versão que convida a um. Pesos idênticos, forward pass idêntico, tokens de entrada diferentes. Então a sequência é: montar as mensagens, chamar o template com `add_generation_prompt=True` e sua escolha de thinking, tokenizar e desempacotar o encoding devolvido em `generate()`.
 
 ```python
-ids = tok.apply_chat_template(messages, add_generation_prompt=True,
-                              enable_thinking=False, return_tensors="pt")
-out = model.generate(ids, temperature=0.7, top_p=0.80, top_k=20,
-                     min_p=0.0, repetition_penalty=1.0)
+inputs = tok.apply_chat_template(
+    messages,
+    add_generation_prompt=True,
+    enable_thinking=False,
+    return_dict=True,
+    return_tensors="pt",
+).to(model.device)
+out = model.generate(
+    **inputs,
+    do_sample=True,
+    temperature=0.7,
+    top_p=0.80,
+    top_k=20,
+    min_p=0.0,
+    repetition_penalty=1.0,
+    max_new_tokens=256,
+)
 ```
+
+Este trecho supõe que `tok` e um `model` em um único device foram carregados da mesma revisão fixada e que `messages` já está definido. No Transformers v5, `apply_chat_template(..., return_tensors="pt")` devolve um `BatchEncoding`, então passá-lo como argumento posicional `ids` falha; `**inputs` fornece tanto `input_ids` quanto `attention_mask`. `do_sample=True` também é necessário para temperature, top-p, top-k e min-p afetarem o decoding. O limite de comprimento fica explícito para que um exemplo copiado tenha uma fronteira finita.
 
 :::warning
 Montar a string do prompt na mão é a maneira mais comum de quebrar um modelo de chat, e ela falha em silêncio. Um prompt que é apenas *parecido* com o layout treinado ainda produz texto fluente, então nada quebra e nenhum erro aparece — você simplesmente obtém um modelo operando fora da distribuição em que foi instruction-tuned, com um botão de thinking que não faz nada porque nenhum template chegou a rodar. Renderize o template, depois logue a string renderizada uma vez e leia.
@@ -66,7 +85,7 @@ Como o template é um arquivo, e não uma propriedade dos pesos, ele também é 
 
 O tool calling anda pelo mesmo mecanismo, e é por isso que ele cabe aqui em vez de numa lição própria. Você passa as definições de tools ao `apply_chat_template` junto com as mensagens; o template as renderiza no layout exato de special tokens que o modelo foi treinado para responder; o modelo emite uma chamada estruturada como tokens comuns; e o seu harness converte esse trecho de volta em nome de função e argumentos, executa e anexa o resultado como mais uma mensagem. Cada um desses passos é texto. Nada no forward pass sabe que existe uma tool. Quando o tool calling se comporta mal, o bug quase sempre está na renderização ou no parsing, não no modelo — e a lição 8.5 cobre a metade complementar: restringir o decode para que a chamada emitida tenha parsing garantido.
 
-O sampling é a segunda falha silenciosa. O preset instruct completo do model card atual é temperature 0.7, top_p 0.80, top_k 20, min_p 0, presence penalty 1.5 e repetition penalty 1.0. O thinking mode usa temperature 1.0, top_p 0.95, top_k 20, min_p 0, presence penalty 0 e repetition penalty 1.0. O suporte varia por framework: declare todo campo suportado, registre os não suportados e logue a requisição efetiva — não presuma que padrões omitidos casam com o card.
+O sampling é a segunda falha silenciosa. O preset instruct completo do model card atual é temperature 0.7, top_p 0.80, top_k 20, min_p 0, presence penalty 1.5 e repetition penalty 1.0. O thinking mode usa temperature 1.0, top_p 0.95, top_k 20, min_p 0, presence penalty 0 e repetition penalty 1.0. A interface bruta de `generate()` do Transformers na revisão citada suporta os campos mostrados no trecho, mas não tem argumento de presence penalty; portanto, o trecho é uma implementação parcial e declarada do preset do card. Defina todo campo suportado, registre os não suportados e logue a requisição efetiva — não presuma que padrões omitidos casam com o card.
 
 O thinking tem três controles independentes. `enable_thinking` decide se existe um bloco de raciocínio. `reasoning_effort` controla a profundidade e hoje assume `xhigh` por padrão no card oficial; os rótulos são semântica de API e template, então inspecione o template efetivo antes de comparar runtimes. `preserve_thinking` hoje vem true e retém blocos de raciocínio históricos. Isso pode ajudar um agente, mas também faz raciocínio antigo consumir tokens de prompt em cada turno. Meça tokens e tempo do job inteiro e decida deliberadamente se esse histórico pertence ao contexto.
 

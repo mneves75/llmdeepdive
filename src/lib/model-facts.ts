@@ -175,9 +175,10 @@ export const QWEN = {
  *    deliberately protected tensors are counted in, which is why a community
  *    artifact labelled `3.8bpw` is being *more* precise than one labelled
  *    `4bit`, not less.
- * 2. **Quantizing at all is what buys decode.** Text generation roughly doubles
- *    to triples against F16's 29.17 t/s the moment the weights shrink — lesson
- *    7.3's memory-bound decode, measured rather than asserted.
+ * 2. **Quantizing at all is what buys decode in this benchmark.** Against F16's
+ *    29.17 t/s, the quantized Llama-3.1-8B rows span 1.75x (Q8_0, 50.93 t/s) to
+ *    3.09x (Q2_K_S, 90.01 t/s) — lesson 7.3's memory-bound decode, measured
+ *    rather than asserted as a universal quantization ratio.
  * 3. **Below 8 bits, size stops predicting speed.** The ordering is not
  *    monotonic, and not only across format families: `Q3_K_S` (3.6429 bpw)
  *    decodes at 69.84 while the LARGER `Q4_K_S` (4.6672) reaches 76.71, and

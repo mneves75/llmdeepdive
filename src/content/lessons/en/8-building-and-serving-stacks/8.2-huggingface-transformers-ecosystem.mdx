@@ -11,7 +11,7 @@ unlocks: ["8.4-vllm"]
 analogy: "A concert hall does not ship the composer. It ships a printed edition of the score, a librarian who hands out the right revision, a conductor who decides tempo and dynamics, and a stage manager who says when the piece ends. Blame for a bad performance usually lands on the composer and usually belongs to one of the other three. The Hub, safetensors, the chat template, and the generation loop are those three roles around Qwen3.8-27B."
 teachBack:
   prompt: "Trace a chat request through the Transformers stack and explain precisely where enable_thinking takes effect, and why calling it a model setting is wrong."
-  modelAnswer: "A list of role-and-content messages goes to the tokenizer's apply_chat_template, which renders the model's Jinja template — stored with the tokenizer, not the weights — into one string carrying the exact special tokens the model was trained on, then tokenizes it to ids. Those ids go to generate(), which runs the forward pass repeatedly, samples with whatever decoding parameters you supply, maintains the cache, and stops on a stop token or length. enable_thinking is an argument to apply_chat_template: it changes which scaffolding the template emits, and therefore which tokens the model receives. The weights, the config, and the forward pass are byte-for-byte identical either way. If you build the prompt string yourself, or pass the flag to generate() instead of the template, it does nothing at all and you will conclude the model ignores it."
+  modelAnswer: "A list of role-and-content messages goes to the tokenizer's apply_chat_template, which renders the model's Jinja template — stored with the tokenizer, not the weights — into one string carrying the exact special tokens the model was trained on, then tokenizes it. Current Transformers returns a BatchEncoding with input_ids and an attention_mask, and generate() receives that mapping, runs the forward pass repeatedly, samples when do_sample=True with the decoding parameters you supply, maintains the cache, and stops on a stop token or length. enable_thinking is an argument to apply_chat_template: it changes which scaffolding the template emits, and therefore which tokens the model receives. The weights, the config, and the forward pass are byte-for-byte identical either way. If you build the prompt string yourself, or pass the flag to generate() instead of the template, it does nothing at all and you will conclude the model ignores it."
 quiz:
   - question: "Why does safetensors loading not execute arbitrary code, unlike a pickled checkpoint?"
     options: ["The file is a JSON header of names, dtypes, shapes, and byte offsets followed by a flat tensor blob, so loading is memory-mapping and slicing","It is encrypted","It runs the code in a sandbox","It converts everything to float32 first"]
@@ -30,6 +30,10 @@ citations:
     authors: "Hugging Face"
     year: 2026
     url: "https://huggingface.co/docs/transformers"
+  - title: "Transformers v5 Migration Guide — apply_chat_template returns BatchEncoding"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://github.com/huggingface/transformers/blob/856157a2f3e9594954310df18fdccc31ffddebe9/MIGRATION_GUIDE_V5.md#4-apply_chat_template-returns-batchencoding"
   - title: "safetensors Documentation"
     authors: "Hugging Face"
     year: 2026
@@ -38,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-20"
+updated: "2026-09-13"
 ---
 
 A colleague reports that Qwen3.8-27B "ignores the thinking toggle" — they set it, the model reasons anyway, and the flag appears to be decorative. Another reports that the same script gave different answers last month than it does today, with no code change. Both bugs are real, neither is in the model, and both live in the thin layer of plumbing between weights on the Hub and text on a screen. That layer has four parts: which bytes you fetched, how they were loaded, how your conversation became a string, and how tokens were sampled. Lesson 8.1 gave you the runtime; this lesson gives you everything wrapped around it.
@@ -49,14 +53,29 @@ Then the format. Qwen3.8-27B ships bf16 safetensors, and safetensors is delibera
 
 Now the part that causes the reported bug. Qwen3.8-27B is a chat model, and chat models are trained on a very specific string layout — role markers, turn boundaries, and the special tokens that delimit a thinking block. That layout is not baked into the weights and it is not in the model config. It is a Jinja template shipped *with the tokenizer*, and `apply_chat_template` is what renders it. You hand it a list of dictionaries with roles and contents, it hands you the exact string the model was trained to continue, and tokenizing that string gives ids for the forward pass. The model never sees a role. It sees tokens.
 
-That is where `enable_thinking` lives: it is a variable consumed by the template, not a parameter of the model and not an argument to the generation loop. Setting it to false makes the template render a prompt whose scaffolding suppresses the thinking block; setting it to true (the default) renders the version that invites one. Identical weights, identical forward pass, different input tokens. So the sequence is: build messages, call the template with `add_generation_prompt=True` and your thinking choice, tokenize, generate.
+That is where `enable_thinking` lives: it is a variable consumed by the template, not a parameter of the model and not an argument to the generation loop. Setting it to false makes the template render a prompt whose scaffolding suppresses the thinking block; setting it to true (the default) renders the version that invites one. Identical weights, identical forward pass, different input tokens. So the sequence is: build messages, call the template with `add_generation_prompt=True` and your thinking choice, tokenize, then unpack the returned encoding into `generate()`.
 
 ```python
-ids = tok.apply_chat_template(messages, add_generation_prompt=True,
-                              enable_thinking=False, return_tensors="pt")
-out = model.generate(ids, temperature=0.7, top_p=0.80, top_k=20,
-                     min_p=0.0, repetition_penalty=1.0)
+inputs = tok.apply_chat_template(
+    messages,
+    add_generation_prompt=True,
+    enable_thinking=False,
+    return_dict=True,
+    return_tensors="pt",
+).to(model.device)
+out = model.generate(
+    **inputs,
+    do_sample=True,
+    temperature=0.7,
+    top_p=0.80,
+    top_k=20,
+    min_p=0.0,
+    repetition_penalty=1.0,
+    max_new_tokens=256,
+)
 ```
+
+This excerpt assumes `tok` and a single-device `model` were loaded from the same pinned revision and `messages` is already defined. In Transformers v5, `apply_chat_template(..., return_tensors="pt")` returns a `BatchEncoding`, so passing it as the positional `ids` argument fails; `**inputs` supplies both `input_ids` and `attention_mask`. `do_sample=True` is also required for temperature, top-p, top-k, and min-p to affect decoding. The length cap is explicit so a copied example has a finite boundary.
 
 :::warning
 Hand-assembling the prompt string is the single most common way to break a chat model, and it fails quietly. A prompt that is merely close to the trained layout still produces fluent text, so nothing crashes and no error appears — you simply get a model operating outside its instruction-tuned distribution, with a thinking toggle that does nothing because no template ever ran. Render the template, then log the rendered string once and read it.
@@ -66,7 +85,7 @@ Because the template is a file rather than a property of the weights, it is also
 
 Tool calling rides on the same mechanism, which is why it belongs here rather than in a lesson of its own. You pass tool definitions to `apply_chat_template` alongside the messages; the template renders them into the exact special-token layout the model was trained to answer in; the model emits a structured call as ordinary tokens; and your harness parses that span back into a function name and arguments, runs it, and appends the result as another message. Every one of those steps is text. Nothing in the forward pass knows that a tool exists. When tool calling misbehaves, the bug is almost always in the rendering or the parsing rather than in the model — and lesson 8.5 covers the complementary half, constraining the decode so the emitted call is guaranteed to parse at all.
 
-Sampling is the second quiet failure. The complete current instruct preset is temperature 0.7, top_p 0.80, top_k 20, min_p 0, presence penalty 1.5, and repetition penalty 1.0. Thinking mode uses temperature 1.0, top_p 0.95, top_k 20, min_p 0, presence penalty 0, and repetition penalty 1.0. Framework support differs: set every supported field explicitly, record unsupported fields, and log the effective request — do not assume omitted defaults match the card.
+Sampling is the second quiet failure. The complete current instruct preset is temperature 0.7, top_p 0.80, top_k 20, min_p 0, presence penalty 1.5, and repetition penalty 1.0. Thinking mode uses temperature 1.0, top_p 0.95, top_k 20, min_p 0, presence penalty 0, and repetition penalty 1.0. The raw Transformers `generate()` interface at the cited revision supports the fields shown in the snippet but has no presence-penalty argument, so the snippet is a disclosed partial implementation of the card's preset. Set every supported field explicitly, record unsupported fields, and log the effective request — do not assume omitted defaults match the card.
 
 Thinking has three independent controls. `enable_thinking` decides whether a reasoning block exists. `reasoning_effort` controls depth and currently defaults to `xhigh` in the official card; the labels are API and template semantics, so inspect the effective template before comparing runtimes. `preserve_thinking` currently defaults to true and retains historical reasoning blocks. That can help an agent, but it also makes old reasoning consume prompt tokens on every turn. Measure tokens and wall time for the whole job and deliberately decide whether that history belongs in context.
 
