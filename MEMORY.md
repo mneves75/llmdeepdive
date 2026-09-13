@@ -2,6 +2,27 @@
 
 ## Current Direction
 
+- **0.6.3 closes the end-to-end review with verified rendering and interactions.**
+  Deployed on 2026-09-13 from `99c14d8`, tagged `v0.6.3-beta1` for staging
+  and `v0.6.3` for production. Staging version `696b2d5b` and production
+  version `bfa69e5b` are active at 100%. All 531 public output files match the
+  same artifact on staging, apex and www; localized 404s, Brotli and the
+  1,666-character CSP value (1,693-character generated line) were verified.
+  CI passed all 88 tests and every documented gate. A real Chromium sweep
+  covered all 238 routes at 320px and 1440px: 476 rendered checks with no
+  overflow, duplicate IDs, invalid default numeric inputs or missing structure.
+  Chrome and iPhone Safari checks exercised explorer-to-lesson navigation;
+  Chrome also verified search, quiz completion, saved-answer reload, storage
+  failure, calculators, no-JS/no-WebGL fallback and initial reduced motion.
+  The plot was inspected in mobile Safari and the 3D model from multiple angles.
+  All 238 staging routes passed 20-request performance checks after two initial
+  spikes cleared at 25.7 ms and 23.3 ms server p95. The immutable control was
+  16.5 ms; the worst first-pass server p95 was 63.2 ms, after subtracting the
+  measured 36.1 ms RTT. The impossible-budget self-test also passed.
+  Remaining bounded follow-ups: normalize corrupt theme preferences and expose
+  theme-save failures; react to reduced-motion changes during an open explorer;
+  extend bilingual parity checks to structural track and lesson metadata.
+
 - **0.6.2 combines the corpus corrections with the Kimi K3 in C reference.**
   Lesson 7.12 now explains streamed inference in both languages. The release
   also corrects Ollama's presence-penalty example and updates Astro, Wrangler
@@ -102,7 +123,7 @@
   script never executes — but the config claims analytics that do not exist.
 
   Confirmed still live on 2026-09-13 on both production domains after the
-  0.6.2 deployment; staging does not inject the beacon. It
+  0.6.3 deployment; staging does not inject the beacon. It
   cannot be fixed from this repo: wrangler's OAuth token returns
   `10000 Authentication error` against `/accounts/{id}/rum/site_info/list`, so
   this needs the dashboard or an API token scoped for RUM. Verify in one
