@@ -76,6 +76,17 @@ test('names come from the environment, never from the repo', () => {
   assert.deepEqual(scanText('acmecorp'), [])
 })
 
+test('namesFromEnv is independent of the ambient process environment', () => {
+  const previous = process.env.PRIVATE_REFS_NAMES
+  process.env.PRIVATE_REFS_NAMES = 'ambient-only-name'
+  try {
+    assert.equal(namesFromEnv(undefined), null)
+  } finally {
+    if (previous === undefined) delete process.env.PRIVATE_REFS_NAMES
+    else process.env.PRIVATE_REFS_NAMES = previous
+  }
+})
+
 test('regex metacharacters in a name are escaped, not interpreted', () => {
   const rule = namesFromEnv('a.c')
   assert.deepEqual(scanText('a.c', [rule]).map((f) => f.hit), ['a.c'])

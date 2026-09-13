@@ -345,15 +345,25 @@ scripts and they are otherwise invisible to every budget.
 The published corpus is tracks 0–9; documentation must describe that shipped
 scope exactly.
 
-The project's implementation reference for Kimi K3's 2.8-trillion-parameter MoE
-in C is [Colibrì](https://github.com/JustVugg/colibri), specifically its
-`c/kimi_k3.c` engine and `docs/kimi_k3.md`. It streams routed experts directly
-from the original MXFP4 checkpoint with `pread` and optional `O_DIRECT`.
-Memory and throughput figures are hardware- and revision-specific; cite the
-upstream measurement instead of repeating a fixed memory requirement.
+The Kimi K3 implementation reference is
+[Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c). For the streaming
+mechanism, read upstream `docs/ARCHITECTURE.md`, `src/io/k3_trunk.c` and
+`src/cache/k3_cache.c`; for measurements, read `docs/data/README.md` and its
+linked logs. Lesson 7.12 owns the bilingual case study. Cite a fixed upstream
+revision and distinguish process RSS, checkpoint storage and generation speed;
+memory budgets measured on a server are not laptop benchmarks.
 
 ## Docs
 
 `MEMORY.md` (curated state) + `FOR_YOU_KNOW.md` (plain-language explainer) +
 `PRODUCT.md` (product facts) + `DESIGN.md` (visual system). Read them when
 opening the repo.
+
+## Package management
+
+- **Use pnpm exclusively.** Never use `npm install`, `yarn`, or `bun install` — they ignore `pnpm-lock.yaml` and create duplicate physical copies of every dependency.
+- Setup / CI: `pnpm install --frozen-lockfile`
+- Add dependency: `pnpm add <pkg>` · dev: `pnpm add -D <pkg>` · workspace pkg: `pnpm --filter <name> add <pkg>`
+- Run scripts: `pnpm <script>`
+- `node_modules/` is disposable: hardlinked views into the shared pnpm store. Deleting it is always safe; reinstall is fast and offline. Never commit or edit it.
+- `pnpm-lock.yaml` is the source of truth: commit it, never hand-edit.

@@ -68,7 +68,7 @@ export const STRUCTURAL_RULES = [
  * committing the list would publish exactly what it exists to protect. Set it
  * locally in your shell and as a CI secret.
  */
-export function namesFromEnv(raw = process.env.PRIVATE_REFS_NAMES) {
+export function namesFromEnv(raw) {
   const names = (raw ?? '')
     .split(',')
     .map((n) => n.trim())
@@ -149,7 +149,7 @@ function scanCommitMetadata(rules) {
 // Only scan when invoked as a command; the exports above are imported by tests.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const names = namesFromEnv()
+    const names = namesFromEnv(process.env.PRIVATE_REFS_NAMES)
     const rules = names ? [...STRUCTURAL_RULES, names] : STRUCTURAL_RULES
     const files = scanTrackedFiles(rules)
     const commits = scanCommitMetadata(rules)

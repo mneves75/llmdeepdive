@@ -14,16 +14,16 @@ teachBack:
   modelAnswer: "At 64 KiB of KV per token from lesson 7.2, a 3,000-token prefix costs about 188 MiB of cache. Without sharing, 40 calls hold 40 separate copies, about 7.3 GiB, and each call pays the prefill compute for those 3,000 tokens, 120,000 prefill tokens in total. With RadixAttention the prefix is stored once — about 188 MiB — and prefilled once, with each call keeping only the blocks for its own divergent suffix. The habit that destroys it is putting anything volatile at the top of the prompt: a timestamp, a request id, a shuffled tool list, or a per-user greeting. Matching is exact and prefix-anchored on token ids, so a single differing token in the first line reduces the shared prefix to nothing and every call pays full price."
 quiz:
   - question: "Why must volatile content such as a timestamp go at the end of a prompt rather than the beginning?"
-    options: ["Prefix matching is exact and anchored at position one, so a differing early token means no blocks are shared at all", "Timestamps confuse the tokenizer", "The model reads prompts backwards", "Late tokens are cached but early ones are not"]
-    correctIndex: 0
+    options: ["Timestamps confuse the tokenizer","The model reads prompts backwards","Late tokens are cached but early ones are not","Prefix matching is exact and anchored at position one, so a differing early token means no blocks are shared at all"]
+    correctIndex: 3
     explanation: "A radix tree over token ids only shares the common leading run; divergence at token one leaves an empty shared prefix, and everything after it is recomputed."
   - question: "From lesson 8.4, what does saving KV memory through prefix sharing actually buy on a fixed card?"
-    options: ["A larger effective token pool, and therefore more concurrent sessions at the same context length", "More FLOPs per second", "A smaller model on disk", "Lower per-token bandwidth for the weights"]
+    options: ["A larger effective token pool, and therefore more concurrent sessions at the same context length","More FLOPs per second","A smaller model on disk","Lower per-token bandwidth for the weights"]
     correctIndex: 0
     explanation: "Concurrency is pool size divided by tokens per session; recovering gibibytes of duplicated prefix raises the numerator without touching the weights."
   - question: "What does grammar-constrained decoding guarantee, and what does it not?"
-    options: ["It guarantees output conforms to the schema, not that the content is correct or well-reasoned", "It guarantees factual accuracy", "It guarantees lower latency", "It guarantees the model used thinking mode"]
-    correctIndex: 0
+    options: ["It guarantees factual accuracy","It guarantees output conforms to the schema, not that the content is correct or well-reasoned","It guarantees lower latency","It guarantees the model used thinking mode"]
+    correctIndex: 1
     explanation: "Masking disallowed tokens before sampling enforces shape only; a schema-valid object can still be wrong, so validation of meaning stays your job."
 citations:
   - title: "SGLang Documentation"
@@ -42,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-18"
+updated: "2026-08-20"
 ---
 
 Your traffic is not what lesson 8.4 assumed. Instead of independent users asking independent questions, you are running an agent: one task fans out into forty model calls, each of which begins with the same system prompt, the same tool schemas, and the same few-shot examples — about three thousand tokens of identical preamble — and diverges only in the last paragraph. Every call must return a JSON object your code will parse. On a general-purpose engine this workload is quietly pathological, and understanding why is the whole reason SGLang exists.
@@ -53,7 +53,7 @@ $$
 3{,}000 \times 64\ \text{KiB} = 187.5\ \text{MiB}
 $$
 
-of cache. Forty concurrent calls each holding their own copy come to roughly 7.3 GiB — on the fourteen-gibibyte pool we sized in lesson 8.4, that is more than half the machine's entire capacity spent storing forty identical things. The compute is just as bad: the preamble is prefilled forty times, one hundred and twenty thousand tokens of attention work to produce a prefix the engine already computed thirty-nine times that second.
+of cache. Forty concurrent calls each holding their own copy come to roughly 7.3 GiB of duplicate KV — substantial pressure in any realized pool, whose complete budget belongs to lesson 9.3. The compute is just as bad: the preamble is prefilled forty times, one hundred and twenty thousand tokens of attention work to produce a prefix the engine already computed thirty-nine times that second.
 
 RadixAttention is the fix, and its shape follows from what the cache actually is. KV blocks are a function of the token ids that produced them and their positions, so two sequences that begin with the identical token run have identical blocks for that run. SGLang therefore organizes the block pool as a radix tree keyed on token ids: an arriving request walks the tree from the root, reuses every block along the longest matching path, and allocates only for the suffix where it diverges. Eviction is least-recently-used over that tree, so hot prefixes — your system prompt — stay resident while one-off conversations age out. In our example the preamble is stored once at about 188 MiB and prefilled once, recovering roughly seven gibibytes of pool and thirty-nine fortieths of the preamble's prefill cost.
 
@@ -69,7 +69,7 @@ Structured output is the third piece, and it is what makes the JSON requirement 
 Schema-valid is not correct. A constrained decode will happily produce a perfectly formed object whose fields are wrong, invented, or contradictory, and it will do so with more confidence than free-form text because the usual signal of a confused model — rambling — has been masked away. Keep semantic validation downstream. Constrained decoding removes parse errors from your incident list; it does not remove hallucination.
 :::
 
-The hybrid architecture adds a wrinkle to prefix sharing that is worth stating precisely, because it is the deepest thing in this lesson. Only the 16 full-attention layers store per-token KV blocks, which are exactly what a radix tree can share. The 48 Gated DeltaNet layers hold a fixed-size recurrent state that is a *summary* of everything processed so far — it has no per-token structure and cannot be indexed into or partially reused. For a request to resume from a shared prefix, the engine must therefore also have checkpointed the recurrent state at that prefix boundary and be able to restore it, roughly 72 MiB per checkpoint. That is cheap next to the 188 MiB of shared KV it unlocks, but it is a genuinely different mechanism from block sharing, and whether a given release implements it — rather than silently falling back to full recomputation, or worse, reusing blocks against a stale state — is a per-version question to verify, not to assume. SGLang publishes an official cookbook page for this exact model, which is the right starting point precisely because it pins the versions and settings the maintainers have exercised.
+The hybrid architecture adds a wrinkle to prefix sharing that is worth stating precisely, because it is the deepest thing in this lesson. Only the 16 full-attention layers store per-token KV blocks, which are exactly what a radix tree can share. The 48 Gated DeltaNet layers hold a fixed-size recurrent state that is a *summary* of everything processed so far — it has no per-token structure and cannot be indexed into or partially reused. For a request to resume from a shared prefix, the engine must therefore also have checkpointed the recurrent state at that prefix boundary and be able to restore it. The reference implementation stores about 144 MiB per sequence when that state is fp32 — the same order as the 188 MiB of shared KV in this example, not a negligible add-on. A serving runtime may use another state dtype or layout, so inspect its realized allocation. This is a genuinely different mechanism from block sharing, and whether a given release implements it — rather than silently falling back to full recomputation, or worse, reusing blocks against a stale state — is a per-version question to verify, not to assume. SGLang publishes an official cookbook page for this exact model, which is the right starting point precisely because it pins the versions and settings the maintainers have exercised.
 
 One boundary rule survives all of this unchanged. Reuse is exact-match on token ids, so no content crosses between requests that did not already share it verbatim — but a cache hit is faster than a miss, and timing is observable. Treat cross-tenant prefix sharing as a decision to make deliberately, keep tenants in separate pools when the prompt itself is confidential, and re-read lesson 7.2's warning about cached keys and values being a rich record of what a user said.
 

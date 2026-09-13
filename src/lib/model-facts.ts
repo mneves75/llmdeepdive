@@ -135,14 +135,15 @@ export const QWEN = {
 
   /**
    * The recurrent state a DeltaNet layer keeps instead of a growing cache.
-   * Approximate: the short-conv state is excluded. The 16 GiB-versus-72 MiB
-   * contrast is the course's central architectural argument.
+   * The Transformers reference path keeps this matrix state in float32; the
+   * small short-convolution state is excluded.
+   * Runtime implementations may choose a different state dtype.
    */
   deltaNetStateMib: fact(
-    72,
+    144,
     'MiB total, constant in sequence length',
     'derived',
-    '~1.5 MiB per layer x 48 layers; conv state excluded',
+    '48 value heads x 128 x 128 x 4 B x 48 layers; reference float32 state, conv state excluded',
   ),
 
   paramsTotal: fact(27e9, 'parameters', 'card', 'marketed ~27B, includes the vision tower'),
@@ -189,10 +190,10 @@ export const QWEN = {
  * 708.71 for IQ3_XS, because dequantization is extra arithmetic in a
  * compute-bound regime.
  *
- * Bits per weight is **model-dependent**: it shifts with how much of a
- * checkpoint is embedding and which tensors a recipe protects. Lesson 8.7's
- * ~4.7 bpw for a 16 GB Q4_K_M build of Qwen3.8-27B and the 4.8944 below are
- * both right, for different models. Neither generalises.
+ * Bits per weight is **artifact- and model-dependent**: it shifts with tensor
+ * inventory, protected tensors, and metadata. The 4.8944 below is measured for
+ * the published Llama-3.1-8B artifact; no exact Qwen bpw is inferred from its
+ * rounded marketed parameter count.
  *
  * Provenance: llama.cpp `tools/quantize/README.md`, fetched 2026-08-19.
  * https://github.com/ggml-org/llama.cpp/blob/master/tools/quantize/README.md

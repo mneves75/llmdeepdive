@@ -10,16 +10,16 @@ prerequisites: ["5.9-mixed-precision"]
 unlocks: ["5.11-learning-rate-schedules"]
 analogy: "A hiker crossing a long route can photograph every turn or only major trail junctions. Photographing everything makes the return route easy but fills the phone. Keeping only junctions saves storage; on the way back, the hiker must retrace each segment to reconstruct intermediate turns. Checkpointing stores selected activation junctions and recomputes the path when gradients travel backward."
 teachBack:
-  prompt: "Estimate the saved-activation memory of one 8,192-token sequence through Qwen3.8-27B's 64 layers, then show what checkpointing at super-block boundaries changes."
-  modelAnswer: "Work the estimate on a uniform full-attention model with this model's dimensions; the hybrid's 48 DeltaNet layers need their training activations costed separately. Counting the tensors autograd retains in one layer — the residual stream and normalized copies at 5120 wide, the non-square attention projections, and the three 17,408-wide FFN tensors — gives roughly 98,300 values per token per layer, about 192 KiB in bf16. Across 8,192 tokens and 64 layers that is about 96 GiB for a single sequence at batch size one. Checkpointing at the 16 super-block boundaries stores only the boundary hidden states, 8,192 x 5120 x 2 bytes = 80 MiB each, about 1.25 GiB in total, plus the transient cost of recomputing one four-layer super-block, about 6.0 GiB. Peak activation memory falls from roughly 96 GiB to under 8 GiB, at the price of running most of the forward pass a second time."
+  prompt: "Estimate saved activations for an explicitly hypothetical all-attention model with Qwen3.8-27B’s dimensions, show how super-block checkpoint boundaries change that estimate, and explain why the resulting ratio cannot be transferred to the real hybrid without measurement."
+  modelAnswer: "For a deliberately uniform full-attention model with these dimensions, a format count gives roughly 98,300 retained values per token per layer, about 192 KiB in bf16, or about 96 GiB across 8,192 tokens and 64 layers. This is a teaching model, not the measured peak of Qwen3.8-27B: its 48 DeltaNet layers retain different convolution, projection, gate, beta, and recurrent-state intermediates. Under the same hypothetical per-layer rate, storing 16 boundary states costs about 1.25 GiB and rematerializing four layers about 6.0 GiB. These figures demonstrate the checkpointing method; neither 7.3 GiB as a ceiling nor the 13-fold ratio is established for the real hybrid. Its peak must be measured with the actual autograd graph and kernels."
 quiz:
   - question: "Estimating activation memory as batch x sequence x hidden x layers x 2 bytes gives about 5 GiB for one 8,192-token sequence. Why is the figure for a uniform full-attention model of this size closer to 96 GiB?"
-    options: ["That formula counts only the residual stream; autograd also retains the normalized copies, the attention projections, and three 17,408-wide FFN tensors per layer, about 19 times as many values", "Because the weights are counted twice", "Because bf16 uses 4 bytes per element", "Because the KV cache is retained during training"]
-    correctIndex: 0
+    options: ["Because the weights are counted twice", "Because bf16 uses 4 bytes per element", "That formula counts only the residual stream; autograd also retains the normalized copies, the attention projections, and three 17,408-wide FFN tensors per layer, about 19 times as many values", "Because the KV cache is retained during training"]
+    correctIndex: 2
     explanation: "The FFN intermediates dominate: three tensors of width 17,408 against a 5120-wide residual stream, which is why a residual-only estimate underestimates by more than an order of magnitude."
-  - question: "Lesson 5.9 kept an fp32 master copy of the weights. Does activation checkpointing reduce it?"
-    options: ["No — checkpointing attacks saved activations only, leaving parameters, gradients, and the 324 GB of optimizer state untouched", "Yes, by half, since boundaries are stored in bf16", "Yes, because recomputation regenerates master weights", "Only when combined with loss scaling"]
-    correctIndex: 0
+  - question: "Under the illustrative optimizer recipe discussed in lessons 5.7 and 9.3, does activation checkpointing reduce persistent optimizer state?"
+    options: ["Yes, by half, since boundaries are stored in bf16", "Yes, because recomputation regenerates master weights", "Only when combined with loss scaling", "No — checkpointing attacks saved activations only, leaving parameters, gradients, and the 324 GB of optimizer state untouched"]
+    correctIndex: 3
     explanation: "The categories are independent: sharding addresses persistent state, checkpointing addresses activations, and a job can be limited by either."
   - question: "Why must random-number state be handled during recomputation?"
     options: ["Dropout and other stochastic operations must reproduce compatible masks", "It changes parameter shapes", "It allocates the tokenizer", "It replaces the loss"]
@@ -34,7 +34,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-18"
+updated: "2026-08-20"
 ---
 
 Lesson 5.7 got persistent state down to about 6.75 GB per rank on a 64-way ZeRO-3 job. Lesson 5.8 partitioned the layers. On paper, a 27-billion-parameter model now fits an 80 GB accelerator with enormous headroom. Then you launch with an 8,192-token sequence and batch size one, and the job dies at the first backward pass. Nothing about your sharding was wrong. You budgeted the wrong category.
@@ -75,13 +75,13 @@ $$
 80\ \text{MiB}\times 16\ \text{boundaries}=1.25\ \text{GiB}.
 $$
 
-During backward, one super-block is rematerialized at a time, costing four layers' worth of intermediates — still priced at the uniform-attention rate, which is why the result below is a ceiling for the real hybrid rather than its measured peak:
+During backward, one super-block is rematerialized at a time, costing four layers' worth of intermediates — still priced at the uniform-attention rate, but that rate is only a hypothetical comparison point for the hybrid, not a known ceiling or a measured peak:
 
 $$
 4\times 8192\times 192\ \text{KiB}\approx 6.0\ \text{GiB}.
 $$
 
-Peak activation memory becomes roughly $1.25+6.0\approx 7.3$ GiB instead of 96 GiB — about a thirteenfold reduction, and the ratio is what transfers to the real model even though the two absolute figures are the hypothetical's — paid for by running most of the forward computation twice.
+Within that full-attention teaching model, peak saved-activation memory becomes roughly $1.25+6.0\approx 7.3$ GiB instead of 96 GiB. The roughly thirteenfold ratio belongs only to that shape-based count; it does **not** transfer to the real hybrid until its DeltaNet autograd graph, fused kernels, allocator, and recomputation policy are measured.
 
 :::insight
 Segment granularity is a dial, not a switch, and the two terms move in opposite directions. Sixteen coarse segments store few boundaries and rematerialize a lot; sixty-four fine segments store 64 boundaries (5 GiB) and rematerialize only one layer at a time (about 1.5 GiB). Both land near 6 to 7 GiB here, but with different framework overhead and different overlap behaviour. Measure both rather than adopting a folklore interval.
@@ -95,7 +95,7 @@ $$
 M_{peak}=M_{params}+M_{grads}+M_{optimizer}+M_{activations}+M_{temporary}+M_{allocator}.
 $$
 
-Checkpointing attacks $M_{activations}$ and nothing else. It does not shard parameters, it does not touch the fp32 master weights of lesson 5.9, and it leaves the 324 GB of AdamW state exactly where lesson 5.7 found it. A job dominated by optimizer state needs ZeRO or FSDP; a job dominated by long-sequence activations needs this. Most large runs are limited by one at a time, and the limiting category changes as sequence length grows.
+Checkpointing attacks $M_{activations}$ and nothing else. It does not shard parameters and does not change persistent optimizer state. The exact dtypes and components of that state are recipe-dependent, and lesson 9.3 owns the Qwen memory budget. A job dominated by persistent state needs ZeRO or FSDP; one dominated by long-sequence activations needs checkpointing.
 
 Sequence length is where this model gets interesting. The estimate above used 8,192 tokens; native context is 262,144. Activations in the position-wise parts of the network grow linearly with $T$, so the same arithmetic at full context is thirty-two times larger and utterly infeasible without both checkpointing and the sequence parallelism of lesson 5.8. Ordinary attention would add a term quadratic in $T$ on top, which is precisely why memory-efficient attention kernels that never materialize the full probability matrix are mandatory at these lengths — and why only 16 of the 64 layers face that term at all, the other 48 scanning positions with a fixed-size recurrent state.
 

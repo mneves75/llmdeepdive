@@ -14,12 +14,12 @@ teachBack:
   modelAnswer: "DPO compares each response's log-probability under the trainable policy against its log-probability under a frozen reference policy, and a logistic loss widens the chosen response's relative margin over the rejected one. On Qwen3.8-27B the hazard is the thinking segment: thinking mode is the default, so the same conversation renders differently depending on whether enable_thinking is False, and the two renderings produce different token sequences and different log-probabilities. If pairs were collected in one mode and scored in the other, or if chosen and rejected responses carry thinking traces of very different lengths, the summed log-probabilities measure trace length rather than answer quality."
 quiz:
   - question: "What role does the reference model play in standard DPO?"
-    options: ["It anchors relative log-probability changes for chosen and rejected responses", "It generates the tokenizer alphabet", "It supplies human labels automatically", "It removes the need for preference data"]
-    correctIndex: 0
+    options: ["It generates the tokenizer alphabet", "It supplies human labels automatically", "It anchors relative log-probability changes for chosen and rejected responses", "It removes the need for preference data"]
+    correctIndex: 2
     explanation: "DPO measures how the policy changes response likelihood relative to a fixed reference, creating an implicit regularization anchor."
   - question: "Lesson 6.4 described length as the canonical confounder in preference data. Why is offline DPO especially exposed to it?"
-    options: ["It scores whole responses by summed token log-probability, so length differences enter the objective directly and there is no fresh sampling to reveal the drift", "It cannot process responses longer than the context window", "It normalizes every response to the same length automatically", "It discards the rejected response before computing the loss"]
-    correctIndex: 0
+    options: ["It cannot process responses longer than the context window", "It normalizes every response to the same length automatically", "It discards the rejected response before computing the loss", "It scores whole responses by summed token log-probability, so length differences enter the objective directly and there is no fresh sampling to reveal the drift"]
+    correctIndex: 3
     explanation: "The pairwise labels carry the annotators' length bias, and the objective's own summation over response tokens adds a second, mechanical length dependence on top of it."
   - question: "Which statement is a limitation of ordinary offline DPO?"
     options: ["It is constrained by the coverage and quality of existing preference pairs", "It cannot compute token log-probabilities", "It requires no model weights", "It proves the preferences are unbiased"]
@@ -51,13 +51,13 @@ $$
 
 Now make it concrete on this course's model. You want to adapt Qwen3.8-27B's instruct-mode style for a support product, and you have 8,000 preference pairs. Setting up the run means answering four questions, in this order.
 
-First, where does the reference model come from? Naively you load two 27B checkpoints, which at 54 GB each in bf16 is not happening on one card. The trick is to combine DPO with LoRA from lesson 6.3: train adapters on a 4-bit backbone of roughly 14 to 16 GB, and get the reference for free by running the same forward pass with the adapters disabled. One copy of the base weights, two log-probabilities. That is what puts a DPO run on a 48 GB GPU.
+First, where does the reference model come from? Naively loading two 27B bf16 checkpoints is not a one-card plan. Combine DPO with LoRA from lesson 6.3 instead: train adapters over one low-bit backbone and obtain the reference log-probability by running the same backbone with adapters disabled. That removes the second weight copy, but it does not prove a fixed GPU fit; activation memory, quantization metadata, sequence length, micro-batch, and backend buffers still determine residency.
 
 Second, which mode are you training? Qwen3.8-27B ships thinking mode on by default and instruct mode behind enable_thinking set to False, and the two render the same conversation into different token sequences. Log-probabilities are computed over tokens, so a pair collected in one mode and scored in the other is not merely noisy — it is a different objective. Pick a mode, render both the chosen and rejected responses through that exact template branch, and record which branch the dataset used.
 
 Third, which tokens enter the sum? If you are training thinking mode and your chosen response carries a 900-token reasoning trace while the rejected one carries 200, the summed log-probability difference is dominated by trace length before quality gets a vote. Either mask the thinking segment out of the loss and score only the final answer, or length-control your pairs deliberately. Do not leave it to chance.
 
-Fourth, how were the candidates sampled? Generate them under the mode's own published preset — temperature 1.0, top_p 0.95, top_k 20 for thinking; 0.7, 0.80, 20 for instruct. Candidates sampled at some other temperature come from a distribution the deployed model does not use, and you will be teaching preferences over responses your users will never see.
+Fourth, how were the candidates sampled? Record the full configuration. To reproduce the model card's recommendations, thinking uses temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, presence_penalty 0.0, and repetition_penalty 1.0; instruct uses 0.7, 0.80, 20, 0.0, 1.5, and 1.0. The deployment operator can choose other settings, so off-recommendation samples are not intrinsically invalid or responses users will never see. What matters is whether the candidate distribution covers the behavior you intend to deploy and whether that choice is recorded.
 
 Then run one example through the arithmetic. Take $\beta = 0.1$. Suppose the chosen response scores $-42.0$ under the policy and $-45.0$ under the reference, a relative gain of $+3.0$; the rejected response scores $-50.0$ under the policy and $-48.0$ under the reference, a relative loss of $-2.0$. Then $m = 0.1 \times (3.0 - (-2.0)) = 0.5$, and the loss is $-\log\sigma(0.5)\approx 0.47$. Note what moved the number: not how likely either response is, but how each one's likelihood shifted *relative to the reference*.
 

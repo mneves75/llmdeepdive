@@ -14,12 +14,12 @@ teachBack:
   modelAnswer: "In Megatron-style tensor parallelism each layer has two points where partial results must be summed across ranks — after the attention or DeltaNet output projection and after the FFN down projection. Each reconciliation is over one hidden vector: 5120 values at 2 bytes is 10 KiB. Across 64 layers that is 128 all-reduces per token carrying 1.25 MiB of payload, and a ring all-reduce moves 2 times N minus 1 over N of that per rank, so 1.25 MiB at two ranks and about 1.875 MiB at four. The bytes are trivial for NVLink; the cost is latency, because 128 synchronizations happen serially per token. Sharding halves the per-GPU weight read each time N doubles, but the 128 synchronizations do not shrink, so communication grows as a fraction of the step and returns diminish. The cap is the KV head count: Qwen3.8-27B has 4 KV heads, so tensor-parallel degrees above 4 must replicate KV heads across ranks, duplicating the cache and forfeiting the memory saving that motivated sharding."
 quiz:
   - question: "Lesson 5.8 described tensor parallelism as splitting weight matrices across devices. For Qwen3.8-27B, which dimension caps the clean tensor-parallel degree at 4?"
-    options: ["The 4 KV heads of grouped-query attention", "The 5120 hidden size", "The 17408 FFN intermediate size", "The 248,320 padded vocabulary"]
-    correctIndex: 0
+    options: ["The 5120 hidden size","The 17408 FFN intermediate size","The 4 KV heads of grouped-query attention","The 248,320 padded vocabulary"]
+    correctIndex: 2
     explanation: "Hidden 5120, FFN 17408 and the padded vocabulary 248,320 all divide cleanly by large powers of two; only the 4 KV heads run out first, and beyond 4 ranks they must be replicated."
   - question: "Why does an all-reduce payload of about 1.9 MiB per token still limit throughput on a slow interconnect?"
-    options: ["Because the cost is dominated by the latency of 128 serial synchronizations per token, not by the bytes", "Because 1.9 MiB exceeds PCIe bandwidth", "Because the payload must be sent to every node in the cluster", "Because all-reduce requires the full KV cache to be transferred"]
-    correctIndex: 0
+    options: ["Because 1.9 MiB exceeds PCIe bandwidth","Because the payload must be sent to every node in the cluster","Because all-reduce requires the full KV cache to be transferred","Because the cost is dominated by the latency of 128 serial synchronizations per token, not by the bytes"]
+    correctIndex: 3
     explanation: "At interactive rates the aggregate is under 100 MiB/s, far below any modern fabric; what hurts is that each of the 128 reconciliations is a blocking round trip whose fixed cost adds up."
 citations:
   - title: "NVIDIA NVLink and Data Center Networking"
@@ -34,7 +34,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-18"
+updated: "2026-08-20"
 ---
 
 Lesson 9.4 left you with a sizing problem. Qwen3.8-27B in bf16 is 54 GB of weights, and lesson 7.2 adds up to 16 GiB of KV cache for one full-length sequence, so a single 80 GB accelerator serves the model with very little room for users. The obvious fix is more GPUs. The question this lesson answers is what that actually costs, because the wire between the chips has a price that does not appear on any spec sheet you were shopping from.
@@ -59,13 +59,13 @@ A ring all-reduce puts $\tfrac{2(N-1)}{N}$ times the payload on each rank's wire
 
 So the bytes are not the problem, and this is exactly where the classic wrong turn happens. An engineer computes that payload, sees it is trivial, concludes the interconnect is irrelevant, and buys four GPUs on a PCIe-only board expecting four times the throughput of one. The error is measuring the wrong quantity: 128 all-reduces per token are not one transfer of 1.25 MiB, they are 128 serial blocking round trips, and what dominates a small collective is latency, not bandwidth.
 
-Put stated assumptions on the latency — these are assumptions to make the shape visible, not vendor figures — and redo the arithmetic. Say a fast intra-node fabric costs about 10 microseconds per small all-reduce and a slow one about 50. Weight-read time per token is lesson 9.1's division with the per-GPU share:
+Put stated assumptions on the latency — these are assumptions to make the shape visible, not vendor figures — and redo the arithmetic. Say a fast intra-node fabric costs about 10 microseconds per small all-reduce and a slow one about 50. For a stated checkpoint-size scenario, divide the per-GPU file share by bandwidth; this is a planning heuristic, not measured active traffic:
 
 $$
 N = 2:\quad \frac{27\ \text{GB}}{3.35\ \text{TB/s}} \approx 8.06\ \text{ms}, \qquad N = 4:\quad \frac{13.5\ \text{GB}}{3.35\ \text{TB/s}} \approx 4.03\ \text{ms}.
 $$
 
-Communication adds a fixed 128 times the per-collective latency: 1.28 ms on the fast fabric, 6.4 ms on the slow one. Adding them:
+Communication adds a fixed 128 times the per-collective latency: 1.28 ms on the fast fabric, 6.4 ms on the slow one. Adding those stated heuristics and latency assumptions:
 
 $$
 N = 2\ \text{fast}: 8.06 + 1.28 = 9.34\ \text{ms} \rightarrow 107\ \text{tok/s},
@@ -79,7 +79,7 @@ $$
 N = 4\ \text{slow}: 4.03 + 6.40 = 10.43\ \text{ms} \rightarrow 96\ \text{tok/s}.
 $$
 
-Read those three lines carefully. Doubling from two to four GPUs on the fast fabric returned 1.76 times, not 2 — the compute halved while the communication stayed fixed. And four GPUs on the slow fabric are slower than two on the fast one. The interconnect, not the accelerator count, decided the outcome. This is why NVLink exists as a distinct product from PCIe, why tensor parallelism is kept inside a node, and why cross-node fabrics such as InfiniBand or RoCE are reserved for the parallelism forms that reconcile rarely — data parallelism, which synchronizes once per training step, or pipeline parallelism over the model's 16 super-blocks, which passes an activation between stages rather than reconciling every layer.
+Read those three lines carefully. Doubling from two to four GPUs on the fast fabric returned 1.76 times, not 2 — the checkpoint-size term halved while the assumed communication stayed fixed. And four GPUs on the slow fabric are slower than two on the fast one. The interconnect, not the accelerator count, decided the outcome. This is why NVLink exists as a distinct product from PCIe, why tensor parallelism is kept inside a node, and why cross-node fabrics such as InfiniBand or RoCE are reserved for the parallelism forms that reconcile rarely — data parallelism, which synchronizes once per training step, or pipeline parallelism over the model's 16 super-blocks, which passes an activation between stages rather than reconciling every layer.
 
 Prefill behaves oppositely and it is worth seeing why. A 4,096-token prompt runs all positions at once, so the same 128 collectives carry 4,096 hidden vectors each:
 

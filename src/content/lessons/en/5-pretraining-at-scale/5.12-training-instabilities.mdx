@@ -11,19 +11,19 @@ unlocks: ["5.13-pretraining-costs"]
 analogy: "An intensive-care monitor does not summarize a patient with one heartbeat average. It watches rhythm, pressure, oxygen, sensor faults, and medication timing; when an alarm fires, clinicians preserve the chart and identify whether the patient changed or the sensor failed. A training dashboard needs the same discipline: loss is one vital sign, and a blind restart can erase the evidence."
 teachBack:
   prompt: "Show how to read a loss spike quantitatively against the uniform baseline and the per-rank distribution, and name the architectural devices that make a hybrid stack stable."
-  modelAnswer: "Cross-entropy is interpretable in nats: a jump from 2.05 to 2.90 means average probability on the correct token fell from about 0.129 to about 0.055, while an uninformed model over 248,320 classes would sit at 12.42 nats. So a fractional-nat bump is a hard batch, not a reset; a climb toward double digits is real divergence. The averaged loss must never be read alone, because with 64 ranks a single rank at 40.0 while the rest sit at 2.0 shows up as a global mean of only 2.59. Architecturally, RMSNorm with epsilon 1e-6 in a pre-norm residual stream keeps activation scale bounded through 64 layers, the gated feed-forward multiplies a SiLU gate against the up-projection so the block can suppress its own output, and Gated DeltaNet's gate controls how much is written to and decayed from the recurrent state, which is the fix for the unbounded state growth that made naive RNNs diverge."
+  modelAnswer: "Cross-entropy is interpretable in nats: exp(-mean loss) is the geometric mean correct-token probability, so a jump from 2.05 to 2.90 moves that quantity from about 0.129 to 0.055. Uniform prediction over 248,320 classes gives 12.42 nats as a reference baseline, not a ceiling; NLL is unbounded when the correct-token probability approaches zero. Neither the size nor shape of one bump identifies a hard batch, reset, or divergence without trajectory, per-token and per-rank losses, gradients, and input evidence. With 64 ranks, one rank at 40.0 while the rest sit at 2.0 appears as a global mean of only 2.59. Architecturally, pre-norm RMSNorm stabilizes the scale each sublayer reads but does not bound the residual stream, whose magnitude may grow with depth. Gated FFNs and DeltaNet gates provide learned control over emitted updates and recurrent-state writes."
 quiz:
   - question: "On a 64-rank job, 63 ranks report loss 2.0 and one reports 40.0. What does the averaged loss show?"
     options: ["About 2.59 — a modest bump that completely hides a catastrophic single-rank failure", "About 40.0, since the maximum dominates", "About 21.0, the midpoint", "Nothing, because averaging is undefined with outliers"]
     correctIndex: 0
     explanation: "(63 x 2.0 + 40) / 64 = 166 / 64 = 2.59, which is why per-rank diagnostics matter more than the global mean."
   - question: "Lesson 5.11 defined schedules in tokens and warned about resume. Which spike does a mishandled resume typically produce?"
-    options: ["A jump at the exact step of the restart, because the scheduler restarted warmup or resumed at the wrong point on the decay curve", "A slow drift over the following 100,000 steps", "A non-finite value in the tokenizer", "A change in vocabulary size"]
-    correctIndex: 0
+    options: ["A slow drift over the following 100,000 steps", "A jump at the exact step of the restart, because the scheduler restarted warmup or resumed at the wrong point on the decay curve", "A non-finite value in the tokenizer", "A change in vocabulary size"]
+    correctIndex: 1
     explanation: "Restart-aligned spikes point at scheduler, optimizer, or data-cursor state rather than at the data itself."
   - question: "Why is waiting for a NaN a poor divergence detector?"
-    options: ["A run can be persistently worsening while every value remains finite, so the trajectory has failed long before arithmetic does", "NaN values are always caused by hardware", "NaN cannot propagate through backward", "Finite losses never diverge"]
-    correctIndex: 0
+    options: ["NaN values are always caused by hardware", "NaN cannot propagate through backward", "A run can be persistently worsening while every value remains finite, so the trajectory has failed long before arithmetic does", "Finite losses never diverge"]
+    correctIndex: 2
     explanation: "Non-finite arithmetic is a late propagation symptom; divergence is a property of the trajectory, visible in loss, gradient norms, and activation norms first."
 citations:
   - title: "PaLM: Scaling Language Modeling with Pathways"
@@ -38,7 +38,11 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-18"
+  - title: "On Layer Normalization in the Transformer Architecture"
+    authors: "Ruibin Xiong et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2002.04745"
+updated: "2026-08-20"
 ---
 
 Two weeks into a run, the dashboard shows the averaged training loss stepping from 2.05 to 2.59 and staying there. It is not dramatic. Nobody would call it a catastrophe. The on-call engineer notes it, sees no NaN, and lets the job continue. Six hours and a considerable amount of cluster time later, someone opens the per-rank view and finds that 63 ranks are training normally at 2.0 while rank 41 has been sitting at 40.0 since the moment of the step. The global mean was never lying; it was averaging.
@@ -51,7 +55,7 @@ $$
 
 One rank in complete failure moves the headline number by half a nat. Sixteen times more ranks, and it would move it by three hundredths. Averaging is a low-pass filter on exactly the signal you most need, and the larger the job, the more effectively it hides the thing that killed it.
 
-The second half of reading anomalies well is knowing what a nat is worth. From lesson 5.1, cross-entropy is $-\ln p(\text{correct token})$, and an uninformed model spreading mass uniformly over 248,320 classes sits at $\ln 248{,}320\approx 12.42$ nats. So calibrate any spike against that ceiling. A jump from 2.05 to 2.90 means the average probability assigned to the true next token fell from $e^{-2.05}\approx 0.129$ to $e^{-2.90}\approx 0.055$ — a factor of 2.3, unpleasant but recoverable, and still enormously better than uninformed. A climb through 6, 9, and toward 12.42 is something else entirely: that is a model losing everything it learned. The shape of a loss curve is ambiguous; its distance from the uniform baseline is not.
+The second half of reading anomalies well is knowing what a nat means. From lesson 5.1, mean cross-entropy is the mean negative log-probability of the correct tokens, so $e^{-L}$ is their **geometric-mean** probability. Uniform prediction over 248,320 classes gives $\ln 248{,}320\approx 12.42$ nats: a useful reference baseline, not a ceiling. NLL has no finite upper bound because the correct-token probability can approach zero. A jump from 2.05 to 2.90 moves the geometric mean from $e^{-2.05}\approx 0.129$ to $e^{-2.90}\approx 0.055$. That quantifies the change but does not diagnose it. Distance from the uniform baseline cannot by itself distinguish a reset, corrupted batch, rank failure, or genuine optimization divergence.
 
 With that calibration in place, the vocabulary of failures becomes usable. A **loss spike** is a sudden rise followed by recovery or escalation. It can come from a genuinely difficult batch, corrupted tokenization, an abrupt mixture change, a scheduler problem, exploding activations, a precision overflow, or a rank feeding invalid values downstream. The shape alone identifies none of these; compare token-level losses, per-rank values, gradient norms, activation norms, and the input manifest before forming a hypothesis. Spikes aligned exactly with a restart point at scheduler, optimizer, or data-cursor state rather than at the data, which is why lesson 5.11 insisted that scheduler position is checkpoint state.
 
@@ -63,7 +67,7 @@ With that calibration in place, the vocabulary of failures becomes usable. A **l
 Do not build an unbounded "skip bad batch" rule. It converts every category of failure into silence: a parser regression, an entire broken source, or a deliberately poisoned shard can be discarded invisibly while the run reports success and the data distribution quietly changes underneath the objective. Skipping must be bounded, categorized, counted, and alerted, and a rising skip rate is itself an incident.
 :::
 
-Architecture is part of the stability story, and this model's config shows the devices plainly. **RMSNorm with epsilon 1e-6 in a pre-norm residual stream** is the baseline: normalizing before each sublayer and adding into an unnormalized residual keeps activation scale from compounding across 64 layers, which is what made very deep stacks trainable in the first place. The **gated feed-forward** multiplies a SiLU-activated gate against the up-projection before the 17,408-wide intermediate is projected back down, so a block can attenuate its own contribution rather than being forced to emit something. And the gate in **Gated DeltaNet** governs how much each step writes into and decays out of the fixed-size recurrent state — precisely the control that lesson 3.2 identified as missing from naive recurrent networks, whose states grew or vanished without bound. A hybrid stack that carries recurrent state through 48 of its 64 layers would be a stability nightmare without it.
+Architecture is part of the stability story, and this model's config shows the devices plainly. **RMSNorm with epsilon 1e-6 in a pre-norm residual stream** is the baseline: normalizing before each sublayer stabilizes the scale seen by that sublayer and improves gradient behavior. The residual stream itself is not normalized after each addition and may grow with depth, as lesson 4.10 explains; pre-norm does not bound it. The **gated feed-forward** multiplies a SiLU-activated gate against the up-projection before the 17,408-wide intermediate is projected back down, so a block can attenuate its own contribution rather than being forced to emit something. And the gate in **Gated DeltaNet** governs how much each step writes into and decays out of the fixed-size recurrent state — precisely the control that lesson 3.2 identified as missing from naive recurrent networks, whose states grew or vanished without bound. A hybrid stack that carries recurrent state through 48 of its 64 layers would be a stability nightmare without it.
 
 :::caveat
 None of that reasoning is a published claim about how this particular run behaved. There is no technical report for Qwen3.8-27B, so no loss curves, spike incidents, restart counts, or recovery procedures are available for it. The config tells you which stability devices are present in the architecture; it tells you nothing about whether the run needed them, and inferring a smooth run from a clean config is not evidence.

@@ -14,8 +14,8 @@ teachBack:
   modelAnswer: "O decode em batch 1 precisa transmitir essencialmente todos os pesos do modelo por token gerado, então o recurso escasso são bytes movidos, não aritmética. Um draft propõe um bloco de k tokens de forma barata; o target model então avalia todas as k posições numa única passagem, lendo seus pesos uma vez em vez de k vezes. O total de FLOPs sobe — propostas rejeitadas são trabalho desperdiçado — mas os tokens aceitos amortizam a leitura dos pesos, cortando a latência por token. A regra de aceitação compara as probabilidades do draft e do target e, após uma rejeição, amostra um token corrigido, preservando a distribuição de saída exata do target model. O Qwen3.8-27B foi treinado com multi-token prediction ao longo de múltiplos passos, então o próprio checkpoint consegue propor tokens futuros — um drafter embutido no espírito dos heads adicionados do Medusa, sem um draft model separado para hospedar ou manter sincronizado."
 quiz:
   - question: "O speculative sampling exato com a regra de aceitação apropriada preserva o quê?"
-    options: ["A distribuição de saída do target model sob as configurações escolhidas do sampler", "A distribuição de saída do draft model", "Greedy decoding independentemente da temperature", "A ordem de merges do tokenizer"]
-    correctIndex: 0
+    options: ["A distribuição de saída do draft model", "A distribuição de saída do target model sob as configurações escolhidas do sampler", "Greedy decoding independentemente da temperature", "A ordem de merges do tokenizer"]
+    correctIndex: 1
     explanation: "A aceitação compara probabilidades do draft e do target e amostra um token corrigido na rejeição, então a sequência amostrada se distribui como se o target — com sua temperature e truncamento da lição 7.4 — tivesse decodificado sozinho."
   - question: "O que o treinamento de multi-token prediction do Qwen3.8-27B oferece em tempo de inferência?"
     options: ["Propostas embutidas para vários tokens futuros, atuando como drafter nativo sem um draft model separado", "Um KV cache ilimitado", "Um segundo tokenizer", "Retreinamento a cada requisição"]
@@ -26,6 +26,10 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
+  - title: "Qwen 3.8 27B is not one number"
+    authors: "BlackwellBoy"
+    year: 2026
+    url: "https://github.com/Blackwellboy/qwen38-27b-is-not-one-number/tree/ce4eea23df8750a05f11a45b9c1d63da94916275"
   - title: "Fast Inference from Transformers via Speculative Decoding"
     authors: "Yaniv Leviathan, Matan Kalman e Yossi Matias"
     year: 2022
@@ -34,7 +38,7 @@ citations:
     authors: "Tianle Cai et al."
     year: 2024
     url: "https://arxiv.org/abs/2401.10774"
-updated: "2026-08-18"
+updated: "2026-08-20"
 ---
 
 A lição 7.3 deixou o decode numa posição desconfortável: em batch 1, o Qwen3.8-27B transmite cerca de 54 GB de pesos da memória para cada token que emite. A cadeia serial — o token $t+1$ não pode ser finalizado antes do token $t$ — parece forçar esse preço. Esta lição cobre os métodos que gastam trabalho paralelo extra em volta da cadeia, e eles otimizam duas coisas muito diferentes. O **beam search** compra *qualidade* de saída. O **speculative decoding** e o **Medusa** compram *velocidade*, extraindo mais de um token de cada leitura cara de pesos — e o Qwen3.8-27B chega com sua própria versão nativa do truque.
@@ -55,7 +59,9 @@ Agora o desvio clássico: "speculative decoding economiza computação". Não ec
 
 O próprio draft é uma tensão: fraco demais e as propostas são rejeitadas; grande demais e propor custa o que verificar economiza; e um modelo separado precisa ser hospedado, agendado e mantido compatível com o target. O **Medusa** (Cai et al.) dissolve o modelo separado ao parafusar heads leves de decoding no próprio target, cada uma prevendo um token num offset futuro; os heads propõem uma pequena árvore de continuações que uma única passagem de verificação poda até um caminho aceito. Os heads precisam ser treinados contra o checkpoint base exato — mudou a base, retreine os heads.
 
-O Qwen3.8-27B dá o passo final: o model card afirma que ele foi treinado com **multi-token prediction** ao longo de múltiplos passos. O drafter não é parafusado depois; o próprio tronco aprendeu a propor vários tokens futuros como parte do pretraining. Na inferência isso funciona como fonte nativa de draft — nenhum segundo modelo para implantar, nenhum head post-hoc para ajustar, propostas que vêm das mesmas representações que o verificador usa. Serving stacks que dão suporte a isso (o model card lista vLLM e SGLang entre seus runtimes) podem verificar propostas de MTP exatamente como fariam com as de um draft model. A ressalva honesta: quanto de speedup você obtém é uma propriedade empírica dos seus prompts, sampler e formato de batch — nenhum número independente de vazão foi publicado, então meça no seu próprio tráfego.
+O Qwen3.8-27B dá o passo final: o model card afirma que ele foi treinado com **multi-token prediction** ao longo de múltiplos passos. O drafter não é parafusado depois; o próprio tronco aprendeu a propor vários tokens futuros como parte do pretraining. Na inferência isso funciona como fonte nativa de draft — nenhum segundo modelo para implantar, nenhum head post-hoc para ajustar, propostas que vêm das mesmas representações que o verificador usa. Serving stacks que dão suporte a isso (o model card lista vLLM e SGLang entre seus runtimes) podem verificar propostas de MTP exatamente como fariam com as de um draft model.
+
+Uma campanha pública em RTX 5090 mostra por que isso precisa ser medido atrás de um gate de correção. Nesse relatório, um stack acelerado stock com TurboQuant 4-bit KV e MTP3 subiu, mas falhou canários de saída exata, JSON, ferramentas, coding e multi-turn, então o resultado de velocidade ficou em HOLD em vez de virar vitória publicada. Depois do patch #40914, os mesmos canários congelados passaram, e o C1 pareado reportou decode real de 151,27 tok/s, TTFT de 0,920 s, E2E de 7,69 s e 830 de 834 propostas de MTP aceitas (99,52 por cento). Isso é um estudo de caso útil para esse stack, não um número universal do Qwen: a lição é correção antes da velocidade, depois estatísticas de aceitação e formato da carga ao lado do throughput.
 
 :::caveat
 Qualquer alegação de aceleração precisa declarar target model, configuração de draft ou de heads, hardware, tamanho de batch e concorrência, comprimentos de prompt e de saída, configurações do sampler e estatísticas de aceitação. Uma única demo de latência sob carga baixa não prevê nada sobre vazão em produção.

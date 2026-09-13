@@ -14,16 +14,16 @@ teachBack:
   modelAnswer: "Um tensor residual B×T×5120 é normalizado por RMSNorm e entra na subcamada de mistura; a atualização é somada de volta, um segundo RMSNorm alimenta a FFN gated (5120 para 17.408 para 5120), e sua saída também é somada, de modo que os shapes voltam a B×T×5120 e os blocos empilham. O Qwen3.8-27B mantém toda essa interface — RMSNorm em pre-norm, somas residuais, FFN gated — idêntica nas 64 camadas e troca apenas o mixer: 16 camadas usam gated attention com 24 query heads e 4 KV heads com head dimension 256, então Q projeta 5120 para 12288 — um query state de 6144 mais sua porta — e K/V para 1024 cada, enquanto as outras 48 camadas usam Gated DeltaNet, um mixer recorrente de estado de tamanho fixo."
 quiz:
   - question: "No bloco de attention do Qwen3.8-27B, qual é a largura do query state que entra na atenção, e por quê?"
-    options: ["6144, porque 24 heads × head dimension 256 não precisa ser igual ao hidden size 5120 — metade de uma projeção com porta de 12288", "5120, porque projeções num Transformer são sempre quadradas", "1024, a mesma da projeção de key", "248.320, o tamanho do vocabulário"]
-    correctIndex: 0
+    options: ["5120, porque projeções num Transformer são sempre quadradas", "1024, a mesma da projeção de key", "248.320, o tamanho do vocabulário", "6144, porque 24 heads × head dimension 256 não precisa ser igual ao hidden size 5120 — metade de uma projeção com porta de 12288"]
+    correctIndex: 3
     explanation: "A contagem de heads vezes a head dimension define o query state: 24 × 256 = 6144, e 4 × 256 = 1024 para keys e values. Como as camadas têm porta, a própria q_proj emite 12288 e divide por head — cada head fica com 256 valores de query e depois 256 de gate, não um bloco de 6144 seguido de outro; a projeção de saída leva a saída de atenção de 6144, já escalada pela porta, de volta a 5120."
   - question: "Quais partes do bloco o Qwen3.8-27B mantém idênticas nas 64 camadas?"
     options: ["A colocação do RMSNorm em pre-norm, as somas residuais e a FFN gated — só a subcamada de mistura difere", "Nada; cada camada tem uma interface única", "O mixer — attention aparece em todas as camadas", "Apenas o embedding de vocabulário"]
     correctIndex: 0
     explanation: "Os dois tipos de bloco são mixer mais FFN com o mesmo contrato residual e de normalização; a troca fica confinada ao mixer."
   - question: "Usando o padrão pre-norm da lição anterior, qual expressão descreve a primeira metade de um bloco do Qwen?"
-    options: ["x1 = x + Mixer(RMSNorm(x))", "x1 = RMSNorm(x + Mixer(x))", "x1 = Mixer(x) com o stream descartado", "x1 = RMSNorm(x) sozinho"]
-    correctIndex: 0
+    options: ["x1 = RMSNorm(x + Mixer(x))", "x1 = x + Mixer(RMSNorm(x))", "x1 = Mixer(x) com o stream descartado", "x1 = RMSNorm(x) sozinho"]
+    correctIndex: 1
     explanation: "Pre-norm calibra a entrada do mixer enquanto o caminho residual continua uma soma nua; a metade da FFN repete o mesmo padrão sobre x1."
 citations:
   - title: "Attention Is All You Need"
@@ -34,7 +34,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-18"
+updated: "2026-08-20"
 ---
 
 As peças agora se montam numa única interface repetida. Um bloco Transformer decoder-only em pre-norm recebe um tensor $x$ de shape $B\times T\times d_{model}$ e devolve um tensor do mesmo shape. Tudo lá dentro pode expandir, dividir em heads ou formar matrizes de attention, mas a fronteira permanece estável para que dezenas de blocos possam empilhar. Conceitualmente, o bloco são duas equações:
@@ -57,7 +57,7 @@ O equívoco mais comum na montagem é que as camadas de um Transformer são clon
 
 Eis o fato estrutural maior. O Qwen3.8-27B contém **dois tipos de bloco**, e ambos são instâncias da interface acima. Eles compartilham tudo fora do mixer: RMSNorm em pre-norm ($\epsilon=10^{-6}$) nas mesmas posições, as mesmas somas residuais e uma FFN gated com SiLU idêntica expandindo 5120 → 17.408 → 5120 ao custo de cerca de 267 milhões de parâmetros por camada.
 
-O **bloco de Attention** é o design clássico com refinamentos modernos: gated attention usando 24 query heads e 4 KV heads compartilhados com head dimension 256, informação posicional rotativa aplicada a uma fatia de 64 dimensões de cada head, scores de softmax sobre o passado causal, uma projeção de saída de 6144 de volta para 5120. Ele consegue olhar para *qualquer* posição anterior com precisão exata, endereçada por conteúdo. Dezesseis das 64 camadas são esse bloco.
+O **bloco de Attention** é o design clássico com refinamentos modernos: gated attention usando 24 query heads e 4 KV heads compartilhados com head dimension 256, informação posicional rotativa aplicada a uma fatia de 64 dimensões de cada head, scores de softmax sobre o passado causal, uma projeção de saída de 6144 de volta para 5120. Ele consegue rotear informação de *qualquer* posição anterior por conteúdo; a precisão da recuperação depende dos scores, das projeções e do comportamento aprendido. Dezesseis das 64 camadas são esse bloco.
 
 O **bloco DeltaNet** substitui softmax attention por completo. Seu mixer é o Gated DeltaNet, uma camada recorrente que carrega um estado matricial de tamanho fixo de token em token, atualizando-o com uma delta rule com gate em vez de armazenar cada key e value do passado. Ele nunca materializa uma matriz de scores $T\times T$ e nunca cresce em memória com o comprimento da sequência. Quarenta e oito das 64 camadas — três a cada quatro — são esse bloco. A lição 4.15 abre o mecanismo; aqui, o que importa é que, do ponto de vista do residual stream, o bloco DeltaNet é apenas mais um mixer honrando o mesmo contrato: ler um estado normalizado de largura 5120 e devolver uma atualização de largura 5120.
 
@@ -71,4 +71,4 @@ Em torno da pilha ficam os arremates. IDs de token indexam uma tabela de embeddi
 
 O comportamento de memória difere fortemente entre os tipos de bloco. O cálculo de scores do bloco de attention escala com o contexto nas implementações convencionais, e no tempo de decode ele precisa reter keys e values passados; o bloco DeltaNet carrega apenas seu estado de tamanho fixo independentemente do comprimento. A mesma pilha, portanto, pressiona o hardware de formas muito diferentes conforme quais dezesseis camadas você está medindo — um fio retomado na track 7.
 
-A imagem montada é compacta: um stream, um contrato, dois mixers. Attention onde a busca exata de longo alcance justifica seu custo, DeltaNet onde uma mistura barata de estado constante basta, e uma FFN gated idêntica fazendo a transformação pesada em cada andar. Entender a interface — e não memorizar as entranhas de um bloco específico — é o que permite ler um modelo heterogêneo de 64 camadas com a mesma facilidade que um uniforme de doze camadas.
+A imagem montada é compacta: um stream, um contrato, dois mixers. Attention onde o acesso direto a keys e values por posição justifica seu custo, DeltaNet onde uma mistura barata de estado constante basta, e uma FFN gated idêntica fazendo a transformação pesada em cada andar. Entender a interface — e não memorizar as entranhas de um bloco específico — é o que permite ler um modelo heterogêneo de 64 camadas com a mesma facilidade que um uniforme de doze camadas.

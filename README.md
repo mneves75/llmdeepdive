@@ -80,12 +80,13 @@ Every mechanism is worked through one real model, Qwen3.8-27B.
 
 ## Systems reference
 
-The 2.8-trillion-parameter Kimi K3 case is grounded in
-[Colibrì](https://github.com/JustVugg/colibri), an external pure-C inference
-engine that streams routed experts from the model's native MXFP4 checkpoint.
-Colibrì is a technical reference, not code or a model bundled with this site;
-its memory and throughput requirements depend on the current revision and
-hardware.
+The Kimi K3 case is grounded in
+[Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c), an external C99
+CPU inference engine that loads native MXFP4 experts on demand and streams the
+dense trunk within a configurable memory budget. Lesson 7.12 explains the
+storage/RAM tradeoff with revision-pinned architecture and measurement sources.
+The engine and checkpoint remain external to the site; a low process RSS does
+not remove their disk requirements or establish interactive speed on a laptop.
 
 ## Develop
 

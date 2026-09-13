@@ -11,16 +11,16 @@ unlocks: ["4.11-full-transformer-block"]
 analogy: "Um longo projeto de restauração mantém a fotografia original numa mesa de luz central. Sessenta e quatro especialistas — alguns retocadores, alguns arquivistas com ferramentas diferentes — recebem cada um uma cópia calibrada, propõem uma correção limitada e a somam de volta em vez de repintar do zero. Pre-norm calibra o que entra em cada especialista deixando a mesa central contínua. Post-norm soma a correção primeiro e recalibra a imagem combinada depois."
 teachBack:
   prompt: "Escreva as equações conceituais de pre-norm e post-norm, explique como o RMSNorm difere do LayerNorm e diga por que um único residual stream contínuo permite ao Qwen3.8-27B empilhar 64 camadas de dois tipos diferentes."
-  modelAnswer: "Pre-norm calcula x' = x + F(RMSNorm(x)); post-norm calcula x' = Norm(x + F(x)). O RMSNorm divide pela magnitude root-mean-square mais um epsilon pequeno (1e-6 no Qwen3.8-27B) e aplica uma escala aprendida, sem subtrair a média como o LayerNorm faz. O caminho identidade aditivo permite que informação e gradientes viajem pela pilha sem que cada camada reconstrua a representação, e é por isso que 64 camadas — com mixer de attention ou Gated DeltaNet — conseguem todas ler e escrever no mesmo stream de 5120 dimensões. Cada subcamada só precisa honrar a interface: ler uma cópia normalizada e devolver uma atualização de shape compatível."
+  modelAnswer: "Pre-norm calcula x' = x + F(RMSNorm(x)); post-norm calcula x' = Norm(x + F(x)). O RMSNorm calcula x / sqrt(mean(x²) + epsilon), aplica uma escala aprendida e não subtrai a média como o LayerNorm; o epsilon é 1e-6 no Qwen3.8-27B. O caminho identidade aditivo permite que informação e gradientes viajem pela pilha sem que cada camada reconstrua a representação, e é por isso que 64 camadas — com mixer de attention ou Gated DeltaNet — conseguem todas ler e escrever no mesmo stream de 5120 dimensões. Cada subcamada só precisa honrar a interface: ler uma cópia normalizada e devolver uma atualização de shape compatível."
 quiz:
   - question: "Qual expressão descreve o padrão pre-norm que o Qwen3.8-27B usa?"
-    options: ["x + F(RMSNorm(x))", "RMSNorm(x + F(x))", "F(x) sem caminho residual", "softmax(RMSNorm(x)) sozinho"]
-    correctIndex: 0
+    options: ["RMSNorm(x + F(x))", "F(x) sem caminho residual", "x + F(RMSNorm(x))", "softmax(RMSNorm(x)) sozinho"]
+    correctIndex: 2
     explanation: "Pre-norm normaliza a entrada da subcamada e soma a atualização resultante ao residual stream intocado; post-norm normalizaria a soma."
   - question: "Como o RMSNorm difere do LayerNorm clássico?"
-    options: ["Divide pela magnitude root-mean-square com uma escala aprendida, sem subtrair a média das features", "Normaliza ao longo da dimensão de batch", "Exige um termo de bias em cada posição", "Substitui inteiramente a conexão residual"]
-    correctIndex: 0
-    explanation: "O RMSNorm pula a subtração da média e reescala pela magnitude RMS mais epsilon, uma operação mais barata que funciona bem em pilhas decoder grandes."
+    options: ["Normaliza ao longo da dimensão de batch", "Exige um termo de bias em cada posição", "Substitui inteiramente a conexão residual", "Divide por sqrt(mean(x²) + epsilon) com uma escala aprendida, sem subtrair a média das features"]
+    correctIndex: 3
+    explanation: "O RMSNorm pula a subtração da média e reescala por sqrt(mean(x²) + epsilon), uma operação mais barata que funciona bem em pilhas decoder grandes."
   - question: "Na FFN gated da lição anterior, qual tensor a soma residual recebe?"
     options: ["A saída da projeção down, de volta à largura 5120, somada ao stream que entrou na subcamada", "As ativações gated de largura 17.408 diretamente", "Apenas os valores do gate SiLU", "A entrada normalizada, descartada após o uso"]
     correctIndex: 0
@@ -38,7 +38,11 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-18"
+  - title: "Qwen3.5/Qwen3.8 reference implementation"
+    authors: "Hugging Face and Qwen Team"
+    year: 2026
+    url: "https://github.com/huggingface/transformers/blob/e4dd56a373b51a2ed2a6330b64f9d44c51260d5c/src/transformers/models/qwen3_5/modeling_qwen3_5.py"
+updated: "2026-08-20"
 ---
 
 Eis um problema que a próxima lição vai tornar vívido: o Qwen3.8-27B empilha 64 camadas, e elas nem sequer são todas do mesmo tipo — a maioria mistura tokens de um jeito, uma minoria de outro, e todas terminam na FFN gated e larga que você acabou de conhecer. Como sessenta e quatro estágios heterogêneos de processamento cooperam sem que nenhum destrua o que os anteriores construíram, e sem que os gradientes morram no caminho de volta? A resposta é a decisão mais silenciosa e mais estrutural da arquitetura: um único **residual stream** contínuo, de 5120 números por token, que nenhuma camada jamais substitui — as camadas apenas somam a ele.
@@ -53,7 +57,7 @@ O termo identidade $x$ dá à informação uma rota direta pela pilha. Uma camad
 
 Cada camada escreve duas vezes. Depois da sua subcamada de mistura, o stream guarda suas features anteriores mais uma atualização de comunicação; depois da FFN, guarda esse resultado mais uma atualização não linear por posição. O residual stream, portanto, não é a saída de nenhum componente isolado. É um espaço de trabalho compartilhado no qual muitas features sobrepostas coexistem, e o fato de que tanto uma camada Gated DeltaNet quanto uma camada de full attention podem escrever nesse mesmo espaço — usando a mesma interface, uma atualização somada de largura 5120 — é exatamente o que permite ao Qwen misturar tipos de camada livremente.
 
-A normalização controla o que cada subcamada lê desse espaço de trabalho. O LayerNorm clássico calcula média e variância ao longo da dimensão de features de um token, subtrai, divide e aplica uma escala e um deslocamento aprendidos. O Qwen3.8-27B, como a maioria dos decoders modernos, usa **RMSNorm**: divide o vetor pela sua magnitude root-mean-square, soma um $\epsilon$ pequeno para segurança numérica e aplica uma escala aprendida — sem subtração de média, sem deslocamento. No Qwen o epsilon é $10^{-6}$: pequeno o bastante para ser invisível em ativações saudáveis, presente para que um vetor quase nulo nunca divida por zero.
+A normalização controla o que cada subcamada lê desse espaço de trabalho. O LayerNorm clássico calcula média e variância ao longo da dimensão de features de um token, subtrai, divide e aplica uma escala e um deslocamento aprendidos. O Qwen3.8-27B, como a maioria dos decoders modernos, usa **RMSNorm**: divide o vetor por $\sqrt{\operatorname{mean}(x^2)+\epsilon}$ e aplica uma escala aprendida — sem subtração de média, sem deslocamento. No Qwen o epsilon é $10^{-6}$: pequeno o bastante para ser invisível em ativações saudáveis, presente dentro da raiz quadrada para que um vetor quase nulo nunca divida por zero.
 
 Onde a normalização fica é a bifurcação clássica. O Transformer original usava **post-norm**:
 

@@ -2,6 +2,25 @@
 
 ## Current Direction
 
+- **0.6.2 combines the corpus corrections with the Kimi K3 in C reference.**
+  Lesson 7.12 now explains streamed inference in both languages. The release
+  also corrects Ollama's presence-penalty example and updates Astro, Wrangler
+  and affected transitive dependencies to clear the dependency audit.
+
+- **The 2026-08-20 review audited all 212 lessons and made benchmark identity a
+  first-class teaching rule.** Qwen3.8-27B results now carry their template,
+  reasoning policy, output budget, runtime, quantization, KV policy, speculative
+  decoder, harness and workload. The BlackwellBoy campaign is used as bounded
+  deployment evidence, never as a universal model score. Quiz answer positions
+  are distributed and parity-checked, while a parser-backed gate protects math
+  notation and pt-BR number localization.
+- **The reference DeltaNet state is 144 MiB per sequence in float32, not 72 MiB
+  universally.** The official config selects float32 state and the current
+  Transformers reference path materializes 48 x 128 x 128 matrices in that
+  dtype across 48 DeltaNet layers. Lesson 7.2 owns the derivation; lesson 9.3
+  owns the resulting memory budget. Other runtimes may choose another state
+  dtype or layout and must be measured.
+
 - **0.6.0 added lesson 7.13 and then found the corpus was wrong in thirty-odd
   places.** The lesson closes a real gap — the course taught every mechanism
   behind a Hub quantization and none of the vocabulary printed on one (`bpw`,
@@ -45,7 +64,7 @@
   stacks: PyTorch, Transformers, vLLM, SGLang, TensorRT-LLM, llama.cpp, Ollama,
   MLX, Modular MAX, managed endpoints) and 9 (hardware: NVIDIA, AMD, Apple,
   Qualcomm, Cerebras, roofline, memory budgets, cost per token). 105 lessons per
-  locale across 10 tracks. Not yet deployed — `main` is ahead of production.
+  locale across 10 tracks at that release.
 - The Abyssal Core Atlas redesign is **merged into `main`**, together with the
   explorer-link, 404 and gate work. `design/reimagine-all-pages` is where it was
   developed and is fully contained in `main`.
@@ -62,7 +81,7 @@
   and material intent, not a contract; see the invariant in `AGENTS.md`. The
   binding constraint is the stage envelope in `src/lib/three/envelope.ts`,
   asserted by `tests/transformer-scene.test.mjs`.
-- **0.2.0 is live in production** (version `44082f2b`, 100%), tagged `v0.2.0`,
+- **0.2.0 was deployed to production** (version `44082f2b`, 100%), tagged `v0.2.0`,
   with `v0.2.0-beta1..3` marking the staging rounds. Verified on the live site,
   not from the deploy's stdout.
 - **One open item, account-side and unresolved:** Cloudflare Web Analytics still
@@ -123,10 +142,12 @@
   bindings. Progress and learner prose remain in the browser; adding a server
   would break that privacy boundary.
 - **The Kimi K3 systems reference is external.**
-  [Colibrì](https://github.com/JustVugg/colibri) implements the 2.8T MoE path in
-  C and streams native MXFP4 experts from storage. It is not bundled with the
-  site, and upstream memory/performance figures must not be repeated without a
-  revision-specific source.
+  [Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c) replaces Colibrì
+  as the reference on the home page and in the explorer. Lesson 7.12 explains
+  expert/trunk streaming and the distinction between process RSS, disk capacity
+  and generation speed in both locales, using upstream revision `ac1584a`.
+  The engine and checkpoint remain external; measurement guidance is in
+  `AGENTS.md` under **External systems reference**.
 - **A review sweep is worth more than another gate.** 0.6.0's nine fresh-context
   readers found thirty-odd real defects — wrong arithmetic, a wrong float format,
   forbidden claims, an ownership violation — across a corpus where every gate was
@@ -232,3 +253,15 @@
 - **Cache-busting is part of the canary.** The first post-deploy header check
   read a cached edge response and reported a fix as missing that was actually
   live. Every canary request carries a unique query string.
+
+## Release review follow-ups
+
+- The memory lab's zero-seat verdict must distinguish weights exhausting the
+  card from a positive pool too small for one sequence.
+- Both calculators need domain-range and empty-input validation before updating
+  results; HTML `min` constraints do not gate their input handlers.
+- Decimal outputs in the pt-BR calculators still need locale-aware formatting
+  on both the server-rendered defaults and client updates.
+- The benchmark confirmation pass currently rechecks latency without combining
+  the confirmation's HTTP-status and page-marker failures. Until corrected,
+  a `CLEARED` row is not sufficient verification; inspect responses separately.

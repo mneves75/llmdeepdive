@@ -192,9 +192,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Sparse capacity', 'pt-br': 'Capacidade esparsa' },
     tagline: { en: 'Trillions of parameters, billions used', 'pt-br': 'Trilhões de parâmetros, bilhões usados' },
     summary: {
-      en: 'A tiny learned gate picks k experts out of E for each token. Total parameters grow with E while per-token compute grows only with k. Colibrì implements this systems path for Kimi K3 in pure C by streaming selected MXFP4 experts from storage.',
+      en: 'A tiny learned gate picks k experts out of E for each token. Total parameters grow with E while per-token compute grows only with k. FareedKhan-dev’s Kimi K3 in C illustrates CPU inference with native MXFP4 experts loaded on demand from storage; a smaller resident working set still needs disk capacity and I/O time.',
       'pt-br':
-        'Um gate pequeno e aprendido escolhe k experts entre E para cada token. O total de parâmetros cresce com E, mas o cálculo por token cresce só com k. O Colibrì implementa esse caminho para o Kimi K3 em C puro, transmitindo do armazenamento os experts MXFP4 selecionados.',
+        'Um gate pequeno e aprendido escolhe k experts entre E para cada token. O total de parâmetros cresce com E, mas o cálculo por token cresce só com k. O Kimi K3 in C, de FareedKhan-dev, ilustra inferência em CPU com experts MXFP4 nativos carregados do armazenamento sob demanda; um conjunto de trabalho residente menor ainda exige espaço em disco e tempo de I/O.',
     },
     facts: {
       params: 'Router <0.1%; experts can be >90% of the model',

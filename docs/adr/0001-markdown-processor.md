@@ -10,7 +10,7 @@ Astro 7 changed the default Markdown processor from the unified (remark/rehype)
 pipeline to **Sätteri**, its own native implementation. `@astrojs/markdown-remark`
 is no longer installed by default.
 
-This course needs, across ~236 lesson files: KaTeX math (inline and display),
+This course needs, across 212 lesson files: KaTeX math (inline and display),
 autolinked heading anchors, and callout/admonition syntax. Choosing wrong is
 expensive — porting after the content is written is per-plugin, per-file work.
 
@@ -20,7 +20,7 @@ Pin the unified pipeline explicitly:
 
 ```js
 import { unified } from '@astrojs/markdown-remark'
-markdown: { processor: unified(), remarkPlugins: [...], rehypePlugins: [...] }
+markdown: { processor: unified({ remarkPlugins: [...], rehypePlugins: [...] }) }
 ```
 
 ## Evidence
@@ -60,8 +60,10 @@ against the emitted HTML rather than assumed:
 
 - Adds `@astrojs/markdown-remark`, `remark-math`, `remark-directive`,
   `rehype-katex`, `rehype-slug`, `rehype-autolink-headings`, `katex`,
-  `unist-util-visit`. All build-time except the KaTeX stylesheet.
-- KaTeX CSS ships to any page containing math. Loaded per-page, not globally.
+  `unist-util-visit`. All run at build time.
+- `rehype-katex` uses `output: 'mathml'`. Browsers render the resulting MathML
+  natively; no KaTeX stylesheet or font files ship. This avoids the duplicate
+  formula rendering corrected in 0.5.0.
 - Callouts are a local remark plugin (`src/lib/markdown/callouts.mjs`) rather
   than a dependency: four kinds (`note`, `insight`, `warning`, `caveat`), each
   rendering a labelled `<aside role="note">` with a locale-aware label derived
@@ -73,6 +75,6 @@ against the emitted HTML rather than assumed:
 
 - **Install `satteri` and use the default.** Rejected: unverified plugin
   ecosystem for the three features the content depends on, and discovering a gap
-  after writing 236 files is the exact failure this ADR exists to prevent.
+  after writing hundreds of files is the exact failure this ADR exists to prevent.
 - **Drop KaTeX, use images for math.** Rejected: inaccessible, unsearchable, and
   a course about attention mechanisms cannot treat equations as decoration.

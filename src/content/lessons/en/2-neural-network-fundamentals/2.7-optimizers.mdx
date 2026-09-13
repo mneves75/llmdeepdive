@@ -3,28 +3,28 @@ id: "2.7-optimizers"
 track: "2-neural-network-fundamentals"
 order: 7
 title: "Optimizers: SGD to Momentum to Adam to AdamW"
-summary: "Adam buys per-coordinate step sizes by keeping two extra numbers per parameter — which for a 27B model means roughly 324 to 432 GB of optimizer state, and is why training needs a cluster when inference needs one card."
+summary: "Adam buys per-coordinate step sizes by keeping two moment tensors alongside the parameters — extra state that makes full training far more memory-intensive than inference."
 tier: "foundations"
 locale: "en"
 prerequisites: ["2.6-gradient-descent-loss-landscape"]
 unlocks: ["2.8-initialization-normalization-residuals"]
 analogy: "Four cyclists descend a winding track. Plain SGD steers only from the current slope. Momentum carries velocity, smoothing alternating turns. Adam keeps separate gauges for recent direction and squared magnitude on every control, taking smaller steps where gradients are consistently large. AdamW also applies a deliberate shrinkage to weights as a separate maintenance rule. No bicycle wins every track; schedule, surface, and tuning determine the race."
 teachBack:
-  prompt: "Explain how Adam's second moment gives each coordinate its own effective step size, why AdamW decouples weight decay, and what Adam's state costs for a 27-billion-parameter model."
-  modelAnswer: "Adam keeps a first moment m (a smoothed gradient) and a second raw moment v (a smoothed squared gradient) per coordinate, bias-corrects both, and steps by m̂ divided by the square root of v̂ plus epsilon. Dividing by the typical magnitude makes the step roughly scale-free per coordinate, so a steep direction and a shallow one advance at comparable rates under one global learning rate. Adding an L2 term to the gradient does not survive that division as uniform shrinkage, so AdamW applies decay directly to the parameters after the adaptive step. The cost is memory: at roughly 12 to 16 bytes per parameter for the training states, a 27B model carries about 324 to 432 GB of optimizer and master state, against 54 GB for the bf16 weights alone."
+  prompt: "Explain how Adam's second moment gives each coordinate its own effective step size, why AdamW decouples weight decay, and why Adam's additional state makes full training much more memory-intensive than inference."
+  modelAnswer: "Adam keeps a first moment m (a smoothed gradient) and a second raw moment v (a smoothed squared gradient) per coordinate, bias-corrects both, and steps by m̂ divided by the square root of v̂ plus epsilon. Dividing by the typical magnitude makes the step roughly scale-free per coordinate, so a steep direction and a shallow one advance at comparable rates under one global learning rate. Adding an L2 term to the gradient does not survive that division as uniform shrinkage, so AdamW applies decay directly to the parameters after the adaptive step. The two moments, and often a higher-precision master copy, live alongside weights, gradients, and activations; their exact memory depends on dtype, bookkeeping, and sharding, whose full arithmetic belongs to lesson 9.3."
 quiz:
   - question: "Lesson 2.6 showed one global learning rate cannot serve a steep and a shallow direction at once. How does Adam attack that specific problem?"
-    options: ["It divides each coordinate's step by the square root of that coordinate's recent squared-gradient average, so steps become roughly scale-free per direction", "It shrinks the dataset", "It computes the exact Hessian", "It removes the learning rate entirely"]
-    correctIndex: 0
+    options: ["It shrinks the dataset", "It computes the exact Hessian", "It removes the learning rate entirely", "It divides each coordinate's step by the square root of that coordinate's recent squared-gradient average, so steps become roughly scale-free per direction"]
+    correctIndex: 3
     explanation: "The second moment acts as a cheap per-coordinate normalizer, approximating useful geometric behavior without forming a second-derivative matrix."
   - question: "What is AdamW's defining change relative to Adam with an L2 penalty added to the loss?"
     options: ["Weight decay is applied directly to the parameters, outside the adaptive gradient computation", "It removes the moment estimates", "It uses no learning rate", "It guarantees better generalization"]
     correctIndex: 0
     explanation: "Passing the penalty through Adam's per-coordinate division makes shrinkage depend on gradient history, which is not what weight decay is supposed to mean."
-  - question: "Roughly how much memory does the AdamW training state occupy for a 27-billion-parameter model?"
-    options: ["About 324 to 432 GB, depending on bookkeeping convention", "About 54 GB", "About 16 GB", "About 2 GB"]
-    correctIndex: 0
-    explanation: "At roughly 12 to 16 bytes per parameter for master weights and both moments, the optimizer state dwarfs the 54 GB the bf16 weights themselves occupy."
+  - question: "Why does AdamW make full-training memory much larger than inference memory?"
+    options: ["It duplicates the tokenizer for every layer", "It keeps two moment tensors per trained parameter, often alongside a higher-precision master copy, gradients, and activations", "It stores the complete training corpus on the GPU", "It expands the vocabulary after every update"]
+    correctIndex: 1
+    explanation: "The exact byte budget depends on dtypes, copies, and sharding and is derived once in lesson 9.3; the durable point here is that optimizer state adds tensors for every trained parameter."
 citations:
   - title: "Adam: A Method for Stochastic Optimization"
     authors: "Diederik P. Kingma and Jimmy Ba"
@@ -34,11 +34,15 @@ citations:
     authors: "Ilya Loshchilov and Frank Hutter"
     year: 2017
     url: "https://arxiv.org/abs/1711.05101"
+  - title: "DeepSpeed Memory Requirements"
+    authors: "Microsoft DeepSpeed Team"
+    year: 2026
+    url: "https://deepspeed.readthedocs.io/en/stable/memory.html"
   - title: "Qwen3.8-27B Model Card"
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-18"
+updated: "2026-08-20"
 ---
 
 Lesson 2.6 left a concrete failure on the table. In a bowl a hundred times steeper along one axis than another, any learning rate small enough to keep the steep direction stable leaves the shallow direction crawling, and any rate fast enough for the shallow direction blows the steep one up. Backpropagation cannot help — it reported both gradients correctly. The fix has to live in how the update uses them, which is what an **optimizer** is.
@@ -60,11 +64,11 @@ Now the classic wrong turn, which shipped in real code for years. You want regul
 Not every parameter should decay. Biases and normalization scale parameters are commonly placed in a no-decay group, a configuration detail that is a frequent source of silent bugs — log which parameter names entered which group and fail loudly on unexpected omissions.
 
 :::insight
-Adam's state is the hidden cost, and this is the first place in the course where it bites. Two extra tensors, $m$ and $v$, exist for every single parameter, and they are normally kept in higher precision than the weights along with a master copy of the weights themselves. Count bytes per parameter and the standard bookkeeping lands somewhere around 12 to 16, depending on which copies you attribute to the optimizer. For a model with roughly 27 billion parameters, such as Qwen3.8-27B (Qwen3.8-27B Model Card, 2026), that is approximately 324 to 432 GB of training state. The bf16 weights alone are 54 GB. Serving that model is a single-accelerator problem; training it is not a single-accelerator problem by nearly an order of magnitude, before a single activation or gradient buffer is counted.
+Adam's state is the hidden cost, and this is the first place in the course where it bites. Two extra tensors, $m$ and $v$, exist for every trained parameter, and mixed-precision training often keeps them in higher precision alongside a higher-precision master copy. Do not compress that into one universal bytes-per-parameter figure: the answer changes with the dtypes of parameters and gradients, which copies the implementation retains, and how states are sharded or offloaded. Lesson 9.3 owns that full memory arithmetic. The durable conclusion here is narrower: optimizer state adds parameter-sized tensors that inference does not need, so it can outweigh the inference weights before activations enter the budget.
 :::
 
 :::warning
-The most common misconception is that a model which fits in memory for inference can be trained in that memory. It cannot, and the gap is not marginal. Inference needs weights plus a cache; training needs weights, gradients, two optimizer moments, a master copy, and stored activations for the backward pass. This asymmetry — roughly 54 GB against several hundred — is the entire reason tracks 5 and 9 spend their time on sharding, ZeRO, FSDP, and interconnects. Fine-tuning methods such as LoRA in lesson 6.3 exist largely to attack the same arithmetic from the other side, by shrinking the number of parameters that need optimizer state at all.
+The most common misconception is that a model which fits in memory for inference can be fully trained in that same memory. Inference needs weights plus runtime state; full training also needs gradients, optimizer moments, commonly a master copy, and stored activations for the backward pass. Tracks 5 and 9 explain how sharding, ZeRO, FSDP, and interconnects divide that bill, and lesson 9.3 derives it without mixing categories. Fine-tuning methods such as LoRA in lesson 6.3 attack the same problem from the other side by shrinking the number of parameters that need optimizer state at all.
 :::
 
 Schedules matter as much as the update rule. Warmup keeps early effective steps small while activations and moment estimates settle; decay reduces the step later for convergence. A fair experiment reports the optimizer equations or implementation, the learning-rate curve, batch size, clipping threshold, decay groups, total tokens, and seeds. SGD, Momentum, Adam, and AdamW are update rules with different inductive biases, not a chronological ladder on which the newest name wins.

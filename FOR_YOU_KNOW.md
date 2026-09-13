@@ -90,8 +90,8 @@ so only sixteen layers build a KV cache at all.
 That single fact carries the spine of the whole course. At the model's native
 262,144-token context, those sixteen attention layers hold about 16 GiB of cache
 for a *single* conversation, while all forty-eight DeltaNet layers together hold
-roughly 72 MiB — and that 72 MiB does not grow no matter how long the
-conversation gets. Two orders of magnitude, in the opposite direction from
+roughly 144 MiB in the reference float32 path — and that matrix state does not grow
+no matter how long the conversation gets. Two orders of magnitude, in the opposite direction from
 everyone's intuition, which says the forty-eight recurrent layers must be where
 the memory went. The course walks you into that wrong guess deliberately, then
 corrects it.
@@ -103,7 +103,7 @@ Ollama, MLX, Modular MAX — and ends in a bake-off. Track 9 covers the silicon
 underneath, from NVIDIA and AMD to Apple, Qualcomm and Cerebras, and ends by
 pricing the same workload three ways.
 
-The discipline that made 210 documents agree with each other is worth copying: a
+The discipline that made 212 documents agree with each other is worth copying: a
 single fact sheet, verified against the model's own `config.json`, and a rule
 that no lesson may state a number that is not on it. The model has no published
 technical report, so the course never claims a training-token count, a data mix
@@ -122,7 +122,7 @@ a lab. The product was promising something it did not ship.
 
 Two now exist. Lesson 9.3 has a memory-budget calculator, and its defaults
 reproduce the lesson's own worked example exactly, so the page cannot contradict
-itself. Push the context to 262,144 and concurrent sequences fall from eleven to
+itself. Push the context to 262,144 and concurrent sequences fall from ten to
 one; switch the weights to 4-bit hoping to fix it and you only reach three,
 because the cache — not the weights — is what binds. Lesson 9.10 has the cost
 capstone, where the break-even between renting GPUs and paying per token moves
@@ -172,9 +172,11 @@ modes were forced before the fix was trusted.
 
 ## External systems reference
 
-The 2.8-trillion-parameter Kimi K3 example points to
-[Colibrì](https://github.com/JustVugg/colibri), a separate pure-C inference
-engine that streams routed experts from the model's native MXFP4 checkpoint.
-The site does not bundle that engine or model. Treat its resource and throughput
-figures as revision- and hardware-specific measurements, not timeless product
-claims.
+The Kimi K3 example points to
+[Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c), a separate C99
+CPU inference engine. It brings selected MXFP4 experts and dense trunk layers
+from disk into a bounded working set, like reading books at a small desk while
+keeping the library on shelves. A smaller desk does not shrink the library or
+make fetching books free. Lesson 7.12 explains that storage/RAM tradeoff in both
+languages and links the upstream measurements at a fixed revision. The engine
+and model remain external to the site.

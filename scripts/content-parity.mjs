@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { relative, sep } from 'node:path'
-import { displayPath, finish, readLessons, stringField, TRACKS_ROOT, walkFiles } from './content-utils.mjs'
+import { bilingualContentFailures } from './content-locale.mjs'
+import { displayPath, finish, objectArrayField, readLessons, stringField, TRACKS_ROOT, walkFiles } from './content-utils.mjs'
 
 const TRACK_EXTENSIONS = new Set(['.json', '.yaml', '.yml'])
 
@@ -8,6 +9,7 @@ try {
   const lessons = readLessons()
   const failures = []
   const byLocale = new Map([['en', new Map()], ['pt-br', new Map()]])
+  const quizPositions = new Map([['en', new Map()], ['pt-br', new Map()]])
 
   for (const lesson of lessons) {
     if (!byLocale.has(lesson.locale)) {
@@ -68,6 +70,25 @@ try {
       else if (!localeTracks.has(track)) {
         failures.push(displayPath(lesson.file) + ': track "' + track + '" does not resolve in ' + lessonLocale)
       }
+      const quizzes = objectArrayField(lesson.frontmatter, 'quiz', lesson.file) ?? []
+      const localeQuizPositions = quizPositions.get(lessonLocale)
+      const trackPositions = (track && localeQuizPositions?.get(track)) ?? new Map()
+      if (track && localeQuizPositions) localeQuizPositions.set(track, trackPositions)
+      for (const [quizIndex, quiz] of quizzes.entries()) {
+        const options = quiz.options
+        const correctIndex = quiz.correctIndex
+        if (!Array.isArray(options) || options.length < 2) {
+          failures.push(displayPath(lesson.file) + ': quiz ' + (quizIndex + 1) + ' needs at least two options')
+          continue
+        }
+        if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) {
+          failures.push(displayPath(lesson.file) + ': quiz ' + (quizIndex + 1) + ' has invalid correctIndex')
+          continue
+        }
+        const ordinalPositions = trackPositions.get(quizIndex) ?? []
+        trackPositions.set(quizIndex, ordinalPositions)
+        ordinalPositions.push(correctIndex)
+      }
     }
   }
   for (const id of english.keys()) {
@@ -78,6 +99,34 @@ try {
     const ptTrack = stringField(ptLesson.frontmatter, 'track', ptLesson.file)
     if (enTrack !== ptTrack) {
       failures.push('Lesson "' + id + '" is in track "' + enTrack + '" for en but "' + ptTrack + '" for pt-br')
+    }
+    const enQuizzes = objectArrayField(enLesson.frontmatter, 'quiz', enLesson.file) ?? []
+    const ptQuizzes = objectArrayField(ptLesson.frontmatter, 'quiz', ptLesson.file) ?? []
+    if (enQuizzes.length !== ptQuizzes.length) {
+      failures.push('Lesson "' + id + '" has ' + enQuizzes.length + ' quiz item(s) in en but ' + ptQuizzes.length + ' in pt-br')
+    }
+    const comparableQuizzes = Math.min(enQuizzes.length, ptQuizzes.length)
+    for (let index = 0; index < comparableQuizzes; index += 1) {
+      if (enQuizzes[index]?.correctIndex !== ptQuizzes[index]?.correctIndex) {
+        failures.push('Lesson "' + id + '" quiz ' + (index + 1) + ' has different correctIndex values across locales')
+      }
+    }
+    for (const failure of bilingualContentFailures(enLesson, ptLesson)) {
+      failures.push(displayPath(ptLesson.file) + ': ' + failure)
+    }
+  }
+
+  for (const [locale, tracks] of quizPositions) {
+    for (const [track, positionsByOrdinal] of tracks) {
+      for (const [quizIndex, positions] of positionsByOrdinal) {
+        if (positions.length < 4) continue
+        const counts = new Map()
+        for (const position of positions) counts.set(position, (counts.get(position) ?? 0) + 1)
+        const largestBucket = Math.max(...counts.values())
+        if (counts.size < 3 || largestBucket > Math.ceil(positions.length / 2)) {
+          failures.push(locale + ' track "' + track + '" quiz ' + (quizIndex + 1) + ' has predictable answer positions: ' + positions.join(','))
+        }
+      }
     }
   }
 

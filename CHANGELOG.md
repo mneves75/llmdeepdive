@@ -3,7 +3,32 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.6.2] — 2026-09-13
+
+### Added
+
+- Lesson 7.12 now includes a bilingual Kimi K3 in C case study, with pinned sources explaining weight streaming, process RSS, storage requirements and the limits of upstream performance measurements.
+- Content gates now parse bilingual MDX to keep mathematical notation identical across locales, catch high-confidence pt-BR number-format drift, and reject quiz answer keys that collapse onto one position.
+
+### Fixed
+
+- A fresh-source review of all 212 lessons corrected technical, arithmetic and translation defects across every track. The Qwen3.8-27B deployment campaign is now taught as protocol-bound evidence: template semantics, reasoning budget, realized context, correctness canaries, runtime and harness all travel with a benchmark number.
+- The Gated DeltaNet matrix-state budget is 144 MiB per sequence in the current Transformers reference float32 path, not a universal 72 MiB. Lesson 7.2, lesson 9.3, the shared fact sheet and the interactive memory lab now agree.
+- The memory lab now recalculates on both `input` and `change`, so selecting a different context updates its per-sequence cost and concurrency in real use.
+- The pinned Q4_K_M text artifact is now reported at its exact 17,106,773,984-byte size (17.1 GB / 15.93 GiB), MI300X capacity uses the runtime-reported roughly 192 GiB pool, and checkpoint/file-size throughput quotients are labeled as planning heuristics rather than hard roofline bounds.
+- Lesson 8.8 now configures Ollama's supported presence penalty explicitly in both languages and keeps its teach-back answer consistent with the Modelfile.
+- The contributor guide uses the current Kimi reference, and the Markdown ADR now documents nested unified plugins and MathML-only output.
+
+### Changed
+
+- The home page, explorer and project documentation now use [Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c) as the external Kimi K3 systems reference.
+- Quiz choices were redistributed in both locales without changing their grading semantics, removing the site-wide correct-position shortcut.
+- Cloudflare's compatibility date is now 2026-09-13.
+
+### Security
+
+- Updated Astro, Wrangler and affected transitive dependencies to clear the build toolchain's critical, high and moderate dependency advisories.
+- Removed obsolete package release-age exceptions; the updated dependencies satisfy the default age policy.
 
 ## [0.6.1] — 2026-08-19
 
@@ -116,7 +141,7 @@ Initial public release.
 - **One real model carries the whole course.** Every mechanism is worked through
   Qwen3.8-27B. Its layout — 64 layers as 16 × (3 Gated DeltaNet → 1 Gated
   Attention) — is the course's central contrast: only 16 layers build a KV
-  cache, so 16 GiB of cache stands against roughly 72 MiB of constant recurrent
+  cache, so 16 GiB of cache stands against what was then estimated as roughly 72 MiB of constant recurrent
   state at the native 262,144-token context. The KV arithmetic is derived once
   in 7.2 and the memory budget once in 9.3; every other lesson references them.
   `src/lib/model-facts.ts` holds those numbers as a typed module with per-value
@@ -222,7 +247,7 @@ Initial public release.
   figures for the same 80 GB card, with 8.12 omitting the per-sequence Gated
   DeltaNet state its own quiz flags as an error; 4.3 dividing by `√16` in prose
   while deriving `√256` three paragraphs above; 4.16 calling a 227× contrast
-  "nearly three orders of magnitude"; 4.15 describing a 1.5 MiB per-layer state
+  "nearly three orders of magnitude"; 4.15 describing what was then estimated as a 1.5 MiB per-layer state
   as "a few megabytes". 5.10's activation estimate is explicitly scoped to a
   uniform full-attention model — applying a full-attention layer's cost to all
   64 layers of a 3:1 hybrid was never sound.

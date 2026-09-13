@@ -20,7 +20,7 @@ more than prose here: every empirical claim carries a paper and a year, or an
 explicit statement of why none is needed.
 
 The external implementation reference for the Kimi K3 2.8T systems case is
-[Colibrì](https://github.com/JustVugg/colibri). If you change a claim derived
+[Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c). If you change a claim derived
 from it, cite the upstream revision and measurement.
 
 ## Code

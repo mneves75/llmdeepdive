@@ -3,27 +3,27 @@ id: "5.9-mixed-precision"
 track: "5-pretraining-at-scale"
 order: 9
 title: "Mixed precision: fp16, bf16, fp8"
-summary: "Mixed-precision training uses compact formats for speed and memory while keeping sensitive state wider — which is why Qwen3.8-27B ships as 54 GB of bf16 weights but was trained against an fp32 master copy twice that size."
+summary: "Mixed-precision training uses compact formats for speed while protecting sensitive operations with wider arithmetic; fp32 master weights are one conservative recipe, not a documented Qwen training fact or a universal requirement."
 tier: "advanced"
 locale: "en"
 prerequisites: ["5.8-model-parallelism"]
 unlocks: ["5.10-gradient-checkpointing"]
 analogy: "A survey crew carries pocket rulers for routine measurements and a calibrated laboratory instrument for tiny tolerances and final totals. A pocket ruler is faster to carry but has limited range and detail. Mixed precision assigns cheap rulers to large matrix work while keeping accumulation, normalization, or master records where extra range matters. Using one ruler everywhere is simpler, but can overflow a mountain or round a hair to zero."
 teachBack:
-  prompt: "Explain why Qwen3.8-27B's 54 GB of bf16 weights implies a much larger training footprint, and compare fp16, bf16, and fp8 in range, precision, and required safeguards."
-  modelAnswer: "The shipped safetensors are bf16, so 27 billion parameters at 2 bytes give 54 GB. Training cannot use only that copy: bf16 has 7 explicit fraction bits, so the smallest relative step near a weight of 1.0 is about 1/128, and a typical update of order 1e-5 rounds away entirely. Training therefore keeps an fp32 master copy at 4 bytes per parameter, 108 GB, where updates accumulate, and casts down to bf16 for the forward pass. fp16 has more fraction bits but a much narrower exponent range and needs dynamic loss scaling. bf16 keeps the fp32 exponent width with a coarser mantissa and usually needs no loss scaling. fp8 trades further precision or range for throughput and requires per-tensor or per-block scaling, wider accumulation, and hardware-aware recipes."
+  prompt: "Compare fp16, bf16, and fp8 in range and precision, explain when an fp32 master copy protects small updates, and distinguish that recipe from what is publicly known about Qwen3.8-27B training."
+  modelAnswer: "The released Qwen safetensors are bf16, so the checkpoint stores approximately 2 bytes per parameter; its training-state dtypes are unpublished. bf16 has seven explicit fraction bits, so direct in-place updates much smaller than the local spacing can round away. A common conservative recipe updates fp32 master weights and casts reduced-precision compute copies, but validated pure-bf16/AnyPrecision recipes also exist. fp16 has more fraction bits but a narrower exponent range and often needs loss scaling. bf16 keeps fp32 exponent width with a coarser significand. fp8 requires explicit scaling, wider accumulation, and hardware-aware validation."
 quiz:
-  - question: "Qwen3.8-27B's safetensors are bf16, totalling 54 GB. Why can training not simply update those tensors in place?"
-    options: ["bf16's 7 explicit fraction bits make the smallest step near 1.0 about 1/128, so an update of order 1e-5 rounds to nothing and the weight never moves", "bf16 cannot represent negative numbers", "bf16 has a narrower exponent range than fp16", "Safetensors files are read-only by design"]
-    correctIndex: 0
-    explanation: "Small updates are swamped by the coarse mantissa, so an fp32 master copy of 108 GB accumulates them and the bf16 copy is regenerated from it."
+  - question: "Why might a conservative mixed-precision recipe keep fp32 master weights when compute uses bf16?"
+    options: ["bf16 cannot represent negative numbers", "Small updates can be below bf16 spacing near a large weight, so wider master state can accumulate them before casting", "bf16 has a narrower exponent range than fp16", "Safetensors files are read-only by design"]
+    correctIndex: 1
+    explanation: "An fp32 master copy is one way to prevent swamping; it is not the only viable recipe, and Qwen does not publish which training-state policy produced this checkpoint."
   - question: "Lesson 5.8 partitioned one logical tensor across tensor-parallel ranks. What does that imply for fp8 scaling factors?"
-    options: ["Ranks that jointly own one logical tensor must agree on its scale, or their partial results cannot be combined correctly", "Each rank should pick its own scale to maximize local range", "fp8 removes the need for collectives", "Scales apply only to the vocabulary dimension"]
-    correctIndex: 0
+    options: ["Each rank should pick its own scale to maximize local range", "fp8 removes the need for collectives", "Ranks that jointly own one logical tensor must agree on its scale, or their partial results cannot be combined correctly", "Scales apply only to the vocabulary dimension"]
+    correctIndex: 2
     explanation: "Partial products from differently scaled shards are not on a common footing; the scale must be synchronized wherever the tensor is logically shared."
   - question: "What major range advantage does bf16 have over fp16?"
-    options: ["An exponent width matching fp32", "More fraction bits than fp32", "Exact representation of all integers", "No rounding at all"]
-    correctIndex: 0
+    options: ["More fraction bits than fp32", "Exact representation of all integers", "No rounding at all", "An exponent width matching fp32"]
+    correctIndex: 3
     explanation: "bf16 sacrifices mantissa precision while retaining the broad fp32 exponent range."
 citations:
   - title: "Mixed Precision Training"
@@ -38,10 +38,14 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-08-18"
+  - title: "Efficient Large-Scale Training with Pytorch FSDP and AWS"
+    authors: "PyTorch Team"
+    year: 2024
+    url: "https://docs.pytorch.org/blog/efficient-large-scale-training-with-pytorch/"
+updated: "2026-08-20"
 ---
 
-Download Qwen3.8-27B and you get bf16 safetensors: 27 billion parameters at 2 bytes each, about 54 GB on disk and the same in accelerator memory when served. That single dtype choice, recorded in the config as `bfloat16`, is the visible end of a numerical design that was far more elaborate during training. The tempting shortcut — "the weights are bf16, so train in bf16" — costs correctness in a way that is invisible for hours and then permanent.
+Download Qwen3.8-27B and the released safetensors are bf16: about 2 bytes per stored parameter. That fact describes the distributed checkpoint, not the optimizer, master-weight, accumulation, or gradient dtypes used during training. The training recipe is not published. Mixed-precision design must therefore be taught as a set of explicit policies and measured safeguards, not reconstructed as Qwen history from the output dtype.
 
 Start with what a floating-point format is buying. Bits divide among sign, exponent, and fraction. More exponent bits widen dynamic range; more fraction bits sharpen local precision. **fp16** spends five bits on exponent and ten explicit bits on fraction: precise near a given magnitude, but with a range so narrow that overflow and underflow are routine in training. **bf16** spends eight bits on exponent — the same width as fp32 — and seven explicit fraction bits, so it almost never overflows and is correspondingly coarse.
 
@@ -59,18 +63,12 @@ $$
 
 because the next representable bf16 value above 1.0 is 1.0078125, and 1.00001 is nowhere near halfway there. The update does not shrink. It vanishes. Repeat that for 100,000 steps and the weight has still not moved, even though the accumulated intended change was about 1.0 — a full unit of drift, silently discarded one step at a time. This is *swamping*, and it is the reason mixed-precision training exists.
 
-The fix is a **master copy** in fp32. Updates accumulate there, where the significand is 24 bits and $10^{-5}$ is representable against 1.0 with room to spare, and the bf16 tensors used in the forward pass are regenerated from it. The cost is explicit:
+One conservative fix is a **master copy** in fp32. Updates accumulate there, where the significand is 24 bits and $10^{-5}$ is representable against 1.0 with room to spare, and the bf16 tensors used in the forward pass are regenerated from it. The storage cost of that master state is 4 bytes per parameter. Lesson 9.3 owns the model-wide byte budget for this course; here the important point is conditional: **if** a recipe keeps fp32 master weights and two fp32 AdamW moments alongside bf16 parameters and gradients, it reaches about 16 persistent bytes per parameter. Pure-bf16/AnyPrecision variants use different state policies and must establish stability empirically.
 
-$$
-27\times 10^{9}\times 4\ \text{B}=108\ \text{GB},
-$$
-
-exactly twice the shipped weights, and one of the three equal 108 GB lines that make up the 324 GB of AdamW state lesson 5.7 budgeted — master copy, first moment, second moment. Together with bf16 parameters and bf16 gradients, the recipe costs about 16 bytes per parameter.
-
-Now the comparison that is usually stated wrongly. Training everything in fp32 — 4 bytes each for weights, gradients, and the two moments — also costs 16 bytes per parameter. **Mixed precision does not shrink the persistent optimizer footprint at all.** What it buys is the accelerator's fast reduced-precision matrix units, roughly half the bandwidth on every weight and gradient it moves, and activations stored at 2 bytes rather than 4 — which is the memory that actually dominates a long-context step, as lesson 5.10 works out. Keeping the fp32 master copy is what makes all of that safe.
+Now the comparison that is usually stated wrongly. Training everything in fp32 — 4 bytes each for weights, gradients, and the two moments — also costs 16 bytes per parameter. Under that conservative recipe, **mixed precision does not shrink the persistent optimizer footprint.** What it buys is the accelerator's fast reduced-precision matrix units, roughly half the bandwidth on every weight and gradient it moves, and activations stored at 2 bytes rather than 4 — which is the memory that actually dominates a long-context step, as lesson 5.10 works out. Numerically safe alternatives may use different state dtypes, but each needs validation against a wider-precision baseline.
 
 :::warning
-The most common misconception is that bf16's fp32-width exponent makes the master copy unnecessary — "no overflow, no underflow, so why keep 108 GB around?" Range was never the problem the master copy solves. Precision is. bf16 handles enormous and tiny magnitudes gracefully and still cannot represent the *sum* of a large weight and a small update, because the two differ by more than 8 significand bits. Dropping master weights produces a run that trains normally at first, when updates are large relative to weights, and then quietly stops learning as the learning rate decays.
+The opposite blanket claims are both wrong: bf16 range does not eliminate swamping, and swamping does not prove every run requires an fp32 master copy. Wider master state is a robust default when tiny updates would be lost; pure-bf16/AnyPrecision optimizers compensate with different update and state policies. Decide from the exact optimizer implementation and validate the loss trajectory, rather than inferring a mandatory recipe from the parameter dtype.
 :::
 
 **Dynamic loss scaling** is the fp16-specific safeguard for the opposite failure. Multiply the loss by a scale before backward so small gradients land inside fp16's representable range; before the optimizer step, unscale and check for non-finite values, skipping the update and lowering the scale on overflow, raising it cautiously after stable steps. In exact arithmetic the scaling cancels; in finite representation the path matters. bf16's range usually makes this unnecessary, which is one reason it became the forgiving default on supporting hardware.
@@ -83,6 +81,6 @@ Distribution makes this harder in ways worth anticipating. A gradient can be fin
 "The accelerator supports fp8" does not establish end-to-end speedup. Casts, scale computation, unsupported shapes, communication, and fallback kernels can erase the theoretical gain, and this model's non-square attention projections — 5120 to 12288 for the gated query projection, 5120 to 1024 for keys and values — are exactly the sort of shapes where a kernel library may or may not have an optimized fp8 path. Profile the actual training graph rather than the marketing table.
 :::
 
-Some operations stay wide regardless: reductions, softmax normalization, loss computation, RMSNorm statistics, optimizer moments, and master weights. Numerically stable kernels often accept low-precision inputs and accumulate internally in fp32, so inspect the operation policy rather than inferring precision from the parameter dtype. Validate against a trusted wider-precision baseline, watching loss curves, gradient norms, skipped steps, overflow counts, and downstream metrics — one short run without non-finite values is weak evidence, since rounding differences bend a trajectory gradually rather than breaking it.
+Some operations stay wide regardless: reductions, softmax normalization, loss computation, RMSNorm statistics, optimizer moments and master weights when the chosen recipe keeps them wide. Numerically stable kernels often accept low-precision inputs and accumulate internally in fp32, so inspect the operation policy rather than inferring precision from the parameter dtype. Validate against a trusted wider-precision baseline, watching loss curves, gradient norms, skipped steps, overflow counts, and downstream metrics — one short run without non-finite values is weak evidence, since rounding differences bend a trajectory gradually rather than breaking it.
 
-The stable rule is to spend bits where they protect information. Narrow formats accelerate large, tolerant matrix work; wider formats accumulate many contributions and hold sensitive state. The 54 GB you download is the compressed residue of a training run that needed 108 GB of master weights to produce it.
+The stable rule is to spend bits where they protect information. Narrow formats accelerate large, tolerant matrix work; wider formats accumulate many contributions and hold sensitive state. The bf16 checkpoint you download establishes the released weight dtype only. The precision policy that produced it remains unknown unless the training recipe is published.
