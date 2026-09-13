@@ -6,6 +6,17 @@
   Lesson 7.12 now explains streamed inference in both languages. The release
   also corrects Ollama's presence-penalty example and updates Astro, Wrangler
   and affected transitive dependencies to clear the dependency audit.
+  Deployed on 2026-09-13 from `3c26b05`, tagged `v0.6.2-beta2` for staging
+  and `v0.6.2` for production. Both environments serve the same artifact;
+  production version `f15ad327` is active at 100% on the apex and www domains.
+  CI passed all 70 tests and the dependency audit. Live desktop and mobile
+  explorer-to-lesson flows, bilingual Kimi content, localized 404s, Brotli and
+  the 1,666-character CSP were verified. All 238 staging routes passed the
+  server-p95 gate; two initial spikes cleared on confirmation, with separate
+  20-request exact-content checks. The worst final server p95 was 34.9 ms.
+  CI also exposed public GitHub service addresses in a fetched Dependabot
+  branch; the privacy gate now allows only those exact addresses and tests
+  that other addresses and lookalike domains still fail.
 
 - **The 2026-08-20 review audited all 212 lessons and made benchmark identity a
   first-class teaching rule.** Qwen3.8-27B results now carry their template,
@@ -90,7 +101,8 @@
   Manage site → Advanced options → Disable). Nothing leaks meanwhile — the
   script never executes — but the config claims analytics that do not exist.
 
-  Confirmed still live on 2026-08-19, after the 0.6.0 production deploy. It
+  Confirmed still live on 2026-09-13 on both production domains after the
+  0.6.2 deployment; staging does not inject the beacon. It
   cannot be fixed from this repo: wrangler's OAuth token returns
   `10000 Authentication error` against `/accounts/{id}/rum/site_info/list`, so
   this needs the dashboard or an API token scoped for RUM. Verify in one
