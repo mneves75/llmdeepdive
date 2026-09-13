@@ -18,6 +18,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The pinned Q4_K_M text artifact is now reported at its exact 17,106,773,984-byte size (17.1 GB / 15.93 GiB), MI300X capacity uses the runtime-reported roughly 192 GiB pool, and checkpoint/file-size throughput quotients are labeled as planning heuristics rather than hard roofline bounds.
 - Lesson 8.8 now configures Ollama's supported presence penalty explicitly in both languages and keeps its teach-back answer consistent with the Modelfile.
 - The contributor guide uses the current Kimi reference, and the Markdown ADR now documents nested unified plugins and MathML-only output.
+- The privacy gate recognizes the exact public GitHub service addresses used in Dependabot commit metadata, while still rejecting other addresses and lookalike domains.
 
 ### Changed
 

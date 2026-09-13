@@ -37,7 +37,12 @@ const BINARY = /\.(png|jpe?g|gif|webp|avif|ico|pdf|woff2?|ttf|otf|mp4|webm|zip|g
 // Addresses allowed to appear anywhere. An allowlist, not a denylist: only an
 // allowlist catches the address nobody thought to forbid, which is the failure
 // mode that actually happened here.
-const ALLOWED_EMAILS = new Set(['contato@mvneves.dev', 'noreply@anthropic.com'])
+const ALLOWED_EMAILS = new Set([
+  'contato@mvneves.dev',
+  'noreply@anthropic.com',
+  'noreply@github.com',
+  'support@github.com',
+])
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu
 
 // A citation URL can contain `/home/` as an ordinary path segment — Shannon's
@@ -96,7 +101,7 @@ export function scanText(text, rules = STRUCTURAL_RULES) {
     findings.push({
       rule: 'unknown-email',
       hit: address,
-      why: 'an email address other than the project contact',
+      why: 'an email address outside the project contact and public service allowlist',
     })
   }
   return findings

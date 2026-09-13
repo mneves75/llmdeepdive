@@ -12,6 +12,8 @@ const LEAKS = [
   ['machine-local-path', 'Config lives in ~/.somelocaltool and is not committed.'],
   ['account-subdomain', "  staging: 'https://site-staging.exampleaccount.workers.dev',"],
   ['unknown-email', 'authenticated as someone.else@example.org while deploying'],
+  ['unknown-email', 'authenticated as someone.else@github.com while deploying'],
+  ['unknown-email', 'contact noreply@github.com.example.org'],
 ]
 
 for (const [rule, line] of LEAKS) {
@@ -29,6 +31,8 @@ for (const [rule, line] of LEAKS) {
 const CLEAN = [
   "export const SITE = 'https://llmdeepdive.com'",
   'Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>',
+  'GitHub <noreply@github.com>',
+  'Signed-off-by: dependabot[bot] <support@github.com>',
   'Questions go to contato@mvneves.dev',
   // Relative and repo-internal paths are not machine-local.
   "import { finish } from './content-utils.mjs'",
