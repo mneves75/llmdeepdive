@@ -2,6 +2,30 @@
 
 ## Current Direction
 
+- **0.6.4 closes the 0.6.3 review with fixes the green gates had missed.**
+  Deployed on 2026-09-15 from `8eb2a68`, tagged `v0.6.4-beta1` for staging and
+  `v0.6.4` for production. Staging version `17ee2007` and production version
+  `8a9d1a08` are active at 100%. All 534 output files are byte-identical on
+  staging, the apex and www. The CSP value (1,504 characters in a 1,531-character
+  line) matches the build, and Brotli and localized 404s work. CI passed with 102
+  tests. A Standards/Spec review, a source-only security audit (no confirmed
+  vulnerability; the fork-PR secret lead is rejected because the repo is public)
+  and two independent automated review passes fed the release. Both P2 findings were
+  fixed: `0.125` parsed as 125 in pt-BR, and YAML tracks bypassed parity (tracks
+  are now JSON only).
+  The review's most important catch was visual. 0.6.3 made inline KaTeX an
+  `inline-block` scroll container, which lifted every inline formula off the
+  baseline. Removing the overflow instead made 12 routes scroll sideways at
+  320px; `inline-flex` keeps both properties, measured in Chromium and WebKit.
+  Firefox was not available locally.
+  A real-browser sweep of all 238 routes at 320px found no overflow, no
+  duplicate IDs and no mis-set scroll regions (326 wrappers). Checks confirmed
+  that reduced motion stops the explorer live (identical frames), and the
+  explorer→lesson canary passed on staging and production. The staging bench ran at
+  load average ~300 from other local work: 235/238 routes under the 50 ms
+  server p95. The three confirmed routes measured the same as the immutable
+  control asset in an interleaved check, so the overage is machine load.
+
 - **0.6.3 closes the end-to-end review with verified rendering and interactions.**
   Deployed on 2026-09-13 from `99c14d8`, tagged `v0.6.3-beta1` for staging
   and `v0.6.3` for production. Staging version `696b2d5b` and production
