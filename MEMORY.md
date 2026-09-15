@@ -20,9 +20,8 @@
   `minimumReleaseAge`. The 0.6.4 docs commit that leaked a private tooling name
   was rewritten out of `main` with an authorised force-push; GitHub may keep the
   orphaned objects reachable by SHA until its own garbage collection.
-  Still account-side and unresolved: the zone's Web Analytics beacon injection
-  and a `www` → apex redirect both need zone-level API access this session did
-  not have (`www` already declares the apex as canonical).
+  The beacon injection and the `www` → apex redirect were then fixed in the
+  zone dashboard the same day (see the zone entry below).
 
 - **0.6.4 closes the 0.6.3 review with fixes the green gates had missed.**
   Deployed on 2026-09-15 from `8eb2a68`, tagged `v0.6.4-beta1` for staging and
@@ -161,23 +160,20 @@
 - **0.2.0 was deployed to production** (version `44082f2b`, 100%), tagged `v0.2.0`,
   with `v0.2.0-beta1..3` marking the staging rounds. Verified on the live site,
   not from the deploy's stdout.
-- **One open item, account-side and unresolved:** Cloudflare Web Analytics still
-  has automatic setup on for this zone, so the edge injects a beacon the CSP
-  blocks. Set `auto_install: false` on the RUM site (dashboard: Web Analytics →
-  Manage site → Advanced options → Disable). Nothing leaks meanwhile — the
-  script never executes — but the config claims analytics that do not exist.
-
-  Confirmed still live on 2026-09-13 on both production domains after the
-  0.6.3 deployment; staging does not inject the beacon. It
-  cannot be fixed from this repo: wrangler's OAuth token returns
-  `10000 Authentication error` against `/accounts/{id}/rum/site_info/list`, so
-  this needs the dashboard or an API token scoped for RUM. Verify in one
-  command — the browser headers are load-bearing, because the edge does not
-  inject for a bare `curl`:
+- **The analytics beacon and the `www` host are resolved in the zone, not the
+  repo.** On 2026-09-15 Web Analytics RUM for `llmdeepdive.com` was set to
+  **Disable** (Web Analytics → Manage site), so the edge no longer injects
+  `cloudflareinsights`; and a zone Single Redirect, "Redirect www.llmdeepdive.com
+  to apex" (`https://www.*` → `https://${1}`, 301, query string preserved), now
+  runs before the Worker. Both were verified live. Keep the `www` custom domain
+  in `wrangler.jsonc`: it supplies the DNS record and certificate the redirect
+  needs, which is why the dashboard warns that `www` has no proxied DNS record.
+  Re-check both after any zone change — the beacon check needs browser headers:
 
   ```bash
   curl -s https://llmdeepdive.com/ \
-    -H 'User-Agent: Mozilla/5.0' -H 'Accept: text/html' | grep -c cloudflareinsights
+    -H 'User-Agent: Mozilla/5.0' -H 'Accept: text/html' | grep -c cloudflareinsights   # 0
+  curl -sI https://www.llmdeepdive.com/x?y=1 | grep -i '^location'   # https://llmdeepdive.com/x?y=1
   ```
 - Product facts and non-visual constraints are captured separately in
   `PRODUCT.md`.

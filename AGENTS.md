@@ -226,8 +226,14 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
   it, so it collects nothing and logs a violation in every visitor's console.
   The fix is `auto_install: false` on the RUM site, not a CSP allowlist: a
   third-party script origin would cost the property that makes the privacy
-  claim structural. Check for edge injection with browser headers after any
-  zone change.
+  claim structural. RUM for this site is set to **Disable** (2026-09-15). Check
+  for edge injection with browser headers after any zone change.
+- **`www` redirects to the apex in the zone, not in this repo.** A Single
+  Redirect (`https://www.*` → `https://${1}`, 301, query string preserved) runs
+  before the Worker. Keep `www.llmdeepdive.com` as a custom domain in
+  `wrangler.jsonc` anyway: it provides the DNS record and certificate the
+  redirect needs. A byte-comparison canary against `www` now follows one
+  redirect.
 
 ## Static-only architecture
 
