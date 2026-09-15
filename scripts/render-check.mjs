@@ -12,6 +12,12 @@
  * region semantics disagree with whether they overflow, then checks that inline
  * maths sits exactly where unstyled maths would.
  *
+ * The site uses system fonts only, so layout depends on what a visitor has
+ * installed: CI's Linux fonts overflowed a pt-BR heading that condensed Avenir
+ * on macOS never did. Chromium therefore makes a second pass with every font
+ * token forced to a wide sans (Verdana, or DejaVu Sans, its Linux equivalent),
+ * so the same fallback fragility fails on any machine.
+ *
  * `--self-test` injects each defect on purpose and requires the gate to fail:
  * a check never seen red is not a check. `RENDER_BROWSERS=chromium` narrows
  * the engines for a quick local run.
@@ -94,8 +100,11 @@ async function baselineFailures(page) {
   })
 }
 
-async function checkEngine(name, base, allRoutes) {
+const WIDE_FONTS = ":root { --font-display: Verdana, 'DejaVu Sans', sans-serif !important; --font-body: Verdana, 'DejaVu Sans', sans-serif !important; --font-ui: Verdana, 'DejaVu Sans', sans-serif !important; }"
+
+async function checkEngine(name, base, allRoutes, wideFonts = false) {
   const browser = await ENGINES[name].launch()
+  const label = wideFonts ? `${name}+wide-fonts` : name
   const failures = []
   try {
     const page = await browser.newPage({ viewport: { width: 320, height: 740 } })
@@ -104,6 +113,7 @@ async function checkEngine(name, base, allRoutes) {
     for (const route of allRoutes) {
       errors.length = 0
       await page.goto(base + route, { waitUntil: 'load' })
+      if (wideFonts) await page.addStyleTag({ content: WIDE_FONTS })
       if (selfTest && route === allRoutes[0]) {
         await page.evaluate(() => {
           const wide = document.createElement('span')
@@ -113,9 +123,10 @@ async function checkEngine(name, base, allRoutes) {
       }
       await settle(page)
       for (const failure of [...await layoutFailures(page), ...errors.map((message) => `uncaught error: ${message}`)]) {
-        failures.push(`${name} ${route}: ${failure}`)
+        failures.push(`${label} ${route}: ${failure}`)
       }
     }
+    if (wideFonts) return failures
     await page.setViewportSize({ width: 1280, height: 900 })
     for (const route of BASELINE_ROUTES) {
       await page.goto(base + route, { waitUntil: 'load' })
@@ -142,10 +153,12 @@ try {
 
   const failures = []
   for (const engine of engines) failures.push(...await checkEngine(engine, base, checked))
+  if (engines.includes('chromium')) failures.push(...await checkEngine('chromium', base, checked, true))
 
   if (selfTest) {
     const expected = engines.flatMap((engine) => [
       `${engine} ${checked[0]}: page overflows`,
+      ...(engine === 'chromium' ? [`chromium+wide-fonts ${checked[0]}: page overflows`] : []),
       ...BASELINE_ROUTES.map((route) => `${engine} ${route} @1280: inline maths moves`),
     ])
     const missed = expected.filter((prefix) => !failures.some((failure) => failure.startsWith(prefix)))
@@ -161,7 +174,7 @@ try {
     for (const failure of failures) console.error('- ' + failure)
     process.exitCode = 1
   } else {
-    console.log(`render:check PASS — ${allRoutes.length} routes at 320px and ${BASELINE_ROUTES.length} inline-maths baselines in ${engines.join(', ')}`)
+    console.log(`render:check PASS — ${allRoutes.length} routes at 320px and ${BASELINE_ROUTES.length} inline-maths baselines in ${engines.join(', ')}${engines.includes('chromium') ? ', plus a wide-font pass' : ''}`)
   }
 } catch (error) {
   console.error('render:check FAIL — ' + (error instanceof Error ? error.message : String(error)))

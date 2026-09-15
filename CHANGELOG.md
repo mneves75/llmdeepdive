@@ -10,11 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Teach-back answers can be cleared with "Clear my answer". The prose exists only in this browser, so this is the only place a learner on a shared profile can remove it; a failure to clear is reported rather than hidden.
-- `pnpm render:check` loads every route in Chromium, WebKit and Firefox and fails on horizontal overflow at 320px, duplicate ids, uncaught page errors, scroll regions whose semantics disagree with their overflow, and inline formulas that leave the text baseline. Its `--self-test` injects each defect and must fail. CI runs both.
+- `pnpm render:check` loads every route in Chromium, WebKit and Firefox and fails on horizontal overflow at 320px, duplicate ids, uncaught page errors, scroll regions whose semantics disagree with their overflow, and inline formulas that leave the text baseline. Chromium repeats the sweep with a wide system font, because the site's layout depends on the fonts a visitor has installed. Its `--self-test` injects each defect and must fail. CI runs both.
 
 ### Fixed
 
 - Inline formulas sit exactly on the text baseline in Firefox too. The first render-check run found 0.6.4's `inline-flex` formulas 1.3px low there; engines with `baseline-source` now use `inline-block` with `baseline-source: first`, and WebKit keeps `inline-flex`.
+
+- Pages no longer scroll sideways on phones whose system fonts are wider than condensed Avenir. CI's Linux fonts pushed the pt-BR "Trilhas de aprendizagem" title 40px past a 320px screen; a wide-font sweep then found the same fragility on 109 routes. Headings may now break an over-long word, the curriculum titles hyphenate ("APREN-DIZAGEM"), single-column home sections no longer size themselves to their longest word, and long API names in citation titles and prose links wrap.
 
 ### Changed
 

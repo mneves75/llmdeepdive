@@ -280,6 +280,14 @@ Two MathML layout traps, both shipped once and both invisible to every gate:
 `pnpm render:check` guards both traps in three engines, and its
 `--self-test` injects each defect and requires the gate to fail.
 
+**Layout depends on the visitor's fonts.** The zero-network-font rule means
+system stacks, so a heading sized for condensed Avenir on macOS overflowed a
+320px screen under Linux's wider fallback, and a wide-font sweep found 109
+such routes. Headings carry `overflow-wrap: break-word`, uppercase display
+titles add `hyphens: auto`, a single-column grid is `minmax(0, 1fr)` rather
+than `1fr`, and long identifiers in links wrap. `render:check` repeats the
+Chromium sweep with Verdana / DejaVu Sans forced, so this fails on any machine.
+
 `.math-scroll` and `.table-scroll` wrappers ship as named, focusable regions
 for no-JS readers; `Lesson.astro` strips those semantics from any wrapper that
 does not actually overflow, so short equations are not landmarks or tab stops.
