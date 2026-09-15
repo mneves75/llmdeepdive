@@ -469,11 +469,14 @@ export class TransformerScene implements SceneModule {
     this.flow.name = '__flow'
     ctx.root.add(this.flow)
     this.partGroups.set('__flow', [this.flow])
-    if (ctx.reducedMotion && this.flow) this.flow.visible = false
+    this.flow.visible = ctx.motion
   }
 
   update(ctx: SceneContext, dt: number): boolean {
-    if (!this.flow || ctx.reducedMotion) return false
+    if (!this.flow) return false
+    // Motion can be paused or reduced at any time, not only at build.
+    this.flow.visible = ctx.motion
+    if (!ctx.motion) return false
     this.flowT += dt
     const attr = this.flow.geometry.getAttribute('position') as THREE.BufferAttribute
     const arr = attr.array as Float32Array

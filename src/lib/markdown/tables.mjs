@@ -10,6 +10,7 @@
  * The wrapper carries tabindex="0" and a label so a keyboard or screen-reader
  * user can reach and scroll the overflowing region — an unlabelled scrollable
  * div is a known WCAG 2.1 failure (a scrollable region must be focusable).
+ * Lesson.astro keeps those semantics only while the table actually overflows.
  */
 import { visit } from 'unist-util-visit'
 

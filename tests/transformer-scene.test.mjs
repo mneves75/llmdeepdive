@@ -12,13 +12,13 @@ import {
   transformerMarkers,
 } from '../src/lib/three/scenes/transformer.ts'
 
-const context = (reducedMotion = false) => ({
+const context = (motion = true) => ({
   root: new THREE.Group(),
   scene: new THREE.Scene(),
   camera: new THREE.PerspectiveCamera(),
   busy() {},
   invalidate() {},
-  reducedMotion,
+  motion,
 })
 
 test('slab and marker order remains stable from input to sampler', () => {
@@ -127,10 +127,23 @@ test('the built instrument fits the stage envelope and rests above the floor', (
   )
 })
 
-test('reduced motion keeps deterministic particles but hides their animation layer', () => {
-  const ctx = context(true)
+test('paused or reduced motion keeps deterministic particles but hides their animation layer', () => {
+  const ctx = context(false)
   const scene = new TransformerScene()
   scene.build(ctx)
   assert.equal(ctx.root.getObjectByName('__flow').visible, false)
   assert.equal(scene.update(ctx, 1), false)
+})
+
+test('motion toggled while the scene is open shows and hides the flow on the next frame', () => {
+  const ctx = context(true)
+  const scene = new TransformerScene()
+  scene.build(ctx)
+  const flow = ctx.root.getObjectByName('__flow')
+  assert.equal(scene.update(ctx, 0.016), true)
+  assert.equal(flow.visible, true)
+  assert.equal(scene.update({ ...ctx, motion: false }, 0.016), false)
+  assert.equal(flow.visible, false)
+  assert.equal(scene.update(ctx, 0.016), true)
+  assert.equal(flow.visible, true)
 })

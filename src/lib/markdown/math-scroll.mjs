@@ -6,6 +6,8 @@
  * a long expression also keeps its intrinsic width and can widen the entire
  * lesson on a narrow viewport. The existing span is the right overflow owner;
  * this plugin gives it the class and semantics that CSS alone cannot add.
+ * Lesson.astro removes the region semantics from any equation that does not
+ * actually overflow, so short formulas are not landmarks or tab stops.
  */
 import { visit } from 'unist-util-visit'
 

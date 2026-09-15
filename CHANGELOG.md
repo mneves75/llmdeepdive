@@ -5,6 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-09-15
+
+### Fixed
+
+- Inline formulas sit on the text line again. 0.6.3 made every inline formula an `inline-block` scroll container, which lifted each one above the baseline like a superscript and loosened line spacing across every lesson with maths; they now scroll as `inline-flex`, which keeps the baseline, so long formulas still stay within a phone screen.
+- Matrices render with column gaps. The CSS reset had removed MathML's cell padding, so `[2 0; 0 1/2]` read as "01/2".
+- Calculators accept "1,5" and "1.5" on any browser. Inputs no longer rely on `type="number"`, which Chrome parses in the browser's language and Safari rewrites. An invalid input now clears every result instead of leaving the last answer beside the error; the error is announced, and an overflow says so instead of blaming valid inputs.
+- A lesson no longer claims completion when the quiz result could not be saved, and loading a lesson no longer writes an empty teach-back answer or reports it as saved.
+- Model answers containing `$$` no longer render empty formulas, and a malformed formula fails the build instead of shipping an error.
+- The theme control treats an unrecognised stored value as "auto" and clears it, reports when the browser cannot save the choice, and follows a change made in another tab.
+- The explorer reacts when reduced motion is switched on or off while it is open. Its motion control, now labelled "Animate", pauses both rotation and the token flow, and reduced motion also removes drag inertia.
+- Short equations and tables that fit are no longer announced as scrollable regions or placed in the tab order; wide ones keep those semantics.
+- Search announces "8 results" rather than a bare number.
+
+### Changed
+
+- Content parity now also compares each lesson's order, tier, prerequisites, unlocks, lab, citation policy, cited sources and quiz option counts across languages, and each track's id, order and tier.
+- Track metadata is JSON only; the unused YAML track format is no longer accepted, so every track the site loads is also checked for parity.
+- pt-BR citations list "contribuidores" consistently.
+
+### Security
+
+- The build fails when the Content-Security-Policy line exceeds its 1,900-character budget, so a deploy can no longer ship a policy Cloudflare would silently drop. The search script no longer uses per-locale inline data, reducing inline script hashes from nine to six and the policy line from 1,693 to 1,531 characters.
+- Removed the obsolete `interest-cohort` Permissions-Policy feature, which browsers report as unrecognised.
+- CI checkout no longer leaves the job token on disk for later steps.
+
 ## [0.6.3] — 2026-09-13
 
 ### Fixed

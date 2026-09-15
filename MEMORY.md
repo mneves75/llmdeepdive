@@ -19,9 +19,8 @@
   spikes cleared at 25.7 ms and 23.3 ms server p95. The immutable control was
   16.5 ms; the worst first-pass server p95 was 63.2 ms, after subtracting the
   measured 36.1 ms RTT. The impossible-budget self-test also passed.
-  Remaining bounded follow-ups: normalize corrupt theme preferences and expose
-  theme-save failures; react to reduced-motion changes during an open explorer;
-  extend bilingual parity checks to structural track and lesson metadata.
+  Its three bounded follow-ups (theme preference hardening, live reduced
+  motion, structural bilingual parity) closed in 0.6.4.
 
 - **0.6.2 combines the corpus corrections with the Kimi K3 in C reference.**
   Lesson 7.12 now explains streamed inference in both languages. The release
@@ -147,10 +146,11 @@
 
 ## Durable Decisions
 
-- **The CSP is one `_headers` line with 307 characters of headroom.**
+- **The CSP is one `_headers` line with 369 characters of headroom.**
   Cloudflare drops a line over 2,000 chars and the site then serves no CSP at
-  all, silently, with every local gate green. Measured at 1,693; asserted under
-  1,900 by `tests/rendered-html.test.mjs`. Each distinct inline `<style>` costs
+  all, silently, with every local gate green. Measured at 1,531 in 0.6.4;
+  `gen-headers.mjs` fails the build over 1,900 and `tests/rendered-html.test.mjs`
+  asserts the same. Each distinct inline `<style>` costs
   ~110 chars (hashed into both `style-src` and `style-src-elem`), each inline
   `<script>` ~55. This is why the figure system ships zero JavaScript and never
   uses `define:vars` on a style block.
@@ -286,15 +286,3 @@
 - **Cache-busting is part of the canary.** The first post-deploy header check
   read a cached edge response and reported a fix as missing that was actually
   live. Every canary request carries a unique query string.
-
-## Release review follow-ups
-
-- The memory lab's zero-seat verdict must distinguish weights exhausting the
-  card from a positive pool too small for one sequence.
-- Both calculators need domain-range and empty-input validation before updating
-  results; HTML `min` constraints do not gate their input handlers.
-- Decimal outputs in the pt-BR calculators still need locale-aware formatting
-  on both the server-rendered defaults and client updates.
-- The benchmark confirmation pass currently rechecks latency without combining
-  the confirmation's HTTP-status and page-marker failures. Until corrected,
-  a `CLEARED` row is not sufficient verification; inspect responses separately.

@@ -1,9 +1,69 @@
 #!/usr/bin/env node
 import { relative, sep } from 'node:path'
 import { bilingualContentFailures } from './content-locale.mjs'
-import { displayPath, finish, objectArrayField, readLessons, stringField, TRACKS_ROOT, walkFiles } from './content-utils.mjs'
+import { readFileSync } from 'node:fs'
+import { displayPath, finish, hasField, objectArrayField, objectField, readLessons, scalarField, stringArrayField, stringField, TRACKS_ROOT, walkFiles } from './content-utils.mjs'
 
-const TRACK_EXTENSIONS = new Set(['.json', '.yaml', '.yml'])
+const TRACK_EXTENSIONS = new Set(['.json'])
+
+// Fields that describe a lesson's place in the course rather than its prose.
+// They must be identical across locales: a translated `order`, `tier` or
+// prerequisite silently reorders the curriculum or breaks unlocks in one
+// language only. `updated` is deliberately absent — a locale may be revised on
+// its own date — and citation titles and authors are translated prose.
+const STRUCTURAL_SCALARS = ['order', 'tier']
+const STRUCTURAL_ARRAYS = ['prerequisites', 'unlocks']
+const STRUCTURAL_TRACK_FIELDS = ['id', 'order', 'tier']
+
+function same(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function citationSources(lesson) {
+  return (objectArrayField(lesson.frontmatter, 'citations', lesson.file) ?? []).map((citation) => ({ url: citation.url, year: citation.year }))
+}
+
+function structuralLessonFailures(id, en, pt) {
+  const failures = []
+  for (const field of STRUCTURAL_SCALARS) {
+    const enValue = scalarField(en.frontmatter, field, en.file)
+    const ptValue = scalarField(pt.frontmatter, field, pt.file)
+    if (!same(enValue, ptValue)) failures.push('Lesson "' + id + '" ' + field + ' is ' + JSON.stringify(enValue) + ' in en but ' + JSON.stringify(ptValue) + ' in pt-br')
+  }
+  for (const field of STRUCTURAL_ARRAYS) {
+    if (!same(stringArrayField(en.frontmatter, field, en.file), stringArrayField(pt.frontmatter, field, pt.file))) {
+      failures.push('Lesson "' + id + '" has different ' + field + ' across locales')
+    }
+  }
+  if (!same(objectField(en.frontmatter, 'lab', en.file), objectField(pt.frontmatter, 'lab', pt.file))) {
+    failures.push('Lesson "' + id + '" declares a different lab across locales')
+  }
+  if (hasField(en.frontmatter, 'citationsNotRequired') !== hasField(pt.frontmatter, 'citationsNotRequired')) {
+    failures.push('Lesson "' + id + '" uses a different citation policy across locales')
+  }
+  if (!same(citationSources(en), citationSources(pt))) {
+    failures.push('Lesson "' + id + '" cites different sources (url/year, in order) across locales')
+  }
+  const enQuizzes = objectArrayField(en.frontmatter, 'quiz', en.file) ?? []
+  const ptQuizzes = objectArrayField(pt.frontmatter, 'quiz', pt.file) ?? []
+  for (let index = 0; index < Math.min(enQuizzes.length, ptQuizzes.length); index += 1) {
+    const enOptions = enQuizzes[index]?.options
+    const ptOptions = ptQuizzes[index]?.options
+    if (Array.isArray(enOptions) && Array.isArray(ptOptions) && enOptions.length !== ptOptions.length) {
+      failures.push('Lesson "' + id + '" quiz ' + (index + 1) + ' has ' + enOptions.length + ' option(s) in en but ' + ptOptions.length + ' in pt-br')
+    }
+  }
+  return failures
+}
+
+function readTrack(file) {
+  try {
+    const value = JSON.parse(readFileSync(file, 'utf8'))
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch (error) {
+    throw new Error(displayPath(file) + ': invalid JSON: ' + (error instanceof Error ? error.message : String(error)))
+  }
+}
 
 try {
   const lessons = readLessons()
@@ -45,7 +105,7 @@ try {
   for (const file of trackFiles) {
     const parts = relative(TRACKS_ROOT, file).split(sep)
     const trackLocale = parts.shift() ?? ''
-    const key = parts.join('/').replace(/\.(?:json|ya?ml)$/u, '')
+    const key = parts.join('/').replace(/\.json$/u, '')
     const localeEntries = tracksByLocale.get(trackLocale)
     if (!localeEntries) {
       failures.push(displayPath(file) + ': unsupported track locale directory "' + trackLocale + '"')
@@ -59,6 +119,24 @@ try {
   const portugueseTracks = tracksByLocale.get('pt-br') ?? new Map()
   const tracksMissingInPortuguese = [...englishTracks.keys()].filter((key) => !portugueseTracks.has(key)).sort()
   const tracksMissingInEnglish = [...portugueseTracks.keys()].filter((key) => !englishTracks.has(key)).sort()
+  for (const [trackLocale, tracks] of tracksByLocale) {
+    for (const [key, file] of tracks) {
+      const track = readTrack(file)
+      if (track.id !== undefined && track.id !== key) failures.push(displayPath(file) + ': track id "' + track.id + '" does not match its file name')
+      if (track.locale !== undefined && track.locale !== trackLocale) failures.push(displayPath(file) + ': track locale "' + track.locale + '" does not match directory "' + trackLocale + '"')
+    }
+  }
+  for (const [key, enFile] of englishTracks) {
+    const ptFile = portugueseTracks.get(key)
+    if (!ptFile) continue
+    const enTrack = readTrack(enFile)
+    const ptTrack = readTrack(ptFile)
+    for (const field of STRUCTURAL_TRACK_FIELDS) {
+      if (!same(enTrack[field], ptTrack[field])) {
+        failures.push('Track "' + key + '" ' + field + ' is ' + JSON.stringify(enTrack[field]) + ' in en but ' + JSON.stringify(ptTrack[field]) + ' in pt-br')
+      }
+    }
+  }
   if (tracksMissingInPortuguese.length) failures.push('Tracks missing in pt-br: ' + tracksMissingInPortuguese.join(', '))
   if (tracksMissingInEnglish.length) failures.push('Tracks missing in en: ' + tracksMissingInEnglish.join(', '))
 
@@ -111,6 +189,7 @@ try {
         failures.push('Lesson "' + id + '" quiz ' + (index + 1) + ' has different correctIndex values across locales')
       }
     }
+    failures.push(...structuralLessonFailures(id, enLesson, ptLesson))
     for (const failure of bilingualContentFailures(enLesson, ptLesson)) {
       failures.push(displayPath(ptLesson.file) + ': ' + failure)
     }

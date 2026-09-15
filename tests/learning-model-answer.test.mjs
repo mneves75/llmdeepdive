@@ -27,3 +27,15 @@ test('literal markup inside math cannot become trusted HTML', () => {
   assert.doesNotMatch(html, /<img\b/iu)
   assert.match(html, /&lt;/u)
 })
+
+test('display-style double dollars do not produce empty formulas', () => {
+  const parts = renderModelAnswer('Costs $$y$$')
+
+  assert.deepEqual(parts.map((part) => part.kind), ['text', 'math', 'text'])
+  assert.equal(parts[0]?.kind === 'text' ? parts[0].value : '', 'Costs $')
+  assert.equal(parts[2]?.kind === 'text' ? parts[2].value : '', '$')
+})
+
+test('a malformed formula fails the build instead of rendering an error span', () => {
+  assert.throws(() => renderModelAnswer('Broken $\\frac{1}{$ formula.'), /KaTeX parse error/u)
+})

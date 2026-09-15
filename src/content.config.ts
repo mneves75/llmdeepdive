@@ -6,7 +6,7 @@ const locale = z.enum(['en', 'pt-br'])
 const tier = z.enum(['foundations', 'core', 'advanced', 'frontier'])
 
 const tracks = defineCollection({
-  loader: glob({ pattern: '**/*.{json,yaml,yml}', base: './src/content/tracks' }),
+  loader: glob({ pattern: '**/*.json', base: './src/content/tracks' }),
   schema: z.object({
     id: z.string().trim().min(1),
     order: z.number().int().nonnegative(),

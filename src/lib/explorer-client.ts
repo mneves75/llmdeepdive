@@ -40,7 +40,7 @@ export function mountExplorer(root: HTMLElement): Cleanup {
   const annotations = root.querySelector<HTMLElement>('#specimen-annotations')
   const isolateBtn = root.querySelector<HTMLButtonElement>('[data-tool="isolate"]')
   const resetBtn = root.querySelector<HTMLButtonElement>('[data-tool="reset"]')
-  const rotate = root.querySelector<HTMLInputElement>('[data-tool="autorotate"]')
+  const rotate = root.querySelector<HTMLInputElement>('[data-tool="motion"]')
 
   const setStageControlsEnabled = (enabled: boolean): void => {
     if (isolateBtn) isolateBtn.disabled = !enabled
@@ -273,8 +273,9 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     })
 
     if (rotate) {
-      rotate.checked = stage.autoRotate
-      on(rotate, 'change', () => stage.setAutoRotate(rotate.checked))
+      rotate.checked = stage.motion
+      on(rotate, 'change', () => stage.setMotion(rotate.checked))
+      stage.onMotionChange = (motion) => { rotate.checked = motion }
     }
 
     bundle = { stage, markers, scene }

@@ -25,8 +25,6 @@ export interface StageOptions {
   /** Orbit distance clamp. */
   minDistance?: number
   maxDistance?: number
-  /** Idle rotation, yielding to the user. */
-  autoRotate?: boolean
 }
 
 export interface SceneModule {
@@ -46,7 +44,8 @@ export interface SceneContext {
   busy(seconds: number): void
   /** Request exactly one more frame. */
   invalidate(): void
-  reducedMotion: boolean
+  /** Ambient animation is allowed: false under reduced motion or when paused. */
+  motion: boolean
 }
 
 const AUTOROTATE_RESUME_MS = 3000
@@ -67,6 +66,9 @@ export class Stage {
    */
   onResize: ((width: number, height: number) => void) | null = null
 
+  /** Called when a system reduced-motion change resets the motion default. */
+  onMotionChange: ((motion: boolean) => void) | null = null
+
   private readonly canvas: HTMLCanvasElement
   private readonly timer = new THREE.Timer()
   private readonly env: THREE.Texture
@@ -76,6 +78,14 @@ export class Stage {
     this.pageVisible = document.visibilityState === 'visible'
     this.invalidate()
   }
+  private readonly motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  // The preference can change while the explorer is open (an OS toggle, or a
+  // battery saver that implies it). Each change resets motion to that
+  // preference's default; an explicit choice afterwards still wins.
+  private readonly onMotionPreference = (): void => {
+    this.applyMotionPreference()
+    this.onMotionChange?.(this.motionWanted)
+  }
 
   private module: SceneModule | null = null
   private frame = 0
@@ -84,18 +94,16 @@ export class Stage {
   private onScreen = true
   private pageVisible = true
   private interactionUntil = 0
-  private autoRotateWanted: boolean
+  private motionWanted: boolean
   private disposed = false
-
-  readonly reducedMotion: boolean
 
   constructor(opts: StageOptions) {
     this.canvas = opts.canvas
-    this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    // Reduced motion disables idle rotation outright. The reference project we
-    // studied handled reduced motion only for CSS keyframes, leaving its model
-    // spinning forever — the single most motion-intense thing on the page.
-    this.autoRotateWanted = (opts.autoRotate ?? true) && !this.reducedMotion
+    // Reduced motion disables idle rotation and the token flow by default. The
+    // reference project we studied handled reduced motion only for CSS
+    // keyframes, leaving its model spinning forever — the single most
+    // motion-intense thing on the page.
+    this.motionWanted = !this.motionQuery.matches
 
     const lowPower =
       window.matchMedia('(max-width: 780px)').matches || (navigator.hardwareConcurrency ?? 8) < 6
@@ -126,7 +134,6 @@ export class Stage {
 
     this.controls = new OrbitControls(this.camera, this.canvas)
     this.controls.target.set(0, 0.05, 0)
-    this.controls.enableDamping = true
     this.controls.dampingFactor = 0.055
     this.controls.enablePan = false
     this.controls.minDistance = opts.minDistance ?? 4.8
@@ -156,6 +163,8 @@ export class Stage {
     this.intersectionObserver.observe(this.canvas)
 
     document.addEventListener('visibilitychange', this.onVisibility)
+    this.motionQuery.addEventListener('change', this.onMotionPreference)
+    this.applyMotionPreference()
 
     this.resize()
     this.animate()
@@ -272,7 +281,7 @@ export class Stage {
       camera: this.camera,
       busy: (s) => this.busy(s),
       invalidate: () => this.invalidate(),
-      reducedMotion: this.reducedMotion,
+      motion: this.motionWanted,
     }
   }
 
@@ -287,18 +296,28 @@ export class Stage {
     this.dirty = true
   }
 
-  setAutoRotate(on: boolean): void {
-    this.autoRotateWanted = on && !this.reducedMotion
+  /** An explicit visitor choice; honoured even under reduced motion. */
+  setMotion(on: boolean): void {
+    this.motionWanted = on
     this.invalidate()
   }
 
-  get autoRotate(): boolean {
-    return this.autoRotateWanted
+  get motion(): boolean {
+    return this.motionWanted
   }
 
-  /** Suspend idle rotation while something is selected. */
+  private applyMotionPreference(): void {
+    const reduced = this.motionQuery.matches
+    this.motionWanted = !reduced
+    // Inertia after a drag is motion the visitor did not ask for (WCAG 2.3.3);
+    // the drag itself stays direct.
+    this.controls.enableDamping = !reduced
+    this.invalidate()
+  }
+
+  /** Suspend idle rotation for a moment after the visitor takes the controls. */
   private applyAutoRotate(now: number): void {
-    this.controls.autoRotate = this.autoRotateWanted && now >= this.interactionUntil
+    this.controls.autoRotate = this.motionWanted && now >= this.interactionUntil
   }
 
   private resize(): void {
@@ -340,6 +359,7 @@ export class Stage {
     this.disposed = true
     cancelAnimationFrame(this.frame)
     document.removeEventListener('visibilitychange', this.onVisibility)
+    this.motionQuery.removeEventListener('change', this.onMotionPreference)
     this.resizeObserver.disconnect()
     this.intersectionObserver.disconnect()
     this.timer.dispose()

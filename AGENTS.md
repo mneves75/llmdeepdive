@@ -17,7 +17,7 @@ pnpm build               # static output to dist/
 pnpm typecheck           # astro check, 0 errors required
 pnpm lint                # ast-grep scan; no-explicit-any is error-severity
 pnpm test                # node --test tests/
-pnpm content:parity      # EN/pt-BR lesson parity
+pnpm content:parity      # EN/pt-BR lesson + track parity, incl. structural metadata
 pnpm content:stubs       # no TODO/TBD/Lorem, word floor
 pnpm content:graph       # prerequisite ids resolve, no cycles
 pnpm content:citations   # citations present or reason given
@@ -126,24 +126,28 @@ Two rules the geometry has already broken once each:
 **6. The CSP lives on one `_headers` line with a hard 2,000-character limit.**
 Cloudflare *drops* a `_headers` line above 2,000 characters, and the site then
 serves **no CSP at all** — silently, with every local gate green. The line is at
-1,693. `gen-headers.mjs` appends a sha256 per distinct inline `<script>` (~55
+1,531. `gen-headers.mjs` appends a sha256 per distinct inline `<script>` (~55
 chars) and per distinct inline `<style>` (~110, because style hashes go into
-both `style-src` and `style-src-elem`). That is roughly five scripts or two
-styles of headroom for the whole site.
+both `style-src` and `style-src-elem`). That is roughly eight scripts or four
+styles of headroom below the 1,900 budget.
 
 Three rules follow, and they are why the figure system ships zero JavaScript:
 
-- **Never `define:vars` on a `<style>`.** It emits one inline `<style>` per
-  component instance, one hash each, and destroys the policy. Pass values as
+- **Never `define:vars` on a `<style>` or a `<script>`.** It emits one inline
+  block per distinct value set, one hash each, and destroys the policy. The
+  search script used it until 0.6.4 and cost a hash per locale. Pass values as
   `style="--x: 42"` attributes; `style-src-attr 'unsafe-inline'` permits them.
 - **A component's `<script>` must be data-free and byte-identical everywhere**,
-  reading parameters from `data-*`. That is why 210 lesson pages produce only
-  nine distinct script hashes.
+  reading parameters from `data-*`. That is why 238 routes produce only six
+  distinct script hashes. An `is:inline` script is a classic script sharing
+  one global lexical scope with every other one, so wrap its body in a block.
 - A static scoped `<style>` in an `.astro` file costs **zero** hashes — Astro
   links it into `_astro/*.css`. All component CSS goes there, and per-route CSS
   is budgeted at 72 KB by `bundle-budget.mjs`.
 
-`tests/rendered-html.test.mjs` asserts the line stays under 1,900.
+`gen-headers.mjs` fails the build when the line exceeds 1,900, so
+`pnpm deploy:*` after `pnpm build` cannot ship a dropped policy;
+`tests/rendered-html.test.mjs` asserts the same ceiling.
 
 ## Performance: read this before touching the bench
 
@@ -254,6 +258,22 @@ are valid HTML. `output: 'mathml'` renders natively, needs no stylesheet and no
 font download (the zero-network-font rule), and is what a screen reader reads.
 Importing the CSS instead would cost ~23 KB render-blocking plus font files.
 
+Two MathML layout traps, both shipped once and both invisible to every gate:
+
+- **An inline formula that scrolls must be `inline-flex`, never
+  `inline-block`.** An inline-block scroll container takes its baseline from
+  its bottom edge (CSS 2.1 §10.8.1); 0.6.3 did this and lifted every inline
+  formula on the site into a superscript. Removing the overflow instead makes
+  six lessons scroll sideways at 320px, because MathML never wraps. Measure
+  the baseline in Chromium and WebKit before changing this rule.
+- **Tailwind's preflight zeroes MathML padding.** MathML Core ignores KaTeX's
+  `columnspacing`, so `global.css` restores `mtd`/`mfrac` user-agent padding;
+  without it a matrix `[2 0; 0 1/2]` reads "01/2".
+
+`.math-scroll` and `.table-scroll` wrappers ship as named, focusable regions
+for no-JS readers; `Lesson.astro` strips those semantics from any wrapper that
+does not actually overflow, so short equations are not landmarks or tab stops.
+
 ## Figures
 
 Lesson bodies had **no visuals at all** before 0.5.0. Authors now write
@@ -347,6 +367,12 @@ itself. Do not add a no-JS submit button: pages are prerendered and never read a
 query string, so the control would lie. `pnpm budget` enforces the declared
 `budgetKb` and counts **inline** script bytes, because Astro inlines small
 scripts and they are otherwise invisible to every budget.
+
+Lab inputs are `type="text"` with `inputmode="decimal"`, parsed by
+`src/lib/lab-number.ts`, never `type="number"`: Chrome reads a number input in
+the browser's UI language and Safari rewrites a typed comma, so "1,5" on a
+pt-BR page is not reliably 1.5. An invalid input blanks every result rather
+than leaving the last valid answer beside it.
 
 ## External systems reference
 
