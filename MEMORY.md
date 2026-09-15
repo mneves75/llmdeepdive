@@ -2,6 +2,28 @@
 
 ## Current Direction
 
+- **0.6.5 made rendered layout a gate.** Deployed on 2026-09-15 from
+  `76879c2`, tagged `v0.6.5-beta1` (staging version `ec056a3e`) and `v0.6.5`
+  (production version `832d44da`), both at 100%. All 534 files are
+  byte-identical on staging, apex and www; CSP, Brotli and localized 404s match;
+  live flows (explorer→lesson, teach-back save and clear, search, calculator,
+  theme) ran with no CSP violation or page error. CI passed with 105 tests and
+  the new `pnpm render:check` in Chromium, WebKit and Firefox.
+  The gate earned itself twice before release: its first local run found 0.6.4's
+  `inline-flex` formulas 1.3px low in Firefox (fixed with `baseline-source`
+  where supported), and its first CI run found the pt-BR tracks title 40px past
+  a 320px screen under Linux fonts, which a wide-font sweep widened to 109
+  fragile routes. No staging benchmark was run: machine load average was ~750,
+  and the release changed only static assets.
+  Also in 0.6.5: a teach-back clear control, shared calculator math for server
+  render and browser, pinned inline hash counts, explicit pnpm
+  `minimumReleaseAge`. The 0.6.4 docs commit that leaked a private tooling name
+  was rewritten out of `main` with an authorised force-push; GitHub may keep the
+  orphaned objects reachable by SHA until its own garbage collection.
+  Still account-side and unresolved: the zone's Web Analytics beacon injection
+  and a `www` → apex redirect both need zone-level API access this session did
+  not have (`www` already declares the apex as canonical).
+
 - **0.6.4 closes the 0.6.3 review with fixes the green gates had missed.**
   Deployed on 2026-09-15 from `8eb2a68`, tagged `v0.6.4-beta1` for staging and
   `v0.6.4` for production. Staging version `17ee2007` and production version
