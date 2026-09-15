@@ -18,20 +18,26 @@ function execute(script, globals) {
   Function(...names, `"use strict";\n${script}`)(...values)
 }
 
-function teachBackHarness({ savedAnswer = '', setItem }) {
+function teachBackHarness({ savedAnswer = '', setItem, removeItem }) {
   const statusText = { textContent: 'Waiting for your explanation.' }
   const listeners = new Map()
   const textarea = {
     value: '',
+    focused: false,
+    focus() { this.focused = true },
     addEventListener: (type, listener) => listeners.set(type, listener),
+  }
+  const clear = {
+    hidden: true,
+    addEventListener: (type, listener) => listeners.set(`clear:${type}`, listener),
   }
   const root = {
     dataset: { lessonKey: 'en:lesson' },
-    querySelector: (selector) => selector === 'textarea'
-      ? textarea
-      : selector === '[data-status-text]'
-        ? statusText
-        : null,
+    querySelector: (selector) => ({
+      textarea,
+      '[data-status-text]': statusText,
+      '[data-teach-back-clear]': clear,
+    })[selector] ?? null,
     closest: () => null,
   }
   const events = []
@@ -56,9 +62,13 @@ function teachBackHarness({ savedAnswer = '', setItem }) {
         writes.push([key, value])
         setItem?.()
       },
+      removeItem: (key) => {
+        removeItem?.()
+        writes.push([key, null])
+      },
     },
   })
-  return { events, listeners, root, statusText, textarea, writes }
+  return { clear, events, listeners, root, statusText, textarea, writes }
 }
 
 const LONG_ANSWER = 'These sixteen words make the response long enough to satisfy both learning requirements before persistence is attempted.'
@@ -84,6 +94,29 @@ test('teach-back loads a saved answer without writing or claiming a new save', (
   assert.deepEqual(empty.writes, [])
   assert.equal(empty.statusText.textContent, 'Waiting for your explanation.')
   assert.equal(empty.root.dataset.saveError, 'false')
+})
+
+test('clearing the teach-back removes the stored answer and resets completion', () => {
+  const harness = teachBackHarness({ savedAnswer: LONG_ANSWER })
+  assert.equal(harness.clear.hidden, false)
+  assert.equal(harness.root.dataset.complete, 'true')
+
+  harness.listeners.get('clear:click')()
+
+  assert.deepEqual(harness.writes, [['ldd:teach-back:en:lesson', null]])
+  assert.equal(harness.textarea.value, '')
+  assert.equal(harness.textarea.focused, true)
+  assert.equal(harness.root.dataset.complete, 'false')
+  assert.equal(harness.statusText.textContent, 'Waiting for your explanation.')
+  assert.deepEqual(harness.events.at(-1)?.detail, { lessonKey: 'en:lesson', valid: false })
+})
+
+test('a teach-back answer that cannot be cleared stays visible and says so', () => {
+  const harness = teachBackHarness({ savedAnswer: LONG_ANSWER, removeItem: () => { throw new Error('blocked') } })
+  harness.listeners.get('clear:click')()
+  assert.equal(harness.textarea.value, LONG_ANSWER)
+  assert.equal(harness.root.dataset.saveError, 'true')
+  assert.match(harness.statusText.textContent, /could not clear/iu)
 })
 
 test('a correct quiz that cannot be saved does not complete the lesson', () => {

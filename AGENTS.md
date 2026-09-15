@@ -25,6 +25,9 @@ pnpm content:assets      # every referenced asset exists
 pnpm content:figures     # every <Figure id> resolves; both locales; labels differ
 pnpm links               # every internal link in dist/ resolves (runs in build)
 pnpm a11y:contrast       # palette stays above accessible contrast ratios
+pnpm render:check        # every route in Chromium, WebKit, Firefox: 320px overflow,
+                         #   duplicate ids, page errors, scroll regions, inline-maths baseline
+                         #   (needs `pnpm build` and `pnpm exec playwright install`)
 pnpm budget              # per-route JS budget
 pnpm privacy             # no machine path, account subdomain or unknown email
                          #   (+ PRIVATE_REFS_NAMES for client/tooling names)
@@ -147,7 +150,9 @@ Three rules follow, and they are why the figure system ships zero JavaScript:
 
 `gen-headers.mjs` fails the build when the line exceeds 1,900, so
 `pnpm deploy:*` after `pnpm build` cannot ship a dropped policy;
-`tests/rendered-html.test.mjs` asserts the same ceiling.
+`tests/rendered-html.test.mjs` asserts the same ceiling and pins the number of
+inline script and style hashes, because `gen-headers.mjs` trusts whatever
+inline code it finds — a new inline block must be a reviewed change there.
 
 ## Performance: read this before touching the bench
 
@@ -260,15 +265,20 @@ Importing the CSS instead would cost ~23 KB render-blocking plus font files.
 
 Two MathML layout traps, both shipped once and both invisible to every gate:
 
-- **An inline formula that scrolls must be `inline-flex`, never
-  `inline-block`.** An inline-block scroll container takes its baseline from
-  its bottom edge (CSS 2.1 §10.8.1); 0.6.3 did this and lifted every inline
-  formula on the site into a superscript. Removing the overflow instead makes
-  six lessons scroll sideways at 320px, because MathML never wraps. Measure
-  the baseline in Chromium and WebKit before changing this rule.
+- **An inline formula that scrolls must keep its content baseline.** An
+  inline-block scroll container takes its baseline from its bottom edge
+  (CSS 2.1 §10.8.1); 0.6.3 did this and lifted every inline formula on the site
+  into a superscript. Removing the overflow instead makes six lessons scroll
+  sideways at 320px, because MathML never wraps. `Lesson.astro` uses
+  `inline-block` + `baseline-source: first` where supported (Chromium,
+  Firefox) and `inline-flex` otherwise (WebKit); `inline-flex` alone is 1.3px
+  low in Firefox. No single display value is exact in all three engines.
 - **Tailwind's preflight zeroes MathML padding.** MathML Core ignores KaTeX's
   `columnspacing`, so `global.css` restores `mtd`/`mfrac` user-agent padding;
   without it a matrix `[2 0; 0 1/2]` reads "01/2".
+
+`pnpm render:check` guards both traps in three engines, and its
+`--self-test` injects each defect and requires the gate to fail.
 
 `.math-scroll` and `.table-scroll` wrappers ship as named, focusable regions
 for no-JS readers; `Lesson.astro` strips those semantics from any wrapper that
@@ -368,8 +378,11 @@ query string, so the control would lie. `pnpm budget` enforces the declared
 `budgetKb` and counts **inline** script bytes, because Astro inlines small
 scripts and they are otherwise invisible to every budget.
 
-Lab inputs are `type="text"` with `inputmode="decimal"`, parsed by
-`src/lib/lab-number.ts`, never `type="number"`: Chrome reads a number input in
+Lab arithmetic lives in `src/lib/lab-math.ts` and input handling in
+`src/lib/lab-form.ts`; the server-rendered defaults and the browser both call
+them, so they cannot disagree. Verdict copy reaches the script through
+`data-*`. Lab inputs are `type="text"` with `inputmode="decimal"`, never
+`type="number"`: Chrome reads a number input in
 the browser's UI language and Safari rewrites a typed comma, so "1,5" on a
 pt-BR page is not reliably 1.5. An invalid input blanks every result rather
 than leaving the last valid answer beside it.

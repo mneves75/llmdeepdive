@@ -1,6 +1,7 @@
 ---
 import { QWEN } from '../../lib/model-facts'
-import { formatInputValue } from '../../lib/lab-number'
+import { formatInputValue } from '../../lib/lab-form'
+import { kvBudget, labFormatters } from '../../lib/lab-math'
 /**
  * Lesson 9.3 — the memory budget of one accelerator, made adjustable.
  *
@@ -59,18 +60,13 @@ const KIB_PER_TOKEN = QWEN.kvKibPerToken.value
 const STATE_MIB = QWEN.deltaNetStateMib.value
 const defaults = { usable: 79.6, bytes: 2, context: 32768, reserve: 6 }
 
-const weightsGiB = (PARAMS * defaults.bytes) / 1024 ** 3
-const poolGiB = defaults.usable - weightsGiB - defaults.reserve
-const perSeqMiB = (defaults.context * KIB_PER_TOKEN) / 1024 + STATE_MIB
-const seats = Math.max(0, Math.floor((poolGiB * 1024) / perSeqMiB))
+const budget = kvBudget({ params: PARAMS, kibPerToken: KIB_PER_TOKEN, stateMib: STATE_MIB, ...defaults })
 
 const precisions = isPt
   ? [{ v: 2, l: 'bf16 (2 B)' }, { v: 1, l: 'FP8 (1 B)' }, { v: 0.5, l: '4 bits (0,5 B)' }]
   : [{ v: 2, l: 'bf16 (2 B)' }, { v: 1, l: 'FP8 (1 B)' }, { v: 0.5, l: '4-bit (0.5 B)' }]
 const contexts = [8192, 32768, 131072, 262144]
-const localeTag = isPt ? 'pt-BR' : 'en-US'
-const oneDecimal = new Intl.NumberFormat(localeTag, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-const integer = new Intl.NumberFormat(localeTag, { maximumFractionDigits: 0 })
+const { whole, oneDecimal } = labFormatters(locale)
 ---
 
 <form class="lab-kv" data-lab="kv-budget" data-params={PARAMS} data-kib-per-token={KIB_PER_TOKEN} data-state-mib={STATE_MIB} aria-label={copy.legend}>
@@ -88,7 +84,7 @@ const integer = new Intl.NumberFormat(localeTag, { maximumFractionDigits: 0 })
     <label>
       <span>{copy.context}</span>
       <select name="context">
-        {contexts.map((c) => <option value={c} selected={c === defaults.context}>{integer.format(c)}</option>)}
+        {contexts.map((c) => <option value={c} selected={c === defaults.context}>{whole.format(c)}</option>)}
       </select>
     </label>
     <label>
@@ -102,79 +98,43 @@ const integer = new Intl.NumberFormat(localeTag, { maximumFractionDigits: 0 })
   <p class="lab-kv__validation" data-out="validation" data-invalid={copy.invalid} role="status"></p>
 
   <output class="lab-kv__out" aria-live="polite">
-    <div class="lab-kv__stat"><span>{copy.weights}</span><b data-out="weights">{oneDecimal.format(weightsGiB)} GiB</b></div>
-    <div class="lab-kv__stat"><span>{copy.pool}</span><b data-out="pool">{oneDecimal.format(poolGiB)} GiB</b></div>
-    <div class="lab-kv__stat"><span>{copy.perSeq}</span><b data-out="perseq">{integer.format(perSeqMiB)} MiB</b></div>
-    <div class="lab-kv__stat lab-kv__stat--lead"><span>{copy.seats}</span><b data-out="seats">{integer.format(seats)}</b></div>
+    <div class="lab-kv__stat"><span>{copy.weights}</span><b data-out="weights">{oneDecimal.format(budget.weightsGiB)} GiB</b></div>
+    <div class="lab-kv__stat"><span>{copy.pool}</span><b data-out="pool">{oneDecimal.format(budget.poolGiB)} GiB</b></div>
+    <div class="lab-kv__stat"><span>{copy.perSeq}</span><b data-out="perseq">{whole.format(budget.perSeqMiB)} MiB</b></div>
+    <div class="lab-kv__stat lab-kv__stat--lead"><span>{copy.seats}</span><b data-out="seats">{whole.format(budget.seats)}</b></div>
   </output>
 
-  <p class="lab-kv__verdict" data-out="verdict">{seats >= 8 ? copy.fits : seats > 0 ? copy.tight : poolGiB > 0 ? copy.noSequence : copy.no}</p>
+  {/* The script reads verdict copy from data-* so it stays data-free (CSP). */}
+  <p class="lab-kv__verdict" data-out="verdict" data-fits={copy.fits} data-tight={copy.tight} data-no-sequence={copy.noSequence} data-no={copy.no}>{copy[budget.verdict]}</p>
   <p class="lab-kv__note">{copy.note}</p>
 </form>
 
 <script>
-  import { parseDecimal } from '../../lib/lab-number'
-
-  const readFact = (form: HTMLFormElement, name: string): number => Number(form.dataset[name])
+  import { pageLocale, readLabControl, showLabOutputs } from '../../lib/lab-form'
+  import { kvBudget, labFormatters } from '../../lib/lab-math'
 
   for (const form of document.querySelectorAll<HTMLFormElement>('[data-lab="kv-budget"]')) {
-    const isPt = form.closest('[lang="pt-BR"]') !== null
-    const PARAMS = readFact(form, 'params')
-    const KIB_PER_TOKEN = readFact(form, 'kibPerToken')
-    const STATE_MIB = readFact(form, 'stateMib')
-    if (![PARAMS, KIB_PER_TOKEN, STATE_MIB].every(Number.isFinite)) continue
-    const text = isPt
-      ? { fits: 'Cabe, com folga.', tight: 'Cabe, mas sem margem para picos.', no: 'Não cabe: os pesos e a reserva já consomem a placa.', noSequence: 'Não cabe: o pool de KV restante é menor que uma sequência.' }
-      : { fits: 'Fits, with room to spare.', tight: 'Fits, but with no headroom for bursts.', no: 'Does not fit: weights and reserve already consume the card.', noSequence: 'Does not fit: the remaining KV pool is smaller than one sequence.' }
-    const locale = isPt ? 'pt-BR' : 'en-US'
-    const oneDecimal = new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-    const integer = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 })
-    const out = (name: string): HTMLElement | null => form.querySelector(`[data-out="${name}"]`)
-    const num = (name: string): number | null => {
-      const control = form.elements.namedItem(name)
-      let value: number | null = null
-      if (control instanceof HTMLSelectElement) {
-        value = Number(control.value)
-      } else if (control instanceof HTMLInputElement) {
-        value = parseDecimal(control.value, isPt ? 'pt-br' : 'en')
-        const min = Number(control.dataset.min ?? Number.NEGATIVE_INFINITY)
-        const max = Number(control.dataset.max ?? Number.POSITIVE_INFINITY)
-        if (value !== null && (value < min || value > max)) value = null
-        if (value === null) control.setAttribute('aria-invalid', 'true')
-        else control.removeAttribute('aria-invalid')
-      }
-      return value !== null && Number.isFinite(value) ? value : null
-    }
-    const show = (values: Record<'weights' | 'pool' | 'perseq' | 'seats' | 'verdict', string>, message: string): void => {
-      for (const [name, value] of Object.entries(values)) {
-        const element = out(name)
-        if (element) element.textContent = value
-      }
-      const validation = out('validation')
-      if (validation) validation.textContent = message
-    }
+    const locale = pageLocale(form)
+    const facts = { params: Number(form.dataset.params), kibPerToken: Number(form.dataset.kibPerToken), stateMib: Number(form.dataset.stateMib) }
+    if (!Object.values(facts).every(Number.isFinite)) continue
+    const { whole, oneDecimal } = labFormatters(locale)
+    const invalid = form.querySelector<HTMLElement>('[data-out="validation"]')?.dataset.invalid ?? ''
+    const verdicts = form.querySelector<HTMLElement>('[data-out="verdict"]')?.dataset ?? {}
 
     const update = (): void => {
-      const usable = num('usable')
-      const bytes = num('bytes')
-      const context = num('context')
-      const reserve = num('reserve')
-      if (usable === null || bytes === null || context === null || reserve === null) {
-        // Never leave the last valid answer beside an invalid input.
-        show({ weights: '—', pool: '—', perseq: '—', seats: '—', verdict: '' }, out('validation')?.dataset.invalid ?? '')
+      // Read every control before deciding, so each invalid one is marked.
+      const [usable, bytes, context, reserve] = ['usable', 'bytes', 'context', 'reserve'].map((name) => readLabControl(form, name, locale))
+      if (usable == null || bytes == null || context == null || reserve == null) {
+        showLabOutputs(form, { weights: '—', pool: '—', perseq: '—', seats: '—', verdict: '' }, invalid)
         return
       }
-
-      const weights = (PARAMS * bytes) / 1024 ** 3
-      const pool = usable - weights - reserve
-      const perSeq = (context * KIB_PER_TOKEN) / 1024 + STATE_MIB
-      const seats = Math.max(0, Math.floor((pool * 1024) / perSeq))
-      show({
-        weights: `${oneDecimal.format(weights)} GiB`,
-        pool: `${oneDecimal.format(pool)} GiB`,
-        perseq: `${integer.format(perSeq)} MiB`,
-        seats: integer.format(seats),
-        verdict: seats >= 8 ? text.fits : seats > 0 ? text.tight : pool > 0 ? text.noSequence : text.no,
+      const budget = kvBudget({ ...facts, usable, bytes, context, reserve })
+      showLabOutputs(form, {
+        weights: `${oneDecimal.format(budget.weightsGiB)} GiB`,
+        pool: `${oneDecimal.format(budget.poolGiB)} GiB`,
+        perseq: `${whole.format(budget.perSeqMiB)} MiB`,
+        seats: whole.format(budget.seats),
+        verdict: verdicts[budget.verdict] ?? '',
       }, '')
     }
 

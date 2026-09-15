@@ -52,6 +52,8 @@ test('build produced pages', () => {
  * so this fails in CI rather than in production.
  */
 const CSP_LINE_MAX = 1900
+const EXPECTED_INLINE_SCRIPTS = 6
+const EXPECTED_INLINE_STYLES = 8
 
 test('the CSP header line stays inside the Cloudflare _headers line limit', () => {
   const headers = readFileSync(join(DIST, '_headers'), 'utf8')
@@ -85,6 +87,13 @@ test('generated headers enforce the security policy for built HTML', () => {
   const scriptSources = directives.get('script-src') ?? []
   assert.equal(scriptSources.includes("'unsafe-eval'"), false)
   assert.equal(scriptSources.includes("'unsafe-inline'"), false)
+
+  // gen-headers.mjs trusts every inline script and style it finds in dist/, so
+  // a new one is authorised silently. Pinning the counts makes each addition a
+  // reviewed edit here — and a reminder that each costs CSP line budget.
+  const hashCount = (name) => (directives.get(name) ?? []).filter((source) => source.startsWith("'sha256-")).length
+  assert.equal(hashCount('script-src'), EXPECTED_INLINE_SCRIPTS, 'inline script count changed; review the new script, then update EXPECTED_INLINE_SCRIPTS')
+  assert.equal(hashCount('style-src-elem'), EXPECTED_INLINE_STYLES, 'inline style count changed; review the new style, then update EXPECTED_INLINE_STYLES')
 
   for (const name of [
     'Strict-Transport-Security',

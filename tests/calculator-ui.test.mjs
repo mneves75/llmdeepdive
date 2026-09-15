@@ -2,17 +2,26 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import ts from 'typescript'
-import { formatInputValue, parseDecimal } from '../src/lib/lab-number.ts'
+import { formatInputValue, parseDecimal } from '../src/lib/lab-form.ts'
+import { costComparison, kvBudget } from '../src/lib/lab-math.ts'
 
-function componentScript(relativePath) {
+// Loads a lab's client script and the named imports it declares, so the test
+// runs the shipped script against the real shared modules.
+async function componentScript(relativePath) {
   const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), 'utf8')
   const match = source.match(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/u)
   assert.ok(match, `expected a client script in ${relativePath}`)
-  // The lab scripts import the shared parser; the harness injects it instead.
+  const imports = {}
+  const componentUrl = new URL(`../${relativePath}`, import.meta.url)
+  for (const [, names, from] of match[1].matchAll(/^\s*import \{([^}]+)\} from '([^']+)'$/gmu)) {
+    const module = await import(new URL(`${from}.ts`, componentUrl).href)
+    for (const name of names.split(',').map((part) => part.trim())) imports[name] = module[name]
+  }
   const body = match[1].replace(/^\s*import .*$/gmu, '')
-  return ts.transpileModule(body, {
+  const script = ts.transpileModule(body, {
     compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 },
   }).outputText
+  return { script, imports }
 }
 
 function execute(script, globals) {
@@ -22,6 +31,8 @@ function execute(script, globals) {
 }
 
 class FakeInput {
+  tagName = 'INPUT'
+
   constructor(value, dataset = {}) {
     this.value = value
     this.dataset = dataset
@@ -32,7 +43,9 @@ class FakeInput {
   removeAttribute(name) { this.attributes.delete(name) }
 }
 
-class FakeSelect extends FakeInput {}
+class FakeSelect extends FakeInput {
+  tagName = 'SELECT'
+}
 
 const KV_MESSAGES = { invalid: 'kv invalid' }
 const COST_MESSAGES = { invalid: 'cost invalid', overflow: 'cost overflow' }
@@ -49,17 +62,25 @@ function createForm({ controls, outputs, isPt = false, dataset = {} }) {
   }
 }
 
-function runCalculator(path, form) {
-  execute(componentScript(path), {
-    HTMLInputElement: FakeInput,
-    HTMLSelectElement: FakeSelect,
-    document: { querySelectorAll: () => [form] },
-    parseDecimal,
-  })
+async function runCalculator(path, form) {
+  const { script, imports } = await componentScript(path)
+  execute(script, { document: { querySelectorAll: () => [form] }, ...imports })
+}
+
+const VERDICTS = {
+  fits: 'Fits, with room to spare.',
+  tight: 'Fits, but with no headroom for bursts.',
+  noSequence: 'Does not fit: the remaining KV pool is smaller than one sequence.',
+  no: 'Does not fit: weights and reserve already consume the card.',
+  managed: 'managed cheaper',
+  self: 'rented cheaper',
+  close: 'close',
+  tie: 'tie',
 }
 
 const outputsFor = (names, messages) => ({
   ...Object.fromEntries(names.map((name) => [name, { textContent: `server ${name}` }])),
+  verdict: { textContent: 'server verdict', dataset: VERDICTS },
   validation: { textContent: '', dataset: messages },
 })
 
@@ -102,12 +123,12 @@ test('lab decimals accept both separators and read thousands grouping by locale'
   assert.equal(formatInputValue(0.45, 'en'), '0.45')
 })
 
-test('KV calculator clears stale results for blank, malformed and out-of-range values', () => {
+test('KV calculator clears stale results for blank, malformed and out-of-range values', async () => {
   for (const invalidUsable of ['', '-1', '1025', '12,34,56']) {
     const outputs = outputsFor(KV_OUTPUTS, KV_MESSAGES)
     const form = createForm({ controls: kvControls(invalidUsable), outputs, dataset: KV_FACTS })
 
-    runCalculator('src/components/labs/KvBudgetLab.astro', form)
+    await runCalculator('src/components/labs/KvBudgetLab.astro', form)
 
     assert.equal(outputs.validation.textContent, 'kv invalid', `expected validation for usable=${JSON.stringify(invalidUsable)}`)
     assert.equal(outputs.weights.textContent, '—')
@@ -117,11 +138,11 @@ test('KV calculator clears stale results for blank, malformed and out-of-range v
   }
 })
 
-test('KV calculator recovers once the input is valid again', () => {
+test('KV calculator recovers once the input is valid again', async () => {
   const outputs = outputsFor(KV_OUTPUTS, KV_MESSAGES)
   const controls = kvControls('')
   const form = createForm({ controls, outputs, dataset: KV_FACTS })
-  runCalculator('src/components/labs/KvBudgetLab.astro', form)
+  await runCalculator('src/components/labs/KvBudgetLab.astro', form)
   assert.equal(outputs.validation.textContent, 'kv invalid')
 
   controls.usable.value = '79.6'
@@ -131,21 +152,21 @@ test('KV calculator recovers once the input is valid again', () => {
   assert.equal(controls.usable.attributes.has('aria-invalid'), false)
 })
 
-test('KV calculator distinguishes a positive pool too small for one sequence', () => {
+test('KV calculator distinguishes a positive pool too small for one sequence', async () => {
   const outputs = outputsFor(KV_OUTPUTS, KV_MESSAGES)
   const form = createForm({ controls: kvControls('51', '0', '262144'), outputs, dataset: KV_FACTS })
 
-  runCalculator('src/components/labs/KvBudgetLab.astro', form)
+  await runCalculator('src/components/labs/KvBudgetLab.astro', form)
 
   assert.equal(outputs.seats.textContent, '0')
   assert.ok(Number.parseFloat(outputs.pool.textContent) > 0)
   assert.match(outputs.verdict.textContent, /smaller than one sequence/iu)
 })
 
-test('calculators read and write the page locale, including decimal commas', () => {
+test('calculators read and write the page locale, including decimal commas', async () => {
   const kvOutputs = outputsFor(KV_OUTPUTS, KV_MESSAGES)
   const kvForm = createForm({ controls: kvControls('79,6'), outputs: kvOutputs, isPt: true, dataset: KV_FACTS })
-  runCalculator('src/components/labs/KvBudgetLab.astro', kvForm)
+  await runCalculator('src/components/labs/KvBudgetLab.astro', kvForm)
   assert.equal(kvOutputs.validation.textContent, '')
   assert.match(kvOutputs.weights.textContent, /^50,3 GiB$/u)
   assert.match(kvOutputs.perseq.textContent, /^2\.192 MiB$/u)
@@ -155,20 +176,20 @@ test('calculators read and write the page locale, including decimal commas', () 
   controls.priceIn.value = '0,45'
   controls.priceOut.value = '3,2'
   const costForm = createForm({ controls, outputs: costOutputs, isPt: true })
-  runCalculator('src/components/labs/CostPerTokenLab.astro', costForm)
+  await runCalculator('src/components/labs/CostPerTokenLab.astro', costForm)
   assert.equal(costOutputs.validation.textContent, '')
   assert.match(costOutputs.util.textContent, /^1,9%$/u)
   assert.match(costOutputs.managed.textContent, /^USD 218$/u)
 })
 
-test('cost calculator clears stale results for blank and below-minimum values', () => {
+test('cost calculator clears stale results for blank and below-minimum values', async () => {
   for (const [name, value] of [['inM', ''], ['priceOut', '-0.01'], ['tps', '0']]) {
     const outputs = outputsFor(COST_OUTPUTS, COST_MESSAGES)
     const controls = costControls()
     controls[name].value = value
     const form = createForm({ controls, outputs })
 
-    runCalculator('src/components/labs/CostPerTokenLab.astro', form)
+    await runCalculator('src/components/labs/CostPerTokenLab.astro', form)
 
     assert.equal(outputs.validation.textContent, 'cost invalid', `expected validation for ${name}=${JSON.stringify(value)}`)
     assert.equal(outputs.managed.textContent, '—')
@@ -177,7 +198,7 @@ test('cost calculator clears stale results for blank and below-minimum values', 
   }
 })
 
-test('cost calculator reports overflow instead of blaming valid inputs', () => {
+test('cost calculator reports overflow instead of blaming valid inputs', async () => {
   const outputs = outputsFor(COST_OUTPUTS, COST_MESSAGES)
   const controls = costControls()
   // Each input is finite on its own; only their product overflows.
@@ -185,8 +206,27 @@ test('cost calculator reports overflow instead of blaming valid inputs', () => {
   controls.priceIn.value = '10'
   const form = createForm({ controls, outputs })
 
-  runCalculator('src/components/labs/CostPerTokenLab.astro', form)
+  await runCalculator('src/components/labs/CostPerTokenLab.astro', form)
 
   assert.equal(outputs.validation.textContent, 'cost overflow')
   assert.equal(outputs.managed.textContent, '—')
+})
+
+test('shared lab math reproduces the lesson defaults and every verdict branch', () => {
+  const facts = { params: 27_000_000_000, kibPerToken: 64, stateMib: 144 }
+  const worked = kvBudget({ ...facts, usable: 79.6, bytes: 2, context: 32768, reserve: 6 })
+  assert.equal(worked.weightsGiB.toFixed(1), '50.3')
+  assert.equal(worked.perSeqMiB, 2192)
+  assert.equal(worked.seats, 10)
+  assert.equal(worked.verdict, 'fits')
+  assert.equal(kvBudget({ ...facts, usable: 60, bytes: 2, context: 32768, reserve: 6 }).verdict, 'tight')
+  assert.equal(kvBudget({ ...facts, usable: 51, bytes: 2, context: 262144, reserve: 0 }).verdict, 'noSequence')
+  assert.equal(kvBudget({ ...facts, usable: 40, bytes: 2, context: 8192, reserve: 6 }).verdict, 'no')
+
+  const defaults = costComparison({ inM: 200, outM: 40, priceIn: 0.45, priceOut: 3.2, gpuHour: 2.5, tps: 800 })
+  assert.equal(Math.round(defaults.managed), 218)
+  assert.equal(defaults.rented, 1825)
+  assert.equal(defaults.verdict, 'managed')
+  assert.equal(costComparison({ inM: 0, outM: 0, priceIn: 0, priceOut: 0, gpuHour: 0, tps: 1 }).verdict, 'tie')
+  assert.equal(costComparison({ inM: 1e308, outM: 0, priceIn: 10, priceOut: 0, gpuHour: 1, tps: 1 }), null)
 })

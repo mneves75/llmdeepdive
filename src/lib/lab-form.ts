@@ -58,3 +58,44 @@ export function formatInputValue(value: number, locale: NumberLocale): string {
     maximumFractionDigits: 20,
   }).format(value)
 }
+
+/** The locale a lab runs in, from the nearest page language. */
+export function pageLocale(element: Element): NumberLocale {
+  return element.closest('[lang="pt-BR"]') === null ? 'en' : 'pt-br'
+}
+
+/**
+ * Read one lab control. Selects hold trusted option values; text inputs are
+ * parsed with `parseDecimal` and bounded by `data-min`/`data-max`, and an
+ * input that yields no number is marked `aria-invalid`.
+ */
+export function readLabControl(form: HTMLFormElement, name: string, locale: NumberLocale): number | null {
+  const control = form.elements.namedItem(name)
+  if (control === null || !('tagName' in control)) return null
+  if (control.tagName === 'SELECT') {
+    const value = Number((control as HTMLSelectElement).value)
+    return Number.isFinite(value) ? value : null
+  }
+  if (control.tagName !== 'INPUT') return null
+  const input = control as HTMLInputElement
+  let value = parseDecimal(input.value, locale)
+  const min = Number(input.dataset.min ?? Number.NEGATIVE_INFINITY)
+  const max = Number(input.dataset.max ?? Number.POSITIVE_INFINITY)
+  if (value !== null && (value < min || value > max)) value = null
+  if (value === null) input.setAttribute('aria-invalid', 'true')
+  else input.removeAttribute('aria-invalid')
+  return value
+}
+
+/**
+ * Write every `[data-out]` result and the validation message together, so a
+ * lab can never show the last valid answer beside an input that has none.
+ */
+export function showLabOutputs(form: HTMLFormElement, values: Record<string, string>, message: string): void {
+  for (const [name, value] of Object.entries(values)) {
+    const element = form.querySelector<HTMLElement>(`[data-out="${name}"]`)
+    if (element) element.textContent = value
+  }
+  const validation = form.querySelector<HTMLElement>('[data-out="validation"]')
+  if (validation) validation.textContent = message
+}

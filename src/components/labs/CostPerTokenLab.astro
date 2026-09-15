@@ -11,7 +11,8 @@
  * Server-rendered with defaults already computed, so it degrades to a real
  * worked comparison without JavaScript.
  */
-import { formatInputValue } from '../../lib/lab-number'
+import { formatInputValue } from '../../lib/lab-form'
+import { costComparison, labFormatters } from '../../lib/lab-math'
 
 interface Props { locale: 'en' | 'pt-br' }
 const { locale } = Astro.props
@@ -60,30 +61,10 @@ const copy = isPt
     }
 
 const defaults = { inM: 200, outM: 40, priceIn: 0.45, priceOut: 3.2, gpuHour: 2.5, tps: 800 }
-const HOURS = 730
-
-const managed = defaults.inM * defaults.priceIn + defaults.outM * defaults.priceOut
-// One GPU bills for the whole month whether or not it is busy, and it cannot
-// exceed its own throughput: past 100% the workload needs more machines, so the
-// rental cost has to scale or the comparison quietly prices a fleet that cannot
-// do the work.
-const secondsNeeded = (defaults.outM * 1e6) / defaults.tps
-const monthSeconds = HOURS * 3600
-const gpus = Math.max(1, Math.ceil(secondsNeeded / monthSeconds))
-const rented = defaults.gpuHour * HOURS * gpus
-const utilisation = (secondsNeeded / (gpus * monthSeconds)) * 100
-const cheapest = Math.min(managed, rented)
-// Only an empty configuration is "nothing to compare". Two equal nonzero costs
-// are an exact break-even, which is the most interesting answer the lab gives.
-const verdict = managed === 0 && rented === 0
-  ? copy.verdictTie
-  : Math.abs(managed - rented) / Math.max(cheapest, 1e-9) < 0.1
-    ? copy.verdictClose
-    : managed < rented ? copy.verdictManaged : copy.verdictSelf
-
-const localeTag = isPt ? 'pt-BR' : 'en-US'
-const whole = new Intl.NumberFormat(localeTag, { maximumFractionDigits: 0 })
-const oneDecimal = new Intl.NumberFormat(localeTag, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+const comparison = costComparison(defaults)
+if (!comparison) throw new Error('CostPerTokenLab defaults must produce a finite comparison')
+const verdictCopy = { managed: copy.verdictManaged, self: copy.verdictSelf, close: copy.verdictClose, tie: copy.verdictTie }
+const { whole, oneDecimal } = labFormatters(locale)
 ---
 
 <form class="lab-cost" data-lab="cost-per-token" aria-label={copy.legend}>
@@ -101,81 +82,46 @@ const oneDecimal = new Intl.NumberFormat(localeTag, { minimumFractionDigits: 1, 
   <p class="lab-cost__validation" data-out="validation" data-invalid={copy.invalid} data-overflow={copy.overflow} role="status"></p>
 
   <output class="lab-cost__out" aria-live="polite">
-    <div class="lab-cost__stat"><span>{copy.managed}</span><b data-out="managed">USD {whole.format(managed)}</b></div>
-    <div class="lab-cost__stat"><span>{copy.selfHosted}</span><b data-out="rented">USD {whole.format(rented)}</b></div>
-    <div class="lab-cost__stat"><span>{copy.gpus}</span><b data-out="gpus">{whole.format(gpus)}</b></div>
-    <div class="lab-cost__stat"><span>{copy.utilisation}</span><b data-out="util">{oneDecimal.format(utilisation)}%</b></div>
+    <div class="lab-cost__stat"><span>{copy.managed}</span><b data-out="managed">USD {whole.format(comparison.managed)}</b></div>
+    <div class="lab-cost__stat"><span>{copy.selfHosted}</span><b data-out="rented">USD {whole.format(comparison.rented)}</b></div>
+    <div class="lab-cost__stat"><span>{copy.gpus}</span><b data-out="gpus">{whole.format(comparison.gpus)}</b></div>
+    <div class="lab-cost__stat"><span>{copy.utilisation}</span><b data-out="util">{oneDecimal.format(comparison.utilisation)}%</b></div>
   </output>
 
-  <p class="lab-cost__verdict" data-out="verdict">{verdict}</p>
+  {/* The script reads verdict copy from data-* so it stays data-free (CSP). */}
+  <p class="lab-cost__verdict" data-out="verdict" data-managed={verdictCopy.managed} data-self={verdictCopy.self} data-close={verdictCopy.close} data-tie={verdictCopy.tie}>{verdictCopy[comparison.verdict]}</p>
   <p class="lab-cost__note">{copy.note}</p>
 </form>
 
 <script>
-  import { parseDecimal } from '../../lib/lab-number'
-
-  const HOURS = 730
+  import { pageLocale, readLabControl, showLabOutputs } from '../../lib/lab-form'
+  import { costComparison, labFormatters } from '../../lib/lab-math'
 
   for (const form of document.querySelectorAll<HTMLFormElement>('[data-lab="cost-per-token"]')) {
-    const isPt = form.closest('[lang="pt-BR"]') !== null
-    const text = isPt
-      ? { managed: 'O endpoint gerenciado sai mais barato neste volume.', self: 'A GPU alugada sai mais barata neste volume.', close: 'Os dois custam quase o mesmo: decida por operação, não por preço.', tie: 'Sem volume e sem preço, não há o que comparar.' }
-      : { managed: 'The managed endpoint is cheaper at this volume.', self: 'The rented GPU is cheaper at this volume.', close: 'The two are within a rounding error: decide on operations, not price.', tie: 'With no volume and no prices there is nothing to compare.' }
-    const locale = isPt ? 'pt-BR' : 'en-US'
-    const whole = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 })
-    const oneDecimal = new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
-    const out = (name: string): HTMLElement | null => form.querySelector(`[data-out="${name}"]`)
-    const num = (name: string): number | null => {
-      const control = form.elements.namedItem(name)
-      if (!(control instanceof HTMLInputElement)) return null
-      let value = parseDecimal(control.value, isPt ? 'pt-br' : 'en')
-      if (value !== null && value < Number(control.dataset.min ?? 0)) value = null
-      if (value === null) control.setAttribute('aria-invalid', 'true')
-      else control.removeAttribute('aria-invalid')
-      return value
-    }
-    const show = (values: Record<'managed' | 'rented' | 'gpus' | 'util' | 'verdict', string>, message: string): void => {
-      for (const [name, value] of Object.entries(values)) {
-        const element = out(name)
-        if (element) element.textContent = value
-      }
-      const validation = out('validation')
-      if (validation) validation.textContent = message
-    }
-    // Never leave the last valid answer beside an input that cannot produce one.
-    const blank = (message: string): void => show({ managed: '—', rented: '—', gpus: '—', util: '—', verdict: '' }, message)
+    const locale = pageLocale(form)
+    const { whole, oneDecimal } = labFormatters(locale)
+    const validation = form.querySelector<HTMLElement>('[data-out="validation"]')?.dataset ?? {}
+    const verdicts = form.querySelector<HTMLElement>('[data-out="verdict"]')?.dataset ?? {}
+    const blank = { managed: '—', rented: '—', gpus: '—', util: '—', verdict: '' }
 
     const update = (): void => {
-      const inM = num('inM'), outM = num('outM'), priceIn = num('priceIn')
-      const priceOut = num('priceOut'), gpuHour = num('gpuHour'), tps = num('tps')
-      const validation = out('validation')
-      if (inM === null || outM === null || priceIn === null || priceOut === null || gpuHour === null || tps === null) {
-        blank(validation?.dataset.invalid ?? '')
+      // Read every control before deciding, so each invalid one is marked.
+      const [inM, outM, priceIn, priceOut, gpuHour, tps] = ['inM', 'outM', 'priceIn', 'priceOut', 'gpuHour', 'tps'].map((name) => readLabControl(form, name, locale))
+      if (inM == null || outM == null || priceIn == null || priceOut == null || gpuHour == null || tps == null) {
+        showLabOutputs(form, blank, validation.invalid ?? '')
         return
       }
-
-      const managed = inM * priceIn + outM * priceOut
-      const monthSeconds = HOURS * 3600
-      const secondsNeeded = (outM * 1e6) / tps
-      const gpus = Math.max(1, Math.ceil(secondsNeeded / monthSeconds))
-      const rented = gpuHour * HOURS * gpus
-      const utilisation = (secondsNeeded / (gpus * monthSeconds)) * 100
-      if (![managed, secondsNeeded, gpus, rented, utilisation].every(Number.isFinite)) {
-        blank(validation?.dataset.overflow ?? '')
+      const comparison = costComparison({ inM, outM, priceIn, priceOut, gpuHour, tps })
+      if (!comparison) {
+        showLabOutputs(form, blank, validation.overflow ?? '')
         return
       }
-
-      const cheapest = Math.min(managed, rented)
-      show({
-        managed: `USD ${whole.format(managed)}`,
-        rented: `USD ${whole.format(rented)}`,
-        gpus: whole.format(gpus),
-        util: `${oneDecimal.format(utilisation)}%`,
-        verdict: managed === 0 && rented === 0
-          ? text.tie
-          : Math.abs(managed - rented) / Math.max(cheapest, 1e-9) < 0.1
-            ? text.close
-            : managed < rented ? text.managed : text.self,
+      showLabOutputs(form, {
+        managed: `USD ${whole.format(comparison.managed)}`,
+        rented: `USD ${whole.format(comparison.rented)}`,
+        gpus: whole.format(comparison.gpus),
+        util: `${oneDecimal.format(comparison.utilisation)}%`,
+        verdict: verdicts[comparison.verdict] ?? '',
       }, '')
     }
 

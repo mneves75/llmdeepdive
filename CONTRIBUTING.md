@@ -31,8 +31,10 @@ pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test
 
 All must pass, plus the content checks (`pnpm content:parity`, `pnpm content:stubs`,
 `pnpm content:graph`, `pnpm content:citations`, `pnpm content:assets`,
-`pnpm content:figures`), `pnpm a11y:contrast`, `pnpm budget`, `pnpm privacy` and
-`pnpm audit --audit-level=high`. CI runs these plus a full-history Gitleaks scan.
+`pnpm content:figures`), `pnpm a11y:contrast`, `pnpm budget`, `pnpm privacy`,
+`pnpm audit --audit-level=high` and `pnpm render:check` (after
+`pnpm exec playwright install chromium webkit firefox`). CI runs these plus a
+full-history Gitleaks scan.
 
 Read `AGENTS.md` before non-trivial changes. The invariants there are load-bearing:
 no personalised HTML, no teach-back text leaving the browser, no Three.js on the

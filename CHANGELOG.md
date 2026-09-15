@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.5] — 2026-09-15
+
+### Added
+
+- Teach-back answers can be cleared with "Clear my answer". The prose exists only in this browser, so this is the only place a learner on a shared profile can remove it; a failure to clear is reported rather than hidden.
+- `pnpm render:check` loads every route in Chromium, WebKit and Firefox and fails on horizontal overflow at 320px, duplicate ids, uncaught page errors, scroll regions whose semantics disagree with their overflow, and inline formulas that leave the text baseline. Its `--self-test` injects each defect and must fail. CI runs both.
+
+### Fixed
+
+- Inline formulas sit exactly on the text baseline in Firefox too. The first render-check run found 0.6.4's `inline-flex` formulas 1.3px low there; engines with `baseline-source` now use `inline-block` with `baseline-source: first`, and WebKit keeps `inline-flex`.
+
+### Changed
+
+- Both calculators compute through one shared module (`src/lib/lab-math.ts`) for the server-rendered example and the live update, and share input handling (`src/lib/lab-form.ts`); verdict copy reaches the browser through `data-*`, so the scripts carry no duplicated text.
+
+### Security
+
+- `pnpm-workspace.yaml` states the one-day `minimumReleaseAge` explicitly.
+- The rendered-site test pins the number of inline script and style hashes, because the header generator trusts every inline block it finds; a new one is now a reviewed change.
+
 ## [0.6.4] — 2026-09-15
 
 ### Fixed
