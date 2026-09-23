@@ -56,6 +56,21 @@ export function alternatesFor(path: string): Array<{ hreflang: string; href: str
   return LOCALES.map((l) => ({ hreflang: bcp47[l], href: localeUrl(l, path) }))
 }
 
+/** Tier names, shared by every surface that labels a track or lesson depth. */
+export const tierLabels = {
+  en: { foundations: 'Foundations', core: 'Core', advanced: 'Advanced', frontier: 'Frontier' },
+  'pt-br': { foundations: 'Fundamentos', core: 'Essencial', advanced: 'Avançado', frontier: 'Fronteira' },
+} as const satisfies Record<Locale, Record<string, string>>
+
+/**
+ * The short position of a lesson or track, taken from its id ("1.3-bpe-…" →
+ * "1.3", "4-transformer" → "4"). Ids already carry the course numbering, so no
+ * surface computes its own and three numbering schemes cannot drift apart.
+ */
+export function positionOf(id: string): string {
+  return id.split('-')[0] ?? id
+}
+
 /** UI strings. Lesson content lives in MDX; this is chrome only. */
 export const ui = {
   en: {

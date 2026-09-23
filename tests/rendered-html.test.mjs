@@ -52,7 +52,7 @@ test('build produced pages', () => {
  * so this fails in CI rather than in production.
  */
 const CSP_LINE_MAX = 1900
-const EXPECTED_INLINE_SCRIPTS = 6
+const EXPECTED_INLINE_SCRIPTS = 7
 const EXPECTED_INLINE_STYLES = 8
 
 test('the Pagefind entry lists its languages in a fixed order', () => {

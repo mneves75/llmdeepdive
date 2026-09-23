@@ -141,9 +141,9 @@ Two rules the geometry has already broken once each:
 **6. The CSP lives on one `_headers` line with a hard 2,000-character limit.**
 Cloudflare *drops* a `_headers` line above 2,000 characters, and the site then
 serves **no CSP at all** — silently, with every local gate green. The line is at
-1,531. `gen-headers.mjs` appends a sha256 per distinct inline `<script>` (~55
+1,585. `gen-headers.mjs` appends a sha256 per distinct inline `<script>` (~55
 chars) and per distinct inline `<style>` (~110, because style hashes go into
-both `style-src` and `style-src-elem`). That is roughly six scripts or three
+both `style-src` and `style-src-elem`). That is roughly five scripts or two
 styles of headroom below the 1,900 budget.
 
 Three rules follow, and they are why the figure system ships zero JavaScript:
@@ -153,7 +153,7 @@ Three rules follow, and they are why the figure system ships zero JavaScript:
   values as `style="--x: 42"` attributes; `style-src-attr 'unsafe-inline'`
   permits them.
 - **A component's `<script>` must be data-free and byte-identical everywhere**,
-  reading parameters from `data-*`. That is why 238 routes produce only six
+  reading parameters from `data-*`. That is why 238 routes produce only seven
   distinct script hashes. An `is:inline` script is a classic script sharing
   one global lexical scope with every other one, so wrap its body in a block.
 - A static scoped `<style>` in an `.astro` file costs **zero** hashes — Astro
@@ -165,6 +165,33 @@ Three rules follow, and they are why the figure system ships zero JavaScript:
 `tests/rendered-html.test.mjs` asserts the same ceiling and pins the number of
 inline script and style hashes, because `gen-headers.mjs` trusts whatever
 inline code it finds — a new inline block must be a reviewed change there.
+
+## Frontend rules that have failed silently
+
+- **An element a script creates carries no Astro scope attribute**, so a scoped
+  selector never matches it. Style runtime-built markup with `:global()` under a
+  scoped parent (`.search__results :global(a)`). Search results shipped as one
+  unstyled run-on paragraph because of this, with every gate green.
+- **Tailwind's preflight zeroes a `<dialog>`'s user-agent `margin: auto`**, so
+  a modal pins to the left edge unless its margin is restated.
+- **Pagefind indexes `<main>` minus `excludeSelectors`** (`astro.config.mjs`).
+  Anything new that is chrome rather than teaching — status lines, answers,
+  navigation — belongs in that list, or it leaks into every search excerpt.
+- **Completion is written once.** The lesson page owns the rule (teach-back
+  and quiz) and records `ldd:complete:<locale>:<id>`; track pages only read
+  that key. Nothing else re-derives completion.
+- **The survey bar stops being sticky below 50rem**; a lesson's section strip is
+  then the only sticky chrome, and `scroll-padding-top` follows it so focus is
+  never hidden (WCAG 2.4.11). Change both together.
+- **No kicker above a heading, and no Unicode glyph as an icon.** A label may
+  precede a heading only when it carries data the heading does not (a tier and
+  lesson count, the explorer's instrument labels); a sequence number rides
+  inside its heading when the order is information (`01/05`). Icons come from
+  `src/components/Icon.astro` and markers are drawn (`.sounding-marker`); an
+  arrow inside a text label (“Next lesson →”) is type, not an icon.
+- **Anchor offsets have one source: `scroll-padding-top` on the root.** A
+  `scroll-margin-top` on a heading adds to it, and every jump lands a header
+  too low (measured at ~107px instead of ~16px while both were set).
 
 ## Performance: read this before touching the bench
 

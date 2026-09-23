@@ -23,7 +23,11 @@ The pedagogy is Feynman's, applied literally. Each lesson runs:
 5. **Quiz** — with an explanation of *why* the answer is right
 
 A lesson counts as complete only when your teach-back is substantive **and**
-the quiz is right. Clicking "reveal" is not learning.
+the quiz is right. Clicking "reveal" is not learning: each explanation opens
+only once you have answered its question correctly, and a wrong check tells
+you which questions to look at again. Finished lessons are marked on the track
+pages — read from your browser, so the pages themselves stay identical for
+everyone and nothing is sent anywhere.
 
 ## Figures
 

@@ -49,18 +49,32 @@ const pairs = [
   ['fixed abyss Kelp Green text', token('kelp').dark, abyss.dark],
 ]
 
+// Non-text contrast (WCAG 1.4.11): a control's boundary and the focus ring
+// need 3:1 against every surface they sit on, not 4.5:1.
+const fieldSurfaces = [['raised', token('paper-raised')], ['page', token('paper')], ['sunken', token('paper-sunken')]]
+const nonText = fieldSurfaces.flatMap(([surface, background]) => [
+  [`light field border on ${surface}`, token('rule-field').light, background.light],
+  [`dark field border on ${surface}`, token('rule-field').dark, background.dark],
+  [`light focus ring on ${surface}`, token('focus').light, background.light],
+  [`dark focus ring on ${surface}`, token('focus').dark, background.dark],
+])
+
 const failures = []
 let worst = { name: '', value: Number.POSITIVE_INFINITY }
 for (const [name, foreground, background] of pairs) {
   const value = ratio(foreground, background)
   if (value < worst.value) worst = { name, value }
-  if (value < 4.5) failures.push(`${name}: ${value.toFixed(2)}:1 (${foreground} on ${background})`)
+  if (value < 4.5) failures.push(`${name}: ${value.toFixed(2)}:1 (${foreground} on ${background}; text needs 4.5:1)`)
+}
+for (const [name, foreground, background] of nonText) {
+  const value = ratio(foreground, background)
+  if (value < 3) failures.push(`${name}: ${value.toFixed(2)}:1 (${foreground} on ${background}; non-text needs 3:1)`)
 }
 
 if (failures.length > 0) {
-  console.error(`a11y:contrast FAIL — ${failures.length} text pair(s) below WCAG AA 4.5:1`)
+  console.error(`a11y:contrast FAIL — ${failures.length} pair(s) below WCAG AA`)
   for (const failure of failures) console.error(`- ${failure}`)
   process.exitCode = 1
 } else {
-  console.log(`a11y:contrast PASS — ${pairs.length} token pair(s); worst ${worst.name} ${worst.value.toFixed(2)}:1`)
+  console.log(`a11y:contrast PASS — ${pairs.length} text pair(s), worst ${worst.name} ${worst.value.toFixed(2)}:1; ${nonText.length} non-text pair(s) ≥ 3:1`)
 }

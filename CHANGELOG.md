@@ -5,6 +5,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-23
+
+A design review of every surface (two independent assessments, detector and three-engine browser evidence) and the fixes it called for.
+
+### Fixed
+
+- Search results were unreadable: every title ran into its excerpt as one paragraph, and the dialog sat pinned to the left edge. Results are built by script, so they carry no Astro scope attribute and none of their styles ever applied; Tailwind's preflight had also removed the dialog's centring. Both are restated, and the rule is in `AGENTS.md`.
+- Search excerpts no longer start with "Skip to content" or carry quiz answers, dates, prerequisites or raw TeX. Pagefind now indexes `<main>` only, without lesson chrome, answers or TeX source, and a result is shown only when a highlighted word begins like a query term: Pagefind's fallback to shorter query prefixes had made nonsense queries return lessons through one-letter formula symbols.
+- Portuguese track pages labelled every track in English ("FOUNDATIONS · 8 aulas"). Tier names now come from one shared table, and the pt-BR home and lesson copy says "trilhas" and "explicação" instead of "tracks" and "teach-back".
+- Lessons and tracks were numbered three different ways (slug `1.3-bpe-step-by-step` in the rail, "02" on the home map, "02.03" on track pages). Every surface now shows the position from the id: track 1, lesson 1.3.
+- The home page's primary action sat on the bottom edge of a 1440×900 screen; the hero now sizes by viewport height too.
+- WCAG fixes: field borders and the teach-back focus ring reach 3:1 (they measured about 2.1:1 and 1.6:1); header links, summaries and track rows are 44px tall and the theme switch 42px, all well above WCAG's 24px minimum; the search close control is 44px and its name includes its visible "Esc"; the lesson status no longer re-announces itself on load; a focused element is never hidden under sticky chrome.
+
+### Changed
+
+- The quiz tells you which answers are wrong ("Not yet — reread and try again") in words and colour, and each explanation stays hidden until its question is answered right, then opens by itself, so a lesson is completed by answering rather than by reading ahead. A quiz you passed before keeps its explanations. Without JavaScript the explanations stay readable, since nothing can be checked there.
+- Track pages mark the lessons you finished and count them per track. The lesson page records completion in this browser only; the HTML every visitor receives is unchanged.
+- The home hero's cutaway is now the curriculum itself: four strata, one per tier, each linking to its first track with its track range and lesson count, instead of four decorative labels and five markers that matched nothing.
+- On phones the header scrolls away, so a lesson's section strip is the only sticky chrome (the two together took 22% of an 844px screen); the strip keeps the current section in view, and the language switch moved into the nav row instead of disappearing.
+- The lesson rail marks the section being read (a small observer in the lesson script), and its rule fills as you read where scroll-driven animation is supported. Pages cross-fade under a fixed header in browsers with cross-document view transitions. The gauge and the cross-fade are CSS only and off under reduced motion.
+- The teach-back shows progress toward its 80-character, 15-word rule.
+- The search button shows `/` as its shortcut, which works on every keyboard; ⌘K and Ctrl+K still open search. The home hero drops its row of headline numbers, which the strata now carry. The explorer's annotation callout uses the design system's callout shadow.
+- Icons are one authored inline-SVG set instead of Unicode glyphs; eyebrow labels above headings are gone, with lesson part numbers (`01/05`) inside their headings; callouts use a tinted outline instead of a side stripe; the 404 page and track headers follow the design system; lesson titles are capped at the documented headline size.
+- `pnpm a11y:contrast` also gates non-text contrast (field borders and the focus ring at 3:1 on every surface).
+- One more inline script hash (the track-page progress reader): seven in total, and the CSP line is at 1,585 of the 1,900-character budget.
+
 ## [0.6.8] — 2026-09-23
 
 ### Fixed

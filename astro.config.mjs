@@ -75,7 +75,33 @@ export default defineConfig({
     },
   },
 
-  integrations: [mdx(), sitemap({ i18n: { defaultLocale: 'en', locales: { en: 'en', 'pt-br': 'pt-BR' } } }), pagefind()],
+  integrations: [mdx(), sitemap({ i18n: { defaultLocale: 'en', locales: { en: 'en', 'pt-br': 'pt-BR' } } }), pagefind({
+    indexConfig: {
+      // Index what a lesson teaches, not the page chrome around it. Without a
+      // root, every excerpt began with the skip link ("…cachecontent Advanced")
+      // and carried quiz answers, dates and raw TeX from MathML annotations.
+      rootSelector: 'main',
+      excludeSelectors: [
+        // The TeX source of each formula; the rendered MathML text stays, so an
+        // excerpt keeps its quantities ("3,000 × 64 KiB = 187.5 MiB").
+        'annotation',
+        '.lesson-rail',
+        '.lesson-header__crumb',
+        '.lesson-header__tier',
+        '.updated',
+        '.prerequisites',
+        '.part-index',
+        '[data-teach-back]',
+        '[data-lesson-quiz]',
+        '.completion',
+        '.lesson-nav',
+        '[data-progress]',
+        '[data-done]',
+        '.track-section__open',
+        '.back',
+      ],
+    },
+  })],
 
   vite: {
     plugins: [tailwindcss()],

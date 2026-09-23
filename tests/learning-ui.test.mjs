@@ -119,15 +119,36 @@ test('a teach-back answer that cannot be cleared stays visible and says so', () 
   assert.match(harness.statusText.textContent, /could not clear/iu)
 })
 
-test('a correct quiz that cannot be saved does not complete the lesson', () => {
+function quizHarness({ answers, correct, stored = null, setItem }) {
   const listeners = new Map()
   const status = { textContent: '' }
-  const fieldsets = [0, 2].map((answer) => ({
-    querySelector: () => ({ value: String(answer) }),
-  }))
+  const fieldsets = answers.map((answer) => {
+    const explanation = { hidden: false }
+    const verdict = { textContent: '' }
+    const inputs = [{ addEventListener: () => {} }]
+    return {
+      dataset: {},
+      explanation,
+      verdict,
+      querySelector: (selector) => ({
+        'input:checked': answer === null ? null : { value: String(answer) },
+        '[data-explanation]': explanation,
+        '[data-verdict]': verdict,
+      })[selector] ?? null,
+      querySelectorAll: () => inputs,
+    }
+  })
   const root = {
-    dataset: { lessonKey: 'en:lesson', correct: '[0,2]' },
-    querySelector: (selector) => selector === 'button'
+    dataset: {
+      lessonKey: 'en:lesson',
+      correct: JSON.stringify(correct),
+      right: 'Correct',
+      wrong: 'Not yet',
+      summary: '{n} of {m} correct.',
+      passed: 'Correct.',
+      unsaved: 'Correct, but this device could not save it.',
+    },
+    querySelector: (selector) => selector === '[data-quiz-check]'
       ? { addEventListener: (type, listener) => listeners.set(type, listener) }
       : selector === '[role="status"]'
         ? status
@@ -136,6 +157,7 @@ test('a correct quiz that cannot be saved does not complete the lesson', () => {
     closest: () => null,
   }
   const events = []
+  const writes = []
   class CustomEvent {
     constructor(type, init) {
       this.type = type
@@ -146,13 +168,91 @@ test('a correct quiz that cannot be saved does not complete the lesson', () => {
   execute(componentScript('src/components/LessonQuiz.astro'), {
     CustomEvent,
     document: { querySelectorAll: () => [root], dispatchEvent: (event) => events.push(event) },
-    localStorage: { setItem: () => { throw new Error('blocked') } },
+    localStorage: {
+      getItem: () => stored,
+      setItem: (key, value) => {
+        setItem?.()
+        writes.push([key, value])
+      },
+    },
   })
-  listeners.get('click')()
+  return { check: () => listeners.get('click')(), events, fieldsets, root, status, writes }
+}
 
+test('a correct quiz that cannot be saved does not complete the lesson', () => {
+  const quiz = quizHarness({ answers: [0, 2], correct: [0, 2], setItem: () => { throw new Error('blocked') } })
+  quiz.check()
+
+  assert.equal(quiz.root.dataset.complete, 'false')
+  assert.match(quiz.status.textContent, /could not save/iu)
+  assert.deepEqual(quiz.events.at(-1)?.detail, { lessonKey: 'en:lesson', valid: false })
+})
+
+test('quiz explanations stay hidden until their own question is answered right', () => {
+  const quiz = quizHarness({ answers: [0, 1], correct: [0, 2] })
+  assert.deepEqual(quiz.fieldsets.map((f) => f.explanation.hidden), [true, true])
+
+  quiz.check()
+
+  assert.deepEqual(quiz.fieldsets.map((f) => f.dataset.result), ['right', 'wrong'])
+  assert.deepEqual(quiz.fieldsets.map((f) => f.verdict.textContent), ['Correct', 'Not yet'])
+  assert.deepEqual(quiz.fieldsets.map((f) => f.explanation.hidden), [false, true])
+  assert.deepEqual(quiz.fieldsets.map((f) => f.explanation.open === true), [true, false])
+  assert.equal(quiz.status.textContent, '1 of 2 correct.')
+  assert.equal(quiz.root.dataset.complete, 'false')
+  assert.deepEqual(quiz.writes, [['ldd:quiz:en:lesson', 'false']])
+})
+
+test('a quiz passed before keeps its explanations open', () => {
+  const quiz = quizHarness({ answers: [null, null], correct: [0, 2], stored: 'true' })
+  assert.deepEqual(quiz.fieldsets.map((f) => f.explanation.hidden), [false, false])
+})
+
+test('the lesson records completion for track pages and withdraws it', () => {
+  const listeners = new Map()
+  const writes = []
+  const statusText = { textContent: 'Complete the teach-back and answer the quiz correctly to finish this lesson.' }
+  const completion = {
+    dataset: { incomplete: 'Complete the teach-back and answer the quiz correctly to finish this lesson.', completeText: 'Lesson completed on this device.' },
+    querySelector: (selector) => selector === '[data-completion-text]' ? statusText : null,
+  }
+  const root = {
+    dataset: { lessonKey: 'en:lesson' },
+    querySelector: (selector) => selector === '.completion'
+      ? completion
+      : selector === '[data-teach-back]'
+        ? { dataset: { complete: 'true' } }
+        : null,
+  }
+  const document = {
+    documentElement: { lang: 'en' },
+    querySelectorAll: (selector) => selector === '[data-lesson-progress]' ? [root] : [],
+    addEventListener: (type, listener) => listeners.set(type, listener),
+  }
+  class CustomEvent {
+    constructor(type, init) {
+      this.type = type
+      this.detail = init.detail
+    }
+  }
+  execute(componentScript('src/layouts/Lesson.astro'), {
+    CustomEvent,
+    ResizeObserver: class {},
+    document,
+    localStorage: {
+      getItem: () => 'true',
+      setItem: (key, value) => writes.push([key, value]),
+      removeItem: (key) => writes.push([key, null]),
+    },
+  })
+
+  assert.equal(root.dataset.complete, 'true')
+  assert.deepEqual(writes.at(-1), ['ldd:complete:en:lesson', 'true'])
+  assert.match(statusText.textContent, /completed on this device/iu)
+
+  listeners.get('ldd:quiz')(Object.assign(new CustomEvent('ldd:quiz', { detail: { lessonKey: 'en:lesson', valid: false } })))
   assert.equal(root.dataset.complete, 'false')
-  assert.match(status.textContent, /could not save/iu)
-  assert.deepEqual(events.at(-1)?.detail, { lessonKey: 'en:lesson', valid: false })
+  assert.deepEqual(writes.at(-1), ['ldd:complete:en:lesson', null])
 })
 
 test('ArrowUp from the search input focuses the last result', () => {
@@ -302,4 +402,42 @@ test('a theme chosen in another tab is reflected here', () => {
   assert.deepEqual(theme.inputs.map((input) => input.checked), [false, false, true])
   theme.windowListeners.get('storage')({ key: null, newValue: null })
   assert.equal(theme.root.dataset.theme, undefined)
+})
+
+test('track pages mark only lessons this browser completed', () => {
+  const row = (key) => {
+    const marker = { hidden: true }
+    return { dataset: { lessonKey: key }, marker, querySelector: () => marker }
+  }
+  const rows = [row('en:a'), row('en:b'), row('en:c')]
+  const progress = { hidden: true, textContent: '', dataset: { template: '{n} of {m} completed on this device' } }
+  const section = {
+    querySelectorAll: () => rows,
+    querySelector: (selector) => selector === '[data-progress]' ? progress : null,
+  }
+  const map = { querySelectorAll: () => [section] }
+  const done = new Set(['ldd:complete:en:a', 'ldd:complete:en:c'])
+
+  execute(componentScript('src/components/TrackListing.astro'), {
+    document: { querySelectorAll: () => [map] },
+    localStorage: { getItem: (key) => done.has(key) ? 'true' : null },
+  })
+
+  assert.deepEqual(rows.map((r) => r.dataset.complete), ['true', undefined, 'true'])
+  assert.deepEqual(rows.map((r) => r.marker.hidden), [false, true, false])
+  assert.equal(progress.hidden, false)
+  assert.equal(progress.textContent, '2 of 3 completed on this device')
+})
+
+test('track pages stay unmarked when storage is unreadable', () => {
+  const marker = { hidden: true }
+  const rows = [{ dataset: { lessonKey: 'en:a' }, querySelector: () => marker }]
+  const progress = { hidden: true, textContent: '', dataset: { template: '{n} of {m}' } }
+  const section = { querySelectorAll: () => rows, querySelector: () => progress }
+  execute(componentScript('src/components/TrackListing.astro'), {
+    document: { querySelectorAll: () => [{ querySelectorAll: () => [section] }] },
+    localStorage: { getItem: () => { throw new Error('blocked') } },
+  })
+  assert.equal(marker.hidden, true)
+  assert.equal(progress.hidden, true)
 })

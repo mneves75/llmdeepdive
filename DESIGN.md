@@ -9,6 +9,7 @@ colors:
   sounding-ink: "#102b3a"
   muted-ink: "#3f5a66"
   mist-line: "#cbd8d7"
+  field-rule: "#6b7c85"
   survey-cyan: "#007687"
   sonar-yellow: "#806800"
   coral-red: "#c43327"
@@ -140,6 +141,9 @@ pigments carry stable meaning in both light and dark modes.
 - **Sounding Ink** (`#102b3a`): primary text and display type.
 - **Muted Ink** (`#3f5a66`): summaries and supporting copy.
 - **Mist Line** (`#cbd8d7`): dividers, contour rules, and inactive boundaries.
+- **Field Rule** (`#6b7c85`, `#6f8a90` at night): the boundary of anything a
+  learner types into or toggles. It holds 3:1 against every paper surface
+  (WCAG 1.4.11), which Mist Line does not; `pnpm a11y:contrast` gates it.
 
 **The Encoded Color Rule.** Pigment identifies a layer, state, or path; it is
 never scattered merely to create energy.
@@ -166,6 +170,11 @@ subordinate. The zero-network-font stack protects first render and privacy.
 - **Lesson body** (400, `1.3rem`, `1.65`): long-form teaching copy within a
   `40rem` reading column, with explicit paragraph and list rhythm.
 - **Label** (650, `0.6875rem`, `0.1em`): short uppercase survey notation only.
+  Never a kicker above a heading: a heading carries its own weight. A label
+  may precede one only when it carries data the heading lacks (tier and lesson
+  count). When a sequence is information (a lesson's `01/05` parts), the number
+  rides inside the heading in the data face.
+- **Wrapping:** headings balance, paragraphs use `text-wrap: pretty`.
 
 **The Instrument Test.** Monospace belongs only where content could plausibly
 come from an instrument, coordinate, measurement, code block, or identifier.
@@ -179,7 +188,10 @@ a dominant abyssal stage and an evidence drawer; below `1180px` those strata
 stack in selector → stage → evidence order without losing content. On mobile,
 the selector keeps an explicit swipe affordance and snap-aligned items.
 
-At `58rem` the lesson rail becomes a horizontal sticky strip. At `48rem` and
+At `58rem` the lesson rail becomes a horizontal sticky strip, masked at its
+trailing edge and kept scrolled to the section being read. Below `50rem` the
+survey bar scrolls away, so that strip is the only sticky chrome on a phone.
+At `48rem` and
 `42rem`, multi-column introductions and track structures become deliberate
 vertical surveys. At `28rem`, header controls compact while keeping search,
 theme, and primary navigation visible. Spacing ranges from `4px` to `144px`;
@@ -219,25 +231,62 @@ compact state controls where the silhouette carries meaning.
 
 - **Survey panels:** chart-raised background, one-pixel rule, `13px` maximum
   radius, and no rest shadow.
+- **Callouts:** a whole one-pixel boundary tinted with the register's pigment
+  and a faint pigment wash; never a thick side stripe.
 - **Track strata:** continuous ruled rows with an oversized sequence number.
 - **Abyssal panels:** navy field with high-contrast mist copy and encoded accents.
 
 ### Inputs / Fields
 
-Text fields use a one-pixel strong rule, chart-raised background, `5px` radius,
+Text fields use a one-pixel Field Rule, chart-raised background, `5px` radius,
 and the body font. Focus changes the rule to Survey Cyan and adds a restrained
 Sonar Yellow outline. Validation state uses Kelp Green or Coral Red.
 
 ### Navigation
 
-The header is a sticky three-column survey bar. Below `50rem`, actions stay on
-the first row and primary links occupy a second ruled row. Lessons use a sticky
-depth rail that converts into a horizontally scrollable section strip.
+The header is a sticky three-column survey bar; the current section carries an
+underline and `aria-current`. Below `50rem` it stops being sticky, actions stay
+on the first row, and primary links plus the language switch occupy a second
+ruled row. Page to page, the bar holds still while the field cross-fades
+(cross-document view transition, CSS only, off under reduced motion). Lessons use a sticky
+depth rail that marks the section being read and converts into a horizontally
+scrollable section strip. Where scroll-driven animation exists, the rule under
+the lesson number fills as the reader descends.
+
+### Icons
+
+One authored set in `src/components/Icon.astro`: 24px outlines, one stroke
+weight, `currentColor`. Unicode glyphs never stand in for icons or markers;
+the point-of-attention marker is a drawn sonar ring (`.sounding-marker`). An
+arrow inside a text label is type, not an icon.
+
+### Progress
+
+Completion is shown where a learner chooses what to do next: a kelp check and a
+position in kelp on each finished lesson row, and a count per track. It is read
+from the device after render, so every visitor still receives the same HTML.
+
+### Checks
+
+A checked quiz gives each question a verdict in words ("Correct" / "Not yet")
+and in pigment on its number; the explanation opens only once that question is
+answered right. The teach-back shows its progress toward the 80-character,
+15-word rule in the data face, turning kelp when met.
+
+### Search
+
+A native modal `<dialog>`, centred, entering with a short fade and rise
+(`@starting-style`, off under reduced motion). Results are ruled rows: a title,
+then a two-line excerpt of the page's teaching content; navigation, answers and
+status lines are excluded from the index.
 
 ### Core Section
 
 The signature composition uses an oblique boundary between chart and abyssal
 fields, circular contours, a vertical signal line, and nodes tied to real steps.
+On the home page the strata are the curriculum's four tiers in descent order,
+each a link to its first track, labelled with its track range and lesson count
+and thicker where there are more lessons; every node sits on its stratum.
 Use it when a surface must explain sequence or internal structure, never as
 wallpaper.
 
