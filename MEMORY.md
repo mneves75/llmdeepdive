@@ -2,11 +2,13 @@
 
 ## Current Direction
 
-- **0.7.0 is the design-review release.** Built from `3406b2e`, tagged
-  `v0.7.0-beta1`; staging version `2b0f0bcb` passed `verify:live` (528 files
-  byte-identical, explorer → lesson in chromium/webkit/firefox) and its
-  self-test caught 29/29; a live smoke under the enforced CSP (search, quiz,
-  track progress) was clean in Chromium and WebKit. Two independent
+- **0.7.0 is the design-review release.** Deployed on 2026-09-23 from
+  `3406b2e`, tagged `v0.7.0-beta1` (staging version `2b0f0bcb`) and `v0.7.0`
+  (production version `706c9bac`, 100%, apex and www). `verify:live` passed on
+  both (528 files byte-identical, explorer → lesson in chromium/webkit/firefox,
+  www redirect on production); its self-test caught 29/29 on staging and 30/30
+  on production. A live smoke under the enforced CSP (search, quiz, track
+  progress) was clean in Chromium and WebKit on both. Two independent
   assessments (design review 24/40; detector + browser evidence) found the
   headline defect: search results had been unstyled on production since the
   redesign, because script-built nodes carry no Astro scope attribute, and the
