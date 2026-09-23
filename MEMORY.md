@@ -2,6 +2,30 @@
 
 ## Current Direction
 
+- **0.6.7 stops the explorer reporting a failure when the visitor leaves
+  mid-load, and makes release proof a command.** Deployed on 2026-09-23 from
+  `d149f97`, tagged `v0.6.7-beta1` (staging version `20bb41ae`) and `v0.6.7`
+  (production version `9e04ee8a`), both at 100%. `pnpm verify:live` passed on
+  both: 534 files byte-identical, CSP, Brotli, 404s, www redirect, and the
+  explorer → lesson canary in Chromium, WebKit and Firefox; its self-test
+  caught 28/29 injected defects. On 0.6.6 production the same canary caught
+  the WebKit bug. CI passed; the explorer check ran in Chromium and WebKit
+  there, because CI's Firefox has no WebGL.
+  Diagnosis: WebKit and Firefox reject the three.js import when navigation
+  *starts* (the next page was held 2 s and they still did), so `pagehide`
+  and a deferred report both fail; `navigate` (Navigation API, Chrome 102,
+  Firefox 147, Safari 26.2) is the signal, and `beforeunload` is ruled out
+  (iOS Safari skips it; Firefox drops the page from its back/forward cache).
+  A cache restore after an interrupted load reloads, because Chromium never
+  retries a failed module import in the same document; Playwright's WebKit
+  does not refetch even after a plain reload, so that one case is reported as
+  not covered. The "refused stylesheet" was Playwright's screenshot style
+  hitting the CSP, not the site.
+  Review trail: two Standards/Spec reviews and two Codex verifications. The
+  second verification still failed on two items: the canary accepted a 404
+  lesson, and the changelog overclaimed restore coverage. Both were fixed and
+  proven by the self-test and a live run, without a third round.
+
 - **0.6.6 is a security and instruction-surface release.** Deployed on
   2026-09-23 from `b6dbb2f`, tagged `v0.6.6-beta1` (staging version
   `7fc85dac`) and `v0.6.6` (production version `c9e1e50b`), both at 100%.
@@ -14,10 +38,7 @@
   self-test; CI passed. A source-only security review found no confirmed
   vulnerability. The Codex verifier's second round still failed on a
   dropped "video playback" clause; it was restored without a third round.
-  **Open:** in mobile WebKit, clicking "View lesson" while the explorer is
-  still importing Three.js logs "3D stage failed to start" and a refused
-  stylesheet. 0.6.5 production shows the identical pair; an idle load is clean
-  in every engine. Not yet diagnosed.
+  Its open WebKit item closed in 0.6.7 (above).
 
 - **0.6.5 made rendered layout a gate.** Deployed on 2026-09-15 from
   `76879c2`, tagged `v0.6.5-beta1` (staging version `ec056a3e`) and `v0.6.5`
