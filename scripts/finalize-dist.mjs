@@ -5,7 +5,7 @@
  * Runs before `gen-headers.mjs`, so anything emitted here is still covered by
  * the generated CSP.
  */
-import { readdirSync, readFileSync, statSync, copyFileSync, rmSync, existsSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync, statSync, copyFileSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const DIST = 'dist'
@@ -80,8 +80,23 @@ function pruneUnusedPagefindBundles() {
   return removed
 }
 
+/**
+ * Pagefind writes `languages` in hash-map order, which changes between builds
+ * of the same commit, so `verify:live` could not compare a rebuilt `dist/`
+ * with what was deployed. Its runtime looks languages up by key; the order
+ * matters only to its fallback for an unindexed page language, which sorts by
+ * page count and then keeps this order, so sorting also makes that fallback fixed.
+ */
+function sortPagefindLanguages() {
+  const file = join(DIST, 'pagefind', 'pagefind-entry.json')
+  const entry = JSON.parse(readFileSync(file, 'utf8'))
+  entry.languages = Object.fromEntries(Object.entries(entry.languages).sort(([a], [b]) => (a < b ? -1 : 1)))
+  writeFileSync(file, JSON.stringify(entry))
+}
+
 const pages = emitLocale404s()
 const pruned = pruneUnusedPagefindBundles()
+sortPagefindLanguages()
 console.log(
   `finalize-dist · ${pages.length} locale 404 page(s), ` +
     `${pruned.length} unused pagefind bundle(s) pruned`,

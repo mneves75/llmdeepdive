@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.8] — 2026-09-23
+
+### Fixed
+
+- The build is reproducible again. Pagefind wrote the two search languages in a different order from one build to the next, so rebuilding the released commit made `pnpm verify:live` report `pagefind/pagefind-entry.json` as not matching production. `finalize-dist.mjs` now sorts them; three consecutive builds are byte-identical, and a test fails if the order is unsorted.
+
+### Added
+
+- `pnpm verify:live` requests the home page with browser headers and requires it byte-identical to `dist/`, naming the Web Analytics beacon if the zone injected it. Cloudflare injects scripts only into browser-like requests, so the existing byte check could not see them; the self-test covers the new check. Web Analytics stays disabled for this site: the course promises no tracking, and allowing a third-party script origin would give up that promise.
+
 ## [0.6.7] — 2026-09-23
 
 ### Fixed

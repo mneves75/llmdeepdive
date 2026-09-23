@@ -202,8 +202,10 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
 - `wrangler deploy` exits 0 with empty output in non-TTY. **Never trust its
   stdout.** Verify with `wrangler versions list` plus `pnpm verify:live`.
 - `pnpm verify:live --target staging|production` is the release proof: every
-  `dist/` file byte-identical on the target, the generated CSP, Brotli,
-  localized 404s, the `www` redirect on production, and the real explorer
+  `dist/` file byte-identical on the target (the home page also when requested
+  with browser headers, which is the only way to see an edge-injected script),
+  the generated CSP, Brotli, localized 404s, the `www` redirect on production,
+  and the real explorer
   canary in three engines — open `/explore/`, follow the server-rendered
   `[data-detail-cta]` “View lesson” link, and require the track-qualified
   lesson at the current version. A green local link gate does not prove that
@@ -243,8 +245,13 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
   The fix is `auto_install: false` on the RUM site, not a CSP allowlist: a
   third-party script origin would cost the property that makes the privacy
   claim structural. RUM for this site is set to **Disable** (confirmed
-  2026-09-15). Check for edge injection with browser headers after any zone
-  change.
+  2026-09-15), and the ruleset stays off on purpose: do not add
+  `static.cloudflareinsights.com` to the CSP. `pnpm verify:live` fails if the
+  edge injects anything into the home page, so run it after any zone change.
+- **Pagefind's language order is not stable between builds.**
+  `finalize-dist.mjs` sorts `pagefind-entry.json`'s languages; without that, a
+  rebuilt `dist/` for the released commit does not match production byte for
+  byte.
 - **`www` redirects to the apex in the zone, not in this repo.** A Single
   Redirect (`https://www.*` → `https://${1}`, 301, query string preserved) runs
   before the Worker. Keep `www.llmdeepdive.com` as a custom domain in

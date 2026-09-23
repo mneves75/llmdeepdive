@@ -55,6 +55,14 @@ const CSP_LINE_MAX = 1900
 const EXPECTED_INLINE_SCRIPTS = 6
 const EXPECTED_INLINE_STYLES = 8
 
+test('the Pagefind entry lists its languages in a fixed order', () => {
+  // Pagefind writes them in hash-map order, so an unchanged commit rebuilt
+  // failed verify:live's byte comparison on this one file.
+  const entry = JSON.parse(readFileSync(join(DIST, 'pagefind', 'pagefind-entry.json'), 'utf8'))
+  const languages = Object.keys(entry.languages)
+  assert.deepEqual(languages, [...languages].sort())
+})
+
 test('the CSP header line stays inside the Cloudflare _headers line limit', () => {
   const headers = readFileSync(join(DIST, '_headers'), 'utf8')
   const line = headers.split('\n').find((l) => l.includes('Content-Security-Policy:'))

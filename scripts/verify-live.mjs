@@ -10,6 +10,8 @@
  *     404 pages included, requested as missing URLs, with a 404 status)
  *   - the served Content-Security-Policy equals the generated `_headers` line
  *   - HTML is served Brotli-compressed
+ *   - the home page requested with browser headers is still byte-identical:
+ *     the zone injects scripts such as the Web Analytics beacon only there
  *   - production only: www 301-redirects to the apex, keeping path and query
  *   - in Chromium, WebKit and Firefox, /explore/ → "View lesson" reaches the
  *     track-qualified lesson in both locales, the footer shows package.json's
@@ -35,6 +37,7 @@ const ENGINES = { chromium, webkit, firefox }
 const SERVER_CONFIG = new Set(['_headers', '_redirects'])
 const MISSING = '__verify-live-missing__/'
 const FETCH_TIMEOUT_MS = 20_000
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15'
 
 function parseArgs(argv) {
   const args = { target: 'staging', base: null, selfTest: false }
@@ -108,6 +111,16 @@ async function headerFailures(base, production, selfTest) {
   if (response.headers.get('content-security-policy') !== csp) failures.push('served CSP differs from dist/_headers')
   if (response.headers.get('content-encoding') !== encoding) {
     failures.push(`HTML served with content-encoding ${response.headers.get('content-encoding') ?? 'none'}, expected ${encoding}`)
+  }
+  // The zone injects scripts (Web Analytics' beacon, for one) only into
+  // responses for browser-like requests, which the byte check above never makes.
+  let home = readFileSync(`${DIST_ROOT}/index.html`)
+  if (selfTest) home = Buffer.concat([home, Buffer.from('<!-- self-test -->')])
+  const browserHome = await fetchRetrying(`${base}/`, { headers: { 'user-agent': BROWSER_UA, accept: 'text/html' } })
+  const served = Buffer.from(await browserHome.arrayBuffer())
+  if (!served.equals(home)) {
+    const beacon = served.includes('cloudflareinsights') ? ' (Web Analytics beacon injected)' : ''
+    failures.push(`index.html served to a browser differs from dist/${beacon}`)
   }
   if (production) {
     const origin = new URL(base)
@@ -209,6 +222,7 @@ try {
       ['a wrong 404 status', ['404.html: HTTP 404, expected 200']],
       ['a wrong CSP', ['served CSP differs']],
       ['a wrong content encoding', ['expected self-test']],
+      ['edge-injected HTML', ['index.html served to a browser differs']],
       ...(production ? [['a wrong www redirect', ['www: HTTP']]] : []),
       ...Object.keys(ENGINES).flatMap((engine) => [
         [`a wrong footer version in ${engine}`, [`${engine} /: footer shows`]],
