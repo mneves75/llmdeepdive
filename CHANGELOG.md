@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-09-23
+
+### Security
+
+- `devalue` (reached through `astro`) moves from 5.9.0 to 5.9.4 for GHSA-9rgm-9g3h-6x36, a denial of service on malformed input. It runs only at build time here, but `pnpm audit` now reports no vulnerability at any level.
+
+### Changed
+
+- `AGENTS.md` keeps its rules and drops the release history already recorded here and in `MEMORY.md`, plus a `pnpm --filter` command this single-package repo cannot use; `CLAUDE.md` points to its package-management section instead of copying it. The stated CSP headroom is corrected to roughly six scripts or three styles, which is what the 1,900-character budget leaves.
+
 ## [0.6.5] — 2026-09-15
 
 ### Added
