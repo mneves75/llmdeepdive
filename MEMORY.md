@@ -2,9 +2,11 @@
 
 ## Current Direction
 
-- **0.6.8 makes the build reproducible and guards edge injection.** Staging
-  only so far: from `cf15238`, tagged `v0.6.8-beta1`, staging version
-  `53133015`; production not deployed yet. Pagefind wrote its languages in
+- **0.6.8 makes the build reproducible and guards edge injection.** Deployed
+  on 2026-09-23 from `cf15238`, tagged `v0.6.8-beta1` (staging version
+  `53133015`) and `v0.6.8` (production version `49e18209`, custom domains
+  only); `verify:live --target production` passed (534 files byte-identical,
+  explorer → lesson in chromium/webkit/firefox) and its self-test caught 30/30. Pagefind wrote its languages in
   hash-map order, so rebuilding 0.6.7 failed `verify:live` on
   `pagefind-entry.json` against production; `finalize-dist.mjs` sorts them
   and three builds are byte-identical. `verify:live` now compares the home
