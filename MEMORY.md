@@ -2,6 +2,18 @@
 
 ## Current Direction
 
+- **0.6.8 makes the build reproducible and guards edge injection.** Staging
+  only so far: from `cf15238`, tagged `v0.6.8-beta1`, staging version
+  `53133015`; production not deployed yet. Pagefind wrote its languages in
+  hash-map order, so rebuilding 0.6.7 failed `verify:live` on
+  `pagefind-entry.json` against production; `finalize-dist.mjs` sorts them
+  and three builds are byte-identical. `verify:live` now compares the home
+  page fetched with browser headers (caught a planted beacon locally; self-test
+  30/30 on production, 29/29 on staging). A request to allow the Web Analytics
+  beacon in the CSP was declined: the no-tracking rule below wins. Mobile
+  WebKit (iPhone emulation) leaving `/explore/` at 0–3 s is silent on 0.6.7
+  production and 0.6.8 staging; a planted-violation control was caught.
+
 - **0.6.7 stops the explorer reporting a failure when the visitor leaves
   mid-load, and makes release proof a command.** Deployed on 2026-09-23 from
   `d149f97`, tagged `v0.6.7-beta1` (staging version `20bb41ae`) and `v0.6.7`
