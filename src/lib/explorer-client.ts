@@ -20,6 +20,12 @@ import { isWebGLAvailable } from './three/webgl'
 
 type Cleanup = () => void
 
+/** The two Navigation API fields read here; TypeScript's DOM lib lacks the API. */
+interface NavigateEventFields extends Event {
+  readonly destination: { readonly sameDocument: boolean }
+  readonly downloadRequest: string | null
+}
+
 interface StageBundle {
   stage: import('./three/stage').Stage
   markers: import('./three/markers').MarkerLayer
@@ -65,6 +71,18 @@ export function mountExplorer(root: HTMLElement): Cleanup {
   // component can be torn down mid-flight; without this the Stage is
   // constructed after cleanup ran and leaks a live WebGL context and rAF loop.
   let torndown = false
+  // Set when leaving cancelled the boot. Chromium and WebKit keep that failed
+  // import in the page's module map, so a page restored from the back/forward
+  // cache cannot load the stage again without a fresh document.
+  let interrupted = false
+  // Set when the page starts navigating away. WebKit and Firefox then cancel
+  // the in-flight three.js chunks and reject the import, which is the visitor
+  // leaving, not a stage failure. The Navigation API's `navigate` event is the
+  // signal at navigation start: `pagehide` comes too late, iOS Safari never
+  // fires `beforeunload`, and Firefox keeps no page with a `beforeunload`
+  // listener in its back/forward cache. Without the API, the rejection is
+  // reported as before.
+  let leaving = false
 
   /** addEventListener that always registers its own removal. */
   const on = <K extends keyof HTMLElementEventMap>(
@@ -311,18 +329,34 @@ export function mountExplorer(root: HTMLElement): Cleanup {
         pendingStage = null
         bundle = null
         if (torndown) return
+        if (poster) poster.hidden = false
+        if (canvas) canvas.hidden = true
+        if (leaving) {
+          interrupted = true
+          return
+        }
         // A real catch. Without it this is an unhandled rejection and the user
         // stares at a poster that never becomes interactive with no explanation.
         console.error('[explorer] 3D stage failed to start:', err)
         if (noWebgl) noWebgl.hidden = false
-        if (poster) poster.hidden = false
-        if (canvas) canvas.hidden = true
       })
     },
     { rootMargin: '200px' },
   )
   if (target) io.observe(target)
   cleanups.push(() => io.disconnect())
+
+  const navigation = (window as Window & { navigation?: EventTarget }).navigation ?? null
+  on(navigation, 'navigate', (event) => {
+    const { destination, downloadRequest } = event as NavigateEventFields
+    if (!destination.sameDocument && downloadRequest === null) leaving = true
+  })
+  on(navigation, 'navigateerror', () => { leaving = false })
+  on(window, 'pageshow', (event) => {
+    leaving = false
+    // What the browser would have done had it not cached the page.
+    if ((event as PageTransitionEvent).persisted && interrupted) location.reload()
+  })
 
   return () => {
     torndown = true

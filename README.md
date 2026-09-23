@@ -123,8 +123,19 @@ that list to distinctive names: entries that are also ordinary English words
 will match the prose and the gate will be turned off rather than fixed.
 
 Staging deploys with `pnpm deploy:staging`. A successful command is not enough:
-confirm the new version with Wrangler, then click “View lesson” in the live
-explorer and verify that the destination lesson renders.
+confirm the new version with Wrangler, then prove what the edge serves:
+
+```bash
+pnpm verify:live --target staging      # needs BENCH_STAGING_URL, or --base <url>
+pnpm verify:live --target production
+pnpm verify:live --target staging --self-test   # must catch every injected defect
+```
+
+It requires every `dist/` file byte-identical on the target, the generated CSP,
+Brotli, the localized 404 pages, the `www` redirect on production, and a real
+click from the explorer's “View lesson” to a rendered lesson in Chromium,
+WebKit and Firefox at the current version, with no page error, CSP violation or
+explorer error.
 
 ## Performance
 

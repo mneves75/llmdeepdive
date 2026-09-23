@@ -37,19 +37,12 @@ import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, existsSy
 import { join, relative, sep } from 'node:path'
 import { loadavg } from 'node:os'
 import { connect } from 'node:net'
+import { resolveBase } from './targets.mjs'
 
 const MIN_ITER = 16
 const DEFAULT_ITER = 20
 const DEFAULT_BUDGET_MS = 50
 const DIST = 'dist'
-
-// Staging lives on an account-specific *.workers.dev subdomain, so it comes from
-// the environment rather than being baked into the repo.
-const TARGETS = {
-  production: 'https://llmdeepdive.com',
-  staging: process.env.BENCH_STAGING_URL ?? null,
-  local: 'http://127.0.0.1:8787',
-}
 
 function parseArgs(argv) {
   const args = { iter: DEFAULT_ITER, target: 'staging', budget: DEFAULT_BUDGET_MS, selfTest: false, base: null }
@@ -194,14 +187,7 @@ async function measure(url, iter, marker) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
-  const base = args.base ?? TARGETS[args.target]
-  if (!base) {
-    throw new Error(
-      args.target in TARGETS
-        ? `--target ${args.target} has no URL configured. Set BENCH_STAGING_URL, or pass --base <url>.`
-        : `Unknown --target ${args.target}. Use one of: ${Object.keys(TARGETS).join(', ')}`,
-    )
-  }
+  const base = resolveBase(args.target, args.base)
 
   const budget = args.selfTest ? 0.000001 : args.budget
 

@@ -10,7 +10,9 @@
  * WebKit and Firefox, checks every route at a 320px viewport for horizontal
  * overflow, duplicate ids, uncaught page errors and scroll wrappers whose
  * region semantics disagree with whether they overflow, then checks that inline
- * maths sits exactly where unstyled maths would.
+ * maths sits exactly where unstyled maths would. On /explore/ it leaves the
+ * page while the 3D stage is still loading, which must not be reported as a
+ * failure, and breaks the stage chunk, which must be.
  *
  * The site uses system fonts only, so layout depends on what a visitor has
  * installed: CI's Linux fonts overflowed a pt-BR heading that condensed Avenir
@@ -100,6 +102,138 @@ async function baselineFailures(page) {
   })
 }
 
+// Leaving /explore/ while its three.js chunks are in flight is not a stage
+// failure, but WebKit and Firefox reject the import when navigation cancels
+// the chunks, and 0.6.6 logged "[explorer] 3D stage failed to start" for it.
+// The destination is held back two seconds, so the old page stays alive long
+// after the cancellation, as it does on a slow network; the visitor then comes
+// back and the stage must boot. The other half keeps the fix
+// honest: a chunk that really fails must be reported and restore the poster.
+// An engine without WebGL shows the no-WebGL notice instead of loading the
+// stage, and is reported as not covered rather than passed.
+const STAGE_CHUNK = /\/_astro\/stage\.[^/]+\.js$/
+const explorerEngines = []
+const explorerRestoreUncovered = []
+const stageHidden = (page) => page.evaluate(() => document.querySelector('[data-stage-canvas]')?.hidden)
+const stageBoots = (page) => page
+  .waitForFunction(() => document.querySelector('[data-stage-canvas]')?.hidden === false, null, { timeout: 15_000 })
+  .then(() => true, () => false)
+
+async function openExplorer(browser, base, handleChunk) {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  const logged = []
+  page.on('console', (message) => {
+    if (message.type() === 'error' && message.text().startsWith('[explorer]')) logged.push(message.text())
+  })
+  await page.route(STAGE_CHUNK, handleChunk)
+  const requested = page.waitForRequest(STAGE_CHUNK, { timeout: 15_000 }).then(() => 'loading', () => 'neither')
+  await page.goto(base + '/explore/', { waitUntil: 'load' })
+  const noWebgl = page.waitForSelector('[data-nowebgl]:not([hidden])', { timeout: 15_000 }).then(() => 'no-webgl', () => 'neither')
+  return { page, logged, outcome: await Promise.race([requested, noWebgl]) }
+}
+
+async function explorerFailures(browser, name, base) {
+  const failures = []
+  // The chunk is held until the click and then aborted, which is what WebKit
+  // and Firefox do themselves; Chromium would keep a held request pending
+  // forever, which no real network does.
+  let release = () => {}
+  const released = new Promise((resolve) => { release = resolve })
+  const left = await openExplorer(browser, base, async (route) => {
+    await released
+    await route.abort('aborted').catch(() => {})
+  })
+  try {
+    if (left.outcome === 'no-webgl') return { covered: false, failures }
+    if (left.outcome !== 'loading') return { covered: true, failures: [`${name} /explore/: the stage neither loaded nor showed the no-WebGL notice`] }
+    const { page } = left
+    if (selfTest) await page.evaluate(() => { const canvas = document.querySelector('[data-stage-canvas]'); if (canvas) canvas.hidden = false })
+    if ((await stageHidden(page)) !== true) failures.push(`${name} /explore/: the stage was not still loading at the click, so leaving mid-boot went untested`)
+    await page.route('**/lessons/**', async (route) => {
+      if (route.request().resourceType() === 'document') await new Promise((resolve) => setTimeout(resolve, 2000))
+      await route.continue().catch(() => {})
+    })
+    if (selfTest) await page.evaluate(() => console.error('[explorer] injected on leave'))
+    const cta = page.locator('[data-detail-cta]').first()
+    const href = await cta.getAttribute('href')
+    const arrived = page.waitForURL((url) => url.pathname === href, { timeout: 15_000 })
+    await cta.click()
+    release()
+    await arrived
+    await page.waitForTimeout(1000)
+    await page.unroute(STAGE_CHUNK)
+    await page.goBack({ waitUntil: 'load' })
+    // Scroll restoration returns below the stage, which loads only in view.
+    // Scrolling is withheld in the self-test, so the stage never boots.
+    if (!selfTest) await page.locator('[data-stage-canvas]').evaluate((canvas) => canvas.parentElement?.scrollIntoView({ block: 'center' }))
+    const booted = await stageBoots(page)
+    await page.waitForTimeout(1500)
+    if (left.logged.length) failures.push(`${name} /explore/: leaving mid-boot reported a stage failure: ${left.logged[0]}`)
+    if (!booted) failures.push(`${name} /explore/: coming back after leaving mid-boot did not boot the stage`)
+  } finally {
+    release()
+    await left.page.close()
+  }
+
+  // A back/forward-cache restore of a page left mid-boot. Playwright's engines
+  // reload on back instead, so the restore is replayed in place: the page is
+  // marked as navigating, the chunk is cancelled, and a persisted `pageshow`
+  // must reload into a document that boots, because Chromium and WebKit never
+  // retry a module import that failed once in the same document.
+  let cancel = () => {}
+  const cancelled = new Promise((resolve) => { cancel = resolve })
+  const restored = await openExplorer(browser, base, async (route) => {
+    await cancelled
+    await route.abort('aborted').catch(() => {})
+  })
+  try {
+    const { page } = restored
+    await page.evaluate(() => {
+      const leave = Object.assign(new Event('navigate'), { destination: { sameDocument: false }, downloadRequest: null })
+      window.navigation?.dispatchEvent(leave)
+    })
+    if (selfTest) await page.evaluate(() => console.error('[explorer] injected on restore'))
+    const failed = page.waitForEvent('requestfailed', { predicate: (request) => STAGE_CHUNK.test(request.url()) })
+    cancel()
+    await failed
+    await page.unroute(STAGE_CHUNK)
+    await page.waitForTimeout(300)
+    let refetched = false
+    page.on('request', (request) => { if (STAGE_CHUNK.test(request.url())) refetched = true })
+    const reloaded = page.waitForEvent('load', { timeout: 10_000 }).then(() => true, () => false)
+    if (!selfTest) {
+      await page.evaluate(() => dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))).catch(() => {})
+    }
+    const didReload = await reloaded
+    const booted = didReload && (await stageBoots(page))
+    if (name === 'webkit' && didReload && !refetched) {
+      // WebKit keeps a failed module across a reload, even a plain one after a
+      // genuine server error, so no page can recover it there. Not a pass, and
+      // only WebKit: Chromium and Firefox refetch, so there it stays a failure.
+      explorerRestoreUncovered.push(name)
+    } else {
+      if (restored.logged.length) failures.push(`${name} /explore/: a restore after leaving mid-boot reported a stage failure: ${restored.logged[0]}`)
+      if (!booted) failures.push(`${name} /explore/: a back/forward-cache restore after leaving mid-boot did not boot the stage`)
+    }
+  } finally {
+    cancel()
+    await restored.page.close()
+  }
+
+  const broken = await openExplorer(browser, base, (route) => (selfTest ? route.continue() : route.abort()))
+  try {
+    const { page } = broken
+    const noticed = await page.waitForSelector('[data-nowebgl]:not([hidden])', { timeout: 10_000 }).then(() => true, () => false)
+    const posterBack = await page.evaluate(() => document.querySelector('[data-poster]')?.hidden === false)
+    if (!noticed || !posterBack || (await stageHidden(page)) !== true || broken.logged.length === 0) {
+      failures.push(`${name} /explore/: a failed stage import was not reported with the poster restored`)
+    }
+  } finally {
+    await broken.page.close()
+  }
+  return { covered: true, failures }
+}
+
 const WIDE_FONTS = ":root { --font-display: Verdana, 'DejaVu Sans', sans-serif !important; --font-body: Verdana, 'DejaVu Sans', sans-serif !important; --font-ui: Verdana, 'DejaVu Sans', sans-serif !important; }"
 
 async function checkEngine(name, base, allRoutes, wideFonts = false) {
@@ -134,6 +268,9 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
       await settle(page)
       for (const failure of await baselineFailures(page)) failures.push(`${name} ${route} @1280: ${failure}`)
     }
+    const explorer = await explorerFailures(browser, name, base)
+    failures.push(...explorer.failures)
+    if (explorer.covered) explorerEngines.push(name)
   } finally {
     await browser.close()
   }
@@ -154,12 +291,26 @@ try {
   const failures = []
   for (const engine of engines) failures.push(...await checkEngine(engine, base, checked))
   if (engines.includes('chromium')) failures.push(...await checkEngine('chromium', base, checked, true))
+  // An explorer check that ran nowhere would pass vacuously.
+  if (explorerEngines.length === 0) failures.push('explorer: no engine had WebGL, so the stage lifecycle went unchecked')
+  const explorerNote = `explorer lifecycle in ${explorerEngines.join(', ') || 'no engine'}` +
+    (explorerRestoreUncovered.length ? ` (restore replay not coverable in ${explorerRestoreUncovered.join(', ')}: a reload keeps the failed module)` : '')
 
   if (selfTest) {
     const expected = engines.flatMap((engine) => [
       `${engine} ${checked[0]}: page overflows`,
       ...(engine === 'chromium' ? [`chromium+wide-fonts ${checked[0]}: page overflows`] : []),
       ...BASELINE_ROUTES.map((route) => `${engine} ${route} @1280: inline maths moves`),
+      ...(explorerEngines.includes(engine)
+        ? [
+            `${engine} /explore/: the stage was not still loading at the click`,
+            `${engine} /explore/: leaving mid-boot reported`,
+            `${engine} /explore/: coming back after leaving mid-boot did not boot`,
+            `${engine} /explore/: a restore after leaving mid-boot reported`,
+            `${engine} /explore/: a back/forward-cache restore after leaving mid-boot did not boot`,
+            `${engine} /explore/: a failed stage import was not reported`,
+          ]
+        : []),
     ])
     const missed = expected.filter((prefix) => !failures.some((failure) => failure.startsWith(prefix)))
     if (missed.length) {
@@ -167,14 +318,14 @@ try {
       for (const miss of missed) console.error('- ' + miss)
       process.exitCode = 1
     } else {
-      console.log(`render:check SELF-TEST PASS — every injected defect was caught in ${engines.join(', ')}`)
+      console.log(`render:check SELF-TEST PASS — every injected defect was caught in ${engines.join(', ')} (${explorerNote})`)
     }
   } else if (failures.length) {
     console.error(`render:check FAIL — ${failures.length} issue(s)`)
     for (const failure of failures) console.error('- ' + failure)
     process.exitCode = 1
   } else {
-    console.log(`render:check PASS — ${allRoutes.length} routes at 320px and ${BASELINE_ROUTES.length} inline-maths baselines in ${engines.join(', ')}${engines.includes('chromium') ? ', plus a wide-font pass' : ''}`)
+    console.log(`render:check PASS — ${allRoutes.length} routes at 320px and ${BASELINE_ROUTES.length} inline-maths baselines in ${engines.join(', ')}${engines.includes('chromium') ? ', plus a wide-font pass' : ''}; ${explorerNote}`)
   }
 } catch (error) {
   console.error('render:check FAIL — ' + (error instanceof Error ? error.message : String(error)))

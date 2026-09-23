@@ -26,7 +26,8 @@ pnpm content:figures     # every <Figure id> resolves; both locales; labels diff
 pnpm links               # every internal link in dist/ resolves (runs in build)
 pnpm a11y:contrast       # palette stays above accessible contrast ratios
 pnpm render:check        # every route in Chromium, WebKit, Firefox: 320px overflow,
-                         #   duplicate ids, page errors, scroll regions, inline-maths baseline
+                         #   duplicate ids, page errors, scroll regions, inline-maths baseline,
+                         #   explorer leave-mid-boot and failed-import handling
                          #   (needs `pnpm build` and `pnpm exec playwright install`)
 pnpm budget              # per-route JS budget
 pnpm privacy             # no machine path, account subdomain or unknown email
@@ -34,6 +35,7 @@ pnpm privacy             # no machine path, account subdomain or unknown email
 pnpm audit --audit-level=high
 pnpm bench --target staging --iter 20   # needs BENCH_STAGING_URL, or --base <url>
 pnpm deploy:staging
+pnpm verify:live --target staging       # what the edge serves == dist/; --self-test must catch every injected defect
 ```
 
 `--target staging` reads its URL from `BENCH_STAGING_URL` because the staging
@@ -107,6 +109,16 @@ restore rainbow slabs. Keep the model procedural unless a real interaction
 requirement justifies a downloaded asset. Update
 `tests/transformer-scene.test.mjs` when that mapping or geometry changes, then
 verify `/explore/` in a real desktop and mobile browser.
+
+**Leaving mid-load is not a failure.** WebKit and Firefox reject the three.js
+import the moment navigation starts, so `explorer-client.ts` marks the page as
+leaving on the Navigation API's `navigate` event — never `beforeunload`, which
+iOS Safari does not fire and which keeps a page out of Firefox's
+back/forward cache. A page restored from that cache after such a cancellation
+reloads: Chromium never retries a failed module import in the same document,
+and Playwright's WebKit does not even after a reload. `render:check` covers all
+of this in three engines except that WebKit restore, which it reports as not
+covered.
 
 Two rules the geometry has already broken once each:
 
@@ -188,11 +200,18 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
 - Named environments do **not** inherit `assets` or anything else. Every `env.*`
   re-declares the whole block or staging goes up broken and silent.
 - `wrangler deploy` exits 0 with empty output in non-TTY. **Never trust its
-  stdout.** Verify with `wrangler versions list` plus a live smoke request.
-- The staging canary is the real explorer flow: open `/explore/`, inspect the
-  server-rendered `[data-detail-cta]` href, click “View lesson”, and require the
-  track-qualified lesson page to render. A green local link gate does not prove
-  that the newest asset version reached the live Worker.
+  stdout.** Verify with `wrangler versions list` plus `pnpm verify:live`.
+- `pnpm verify:live --target staging|production` is the release proof: every
+  `dist/` file byte-identical on the target, the generated CSP, Brotli,
+  localized 404s, the `www` redirect on production, and the real explorer
+  canary in three engines — open `/explore/`, follow the server-rendered
+  `[data-detail-cta]` “View lesson” link, and require the track-qualified
+  lesson at the current version. A green local link gate does not prove that
+  the newest asset version reached the live Worker.
+- **Playwright screenshots trip the CSP in WebKit.** `page.screenshot()`
+  injects a caret-hiding `<style>`, and WebKit logs "Refused to apply a
+  stylesheet" for it. That is the policy working, not a site defect; checks
+  that watch the console must not take screenshots.
 - Run wrangler and vite under Node, never Bun — wrangler hangs silently after
   its first API call under Bun.
 - Smart Placement stays off: static assets already serve from the nearest

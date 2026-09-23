@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.7] — 2026-09-23
+
+### Fixed
+
+- Following "View lesson" while the 3D explorer is still loading no longer logs "3D stage failed to start". WebKit and Firefox cancel the explorer's code the moment navigation starts, and that was reported as a failure; the Navigation API's `navigate` event (Chrome 102, Firefox 147, Safari 26.2) now marks the page as leaving first. A failure that really happens is still reported and restores the poster. No `beforeunload` listener is used, so the page stays in Firefox's back/forward cache and iOS Safari is covered too.
+- A page restored from the back/forward cache after being left mid-load reloads itself, as it would had the browser not cached it, so the 3D view loads again; before, it stayed a poster, because Chromium never retries a module import that failed once in the same page. The restore is replayed in Chromium and Firefox with a synthetic persisted `pageshow`, because Playwright's engines reload on back instead of restoring from the cache; a real cache restore has not been observed. Playwright's WebKit keeps a failed module even across a plain reload, so there the explorer may still stay a poster until the next visit.
+
+### Added
+
+- `pnpm render:check` covers the explorer lifecycle in every engine with WebGL: leaving while the 3D view is still loading (with the next page held back two seconds) must stay silent, coming back must load the 3D view, a replayed back/forward-cache restore must restart it (in Chromium and Firefox; Playwright's WebKit cannot load a failed module again even after a reload, so the check reports that case as not covered rather than passed), and a broken 3D chunk must be reported with the poster restored. On the 0.6.6 build it fails the leave case in WebKit and Firefox and the restore case in all three engines.
+- `pnpm verify:live --target staging|production` proves a deployment: every built file byte-identical on the target, the generated CSP, Brotli, localized 404 pages, the `www` redirect on production, and a real explorer → lesson click in Chromium, WebKit and Firefox (a 200 response with the lesson's own article, so a 404 page cannot pass) at the current version with no page error, CSP violation or explorer error. `--self-test` gives each check a wrong expectation or an injected violation and requires every one to be caught.
+
+### Changed
+
+- `bench` and `verify:live` share one target list (`scripts/targets.mjs`).
+
 ## [0.6.6] — 2026-09-23
 
 ### Security
