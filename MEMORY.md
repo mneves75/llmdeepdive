@@ -2,6 +2,27 @@
 
 ## Current Direction
 
+- **0.7.0 is the design-review release.** Built from `3406b2e`, tagged
+  `v0.7.0-beta1`; staging version `2b0f0bcb` passed `verify:live` (528 files
+  byte-identical, explorer → lesson in chromium/webkit/firefox) and its
+  self-test caught 29/29; a live smoke under the enforced CSP (search, quiz,
+  track progress) was clean in Chromium and WebKit. Two independent
+  assessments (design review 24/40; detector + browser evidence) found the
+  headline defect: search results had been unstyled on production since the
+  redesign, because script-built nodes carry no Astro scope attribute, and the
+  dialog was pinned left by preflight. Also fixed: English tier labels on pt-BR
+  pages, three numbering schemes, a bypassable quiz gate, invisible progress,
+  field borders below 3:1. `render:check` earned itself twice during the work
+  (a visually-hidden span stretched to 320px; flex headings that cannot break
+  under wide fonts). The Codex verifier (gpt-6-sol) needed four rounds: header
+  wordmark 38px against a 44px claim; explanations revealed but collapsed;
+  nonsense queries matching one-letter formula tokens via Pagefind's
+  shorter-prefix fallback; then excerpts with holes when maths was dropped from
+  the index — resolved by keeping MathML text and filtering results whose
+  highlights do not begin like a query term. The user's instruction to fix
+  until satisfied overrode the skill's one-round cap. Local search checks under
+  load average ~300 dropped fetches ("Failed to fetch"); retries were clean.
+
 - **0.6.8 makes the build reproducible and guards edge injection.** Deployed
   on 2026-09-23 from `cf15238`, tagged `v0.6.8-beta1` (staging version
   `53133015`) and `v0.6.8` (production version `49e18209`, custom domains
