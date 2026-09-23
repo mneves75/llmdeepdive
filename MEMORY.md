@@ -2,6 +2,23 @@
 
 ## Current Direction
 
+- **0.6.6 is a security and instruction-surface release.** Deployed on
+  2026-09-23 from `b6dbb2f`, tagged `v0.6.6-beta1` (staging version
+  `7fc85dac`) and `v0.6.6` (production version `c9e1e50b`), both at 100%.
+  `devalue` 5.9.0 → 5.9.4 closes GHSA-9rgm-9g3h-6x36 (build-time only), so
+  `pnpm audit` is clean at every level; `AGENTS.md` lost its release history
+  but no rule. All 534 files are byte-identical on staging and the apex (a
+  0.6.5 control mismatched on exactly the 240 HTML pages); www 301s to the
+  apex; CSP (1,504 characters), Brotli, localized 404s match; no edge beacon.
+  All 16 local gates passed, including `render:check` in three engines and its
+  self-test; CI passed. A source-only security review found no confirmed
+  vulnerability. The Codex verifier's second round still failed on a
+  dropped "video playback" clause; it was restored without a third round.
+  **Open:** in mobile WebKit, clicking "View lesson" while the explorer is
+  still importing Three.js logs "3D stage failed to start" and a refused
+  stylesheet. 0.6.5 production shows the identical pair; an idle load is clean
+  in every engine. Not yet diagnosed.
+
 - **0.6.5 made rendered layout a gate.** Deployed on 2026-09-15 from
   `76879c2`, tagged `v0.6.5-beta1` (staging version `ec056a3e`) and `v0.6.5`
   (production version `832d44da`), both at 100%. All 534 files are
