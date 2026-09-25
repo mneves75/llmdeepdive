@@ -19,7 +19,7 @@ Search and share metadata for every page, generated from the corpus. No new page
 
 ### Changed
 
-- Titles name their subject. A lesson title gains its track when the whole title still fits 60 characters ("MLX · Building & Serving Stacks — llmdeepdive"; 28 of 212 lessons); longer titles already carry their subject. The home, track index, track and explorer titles now say "LLM" and fit in 60 characters ("How LLMs actually work: free bilingual course — llmdeepdive", "The Transformer · LLM course — llmdeepdive"). The pt-BR home title and description say "gratuito" rather than "livre", because in Brazil a "curso livre" usually means a non-accredited course rather than a free one, and the description says "trilhas" instead of "tracks".
+- Titles name their subject. A lesson title gains its track when the whole title still fits 60 characters ("MLX · Building & Serving Stacks — llmdeepdive"; 28 of 212 lessons); longer titles already carry their subject. The home, track index, track and explorer titles now say "LLM" and fit in 60 characters ("How LLMs actually work: free bilingual course — llmdeepdive", "The Transformer · LLM course — llmdeepdive"). The pt-BR home title, description, footer and cards say "gratuito" rather than "livre", because in Brazil a "curso livre" usually means a non-accredited course rather than a free one, and the home description says "trilhas" instead of "tracks".
 - The favicon is the header's mark, a cyan ring and crosshair on the abyss ground. The cream "L" tile it replaces predated the redesign. The organisation logo in the structured data is drawn from it at 512px.
 - Pages also declare `og:site_name` and `og:locale:alternate`; lessons are `og:type` `article` with `article:modified_time` and `article:section`.
 

@@ -108,6 +108,6 @@ export const ui = {
     tracks: 'Trilhas',
     notes: 'Anotações',
     search: 'Buscar',
-    tagline: 'Curso livre, bilíngue e de código aberto.',
+    tagline: 'Curso gratuito, bilíngue e de código aberto.',
   },
 } as const satisfies Record<Locale, Record<string, string>>
