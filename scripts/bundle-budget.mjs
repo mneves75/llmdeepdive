@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, relative, resolve, sep } from 'node:path'
-import { DIST_ROOT, displayPath, fileSize, finish, objectField, readLessons, walkFiles } from './content-utils.mjs'
+import { DIST_ROOT, displayPath, executableInlineScripts, fileSize, finish, objectField, readLessons, walkFiles } from './content-utils.mjs'
 
 const ROUTE_BUDGET_BYTES = 150 * 1024
 /**
@@ -66,15 +66,8 @@ function directScripts(html, file) {
 // Astro inlines small scripts straight into the HTML. Those bytes are JS the
 // route ships and the visitor parses, but they have no file to walk, so a
 // src-only measurement silently under-reports every page — and a small enough
-// lab could escape its declared budget entirely. JSON-LD is data the browser
-// never parses as script, so it is not JavaScript and not billed here.
-function inlineScripts(html) {
-  const bodies = []
-  for (const match of html.matchAll(/<script\b(?![^>]*\bsrc=)(?![^>]*\btype=["']application\/ld\+json["'])[^>]*>([\s\S]*?)<\/script>/giu)) {
-    if (match[1]) bodies.push(match[1])
-  }
-  return bodies
-}
+// lab could escape its declared budget entirely. `executableInlineScripts`
+// leaves out JSON-LD, which is data, not JavaScript.
 
 // Maps a lesson source file to the exact route directory its HTML is built into,
 // as a path relative to dist/. Compare it for equality, never as a substring: the
@@ -121,7 +114,7 @@ try {
       }
       for (const dependency of dependencyGraph(script)) initial.add(dependency)
     }
-    const inlineBytes = inlineScripts(html).reduce((sum, body) => sum + Buffer.byteLength(body, 'utf8'), 0)
+    const inlineBytes = executableInlineScripts(html).reduce((sum, body) => sum + Buffer.byteLength(body, 'utf8'), 0)
     const bytes = [...initial].reduce((sum, script) => sum + fileSize(script), 0) + inlineBytes
     const routeDirectory = relative(DIST_ROOT, dirname(file)).split(sep).join('/')
     const route = routeDirectory ? '/' + routeDirectory + '/' : '/'
@@ -166,7 +159,7 @@ try {
     const routePath = lessonRoutePath(lesson)
     const inlineBytes = htmlFiles
       .filter((file) => relative(DIST_ROOT, dirname(file)).split(sep).join('/') === routePath)
-      .flatMap((file) => inlineScripts(readFileSync(file, 'utf8')))
+      .flatMap((file) => executableInlineScripts(readFileSync(file, 'utf8')))
       .filter((body) => body.includes(id))
       .reduce((sum, body) => sum + Buffer.byteLength(body, 'utf8'), 0)
     if (!entryChunks.length && !inlineBytes) {

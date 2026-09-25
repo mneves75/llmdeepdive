@@ -11,6 +11,8 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { serializeJsonLd } from '../src/lib/json-ld.ts'
+import { executableInlineScripts } from '../scripts/content-utils.mjs'
 
 const DIST = 'dist'
 const SITE = 'https://llmdeepdive.com'
@@ -129,6 +131,42 @@ test('every indexable page carries complete search and share metadata', () => {
   }
 })
 
+test('language alternates are reciprocal and point at built pages', () => {
+  const alternatesOf = (html) => new Map([...html.matchAll(/<link rel="alternate" hreflang="([^"]+)" href="([^"]+)">/gu)].map((m) => [m[1], m[2]]))
+  const byUrl = new Map(PAGES.map((p) => [`${SITE}${p.route}`, p]))
+  for (const { route, html } of PAGES) {
+    const self = `${SITE}${route}`
+    const alternates = alternatesOf(html)
+    assert.deepEqual([...alternates.keys()].sort(), ['en', 'pt-BR', 'x-default'], `${route}: hreflang set`)
+    assert.equal(alternates.get(localeOf(route) === 'pt-br' ? 'pt-BR' : 'en'), self, `${route}: must list itself for its own language`)
+    assert.equal(alternates.get('x-default'), alternates.get('en'), `${route}: x-default must be the English page`)
+    for (const [lang, href] of alternates) {
+      const target = byUrl.get(href)
+      assert.ok(target, `${route}: ${lang} alternate ${href} is not a built page`)
+      assert.equal(alternatesOf(target.html).get(localeOf(route) === 'pt-br' ? 'pt-BR' : 'en'), self, `${href} does not link back to ${route}`)
+    }
+  }
+})
+
+test('JSON-LD serialisation cannot close its script element or open a comment', () => {
+  const hostile = 'x</script><script>alert(1)</script><!-- <SCRIPT>'
+  const out = serializeJsonLd([{ '@type': 'Article', headline: hostile }])
+  assert.doesNotMatch(out, /</u, 'a raw "<" survived serialisation')
+  assert.equal(JSON.parse(out)['@graph'][0].headline, hostile, 'escaping must round-trip to the same string')
+})
+
+test('the CSP and JS-budget scanners skip JSON-LD in either quote style, and nothing else', () => {
+  const html = [
+    '<script>run()</script>',
+    '<script type="module">mod()</script>',
+    '<script type="application/ld+json">{"url":"/lessons/9/9.9-cost-per-token/"}</script>',
+    "<script type='application/ld+json'>{}</script>",
+    '<script src="/_astro/x.js"></script>',
+    '<script>   </script>',
+  ].join('')
+  assert.deepEqual(executableInlineScripts(html), ['run()', 'mod()'])
+})
+
 test('404 pages are noindex and claim no canonical, alternates, card or structured data', () => {
   for (const { file, html } of NOT_FOUND) {
     assert.match(one(html, 'name', 'robots', file), /noindex/u, `${file}: must be noindex`)
@@ -156,8 +194,11 @@ test('titles are unique within a locale and lessons gain track context only when
   }
 })
 
-test('the home and index titles name the subject, not just the brand', () => {
+test('the home and index titles name the subject, not just the brand, and fit a result line', () => {
   const byRoute = new Map(PAGES.map((p) => [p.route, titleOf(p.html)]))
+  for (const [route, title] of byRoute) {
+    if (!isLesson(route)) assert.ok(title.length <= TITLE_BUDGET, `${route}: "${title}" is ${title.length} characters`)
+  }
   assert.match(byRoute.get('/'), /LLMs/u)
   assert.match(byRoute.get('/pt-br/'), /LLMs/u)
   assert.match(byRoute.get('/tracks/'), /LLM/u)
@@ -236,11 +277,16 @@ test('structured data describes each page with Google-supported types only', () 
     assert.equal(article.mainEntityOfPage, `${SITE}${route}`)
     assert.equal(article.dateModified, timeOf(html))
     assert.equal(article.inLanguage, localeOf(route) === 'pt-br' ? 'pt-BR' : 'en')
-    assert.deepEqual(article.image, [one(html, 'property', 'og:image', route)])
+    // Google asks for images "relevant to the article, rather than logos or
+    // captions"; the social card is both, and lessons have no raster figure.
+    assert.equal(article.image, undefined, `${route}: the Article must not claim the social card as its image`)
     assert.equal(article.articleSection, trackOf(route))
     assert.equal(article.isAccessibleForFree, true)
     for (const role of ['author', 'publisher']) {
-      assert.equal(ids.get(article[role]?.['@id'])?.name, BRAND, `${route}: ${role} must reference the Organization node`)
+      const who = article[role]
+      assert.equal(ids.get(who?.['@id'])?.name, BRAND, `${route}: ${role} must reference the Organization node`)
+      // Google "strongly recommends" type and url on the author itself.
+      assert.deepEqual({ type: who['@type'], name: who.name, url: who.url }, { type: 'Organization', name: BRAND, url: `${SITE}/` }, `${route}: ${role}`)
     }
     const sources = html.match(/<section class="sources"[\s\S]*?<\/section>/u)?.[0]
     // Astro stamps a scope attribute on each item, so match the tag, not `<li>`.

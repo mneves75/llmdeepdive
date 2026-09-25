@@ -139,7 +139,7 @@ test('generated headers enforce the security policy for built HTML', () => {
   }
 
   // JSON-LD data blocks never execute, so CSP does not govern them (see seo.test.mjs).
-  for (const hash of hashes('scripts', /<script(?![^>]*\bsrc=)(?![^>]*\btype="application\/ld\+json")[^>]*>([\s\S]*?)<\/script>/g)) {
+  for (const hash of hashes('scripts', /<script(?![^>]*\bsrc=)(?![^>]*\btype=["']?application\/ld\+json)[^>]*>([\s\S]*?)<\/script>/g)) {
     assert.ok(scriptSources.includes(hash), `script-src is missing ${hash}`)
   }
   const styleSources = directives.get('style-src') ?? []

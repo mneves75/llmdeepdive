@@ -1,20 +1,20 @@
 import { REPO, SITE } from './site'
-import { bcp47, localeUrl, positionOf, tierLabels, type Locale } from './i18n'
+import { bcp47, localePath, localeUrl, positionOf, tierLabels, ui, type Locale } from './i18n'
 import type { Tier } from './content'
+import type { LdNode } from './json-ld'
 
 /**
  * Search and share metadata for every route: titles, social-card data and
- * JSON-LD. Pages and the card endpoint both build from here, so the image a
- * page announces and the image the endpoint draws cannot describe different
- * things.
+ * JSON-LD. Pages and the card endpoint build from these same functions, and
+ * `tests/seo.test.mjs` checks every announced card exists.
  */
 
 export const BRAND = 'llmdeepdive'
 
 /**
  * Roughly what fits a desktop result line (~600px) before Google truncates.
- * A title may exceed it; the budget only decides whether optional context is
- * worth adding.
+ * Lesson titles use it to decide whether the track is worth adding; every
+ * other title is written to fit it.
  */
 const TITLE_BUDGET = 60
 
@@ -26,7 +26,7 @@ export const brandTitle = (text: string): string => `${text} — ${BRAND}`
  * carries its subject, and appending the track would only push the brand past
  * the cut.
  */
-export function lessonTitle(lesson: string, track: string): string {
+export function lessonTitle({ lesson, track }: { lesson: string; track: string }): string {
   const withTrack = brandTitle(`${lesson} · ${track}`)
   return withTrack.length <= TITLE_BUDGET ? withTrack : brandTitle(lesson)
 }
@@ -41,7 +41,6 @@ export const OG_IMAGE = { width: 1200, height: 630 } as const
 // ── Social cards ────────────────────────────────────────────────────────────
 
 export interface Card {
-  locale: Locale
   /** Where the page sits, e.g. "Track 7 · Lesson 7.2". */
   kicker: string
   headline: string
@@ -53,7 +52,6 @@ export interface Card {
 
 const cardCopy = {
   en: {
-    tagline: 'Free, bilingual, and open source.',
     homeHeadline: 'How LLMs actually work',
     tracksHeadline: 'Learning tracks',
     exploreHeadline: 'Anatomy of an LLM',
@@ -64,7 +62,6 @@ const cardCopy = {
     lessons: (n: number) => `${n} lessons`,
   },
   'pt-br': {
-    tagline: 'Curso livre, bilíngue e de código aberto.',
     homeHeadline: 'Como os LLMs realmente funcionam',
     tracksHeadline: 'Trilhas de aprendizagem',
     exploreHeadline: 'Anatomia de um LLM',
@@ -74,7 +71,7 @@ const cardCopy = {
     count: (tracks: number, lessons: number) => `${tracks} trilhas · ${lessons} aulas`,
     lessons: (n: number) => `${n} aulas`,
   },
-} as const
+} as const satisfies Record<Locale, unknown>
 
 const card = (fields: Omit<Card, 'alt'>): Card => ({
   ...fields,
@@ -86,7 +83,8 @@ interface CourseSize {
   lessons: number
 }
 
-interface Named {
+/** What a card needs from a lesson or track entry. */
+interface CardSubject {
   id: string
   title: string
   tier: Tier
@@ -94,40 +92,45 @@ interface Named {
 
 export function homeCard(locale: Locale, size: CourseSize): Card {
   const copy = cardCopy[locale]
-  return card({ locale, kicker: copy.count(size.tracks, size.lessons), headline: copy.homeHeadline, footer: copy.tagline })
+  return card({ kicker: copy.count(size.tracks, size.lessons), headline: copy.homeHeadline, footer: ui[locale].tagline })
 }
 
 export function tracksCard(locale: Locale, size: CourseSize): Card {
   const copy = cardCopy[locale]
-  return card({ locale, kicker: copy.count(size.tracks, size.lessons), headline: copy.tracksHeadline, footer: copy.tagline })
+  return card({ kicker: copy.count(size.tracks, size.lessons), headline: copy.tracksHeadline, footer: ui[locale].tagline })
 }
 
-export function trackCard(locale: Locale, { track, lessons }: { track: Named; lessons: number }): Card {
+export function trackCard(locale: Locale, { track, lessons }: { track: CardSubject; lessons: number }): Card {
   const copy = cardCopy[locale]
   const kicker = `${copy.track(positionOf(track.id))} · ${copy.lessons(lessons)} · ${tierLabels[locale][track.tier]}`
-  return card({ locale, kicker, headline: track.title, footer: copy.tagline, tier: track.tier })
+  return card({ kicker, headline: track.title, footer: ui[locale].tagline, tier: track.tier })
 }
 
-export function lessonCard(locale: Locale, { lesson, track }: { lesson: Named; track: Named }): Card {
+export function lessonCard(locale: Locale, { lesson, track }: { lesson: CardSubject; track: CardSubject }): Card {
   const copy = cardCopy[locale]
   const kicker = `${copy.track(positionOf(track.id))} · ${copy.lesson(positionOf(lesson.id))} · ${tierLabels[locale][lesson.tier]}`
-  return card({ locale, kicker, headline: lesson.title, footer: track.title, tier: lesson.tier })
+  return card({ kicker, headline: lesson.title, footer: track.title, tier: lesson.tier })
 }
 
 export function exploreCard(locale: Locale): Card {
   const copy = cardCopy[locale]
-  return card({ locale, kicker: copy.exploreKicker, headline: copy.exploreHeadline, footer: copy.tagline })
+  return card({ kicker: copy.exploreKicker, headline: copy.exploreHeadline, footer: ui[locale].tagline })
 }
 
 // ── Structured data ─────────────────────────────────────────────────────────
-
-/** A JSON-LD node. Only Google-supported types are emitted; see AGENTS.md. */
-export type LdNode = Record<string, unknown>
 
 const ORGANIZATION_ID = `${SITE}/#organization`
 const WEBSITE_ID = `${SITE}/#website`
 export const LOGO = { path: '/og/logo.png', size: 512 } as const
 
+/**
+ * How an Article names the site as author and publisher: Google "strongly
+ * recommends" `@type` and `url` on the author itself, and the `@id` ties it to
+ * the full node below.
+ */
+const organizationRef = { '@type': 'Organization', '@id': ORGANIZATION_ID, name: BRAND, url: `${SITE}/` } as const
+
+/** On every page; the Article's author and publisher point at it by `@id`. */
 export const organizationNode: LdNode = {
   '@type': 'Organization',
   '@id': ORGANIZATION_ID,
@@ -148,13 +151,8 @@ export const websiteNode: LdNode = {
   publisher: { '@id': ORGANIZATION_ID },
 }
 
-export interface Crumb {
-  name: string
-  /** Locale-independent path, e.g. `/tracks/`. */
-  path: string
-}
-
-export function breadcrumbNode(locale: Locale, crumbs: Crumb[]): LdNode {
+/** `crumbs` are locale-independent paths; the site root is always the first step. */
+export function breadcrumbNode(locale: Locale, crumbs: Array<{ name: string; path: string }>): LdNode {
   const trail = [{ name: BRAND, path: '/' }, ...crumbs]
   return {
     '@type': 'BreadcrumbList',
@@ -167,8 +165,16 @@ export function breadcrumbNode(locale: Locale, crumbs: Crumb[]): LdNode {
   }
 }
 
-export interface ArticleInput {
+/**
+ * The lesson as an Article. There is deliberately no `datePublished` (the
+ * corpus records only when a lesson was last updated, and an invented date
+ * would be false) and no `image`: Google wants images "relevant to the article,
+ * rather than logos or captions", which the social card is, and lessons carry
+ * no raster figure. The card stays the page's `og:image`.
+ */
+export function articleNode(input: {
   locale: Locale
+  /** Locale-independent path, e.g. `/lessons/4-transformer/4.3-…/`. */
   path: string
   title: string
   description: string
@@ -176,10 +182,8 @@ export interface ArticleInput {
   section: string
   tier: Tier
   citations?: Array<{ title: string; year: number; url: string }>
-}
-
-export function articleNode(input: ArticleInput): LdNode {
-  const url = localeUrl(input.locale, input.path)
+}): LdNode {
+  const url = new URL(localePath(input.locale, input.path), SITE).href
   return {
     '@type': 'Article',
     '@id': `${url}#article`,
@@ -187,12 +191,11 @@ export function articleNode(input: ArticleInput): LdNode {
     description: input.description,
     url,
     mainEntityOfPage: url,
-    image: [ogImageUrl(new URL(url).pathname)],
     dateModified: input.modified.toISOString(),
     inLanguage: bcp47[input.locale],
     articleSection: input.section,
-    author: { '@id': ORGANIZATION_ID },
-    publisher: { '@id': ORGANIZATION_ID },
+    author: organizationRef,
+    publisher: organizationRef,
     isAccessibleForFree: true,
     license: `${REPO}/blob/main/LICENSE`,
     learningResourceType: 'lesson',
@@ -206,12 +209,4 @@ export function articleNode(input: ArticleInput): LdNode {
       })),
     }),
   }
-}
-
-/**
- * One `@graph` per page. `<` is escaped so no value — a lesson title, a
- * citation — can close the script element or open a comment inside it.
- */
-export function serializeJsonLd(nodes: LdNode[]): string {
-  return JSON.stringify({ '@context': 'https://schema.org', '@graph': nodes }).replaceAll('<', '\\u003c')
 }

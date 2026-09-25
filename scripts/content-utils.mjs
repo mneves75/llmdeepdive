@@ -152,6 +152,22 @@ export function wordCount(text) {
   return text.match(/[\p{L}\p{N}][\p{L}\p{M}\p{N}'’_-]*/gu)?.length ?? 0
 }
 
+/**
+ * Bodies of the inline `<script>` elements a browser executes. A JSON-LD block
+ * (`type="application/ld+json"`) is data: never run, not governed by CSP, not
+ * JavaScript. `gen-headers.mjs` must not hash it (one hash per page would burst
+ * the CSP line) and `bundle-budget.mjs` must not bill it as JS.
+ */
+export function executableInlineScripts(html) {
+  const bodies = []
+  for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/giu)) {
+    const attributes = match[1] ?? ''
+    if (/\bsrc\s*=/iu.test(attributes) || /\btype\s*=\s*["']?application\/ld\+json\b/iu.test(attributes)) continue
+    if (match[2]?.trim()) bodies.push(match[2])
+  }
+  return bodies
+}
+
 export function fileSize(file) {
   return statSync(file).size
 }

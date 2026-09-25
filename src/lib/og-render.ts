@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import satori from 'satori'
 import sharp, { type Sharp } from 'sharp'
 import { BRAND, LOGO, OG_IMAGE, type Card } from './seo'
-import type { Tier } from './content'
+import { TIERS, type Tier } from './content'
 
 /**
  * Build-time rasteriser for the social cards and the organisation logo.
@@ -48,8 +48,6 @@ const COLOR = {
   signal: '#5de7ee',
   rule: 'rgba(255, 255, 255, 0.16)',
 } as const
-
-const TIERS: readonly Tier[] = ['foundations', 'core', 'advanced', 'frontier']
 
 type Style = Record<string, string | number>
 interface Node {

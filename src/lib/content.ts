@@ -1,7 +1,9 @@
 import type { CollectionEntry } from 'astro:content'
-import type { Locale } from '~/lib/i18n'
+import { localePath, type Locale } from '~/lib/i18n'
 
-export type Tier = 'foundations' | 'core' | 'advanced' | 'frontier'
+/** The four depths, in descent order. The content schema and the card strata read this. */
+export const TIERS = ['foundations', 'core', 'advanced', 'frontier'] as const
+export type Tier = (typeof TIERS)[number]
 
 export type TrackData = {
   id: string
@@ -49,13 +51,18 @@ export type LessonEntry = Omit<CollectionEntry<'lessons'>, 'data'> & { data: Les
 export type TrackEntry = Omit<CollectionEntry<'tracks'>, 'data'> & { data: TrackData }
 
 export function lessonPath(locale: Locale, lesson: LessonEntry): string {
-  const path = `/lessons/${lesson.data.track}/${lesson.data.id}/`
-  return locale === 'en' ? path : `/pt-br${path}`
+  return localePath(locale, `/lessons/${lesson.data.track}/${lesson.data.id}/`)
 }
 
 export function trackPath(locale: Locale, trackId: string): string {
-  const path = `/tracks/${trackId}/`
-  return locale === 'en' ? path : `/pt-br${path}`
+  return localePath(locale, `/tracks/${trackId}/`)
+}
+
+/** The track a lesson belongs to, from the same locale's tracks; a dangling id fails the build. */
+export function trackOf(lesson: LessonEntry, tracks: readonly TrackEntry[]): TrackEntry {
+  const track = tracks.find((candidate) => candidate.data.id === lesson.data.track)
+  if (!track) throw new Error(`${lesson.data.locale}/${lesson.data.id}: no track "${lesson.data.track}"`)
+  return track
 }
 
 export function sortLessons(

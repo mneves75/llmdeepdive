@@ -1,8 +1,8 @@
 import type { APIRoute } from 'astro'
 import { getCollection } from 'astro:content'
-import { sortLessons, type LessonEntry, type TrackEntry } from '~/lib/content'
+import { lessonPath, sortLessons, type LessonEntry, type TrackEntry } from '~/lib/content'
 import { LOCALES, localeUrl, positionOf, type Locale } from '~/lib/i18n'
-import { REPO } from '~/lib/site'
+import { REPO, SITE } from '~/lib/site'
 import { BRAND } from '~/lib/seo'
 
 /**
@@ -15,10 +15,7 @@ import { BRAND } from '~/lib/seo'
  * that do fetch it, and costs one generated file.
  */
 
-const sectionTitle: Record<Locale, (position: string, title: string) => string> = {
-  en: (position, title) => `Track ${position}: ${title}`,
-  'pt-br': (position, title) => `Trilha ${position}: ${title}`,
-}
+const trackWord: Record<Locale, string> = { en: 'Track', 'pt-br': 'Trilha' }
 
 export const GET: APIRoute = async () => {
   const allLessons: LessonEntry[] = await getCollection('lessons')
@@ -45,9 +42,9 @@ export const GET: APIRoute = async () => {
     const tracksHere = allTracks.filter((track) => track.data.locale === locale).sort((a, b) => a.data.order - b.data.order)
     const lessonsHere = sortLessons(allLessons.filter((lesson) => lesson.data.locale === locale), tracksHere)
     for (const track of tracksHere) {
-      lines.push('', `## ${sectionTitle[locale](positionOf(track.data.id), track.data.title)}`, '')
+      lines.push('', `## ${trackWord[locale]} ${positionOf(track.data.id)}: ${track.data.title}`, '')
       for (const lesson of lessonsHere.filter((candidate) => candidate.data.track === track.data.id)) {
-        const url = localeUrl(locale, `/lessons/${track.data.id}/${lesson.data.id}/`)
+        const url = new URL(lessonPath(locale, lesson), SITE).href
         lines.push(`- [${positionOf(lesson.data.id)} ${lesson.data.title}](${url}): ${lesson.data.summary}`)
       }
     }

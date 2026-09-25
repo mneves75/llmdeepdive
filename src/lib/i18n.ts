@@ -11,6 +11,12 @@ export const bcp47: Record<Locale, string> = {
   'pt-br': 'pt-BR',
 }
 
+/** Open Graph's locale form (`og:locale`). */
+export const ogLocale: Record<Locale, string> = {
+  en: 'en_US',
+  'pt-br': 'pt_BR',
+}
+
 export function isLocale(value: string): value is Locale {
   return (LOCALES as readonly string[]).includes(value)
 }
@@ -44,12 +50,17 @@ export function formatNumber(
 }
 
 /**
- * Absolute URL for a locale-independent path.
+ * Site path for a locale-independent path.
  * EN is unprefixed (prefixDefaultLocale: false); pt-BR lives under /pt-br/.
  */
-export function localeUrl(locale: Locale, path: string): string {
+export function localePath(locale: Locale, path: string): string {
   const clean = path.startsWith('/') ? path : `/${path}`
-  return new URL(locale === DEFAULT_LOCALE ? clean : `/pt-br${clean}`, SITE).href
+  return locale === DEFAULT_LOCALE ? clean : `/pt-br${clean}`
+}
+
+/** Absolute URL for a locale-independent path. */
+export function localeUrl(locale: Locale, path: string): string {
+  return new URL(localePath(locale, path), SITE).href
 }
 
 export function alternatesFor(path: string): Array<{ hreflang: string; href: string }> {
@@ -84,6 +95,7 @@ export const ui = {
     tracks: 'Tracks',
     notes: 'Notes',
     search: 'Search',
+    tagline: 'Free, bilingual, and open source.',
   },
   'pt-br': {
     theme: 'Tema',
@@ -96,5 +108,6 @@ export const ui = {
     tracks: 'Trilhas',
     notes: 'Anotações',
     search: 'Buscar',
+    tagline: 'Curso livre, bilíngue e de código aberto.',
   },
 } as const satisfies Record<Locale, Record<string, string>>

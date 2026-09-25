@@ -1,9 +1,10 @@
 import { defineCollection } from 'astro:content'
 import { glob } from 'astro/loaders'
 import { z } from 'astro/zod'
+import { TIERS } from '~/lib/content'
 
 const locale = z.enum(['en', 'pt-br'])
-const tier = z.enum(['foundations', 'core', 'advanced', 'frontier'])
+const tier = z.enum(TIERS)
 
 const tracks = defineCollection({
   loader: glob({ pattern: '**/*.json', base: './src/content/tracks' }),

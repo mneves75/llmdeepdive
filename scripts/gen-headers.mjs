@@ -21,6 +21,7 @@
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { executableInlineScripts } from './content-utils.mjs'
 
 const DIST = 'dist'
 
@@ -34,20 +35,13 @@ function htmlFiles(dir, acc = []) {
 }
 
 /**
- * sha256-base64 of every inline <script> body found in the build.
- *
- * JSON-LD blocks are skipped: a browser never executes a data block, so CSP
- * does not apply to it, and hashing one per page (every page's is different)
- * would push the policy line past Cloudflare's 2,000-character drop in a
- * single build.
+ * sha256-base64 of every executable inline <script> body found in the build.
+ * JSON-LD data blocks are excluded; see `executableInlineScripts`.
  */
 function inlineScriptHashes() {
   const hashes = new Set()
   for (const file of htmlFiles(DIST)) {
-    const html = readFileSync(file, 'utf8')
-    for (const m of html.matchAll(/<script(?![^>]*\bsrc=)(?![^>]*\btype="application\/ld\+json")[^>]*>([\s\S]*?)<\/script>/g)) {
-      const body = m[1]
-      if (body === undefined || body.trim() === '') continue
+    for (const body of executableInlineScripts(readFileSync(file, 'utf8'))) {
       hashes.add(`'sha256-${createHash('sha256').update(body, 'utf8').digest('base64')}'`)
     }
   }

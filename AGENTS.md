@@ -311,7 +311,10 @@ whole contract against `dist/`.
   page, `Article` on lessons. No `Course` (Google's course list requires
   instructor-led courses with a roster of students, and a mismatch risks a
   manual action), no `FAQPage` (retired 7 May 2026), no quiz or Q&A markup.
-  Never state a date the corpus does not hold: there is no `datePublished`.
+  Never state a date the corpus does not hold: the Article has no
+  `datePublished` (a citation's publication year is the source's own date).
+  The Article has no `image` either: Google asks for images "relevant to the
+  article, rather than logos or captions", and the social card is both.
 - **JSON-LD is a data block, not a script.** Browsers never run it and CSP does
   not govern it, so `gen-headers.mjs`, `bundle-budget.mjs` and the CSP test skip
   `type="application/ld+json"`. Hashing it would add one CSP hash per page and
@@ -324,8 +327,14 @@ whole contract against `dist/`.
   `og-render.ts`, never a silent fallback.
 - **Sitemap `<lastmod>` comes from lesson frontmatter** (`scripts/sitemap-lastmod.mjs`),
   never from the build clock; a page with no content date gets none.
+- **Changing a lesson means moving its `updated` date.** The date is visible
+  and published as `lastmod`, `dateModified` and `article:modified_time`.
+  `tests/content-dates.test.mjs` compares it with the last commit that changed
+  the file (a date-only commit does not count) and needs full Git history.
+  Before it existed, 199 revised lessons kept an August date for weeks.
 - **Lesson titles gain their track only when the whole title fits 60
-  characters.** Titles must stay unique within a locale.
+  characters; every other title is written to fit it.** Titles must stay
+  unique within a locale.
 - `/llms.txt` keeps the llmstxt.org shape (one H1, a blockquote, H2 sections of
   link lists only; Lighthouse's agentic-browsing audit fails anything else) and
   is served `noindex`. Google Search does not read it: do not claim a ranking effect.
