@@ -66,10 +66,11 @@ function directScripts(html, file) {
 // Astro inlines small scripts straight into the HTML. Those bytes are JS the
 // route ships and the visitor parses, but they have no file to walk, so a
 // src-only measurement silently under-reports every page — and a small enough
-// lab could escape its declared budget entirely.
+// lab could escape its declared budget entirely. JSON-LD is data the browser
+// never parses as script, so it is not JavaScript and not billed here.
 function inlineScripts(html) {
   const bodies = []
-  for (const match of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/giu)) {
+  for (const match of html.matchAll(/<script\b(?![^>]*\bsrc=)(?![^>]*\btype=["']application\/ld\+json["'])[^>]*>([\s\S]*?)<\/script>/giu)) {
     if (match[1]) bodies.push(match[1])
   }
   return bodies

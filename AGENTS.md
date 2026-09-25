@@ -245,7 +245,8 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
   its first API call under Bun.
 - Smart Placement stays off: static assets already serve from the nearest
   location, and there is no Worker to place.
-- Asset limits: 100,000 files per version, 25 MiB each. The build emits ~535.
+- Asset limits: 100,000 files per version, 25 MiB each. The build emits ~770
+  files, 239 of them PNGs (a social card per page plus the logo).
 - `not_found_handling: "404-page"` needs a real `404.html` to resolve to.
   `src/pages/404.astro` and `src/pages/pt-br/404.astro` are it; without them
   every bad URL returns a zero-byte body, which is how it shipped once already.
@@ -293,6 +294,41 @@ an omission.
 
 The consequence worth keeping: **the privacy promise is structural.** Teach-back
 prose and quiz results cannot reach a server because there is no server.
+
+## Search metadata
+
+`src/lib/seo.ts` owns titles, social-card data and JSON-LD; pages and the card
+endpoint both build from it. `Base.astro` refuses an indexable page without
+`imageAlt` and `structuredData` (a type error), and a `noindex` page (the 404s)
+gets no canonical, alternates, card or JSON-LD. `tests/seo.test.mjs` asserts the
+whole contract against `dist/`.
+
+- **No page exists only for search.** Google's spam policies call pages made to
+  catch query variations "scaled content abuse". A new route needs teaching
+  content of its own; metadata work goes into the pages that already have it.
+- **Only structured-data types Google supports for this kind of page.**
+  `WebSite` + `Organization` on the home pages, `BreadcrumbList` on every other
+  page, `Article` on lessons. No `Course` (Google's course list requires
+  instructor-led courses with a roster of students, and a mismatch risks a
+  manual action), no `FAQPage` (retired 7 May 2026), no quiz or Q&A markup.
+  Never state a date the corpus does not hold: there is no `datePublished`.
+- **JSON-LD is a data block, not a script.** Browsers never run it and CSP does
+  not govern it, so `gen-headers.mjs`, `bundle-budget.mjs` and the CSP test skip
+  `type="application/ld+json"`. Hashing it would add one CSP hash per page and
+  blow the 2,000-character line in one build. `serializeJsonLd` escapes `<`.
+- **Social cards are `/og/<page path>.png`**, drawn by
+  `src/pages/og/[...slug].png.ts` with satori (text to paths, bundled fonts) and
+  sharp. Never render card text as SVG `<text>` through the system's fonts: the
+  PNG would depend on the build machine and break byte-identical rebuilds. A
+  glyph no bundled font covers fails the build; add a font subset in
+  `og-render.ts`, never a silent fallback.
+- **Sitemap `<lastmod>` comes from lesson frontmatter** (`scripts/sitemap-lastmod.mjs`),
+  never from the build clock; a page with no content date gets none.
+- **Lesson titles gain their track only when the whole title fits 60
+  characters.** Titles must stay unique within a locale.
+- `/llms.txt` keeps the llmstxt.org shape (one H1, a blockquote, H2 sections of
+  link lists only; Lighthouse's agentic-browsing audit fails anything else) and
+  is served `noindex`. Google Search does not read it: do not claim a ranking effect.
 
 ## Content
 

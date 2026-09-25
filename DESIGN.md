@@ -280,6 +280,18 @@ A native modal `<dialog>`, centred, entering with a short fade and rise
 then a two-line excerpt of the page's teaching content; navigation, answers and
 status lines are excluded from the index.
 
+### Mark and Social Cards
+
+The mark is a signal-cyan ring with a crosshair and a centre sounding
+(`.wordmark__mark`); the favicon draws the same mark on the abyss ground, and the
+512px organisation logo is rendered from the favicon. Each page's 1200×630 card
+(`src/lib/og-render.ts`) is a quiet chart plate: abyss ground under a cyan top
+rule, the wordmark, a signal-cyan kicker placing the page (track · lesson ·
+tier), the headline in Roboto Condensed Bold (the display face's own fallback,
+bundled into the build only), and a ruled footer with the track name. Lesson and
+track cards add the four tiers as strata bars with their own lit in cyan and the
+rest in muted ink. No photography, gradients or decoration.
+
 ### Core Section
 
 The signature composition uses an oblique boundary between chart and abyssal

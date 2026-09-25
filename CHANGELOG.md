@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-25
+
+Search and share metadata for every page, generated from the corpus. No new pages: Google's spam policies treat pages made to catch query variations as scaled content abuse, so the work went into the 238 pages that already teach something.
+
+### Added
+
+- Every page describes itself in one JSON-LD graph. The home pages carry `WebSite` and `Organization`, which Google reads for the site name; every other page carries a `BreadcrumbList`; every lesson adds an `Article` with its headline, summary, last-updated date, track, language, tier, licence and the sources it cites. Only types Google supports for such pages are used: no `Course` (Google's course list is for instructor-led courses with a roster of students), no `FAQPage` (Google retired FAQ results in May 2026) and no quiz markup. The graph adds about 2.3 KB to a page (at most 3.1 KB).
+- Every page has its own 1200×630 social card at `/og/<page>.png`, showing its headline, its place in the course (track, lesson, tier) and, for lessons and tracks, the four tiers with its own lit. Cards are drawn at build time from the same data as the page, with fonts bundled into the build (Roboto Condensed, plus Roboto's maths subset for the √ in lesson 4.3), so a rebuild produces the same bytes. A character no bundled font covers fails the build instead of rendering blank. Link previews use the large-image card (`summary_large_image`), and pages allow large image previews in search (`max-image-preview:large`).
+- `<lastmod>` for 236 of the 238 sitemap URLs, taken from each lesson's `updated` date. A track page takes its newest lesson; a home page and the track index take the newest lesson in their language; the explorer has no content date and gets none.
+- `/llms.txt`, an [llmstxt.org](https://llmstxt.org/)-shaped index of every track and lesson in both languages. Google Search does not read it, so it is served with `X-Robots-Tag: noindex` and never competes with the pages it lists.
+- `tests/seo.test.mjs` checks all of this against the build: complete metadata on every page, a built 1200×630 card for every `og:image`, JSON-LD that matches the visible page, sitemap dates equal to lesson dates, and every `llms.txt` link resolving. Planted defects for each check were caught before release.
+
+### Changed
+
+- Titles name their subject. A lesson title gains its track when the whole title still fits 60 characters ("MLX · Building & Serving Stacks — llmdeepdive"; 28 of 212 lessons); longer titles already carry their subject. The home, track index, track and explorer titles now say "LLM" ("How LLMs actually work: a free, bilingual course — llmdeepdive"). The pt-BR home description says "trilhas" instead of "tracks", and "gratuito", the word people search for, instead of "livre".
+- The favicon is the header's mark, a cyan ring and crosshair on the abyss ground. The cream "L" tile it replaces predated the redesign. The organisation logo in the structured data is drawn from it at 512px.
+- Pages also declare `og:site_name` and `og:locale:alternate`; lessons are `og:type` `article` with `article:modified_time` and `article:section`.
+
+### Fixed
+
+- The 404 pages declared a canonical URL and language alternates pointing at `/404` addresses that do not exist. They are now `noindex` and declare neither, and carry no card or structured data.
+
+### Security
+
+- `fflate`, reached only through `satori` at build time, is overridden to 0.7.5 for GHSA-px8p-9vwx-vf98, so `pnpm audit` stays clean at every level.
+- JSON-LD blocks are data, which browsers never run and CSP does not govern. The header generator, the CSP test and the JavaScript budget now skip them; hashing them would have added one CSP hash per page and pushed the policy line past Cloudflare's limit in a single build. The line stays at 1,585 characters with seven script hashes.
+
 ## [0.7.0] — 2026-09-23
 
 A design review of every surface (two independent assessments, detector and three-engine browser evidence) and the fixes it called for.

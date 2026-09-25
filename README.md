@@ -68,10 +68,20 @@ The live explorer is available at
 | Tailwind 4 + hand-written tokens | `light-dark()` theming; "Auto" needs zero JavaScript |
 | Three.js 0.185 (`WebGLRenderer`) | one long-lived stage, procedural geometry, lazy-loaded |
 | Pagefind | per-language index, fetched on first keystroke |
+| satori + sharp | build-time social cards; fonts bundled into the build, none shipped to the browser |
 
 Geometry, labels and signal paths are generated in code, not shipped as a model:
 the whole 3D explorer costs tens of kilobytes rather than the tens of megabytes
 a GLB-based one would.
+
+## Search and sharing
+
+Every page carries a canonical URL, English/Portuguese alternates, a
+corpus-dated sitemap entry, one JSON-LD graph (`WebSite`, `BreadcrumbList`,
+`Article`, depending on the page) and its own 1200×630 social card, all built
+from the same content collections as the page. `/llms.txt` indexes every lesson
+in both languages for agents. The contract, and the structured-data types this
+site deliberately does not use, are in `AGENTS.md` under **Search metadata**.
 
 ## Current scale
 

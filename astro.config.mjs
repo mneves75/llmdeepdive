@@ -13,8 +13,10 @@ import rehypeAutolinkHeadings from 'rehype-autolink-headings'
 import { remarkCallouts } from './src/lib/markdown/callouts.mjs'
 import { rehypeMathScroll } from './src/lib/markdown/math-scroll.mjs'
 import { rehypeTableScroll } from './src/lib/markdown/tables.mjs'
+import { lastmodByPath } from './scripts/sitemap-lastmod.mjs'
 
 export const SITE = 'https://llmdeepdive.com'
+const LASTMOD = lastmodByPath()
 
 export default defineConfig({
   site: SITE,
@@ -75,7 +77,13 @@ export default defineConfig({
     },
   },
 
-  integrations: [mdx(), sitemap({ i18n: { defaultLocale: 'en', locales: { en: 'en', 'pt-br': 'pt-BR' } } }), pagefind({
+  integrations: [mdx(), sitemap({
+    i18n: { defaultLocale: 'en', locales: { en: 'en', 'pt-br': 'pt-BR' } },
+    serialize(item) {
+      const lastmod = LASTMOD.get(new URL(item.url).pathname)
+      return lastmod ? { ...item, lastmod } : item
+    },
+  }), pagefind({
     indexConfig: {
       // Index what a lesson teaches, not the page chrome around it. Without a
       // root, every excerpt began with the skip link ("…cachecontent Advanced")

@@ -54,6 +54,8 @@ The interface supports light, dark, and operating-system themes.
   browser because there is nothing to send them to.
 - Search uses Pagefind and loads on demand. Three.js is lazy, guarded by WebGL
   support, and must never enter the critical rendering path.
+- Every page carries search and share metadata generated from the corpus
+  (JSON-LD, a social card, sitemap dates); no page exists only to rank.
 - Every translated route must remain available without fallback substitution.
 - Existing content, URLs, semantics, canonical metadata, accessibility, privacy,
   performance budgets, and lesson-completion behavior are product contracts.
