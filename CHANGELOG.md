@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A 23-second launch video, `brag-output/brag.mp4` (poster `brag.jpg`, post text `share-copy.txt`). Every scene after the opening line is the built site itself, driven by script; `brag-output/work/` holds the scripts that rebuild it from `dist/`, and `brag-plan.md` the storyboard, measurements and rebuild steps.
+
 ## [0.8.1] — 2026-09-25
 
 ### Fixed
