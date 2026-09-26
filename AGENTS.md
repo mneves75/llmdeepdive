@@ -303,9 +303,11 @@ endpoint both build from it. `Base.astro` refuses an indexable page without
 gets no canonical, alternates, card or JSON-LD. `tests/seo.test.mjs` asserts the
 whole contract against `dist/`.
 
-- **No page exists only for search.** Google's spam policies call pages made to
-  catch query variations "scaled content abuse". A new route needs teaching
-  content of its own; metadata work goes into the pages that already have it.
+- **No page exists only for search.** Google's guide to its AI search
+  features says pages made for query variations mainly to manipulate results
+  violate its scaled content abuse policy (its doorway-abuse policy covers the
+  same pattern). A new route needs teaching content of its own; metadata work
+  goes into the pages that already have it.
 - **Only structured-data types Google supports for this kind of page.**
   `WebSite` + `Organization` on the home pages, `BreadcrumbList` on every other
   page, `Article` on lessons. No `Course` (Google's course list requires

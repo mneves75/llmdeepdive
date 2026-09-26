@@ -2,6 +2,32 @@
 
 ## Current Direction
 
+- **0.8.0 is the search-metadata release.** Deployed on 2026-09-25 from
+  `079bbf5`, tagged `v0.8.0-beta1` (staging version `a3097289`, from
+  `47932f5`), `v0.8.0-beta2` (staging `8564935d`) and `v0.8.0` (production
+  `652f29cd`, apex and www). `verify:live` passed on both (768 files
+  byte-identical, explorer → lesson in chromium/webkit/firefox, www redirect)
+  and its production self-test caught 30/30; CI passed. Every page now has one
+  JSON-LD graph, a per-page 1200×630 card (satori + sharp, bundled Roboto
+  fonts, byte-identical across rebuilds), sitemap `lastmod` from lesson dates
+  and `/llms.txt` (served `noindex`); no new HTML route, deliberately (scaled
+  content abuse). Rejected with reasons: `Course` markup (Google requires
+  instructor-led courses with a roster), FAQ (retired 7 May 2026), Markdown
+  twins (Google Search does not use them; figures would not survive the
+  conversion) and IndexNow automation (Google does not take part; Bing already
+  reads the sitemap).
+  The review sweep's most valuable catch was content, not code: 199 lessons
+  revised on 2026-09-13 still showed August dates, and the release was about
+  to publish them as `lastmod`/`dateModified`; dates now come from Git, guarded
+  by `tests/content-dates.test.mjs`. An independent AI review found the Article
+  claiming the logo-and-caption card as its image (against Google's Article
+  docs) and merge resolutions invisible to that date guard; both fixed. The
+  privacy gate caught a fixture email and a forbidden tooling name in two local
+  commit bodies before push; the commits were reworded. The OpenAI credential
+  used by the Codex CLI was rejected (401) mid-session, so `mneves-verify` ran
+  on Claude Fable 5.1 (round 1 FAIL on a frozen clause that Google's own
+  Article docs disprove; round 2 PASS). The owner needs to re-authenticate Codex.
+
 - **0.7.0 is the design-review release.** Deployed on 2026-09-23 from
   `3406b2e`, tagged `v0.7.0-beta1` (staging version `2b0f0bcb`) and `v0.7.0`
   (production version `706c9bac`, 100%, apex and www). `verify:live` passed on
