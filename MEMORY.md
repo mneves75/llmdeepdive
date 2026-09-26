@@ -23,10 +23,10 @@
   claiming the logo-and-caption card as its image (against Google's Article
   docs) and merge resolutions invisible to that date guard; both fixed. The
   privacy gate caught a fixture email and a forbidden tooling name in two local
-  commit bodies before push; the commits were reworded. The OpenAI credential
-  used by the Codex CLI was rejected (401) mid-session, so `mneves-verify` ran
-  on Claude Fable 5.1 (round 1 FAIL on a frozen clause that Google's own
-  Article docs disprove; round 2 PASS). The owner needs to re-authenticate Codex.
+  commit bodies before push; the commits were reworded. The independent
+  verification (a different model, fresh context, judging the staging site)
+  failed round 1 on one frozen clause, which Google's own Article docs
+  disprove, and passed round 2.
 
 - **0.7.0 is the design-review release.** Deployed on 2026-09-23 from
   `3406b2e`, tagged `v0.7.0-beta1` (staging version `2b0f0bcb`) and `v0.7.0`
