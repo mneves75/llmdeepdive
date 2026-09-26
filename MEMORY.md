@@ -2,6 +2,13 @@
 
 ## Current Direction
 
+- **0.8.1 finishes the pt-BR vocabulary.** Deployed on 2026-09-25 from
+  `9cce022`, tagged `v0.8.1-beta1` (staging version `e4e33939`) and `v0.8.1`
+  (production `33174f97`, apex and www); `verify:live` passed on both. Lesson
+  prose said "track" 49 times in 35 pt-BR lessons while the interface says
+  "trilha", and since 0.8.0 summaries are search snippets. `content:parity`
+  now fails on "track" in pt-BR prose (code spans exempt).
+
 - **0.8.0 is the search-metadata release.** Deployed on 2026-09-25 from
   `079bbf5`, tagged `v0.8.0-beta1` (staging version `a3097289`, from
   `47932f5`), `v0.8.0-beta2` (staging `8564935d`) and `v0.8.0` (production
