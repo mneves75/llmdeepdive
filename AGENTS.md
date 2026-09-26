@@ -280,6 +280,12 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
   `finalize-dist.mjs` sorts `pagefind-entry.json`'s languages; without that, a
   rebuilt `dist/` for the released commit does not match production byte for
   byte.
+- **The zone's `google-site-verification` TXT record keeps Search Console
+  verified.** The site is a Search Console Domain property (added 2026-09-26,
+  sitemap `sitemap-index.xml` submitted and processed). Deleting or editing
+  that apex TXT record unverifies the property silently. Bing is not
+  registered: its Google sign-in failed with `oauth_failure`, and it reads the
+  sitemap from `robots.txt` until someone adds the site there.
 - **`www` redirects to the apex in the zone, not in this repo.** A Single
   Redirect (`https://www.*` → `https://${1}`, 301, query string preserved) runs
   before the Worker. Keep `www.llmdeepdive.com` as a custom domain in
