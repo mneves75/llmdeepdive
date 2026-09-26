@@ -76,3 +76,18 @@ test("bilingual gate treats inline configuration values in frontmatter as notati
 
   assert.deepEqual(bilingualContentFailures(english, portuguese), [])
 })
+
+test('pt-BR prose calls a course track "trilha", as the interface does', () => {
+  const english = { id: 'fixture', body: 'Track 4 shows it.\n\n| Lesson | Track 8 lesson |\n|---|---|\n| a | b |', frontmatter: 'summary: "Covered in track 7."' }
+  const lesson = (body, summary) => ({ id: 'fixture', body, frontmatter: `track: "4-transformer"\nsummary: "${summary}"` })
+
+  const failures = bilingualContentFailures(english, lesson('A track 4 mostra isso.\n\n| Lição | Lição da Track 8 |\n|---|---|\n| a | b |', 'Assunto de toda a track 7.'))
+  assert.equal(failures.length, 3, failures.join('\n'))
+  assert.ok(failures.every((failure) => /says "track"/u.test(failure)), failures.join('\n'))
+
+  // The frontmatter key, inline code and the word inside other words are not prose.
+  assert.deepEqual(
+    bilingualContentFailures(english, lesson('A trilha 4 mostra isso; `--track` é uma flag e tracking é outra palavra.\n\n| Lição | Lição da Trilha 8 |\n|---|---|\n| a | b |', 'Assunto de toda a trilha 7.')),
+    [],
+  )
+})

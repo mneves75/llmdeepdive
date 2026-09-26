@@ -438,6 +438,8 @@ that still needs a reader.
 
 pt-BR is a real translation, not machine output. Industry-standard English terms
 (*embedding*, *attention*, *fine-tuning*) stay English inside Portuguese prose.
+Course structure does not: a track is a *trilha* in pt-BR prose, as in the
+interface, and `content:parity` fails on "track" outside code spans.
 
 **Numbers are localised, notation is not.** pt-BR prose groups thousands with a
 period and marks decimals with a comma (`262.144`, `1,5 MiB`); EN prose keeps the

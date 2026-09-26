@@ -7,7 +7,7 @@ import { visit } from 'unist-util-visit'
 const parser = unified().use(remarkParse).use(remarkMdx).use(remarkMath)
 const DOTTED_NUMBER = /(?<![\p{L}\p{N}_])(\d+(?:\.\d+)+)(?![\p{L}\p{N}_])/gu
 const THOUSANDS = /^\d{1,3}(?:\.\d{3})+$/u
-const REFERENCE_OR_VERSION = /(?:seção|capítulo|track|versão|version|release|apache|cuda|python|node|astro|pnpm|vllm|sglang)\s*$/iu
+const REFERENCE_OR_VERSION = /(?:seção|capítulo|trilha|versão|version|release|apache|cuda|python|node|astro|pnpm|vllm|sglang)\s*$/iu
 const COURSE_REFERENCE = /liç(?:ão|ões)[^\n;:]*$/iu
 const PARAMETER_NOTATION = /(?:temperature|top_p|top_k|gpu_memory_utilization|epsilon|alpha|beta)\s*$/iu
 const FRONTMATTER_PROSE = /^\s*(?:title|summary|analogy|prompt|modelAnswer|question|options|explanation):\s*(.*)$/u
@@ -101,6 +101,22 @@ function dottedNumberFailures(lesson, math) {
 }
 
 /**
+ * The pt-BR interface names a course track "trilha" (tier tables, track pages,
+ * breadcrumbs, social cards). Prose saying "track" put an English word into the
+ * lesson summaries that search engines show as pt-BR snippets. Code spans are
+ * not prose, so `--track` stays legal.
+ */
+const ENGLISH_TRACK = /\btracks?\b/iu
+
+function courseVocabularyFailures(lesson) {
+  return [...new Set(
+    proseSegments(lesson)
+      .filter((segment) => ENGLISH_TRACK.test(segment))
+      .map((segment) => `pt-br prose says "track" where the course says "trilha": "${segment.trim().slice(0, 120)}"`),
+  )]
+}
+
+/**
  * Returns only high-confidence bilingual failures. Ambiguous dotted numbers are
  * left to the reader rather than turning this gate into a noisy heuristic.
  */
@@ -134,7 +150,7 @@ export function bilingualContentFailures(english, portuguese) {
     )
   }
 
-  failures.push(...dottedNumberFailures(portuguese, ptMath).map(
+  failures.push(...[...dottedNumberFailures(portuguese, ptMath), ...courseVocabularyFailures(portuguese)].map(
     (failure) => `lesson "${english.id}": ${failure}`,
   ))
   return failures

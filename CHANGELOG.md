@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-09-25
+
+### Fixed
+
+- Portuguese lessons called a course track "track" 49 times across 35 lessons ("da track 7", "nesta track") while the interface, breadcrumbs and cards say "trilha". Since 0.8.0 lesson summaries are the descriptions search engines show, so the English word also reached pt-BR search snippets. The prose now says "trilha", and each changed lesson's date moved to 2026-09-25.
+- `pnpm content:parity` (part of every build) now fails when pt-BR lesson prose says "track"; code spans such as `--track` are not prose and stay legal.
+
 ## [0.8.0] — 2026-09-25
 
 Search and share metadata for every page, generated from the corpus. No new pages: Google's guide to its AI search features says pages made for query variations mainly to manipulate results violate its scaled content abuse policy, so the work went into the 238 pages that already teach something.
