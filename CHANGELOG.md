@@ -10,6 +10,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Update build-tool dependencies to patched undici 7.29.1 and fast-uri 3.1.8.
   The dependency audit previously reported two high-severity advisories in
   undici; these packages are not part of the static site's browser bundle.
+- CI verifies the authored pull-request head instead of GitHub's temporary
+  merge commit, whose account metadata could fail the full-history privacy
+  scan. The scanner and its email allowlist remain unchanged.
 
 ### Changed
 
