@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Update build-tool dependencies to patched undici 7.29.1 and fast-uri 3.1.8.
+  The dependency audit previously reported two high-severity advisories in
+  undici; these packages are not part of the static site's browser bundle.
+
+### Changed
+
+- Refresh the Cloudflare compatibility date to 2026-10-02 for the verified
+  staging and production deployment.
+
 ### Added
 
 - A 23-second launch video, `brag-output/brag.mp4` (poster `brag.jpg`, post text `share-copy.txt`). Every scene after the opening line is the built site itself, driven by script; `brag-output/work/` holds the scripts that rebuild it from `dist/`, and `brag-plan.md` the storyboard, measurements and rebuild steps.
