@@ -53,7 +53,7 @@ test('build produced pages', () => {
  */
 const CSP_LINE_MAX = 1900
 const EXPECTED_INLINE_SCRIPTS = 2
-const EXPECTED_INLINE_STYLES = 0
+const EXPECTED_INLINE_STYLES = 1
 
 test('the Pagefind entry lists its languages in a fixed order', () => {
   // Pagefind writes them in hash-map order, so an unchanged commit rebuilt

@@ -72,9 +72,10 @@ test('constellations read left to right in course order', () => {
 })
 
 test('names on the same side of the ecliptic do not collide', () => {
-  // A name is drawn up to ~11em wide at ~0.7rem on a ~1000px plate: budget
-  // 120 sky units of width and 30 of height around each anchor.
-  const boxes = sky.constellations.map((item) => ({ id: item.id, x: item.label.x - 60, y: item.label.y - 15, w: 120, h: 30 }))
+  // Measured in Chromium at 1280 and 1440 wide (the hero's two-line names):
+  // up to ~200 sky units wide and ~38 tall around each anchor. An earlier
+  // 120×30 budget passed while neighbouring names overlapped on screen.
+  const boxes = sky.constellations.map((item) => ({ id: item.id, x: item.label.x - 100, y: item.label.y - 20, w: 200, h: 40 }))
   for (const [index, a] of boxes.entries()) {
     for (const b of boxes.slice(index + 1)) {
       const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h

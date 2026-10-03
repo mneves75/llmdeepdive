@@ -158,10 +158,15 @@ Two rules the geometry has already broken once each:
 **6. The CSP lives on one `_headers` line with a hard 2,000-character limit.**
 Cloudflare *drops* a `_headers` line above 2,000 characters, and the site then
 serves **no CSP at all** — silently, with every local gate green. The line is at
-453 characters since 0.9: `build.inlineStylesheets: 'never'` and
+559 characters since 0.9: `build.inlineStylesheets: 'never'` and
 `vite.build.assetsInlineLimit: 0` (astro.config.mjs) make every component
 stylesheet and processed script a hashed file, so only the two `is:inline`
-scripts (theme pre-paint, Pagefind loader) are hashed. `gen-headers.mjs` would
+scripts (theme pre-paint, Pagefind loader) and one `is:inline` style are
+hashed. That style is the cross-document view-transition opt-in, and it must
+stay inline and first in `<head>`: Chromium reads the incoming page's opt-in
+when it reveals it, and with the rule only in the linked stylesheet most
+navigations aborted ("ViewTransition opt-in disabled"; measured 0–2 of 8,
+8/8 inline). `tests/course-player.test.mjs` asserts it. `gen-headers.mjs` would
 append a sha256 per distinct inline `<script>` (~55 chars) and per distinct
 inline `<style>` (~110, in both `style-src` and `style-src-elem`); see
 `docs/adr/0002`.

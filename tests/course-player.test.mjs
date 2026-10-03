@@ -176,3 +176,17 @@ test('a star fills only for its own lesson, never because an ancestor is complet
   const loose = [...css.matchAll(/\[data-complete=["']?true["']?\]\s+\.star-mark/gu)]
   assert.deepEqual(loose.map((match) => match[0]), [], 'star marks must key on their own row ([data-complete] > .star-mark), not on any ancestor')
 })
+
+test('every page opts in to cross-document view transitions inline, before any stylesheet', () => {
+  // Chromium decides the incoming page's opt-in when it reveals the page. With
+  // the rule only in the linked stylesheet, that decision raced the stylesheet
+  // and most navigations aborted ("ViewTransition opt-in disabled"): 0–2 of 8
+  // in a measured run, 8/8 once the rule was inline.
+  for (const { route, html } of all) {
+    const optIn = html.search(/<style[^>]*>[^<]*@view-transition\s*\{\s*navigation:\s*auto/u)
+    assert.ok(optIn !== -1, `${route}: no inline @view-transition opt-in`)
+    const firstSheet = html.indexOf('<link rel="stylesheet"')
+    assert.ok(firstSheet === -1 || optIn < firstSheet, `${route}: the opt-in must precede the stylesheets`)
+    assert.match(html.slice(optIn, optIn + 200), /prefers-reduced-motion:\s*no-preference/u, `${route}: the opt-in must stay off under reduced motion`)
+  }
+})

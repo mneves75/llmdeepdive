@@ -14,9 +14,12 @@
   pixel budget caps a video near 12,288 tokens; VL-JEPA's 2.85x came from
   offline clustering, not an online detector; a misquote) were fixed in both
   locales before release. CSS delivery changed (ADR 0002): no inline component
-  CSS/JS (CSP line 1,585 → 453), class scoping, prose and lab styles as plain
+  CSS/JS (CSP line 1,585 → 559, the one inline style being the view-transition opt-in), class scoping, prose and lab styles as plain
   stylesheets, which took the worst lesson route from 87.5 KB to ~67 KB.
-  Traps found on the way: a `pathLength="1"` dash with
+  Traps found on the way: cross-document view transitions aborted on most
+  navigations ("ViewTransition opt-in disabled") while the opt-in lived in the
+  linked stylesheet — single-shot probes said "yes" by luck; an 8-trial rate
+  measure (0–2/8 → 8/8 inline) found and proved it; a `pathLength="1"` dash with
   `vector-effect: non-scaling-stroke` draws only part of a scaled path in
   Chromium; a view-transition name with no partner on the next page just fades
   out over the content; an animated reticle at 2.2x scale widened the page at

@@ -89,6 +89,8 @@ const round = (value: number): number => Math.round(value * 10) / 10
 const MIN_RADIUS = 2.2
 const MAX_RADIUS = 6
 const MAX_DEGREE_FOR_SCALE = 6
+/** How far every other name in a row steps outward, in sky units: more than a two-line name is tall at 1280px (Chromium), with room for the dome compressing it near the top corners. */
+const LABEL_STAGGER = 68
 /** Air between any star and the plate's neatline, in sky units. */
 const PLATE_MARGIN = 16
 
@@ -114,7 +116,7 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     const high = index % 2 === 0
     const centerY = SKY_HEIGHT * (high ? 0.33 : 0.67) + Math.sin(index * 1.7) * 14
     const width = cell * 1.65
-    const height = SKY_HEIGHT * 0.26
+    const height = SKY_HEIGHT * 0.24
 
     // A serpentine with seeded jitter: lessons run left to right, step down,
     // run back. Every figure stays landscape and compact, reads in course
@@ -141,7 +143,7 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     const spanY = Math.max(maxY - minY, 1)
     // Small tracks stay small: a four-lesson track is a small figure, not one
     // stretched across its whole column.
-    const scale = Math.min(width / spanX, height / spanY, 12 + trackLessons.length * 3)
+    const scale = Math.min(width / spanX, height / spanY, 22 + trackLessons.length * 3)
     // Keep the figure off the plate's neatline: shift it inward if its column
     // sits at the edge of the chart.
     const halfWidth = (spanX * scale) / 2 + MAX_RADIUS
@@ -168,9 +170,8 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     const top = Math.min(...stars.map((star) => star.y))
     const bottom = Math.max(...stars.map((star) => star.y))
     const box = { x: round(left), y: round(top), width: round(right - left), height: round(bottom - top) }
-    const label = high
-      ? { x: round((left + right) / 2), y: round(top - 26), anchor: 'above' as const }
-      : { x: round((left + right) / 2), y: round(bottom + 28), anchor: 'below' as const }
+    // The vertical line is set below, once every figure in the row is known.
+    const label = { x: round((left + right) / 2), y: high ? top : bottom, anchor: high ? 'above' as const : 'below' as const }
 
     return {
       id: track.id,
@@ -183,6 +184,18 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
       label,
     }
   })
+
+  // Names sit on two lines per row, measured from the row's outermost figure,
+  // so a staggered name never lands level with its neighbour however tall the
+  // figures between them are.
+  const highTop = Math.min(...constellations.filter((item) => item.label.anchor === 'above').map((item) => item.box.y))
+  const lowBottom = Math.max(...constellations.filter((item) => item.label.anchor === 'below').map((item) => item.box.y + item.box.height))
+  for (const [index, constellation] of constellations.entries()) {
+    const stagger = Math.floor(index / 2) % 2 === 1 ? LABEL_STAGGER : 0
+    constellation.label.y = constellation.label.anchor === 'above'
+      ? round(highTop - 22 - stagger)
+      : round(lowBottom + 24 + stagger)
+  }
 
   return { width: SKY_WIDTH, height: SKY_HEIGHT, constellations, stars: constellations.flatMap((item) => item.stars) }
 }

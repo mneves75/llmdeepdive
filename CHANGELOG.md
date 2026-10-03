@@ -77,7 +77,9 @@ course player, and a new track teaches how models learn from video.
   beside it. Lesson section headings no longer carry “01/05” numbers: the step
   list shows the order.
 - **No inline CSS or JS from components**: the CSP header line fell from 1,585
-  to 453 characters (2 inline script hashes, 0 style hashes). Component styles
+  to 559 characters (2 inline script hashes, 1 style hash: the view-transition
+  opt-in, inline because Chromium otherwise aborted most page-to-page
+  transitions before the stylesheet arrived). Component styles
   are scoped by class. The worst lesson route ships 67 KB of render-blocking
   CSS against the unchanged 72 KB budget.
 - Lab input borders now meet 3:1 contrast against the lab plate (they used a

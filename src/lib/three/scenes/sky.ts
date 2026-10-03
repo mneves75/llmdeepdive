@@ -534,6 +534,10 @@ export function mountSky(options: SkyOptions): SkyController {
       original: { x: label.style.getPropertyValue('--x'), y: label.style.getPropertyValue('--y') },
       x: read('--x') * frame.width,
       y: read('--y') * frame.height,
+      // The figure edge the name hangs from (chart units). The name is placed
+      // at that edge's projected point plus its flat offset, so the stagger
+      // between neighbouring names survives the dome compressing the corners.
+      attachY: Number.parseFloat(label.dataset.attachY ?? '') || read('--y') * frame.height,
       halfWidth: 0,
       halfHeight: 0,
     }
@@ -549,14 +553,15 @@ export function mountSky(options: SkyOptions): SkyController {
     if (!(width > 0 && height > 0)) return
     for (const anchor of anchors) {
       if (!Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) continue
-      liftedPoint(frame, anchor.x, anchor.y, liftAt(anchor.x), point).applyQuaternion(rotation)
+      liftedPoint(frame, anchor.x, anchor.attachY, liftAt(anchor.x), point).applyQuaternion(rotation)
       toCamera.copy(camera.position).sub(point).normalize()
       const facing = point.clone().normalize().dot(toCamera)
       point.project(camera)
+      const pixelsPerUnit = Math.min(width / frame.width, height / frame.height)
       // Kept inside the figure by the label's own half-size: a label pushed
       // past the edge would widen the page.
       const x = Math.min(Math.max(((point.x + 1) / 2) * width, anchor.halfWidth), width - anchor.halfWidth)
-      const y = Math.min(Math.max(((1 - point.y) / 2) * height, anchor.halfHeight), height - anchor.halfHeight)
+      const y = Math.min(Math.max(((1 - point.y) / 2) * height + (anchor.y - anchor.attachY) * pixelsPerUnit, anchor.halfHeight), height - anchor.halfHeight)
       anchor.label.style.setProperty('--x', `${((x / width) * 100).toFixed(3)}%`)
       anchor.label.style.setProperty('--y', `${((y / height) * 100).toFixed(3)}%`)
       anchor.label.toggleAttribute('data-occluded', facing < 0.15)

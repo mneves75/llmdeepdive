@@ -40,8 +40,9 @@ Two budgets constrained the redesign:
 3. **No inline component CSS or JS:** `build.inlineStylesheets: 'never'` and
    `vite.build.assetsInlineLimit: 0`. Every component stylesheet and processed
    script is a hashed file. Result: 2 inline script hashes (the theme pre-paint
-   and Pagefind's loader, both `is:inline` on purpose), 0 style hashes, and a
-   **453-character** CSP line.
+   and Pagefind's loader, both `is:inline` on purpose), 1 style hash (the
+   cross-document view-transition opt-in, inline so Chromium sees it when it
+   reveals the incoming page), and a **559-character** CSP line.
 4. **`scopedStyleStrategy: 'class'`.** Same specificity as the attribute
    strategy (a class and an attribute both count 0,1,0), ten fewer characters
    on every scoped selector and element.
@@ -58,7 +59,7 @@ render-blocking CSS, under the unchanged 72 KB budget.
 - The fallback face still renders during the swap and if the font fails, so
   `render:check`'s wide-font sweep (Verdana / DejaVu Sans forced) stays.
 - A future inline `<style>` or `<script>` is a reviewed change:
-  `tests/rendered-html.test.mjs` pins 2 scripts and 0 styles.
+  `tests/rendered-html.test.mjs` pins 2 scripts and 1 style.
 - Elements created by script still carry no scope class: style them with
   `:global()` under a scoped parent, as before.
 - Tests and scripts must match class **tokens**, never an exact `class="…"`
