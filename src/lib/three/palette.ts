@@ -56,13 +56,13 @@ export const FIELD_PALETTE: Readonly<ScenePalette> = {
   ink: 0xe9eefb,
   inkMuted: 0xb1bbd6,
   inkFaint: 0x8f9aba,
-  grid: 0x9db0ff,
+  grid: 0x96acff,
   accent: 0x9db0ff,
   reticle: 0xff6b81,
   tierFoundations: 0x72c8f2,
   tierCore: 0xf1cd6b,
   tierAdvanced: 0xff9b57,
-  tierFrontier: 0xff7aa0,
+  tierFrontier: 0xe59cf3,
 }
 
 /** `rgb(…)`/`rgba(…)` or `#rrggbb` to a 24-bit number; null when unparseable. */

@@ -413,7 +413,7 @@ const NIGHT: Readonly<ScenePalette> = {
   tierFoundations: 0x72c8f2,
   tierCore: 0xf1cd6b,
   tierAdvanced: 0xff9b57,
-  tierFrontier: 0xff7aa0,
+  tierFrontier: 0xe59cf3,
 }
 
 interface Materials {
