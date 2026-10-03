@@ -45,9 +45,13 @@ that disagreed with its own lesson would be worse than no figure.
 ## The Anatomy Explorer
 
 The course's front door is a transformer signal observatory you can rotate and
-inspect. Its graphite frame, smoked-glass decks, etched cyan signal paths,
-ceramic token tiles and single amber compute core make the architecture read as
-a scientific instrument rather than a stack of coloured boxes. Twelve numbered
+inspect: one decoder block built as an armillary instrument on a single axis.
+Porcelain embedding and LM-head plates, ink-enamel decks with engraved dials,
+attention drawn as arcs that thicken with the attention weight, one gold
+feed-forward core and porcelain side meridians for the two residual bypasses
+make the architecture read as a scientific instrument rather than a stack of
+coloured boxes; every 12 seconds a token climbs the axis, pausing at each layer.
+Twelve numbered
 ports keep every library component selectable. Each opens through five lenses:
 maths, architectural differences, a token's journey, **how it fails**, and
 where it sits in the stack.

@@ -49,11 +49,13 @@ strict: zero means “not measured,” so markers stay hidden until `ResizeObser
 reports a real size. `tests/marker-scale.test.mjs` locks that rule down.
 
 The mature specimen is still procedural rather than a heavy downloaded model.
-The second-generation art direction is translated into native geometry at
-runtime rather than shipped as an asset. A graphite frame holds smoked-glass
-decks, ceramic token tiles and etched cyan signal paths around one amber FFN
-core. Side routes make residual additions legible, particles trace input to
-output, and a bilingual instrument key names each major layer. Every one of the
+Since 0.9 the art direction is an armillary instrument, built as native
+geometry at runtime rather than shipped as an asset: porcelain embedding and
+LM-head plates, ink-enamel decks with engraved dials on one steel axis,
+attention as arcs that thicken with the attention weight, and one gold FFN
+core. Porcelain side meridians make the two residual additions legible, a
+token climbs the axis every 12 seconds, and a bilingual instrument key names
+each major layer. Every one of the
 12 library components owns a numbered port; components such as the KV cache or
 quantization isolate the physical mechanism they modify instead of pretending
 to be separate slabs.

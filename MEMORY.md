@@ -373,8 +373,8 @@
   pinned, Gitleaks scans full history, dependency audit blocks high-severity
   findings, and the rendered-site test independently verifies CSP hashes.
 
-- Use chart fields and abyssal cutaways to encode real curriculum, model, and
-  evidence relationships; cartographic motifs are never wallpaper.
+- Use the star chart and the instrument to encode real curriculum, model, and
+  evidence relationships; graticules and stars are never wallpaper.
 - Preserve static byte-identical HTML. Body text stays on system fonts; since
   0.9 headings use the self-hosted Mona Sans (ADR 0002), so keep the
   wide-font render sweep for the swap and fallback.
