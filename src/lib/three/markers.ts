@@ -30,8 +30,26 @@ export interface MarkerSpec {
   detail: string
   /** Anchor in the scene's normalised space. */
   position: [number, number, number]
-  /** CSS colour; also drives the DOM callout accent. */
-  color: string
+}
+
+/**
+ * How a port is drawn. Ports carry no hue: state is a mark, not a colour. A
+ * port is a porcelain disc with an ink numeral; the selected one gains the
+ * reticle, the site's "you are here" mark.
+ */
+export interface MarkerStyle {
+  porcelain: string
+  ink: string
+  reticle: string
+  /** CSS font-family list for the numerals. */
+  font: string
+}
+
+const DEFAULT_STYLE: MarkerStyle = {
+  porcelain: '#e9eefb',
+  ink: '#0b1533',
+  reticle: '#ff6b81',
+  font: 'system-ui, sans-serif',
 }
 
 const DOT_PIXELS = 32
@@ -39,7 +57,6 @@ const VIEW_LIFT = 0.2
 const FADE_START = -0.05
 const FADE_END = 0.3
 const PICK_RADIUS_PX = 28
-const SELECTED_COLOR = '#5ee7f5'
 
 interface Marker {
   spec: MarkerSpec
@@ -70,7 +87,7 @@ function outwardNormal(anchor: THREE.Vector3): THREE.Vector3 | null {
   return horizontal.lengthSq() < 1e-8 ? null : horizontal.normalize()
 }
 
-function markerTexture(color: string, index: number, selected: boolean): THREE.CanvasTexture {
+function markerTexture(style: MarkerStyle, index: number, selected: boolean): THREE.CanvasTexture {
   const size = 256
   const c = document.createElement('canvas')
   c.width = size
@@ -78,42 +95,45 @@ function markerTexture(color: string, index: number, selected: boolean): THREE.C
   const ctx = c.getContext('2d')
   if (ctx) {
     const r = size / 2
-    const ringColor = selected ? SELECTED_COLOR : color
-
-    // Dark instrument face and fine concentric rings keep every accent colour
-    // legible without turning the marker into a luminous candy dot.
+    // The selected sprite is drawn 1.5x larger so the reticle fits around a
+    // disc that stays the same size on screen.
+    const unit = selected ? r / 1.5 : r
+    // Porcelain disc with a fine ink bezel, like an enamel dial numeral.
     ctx.beginPath()
-    ctx.arc(r, r, r * 0.66, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(2, 16, 25, 0.96)'
+    ctx.arc(r, r, unit * 0.88, 0, Math.PI * 2)
+    ctx.fillStyle = style.porcelain
     ctx.fill()
-
-    ctx.lineWidth = selected ? 11 : 8
-    ctx.strokeStyle = ringColor
+    ctx.lineWidth = unit * 0.07
+    ctx.strokeStyle = style.ink
     ctx.stroke()
-
     ctx.beginPath()
-    ctx.arc(r, r, r * 0.52, 0, Math.PI * 2)
-    ctx.lineWidth = selected ? 3 : 2
-    ctx.strokeStyle = selected ? 'rgba(238, 250, 255, 0.9)' : 'rgba(238, 250, 255, 0.36)'
+    ctx.arc(r, r, unit * 0.72, 0, Math.PI * 2)
+    ctx.lineWidth = unit * 0.02
     ctx.stroke()
 
-    // Cardinal registration ticks echo survey / observatory instrumentation.
-    ctx.strokeStyle = selected ? ringColor : 'rgba(196, 224, 234, 0.72)'
-    ctx.lineWidth = selected ? 7 : 5
-    ctx.lineCap = 'square'
-    for (let quarter = 0; quarter < 4; quarter += 1) {
-      const angle = quarter * Math.PI * 0.5
-      ctx.beginPath()
-      ctx.moveTo(r + Math.cos(angle) * r * 0.73, r + Math.sin(angle) * r * 0.73)
-      ctx.lineTo(r + Math.cos(angle) * r * 0.88, r + Math.sin(angle) * r * 0.88)
-      ctx.stroke()
+    if (selected) {
+      // The reticle: an open ring broken at the cardinals, with crosshair ticks.
+      ctx.strokeStyle = style.reticle
+      ctx.lineWidth = r * 0.07
+      ctx.lineCap = 'butt'
+      for (let quarter = 0; quarter < 4; quarter += 1) {
+        const start = quarter * Math.PI * 0.5 + 0.28
+        ctx.beginPath()
+        ctx.arc(r, r, r * 0.8, start, start + Math.PI * 0.5 - 0.56)
+        ctx.stroke()
+        const angle = quarter * Math.PI * 0.5
+        ctx.beginPath()
+        ctx.moveTo(r + Math.cos(angle) * r * 0.66, r + Math.sin(angle) * r * 0.66)
+        ctx.lineTo(r + Math.cos(angle) * r * 0.99, r + Math.sin(angle) * r * 0.99)
+        ctx.stroke()
+      }
     }
 
-    ctx.fillStyle = '#eefaff'
-    ctx.font = '600 70px ui-monospace, SFMono-Regular, Menlo, monospace'
+    ctx.fillStyle = style.ink
+    ctx.font = `720 ${Math.round(unit * (index + 1 >= 10 ? 0.74 : 0.92))}px ${style.font}`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.fillText(String(index + 1).padStart(2, '0'), r, r + 2)
+    ctx.fillText(String(index + 1), r, r + unit * 0.05)
   }
   const tex = new THREE.CanvasTexture(c)
   tex.colorSpace = THREE.SRGBColorSpace
@@ -153,20 +173,22 @@ export class MarkerLayer {
   private readonly tmpProj = new THREE.Vector3()
 
   private readonly camera: THREE.PerspectiveCamera
+  private readonly style: MarkerStyle
 
   // Written out rather than declared as a constructor parameter property: that
   // is TypeScript-only syntax, and it stops Node from loading this module for a
   // test by stripping types.
-  constructor(camera: THREE.PerspectiveCamera) {
+  constructor(camera: THREE.PerspectiveCamera, style: MarkerStyle = DEFAULT_STYLE) {
     this.camera = camera
+    this.style = style
     this.group.name = '__markers'
   }
 
   set(specs: readonly MarkerSpec[]): void {
     this.clear()
     for (const [index, spec] of specs.entries()) {
-      const texture = markerTexture(spec.color, index, false)
-      const selectedTexture = markerTexture(spec.color, index, true)
+      const texture = markerTexture(this.style, index, false)
+      const selectedTexture = markerTexture(this.style, index, true)
       const material = new THREE.SpriteMaterial({
         map: texture,
         depthTest: true,
@@ -225,10 +247,12 @@ export class MarkerLayer {
 
       const selected = m.spec.id === this.selectedId
       m.sprite.material.map = selected ? m.selectedTexture : m.texture
-      m.sprite.material.opacity = selected ? Math.min(1, next * 1.08) : next * 0.92
+      m.sprite.material.opacity = next
       m.sprite.visible = m.sprite.material.opacity > 0.02
 
-      const scale = this.pixelScale * (selected ? 1.18 : 1)
+      // The selected texture carries the reticle around the same-size disc, so
+      // it is drawn larger to keep the numeral the same size on screen.
+      const scale = this.pixelScale * (selected ? 1.5 : 1)
       m.sprite.scale.set(scale, scale, 1)
 
       // Lift along the view ray: identical screen position, extra depth clearance.

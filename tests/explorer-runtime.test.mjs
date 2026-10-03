@@ -8,7 +8,6 @@ const SPECS = ['first', 'middle', 'last'].map((id, index) => ({
   label: id,
   detail: id,
   position: [index, 0, 0],
-  color: '#ffffff',
 }))
 
 const withCanvasDocument = (run) => {

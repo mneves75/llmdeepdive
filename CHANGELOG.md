@@ -5,6 +5,80 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-03
+
+The whole frontend is redrawn as a printed star atlas, the lessons become a
+course player, and a new track teaches how models learn from video.
+
+### Added
+
+- **Track 10, Video & World Models** (pt-BR “Vídeo e modelos de mundo”), four
+  lessons in each language: how video models turn frames into tokens (with
+  Qwen3-VL's technical report as the reference system), JEPA and predicting
+  representations instead of pixels, V-JEPA 2 and 2.1 as world models that
+  plan, and VL-JEPA predicting meaning instead of tokens. Six figures and a
+  video-token calculator lab whose defaults reproduce the lesson's worked
+  clip. Every number was checked against its primary source by a separate
+  reviewer before release; none of it is a claim about Qwen3.8-27B. The
+  course now has 110 lessons per language across 11 tracks.
+- **A syllabus beside every lesson**: the whole track in order, with reading
+  time, a star per lesson that fills when you complete it on this device, and
+  the current lesson marked. A sticky sidebar on wide screens, a drawer (one
+  `popover`, no script) elsewhere.
+- **A step list** for the lesson's loop (concept, analogy, lab, teach-back,
+  quiz, sources) that marks the section being read and fills as you read; a
+  reading gauge across the top of the page.
+- **Continue where you left off** on the home page and every track page, and
+  a course-wide count of completed lessons in the header. Both are read from
+  this browser after the page renders and ship hidden, so every visitor still
+  receives the same HTML; the stored record is validated before it becomes a
+  link.
+- **Reading time** for every lesson and every track, derived from the corpus.
+- **The curriculum as a star chart.** Every lesson is a star, every track a
+  constellation joined in course order; larger stars are the lessons more
+  lessons build on. The home page and the tracks index draw the whole sky;
+  each track page draws its constellation; each lesson shows its place in it.
+- `docs/adr/0002`: the display face and how CSS and JS are delivered.
+- A 23-second launch video, `brag-output/brag.mp4` (poster `brag.jpg`, post text `share-copy.txt`). Every scene after the opening line is the built site itself, driven by script; `brag-output/work/` holds the scripts that rebuild it from `dist/`, and `brag-plan.md` the storyboard, measurements and rebuild steps.
+
+### Changed
+
+- **New visual system** (DESIGN.md): two editions of one atlas, a white plate
+  by day and a night plate in dark mode; tier colours follow stellar spectral
+  classes; state is a drawn mark, never colour alone; a crimson reticle marks
+  where you are and is the focus ring.
+- **Motion**, all CSS and all off under reduced motion: opening a lesson from
+  its track flies the constellation into the lesson's plate and the track
+  title into the breadcrumb (cross-document view transitions); the home
+  headline unfolds along the display face's width axis; constellations draw
+  themselves in course order; a comet runs the course route on the home chart,
+  with a pause control.
+- **The anatomy explorer is rebuilt** as an armillary instrument: porcelain
+  and ink-enamel plates on one axis, attention as arcs that thicken with the
+  attention weight, one gold feed-forward core, and a token that steps up the
+  block every 12 seconds, pausing at each layer, with copies riding the two
+  residual bypasses. The page is redrawn in the new system; every component
+  keeps its numbered port and lesson link.
+- **The home and tracks charts lift into 3D** where WebGL is available: the
+  same chart, read from the page's own SVG, curves onto a slowly turning sky.
+  three.js loads only after the page is idle; scrolling is never captured, and
+  it stops off screen, when paused and under reduced motion.
+- **Display face: Mona Sans**, self-hosted and preloaded (98 KB, Latin only on
+  a given page); body text keeps system fonts. Social cards are redrawn in
+  the same face and system.
+- **Lesson titles stay exactly the page's `<h1>`**; the lesson position moved
+  beside it. Lesson section headings no longer carry “01/05” numbers: the step
+  list shows the order.
+- **No inline CSS or JS from components**: the CSP header line fell from 1,585
+  to 453 characters (2 inline script hashes, 0 style hashes). Component styles
+  are scoped by class. The worst lesson route ships 67 KB of render-blocking
+  CSS against the unchanged 72 KB budget.
+- Lab input borders now meet 3:1 contrast against the lab plate (they used a
+  2:1 rule).
+- The live-release canary reads the version from a `data-site-version` hook.
+- Refresh the Cloudflare compatibility date to 2026-10-02 for the verified
+  staging and production deployment.
+
 ### Fixed
 
 - Update build-tool dependencies to patched undici 7.29.1 and fast-uri 3.1.8.
@@ -14,14 +88,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   merge commit, whose account metadata could fail the full-history privacy
   scan. The scanner and its email allowlist remain unchanged.
 
-### Changed
+### Security
 
-- Refresh the Cloudflare compatibility date to 2026-10-02 for the verified
-  staging and production deployment.
-
-### Added
-
-- A 23-second launch video, `brag-output/brag.mp4` (poster `brag.jpg`, post text `share-copy.txt`). Every scene after the opening line is the built site itself, driven by script; `brag-output/work/` holds the scripts that rebuild it from `dist/`, and `brag-plan.md` the storyboard, measurements and rebuild steps.
+- `pnpm audit` ignores exactly one advisory, GHSA-ch52-4w7c-c8xp
+  (http-cache-semantics ≤4.2.0), with the reason in `pnpm-workspace.yaml`: the
+  advisory's patched 4.2.1 is not published, and the package reaches this
+  build only through Astro's cache for remote images, which the site does not
+  use. The audit still fails on any other high-severity finding.
 
 ## [0.8.1] — 2026-09-25
 

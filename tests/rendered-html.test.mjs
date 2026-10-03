@@ -52,8 +52,8 @@ test('build produced pages', () => {
  * so this fails in CI rather than in production.
  */
 const CSP_LINE_MAX = 1900
-const EXPECTED_INLINE_SCRIPTS = 7
-const EXPECTED_INLINE_STYLES = 8
+const EXPECTED_INLINE_SCRIPTS = 2
+const EXPECTED_INLINE_STYLES = 0
 
 test('the Pagefind entry lists its languages in a fixed order', () => {
   // Pagefind writes them in hash-map order, so an unchanged commit rebuilt
@@ -124,7 +124,9 @@ test('generated headers enforce the security policy for built HTML', () => {
   }
   walk(DIST)
 
-  const hashes = (tag, sourcePattern) => {
+  // Scripts must exist (the theme pre-paint is inline on purpose); styles need
+  // not, since every component stylesheet is linked (astro.config.mjs).
+  const hashes = (tag, sourcePattern, required) => {
     const values = new Set()
     for (const file of htmlFiles) {
       const html = readFileSync(file, 'utf8')
@@ -134,17 +136,17 @@ test('generated headers enforce the security policy for built HTML', () => {
         values.add(`'sha256-${createHash('sha256').update(body).digest('base64')}'`)
       }
     }
-    assert.ok(values.size > 0, `build contains no inline ${tag}`)
+    if (required) assert.ok(values.size > 0, `build contains no inline ${tag}`)
     return values
   }
 
   // JSON-LD data blocks never execute, so CSP does not govern them (see seo.test.mjs).
-  for (const hash of hashes('scripts', /<script(?![^>]*\bsrc=)(?![^>]*\btype=["']?application\/ld\+json)[^>]*>([\s\S]*?)<\/script>/g)) {
+  for (const hash of hashes('scripts', /<script(?![^>]*\bsrc=)(?![^>]*\btype=["']?application\/ld\+json)[^>]*>([\s\S]*?)<\/script>/g, true)) {
     assert.ok(scriptSources.includes(hash), `script-src is missing ${hash}`)
   }
   const styleSources = directives.get('style-src') ?? []
   assert.equal(styleSources.includes("'unsafe-inline'"), false)
-  for (const hash of hashes('styles', /<style[^>]*>([\s\S]*?)<\/style>/g)) {
+  for (const hash of hashes('styles', /<style[^>]*>([\s\S]*?)<\/style>/g, false)) {
     assert.ok(styleSources.includes(hash), `style-src is missing ${hash}`)
   }
 })

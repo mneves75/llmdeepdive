@@ -76,3 +76,20 @@ export function sortLessons(
     return byTrack || left.data.order - right.data.order || left.data.id.localeCompare(right.data.id)
   })
 }
+
+const WORDS_PER_MINUTE = 200
+
+/**
+ * Minutes to read a lesson's teaching text, rounded up: the MDX body plus the
+ * analogy. Derived from the corpus at build time, identical for every visitor.
+ * Markup, maths source and component calls are not words a reader reads.
+ */
+export function readingMinutes(lesson: LessonEntry): number {
+  const text = `${lesson.body ?? ''} ${lesson.data.analogy}`
+    .replace(/\$\$[\s\S]*?\$\$/gu, ' ')
+    .replace(/<[^>]+>/gu, ' ')
+    .replace(/^:::.*$/gmu, ' ')
+    .replace(/[#*_`>|[\]()]/gu, ' ')
+  const words = text.split(/\s+/u).filter((word) => /\p{L}/u.test(word)).length
+  return Math.max(1, Math.ceil(words / WORDS_PER_MINUTE))
+}

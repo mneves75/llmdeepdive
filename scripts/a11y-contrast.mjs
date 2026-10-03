@@ -23,41 +23,39 @@ function ratio(foreground, background) {
   return (values[0] + 0.05) / (values[1] + 0.05)
 }
 
-const paper = token('paper-raised')
-const abyss = token('abyss')
-const pairs = [
-  ['light primary text', token('ink').light, paper.light],
-  ['light supporting text', token('ink-muted').light, paper.light],
-  ['light instrument labels', token('ink-faint').light, paper.light],
-  ['light Survey Cyan text', token('accent').light, paper.light],
-  ['light Sonar Yellow text', token('sonar').light, paper.light],
-  ['light Coral Red text', token('coral').light, paper.light],
-  ['light Kelp Green text', token('kelp').light, paper.light],
-  ['light primary button', token('accent-ink').light, token('accent').light],
-  ['dark primary text', token('ink').dark, abyss.dark],
-  ['dark supporting text', token('ink-muted').dark, abyss.dark],
-  ['dark instrument labels', token('ink-faint').dark, abyss.dark],
-  ['dark Survey Cyan text', token('accent').dark, abyss.dark],
-  ['dark Sonar Yellow text', token('sonar').dark, abyss.dark],
-  ['dark Coral Red text', token('coral').dark, abyss.dark],
-  ['dark Kelp Green text', token('kelp').dark, abyss.dark],
-  ['dark primary button', token('accent-ink').dark, token('accent').dark],
-  ['abyss supporting text', token('ink-muted-on-abyss').dark, abyss.dark],
-  ['fixed abyss Survey Cyan text', token('accent').dark, abyss.dark],
-  ['fixed abyss Sonar Yellow text', token('sonar').dark, abyss.dark],
-  ['fixed abyss Coral Red text', token('coral').dark, abyss.dark],
-  ['fixed abyss Kelp Green text', token('kelp').dark, abyss.dark],
-]
+// Two editions of one atlas: every text pigment is measured on every surface
+// it is set on, in both. A light-dark() pair is split into its two values.
+const editions = ['light', 'dark']
+const surfaces = ['plate', 'plate-raised']
+const textInks = ['ink', 'ink-muted', 'ink-faint', 'accent', 'reticle', 'tier-foundations', 'tier-core', 'tier-advanced', 'tier-frontier', 'success', 'danger', 'caution']
+const pairs = []
+for (const edition of editions) {
+  for (const surface of surfaces) {
+    for (const ink of textInks) pairs.push([`${edition} ${ink} on ${surface}`, token(ink)[edition], token(surface)[edition]])
+  }
+  // Controls and states that set text on a filled ground.
+  pairs.push([`${edition} primary button (plate on ink)`, token('plate')[edition], token('ink')[edition]])
+  pairs.push([`${edition} selected answer key (accent-ink on accent)`, token('accent-ink')[edition], token('accent')[edition]])
+  pairs.push([`${edition} current lesson (ink on accent-soft)`, token('ink')[edition], token('accent-soft')[edition]])
+  pairs.push([`${edition} current position (reticle on accent-soft)`, token('reticle')[edition], token('accent-soft')[edition]])
+  // The night plate (analogy, footer, explorer stage) in each edition.
+  pairs.push([`${edition} night text`, token('ink-on-night').light, token('night')[edition]])
+  pairs.push([`${edition} night supporting text`, token('ink-muted-on-night').light, token('night')[edition]])
+}
 
-// Non-text contrast (WCAG 1.4.11): a control's boundary and the focus ring
-// need 3:1 against every surface they sit on, not 4.5:1.
-const fieldSurfaces = [['raised', token('paper-raised')], ['page', token('paper')], ['sunken', token('paper-sunken')]]
-const nonText = fieldSurfaces.flatMap(([surface, background]) => [
-  [`light field border on ${surface}`, token('rule-field').light, background.light],
-  [`dark field border on ${surface}`, token('rule-field').dark, background.dark],
-  [`light focus ring on ${surface}`, token('focus').light, background.light],
-  [`dark focus ring on ${surface}`, token('focus').dark, background.dark],
-])
+// Non-text contrast (WCAG 1.4.11): a control's boundary, the focus ring and a
+// star's outline (it carries completion state) need 3:1 on every surface.
+const nonText = []
+for (const edition of editions) {
+  for (const surface of ['plate', 'plate-raised', 'plate-sunken']) {
+    nonText.push([`${edition} field border on ${surface}`, token('rule-field')[edition], token(surface)[edition]])
+    nonText.push([`${edition} focus ring on ${surface}`, token('reticle')[edition], token(surface)[edition]])
+    for (const tier of ['tier-foundations', 'tier-core', 'tier-advanced', 'tier-frontier']) {
+      nonText.push([`${edition} ${tier} star on ${surface}`, token(tier)[edition], token(surface)[edition]])
+    }
+  }
+  nonText.push([`${edition} focus ring on night`, token('reticle').dark, token('night')[edition]])
+}
 
 const failures = []
 let worst = { name: '', value: Number.POSITIVE_INFINITY }

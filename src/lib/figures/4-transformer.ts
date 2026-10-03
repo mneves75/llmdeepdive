@@ -59,12 +59,12 @@ export const TRACK_4_FIGURES = {
         {
           label: { en: 'q_proj (queries + gate)', 'pt-br': 'q_proj (queries + porta)' },
           detail: { en: `${QWEN.hiddenSize.value} → ${QWEN.qProjectionOut.value}`, 'pt-br': `${QWEN.hiddenSize.value} → ${QWEN.qProjectionOut.value}` },
-          pigment: 'coral',
+          pigment: 'danger',
         },
         {
           label: { en: 'split per head', 'pt-br': 'divide por head' },
           detail: { en: `${QWEN.queryHeads.value} × (${QWEN.headDim.value} query + ${QWEN.headDim.value} gate)`, 'pt-br': `${QWEN.queryHeads.value} × (${QWEN.headDim.value} query + ${QWEN.headDim.value} porta)` },
-          pigment: 'sonar',
+          pigment: 'caution',
         },
         {
           label: { en: 'k_proj · v_proj', 'pt-br': 'k_proj · v_proj' },
@@ -74,7 +74,7 @@ export const TRACK_4_FIGURES = {
         {
           label: { en: 'sigmoid(gate) · o_proj', 'pt-br': 'sigmoid(porta) · o_proj' },
           detail: { en: `${QWEN.queryStateWidth.value} → ${QWEN.hiddenSize.value}`, 'pt-br': `${QWEN.queryStateWidth.value} → ${QWEN.hiddenSize.value}` },
-          pigment: 'kelp',
+          pigment: 'success',
         },
       ],
     },

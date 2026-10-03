@@ -18,13 +18,18 @@ outside, private practice inside—is the most important ownership boundary.
 
 ## The visual map
 
-`src/styles/tokens.css` is the legend for the whole atlas: chart paper, abyssal
-navy, Survey Cyan, Sonar Yellow, Coral Red, and Kelp Green. `global.css` establishes
+`src/styles/tokens.css` is the legend for the whole atlas: a white plate by day,
+a night plate in dark mode, chart blue for links, a crimson reticle for "you
+are here", and four spectral pigments for the tiers. `global.css` establishes
 reading and focus behavior. `DESIGN.md` explains when each token earns its place.
 
-The home page is a cross-section of the full curriculum. Track pages turn the
-same idea into a continuous descent. Lesson pages narrow back to a readable
-`70ch` column and add a depth rail, so a learner always knows where they are.
+The curriculum is a star chart (`src/lib/sky.ts`): every lesson a star, every
+track a constellation joined in course order, one deterministic layout shared
+by the home chart, each track page, each lesson's "you are here" plate and the
+3D sky. Because a lesson's star keeps the same view-transition name on the
+track page and in the lesson, opening a lesson flies its constellation into
+the lesson header — pure CSS. Lesson pages add the track's syllabus and a step
+list, so a learner always knows where they are and what comes next.
 The Anatomy Explorer is the literal core sample: a server-rendered component
 selector and evidence drawer wrapped around an optional Three.js Signal
 Observatory.

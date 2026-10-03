@@ -1,0 +1,92 @@
+/**
+ * The curriculum sky's geometry, against the real corpus.
+ *
+ * Every chart on the site (home, tracks index, track pages, lesson plates and
+ * the 3D sky) reads this one layout, so its failures are everyone's: a star
+ * off the plate, a figure so tall it swallows a track page, or two names
+ * printed over each other.
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { buildSky, SKY_HEIGHT, SKY_WIDTH } from '../src/lib/sky.ts'
+
+function corpus(locale) {
+  const tracksDir = join('src/content/tracks', locale)
+  const tracks = readdirSync(tracksDir).filter((name) => name.endsWith('.json')).map((name) => {
+    const data = JSON.parse(readFileSync(join(tracksDir, name), 'utf8'))
+    return { id: data.id, order: data.order, tier: data.tier, title: data.title }
+  })
+  const lessons = []
+  for (const track of tracks) {
+    const dir = join('src/content/lessons', locale, track.id)
+    let files = []
+    try { files = readdirSync(dir).filter((name) => name.endsWith('.mdx')) } catch { files = [] }
+    for (const file of files) {
+      const source = readFileSync(join(dir, file), 'utf8')
+      const front = source.split(/^---$/mu)[1] ?? ''
+      const id = front.match(/^id:\s*["']?([^"'\n]+)/mu)?.[1]?.trim()
+      const order = Number(front.match(/^order:\s*(\d+)/mu)?.[1])
+      const prereqBlock = front.match(/^prerequisites:\s*\[([^\]]*)\]/mu)?.[1] ?? ''
+      const prerequisites = prereqBlock.split(',').map((item) => item.replace(/["'\s]/gu, '')).filter(Boolean)
+      if (id) lessons.push({ id, track: track.id, order, prerequisites })
+    }
+  }
+  return { tracks, lessons }
+}
+
+const { tracks, lessons } = corpus('en')
+const sky = buildSky(tracks, lessons)
+
+test('every lesson is exactly one star, in a constellation of its own track', () => {
+  assert.equal(sky.stars.length, lessons.length)
+  assert.equal(new Set(sky.stars.map((star) => star.id)).size, lessons.length)
+  assert.equal(sky.constellations.length, tracks.length)
+  for (const constellation of sky.constellations) {
+    for (const star of constellation.stars) assert.equal(star.track, constellation.id)
+  }
+})
+
+test('every star and every name sits on the plate', () => {
+  for (const star of sky.stars) {
+    assert.ok(star.x - star.r >= 0 && star.x + star.r <= SKY_WIDTH, `${star.id} x=${star.x}`)
+    assert.ok(star.y - star.r >= 0 && star.y + star.r <= SKY_HEIGHT, `${star.id} y=${star.y}`)
+  }
+  for (const constellation of sky.constellations) {
+    assert.ok(constellation.label.y >= 12 && constellation.label.y <= SKY_HEIGHT - 12, `${constellation.id} name y=${constellation.label.y}`)
+  }
+})
+
+test('figures stay landscape, so no chart swallows its page', () => {
+  for (const constellation of sky.constellations) {
+    if (constellation.stars.length < 4) continue
+    const { width, height } = constellation.box
+    assert.ok(width >= height, `${constellation.id}: ${width} wide, ${height} tall`)
+  }
+})
+
+test('constellations read left to right in course order', () => {
+  const centers = sky.constellations.map((item) => item.box.x + item.box.width / 2)
+  assert.deepEqual(centers, [...centers].sort((a, b) => a - b))
+})
+
+test('names on the same side of the ecliptic do not collide', () => {
+  // A name is drawn up to ~11em wide at ~0.7rem on a ~1000px plate: budget
+  // 120 sky units of width and 30 of height around each anchor.
+  const boxes = sky.constellations.map((item) => ({ id: item.id, x: item.label.x - 60, y: item.label.y - 15, w: 120, h: 30 }))
+  for (const [index, a] of boxes.entries()) {
+    for (const b of boxes.slice(index + 1)) {
+      const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+      assert.ok(!overlap, `names of ${a.id} and ${b.id} overlap`)
+    }
+  }
+})
+
+test('the layout is deterministic and identical across locales', () => {
+  const again = buildSky(tracks, lessons)
+  assert.deepEqual(again, sky)
+  const pt = corpus('pt-br')
+  const ptSky = buildSky(pt.tracks, pt.lessons)
+  assert.deepEqual(ptSky.stars.map(({ id, x, y, r }) => ({ id, x, y, r })), sky.stars.map(({ id, x, y, r }) => ({ id, x, y, r })))
+})

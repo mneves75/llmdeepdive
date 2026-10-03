@@ -37,16 +37,20 @@ wayfinding.
 Learners enter through the home page, browse ordered tracks, inspect the
 transformer signal observatory through selectable components and evidence
 lenses, search across the bilingual corpus, read long-form lessons, complete
-local teach-backs and quizzes, and continue through previous/next lesson
-navigation. Progress and learner-written prose remain on the device.
+local teach-backs and quizzes, and continue through the track's syllabus or
+previous/next lesson navigation. Progress and learner-written prose remain on the device.
 The interface supports light, dark, and operating-system themes.
 
 ## Capabilities and Constraints
 
-- 106 current lessons in each of English and pt-BR across ten ordered tracks,
-- two interactive labs (memory budget, cost per token) that server-render their
-  defaults and stay usable without JavaScript,
-  with parity enforced at build time.
+- 110 current lessons in each of English and pt-BR across eleven ordered
+  tracks, with parity enforced at build time; track 10 covers video models and
+  JEPA-family world models.
+- three interactive labs (memory budget, cost per token, video tokens) that
+  server-render their defaults and stay usable without JavaScript.
+- a course player on every lesson: the track's syllabus with reading times and
+  completion, the lesson's step list, and "continue where you left off" on the
+  home and track pages, all applied from the device after render.
 - Static, byte-identical HTML for every visitor, served from Cloudflare Workers
   Static Assets; HTML must never become personalised.
 - Progress is stored on the device and nowhere else. There is no account, no

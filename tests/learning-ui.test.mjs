@@ -217,7 +217,7 @@ test('the lesson records completion for track pages and withdraws it', () => {
     querySelector: (selector) => selector === '[data-completion-text]' ? statusText : null,
   }
   const root = {
-    dataset: { lessonKey: 'en:lesson' },
+    dataset: { lessonKey: 'en:lesson', lessonPath: '/lessons/4-transformer/4.2-self-attention/', lessonTitle: 'Self-attention', lessonPosition: '4.2', lessonId: '4.2-self-attention' },
     querySelector: (selector) => selector === '.completion'
       ? completion
       : selector === '[data-teach-back]'
@@ -228,11 +228,13 @@ test('the lesson records completion for track pages and withdraws it', () => {
     documentElement: { lang: 'en' },
     querySelectorAll: (selector) => selector === '[data-lesson-progress]' ? [root] : [],
     addEventListener: (type, listener) => listeners.set(type, listener),
+    dispatchEvent: (event) => dispatched.push(event.type),
   }
+  const dispatched = []
   class CustomEvent {
     constructor(type, init) {
       this.type = type
-      this.detail = init.detail
+      this.detail = init?.detail
     }
   }
   execute(componentScript('src/layouts/Lesson.astro'), {
@@ -248,6 +250,10 @@ test('the lesson records completion for track pages and withdraws it', () => {
 
   assert.equal(root.dataset.complete, 'true')
   assert.deepEqual(writes.at(-1), ['ldd:complete:en:lesson', 'true'])
+  // Opening a lesson records it as the place to continue from, in this locale.
+  assert.deepEqual(writes.find(([key]) => key === 'ldd:last:en'), ['ldd:last:en', JSON.stringify({ id: '4.2-self-attention', path: '/lessons/4-transformer/4.2-self-attention/', title: 'Self-attention', position: '4.2' })])
+  // Every change is announced so stars and counts on the page update live.
+  assert.ok(dispatched.includes('ldd:progress'))
   assert.match(statusText.textContent, /completed on this device/iu)
 
   listeners.get('ldd:quiz')(Object.assign(new CustomEvent('ldd:quiz', { detail: { lessonKey: 'en:lesson', valid: false } })))
@@ -404,40 +410,31 @@ test('a theme chosen in another tab is reflected here', () => {
   assert.equal(theme.root.dataset.theme, undefined)
 })
 
-test('track pages mark only lessons this browser completed', () => {
-  const row = (key) => {
-    const marker = { hidden: true }
-    return { dataset: { lessonKey: key }, marker, querySelector: () => marker }
-  }
-  const rows = [row('en:a'), row('en:b'), row('en:c')]
-  const progress = { hidden: true, textContent: '', dataset: { template: '{n} of {m} completed on this device' } }
-  const section = {
-    querySelectorAll: () => rows,
-    querySelector: (selector) => selector === '[data-progress]' ? progress : null,
-  }
-  const map = { querySelectorAll: () => [section] }
+// Track pages, the syllabus, the home catalog and the header count all read
+// completion through progress.ts; the lesson page is the only writer.
+test('track pages mark only lessons this browser completed', async () => {
+  const { markCompleted, showProgressCounts } = await import('../src/lib/progress.ts')
+  const rows = ['en:a', 'en:b', 'en:c'].map((key) => ({ dataset: { lessonKey: key } }))
+  const output = { textContent: '' }
+  const progress = { hidden: true, dataset: { lessonIds: 'a b c', template: '{n} of {m} completed on this device' }, style: { setProperty() {} }, querySelector: () => output }
   const done = new Set(['ldd:complete:en:a', 'ldd:complete:en:c'])
+  const storage = { length: 0, key: () => null, getItem: (key) => done.has(key) ? 'true' : null }
 
-  execute(componentScript('src/components/TrackListing.astro'), {
-    document: { querySelectorAll: () => [map] },
-    localStorage: { getItem: (key) => done.has(key) ? 'true' : null },
-  })
+  markCompleted(rows, storage)
+  showProgressCounts([progress], storage, 'en')
 
   assert.deepEqual(rows.map((r) => r.dataset.complete), ['true', undefined, 'true'])
-  assert.deepEqual(rows.map((r) => r.marker.hidden), [false, true, false])
   assert.equal(progress.hidden, false)
-  assert.equal(progress.textContent, '2 of 3 completed on this device')
+  assert.equal(output.textContent, '2 of 3 completed on this device')
 })
 
-test('track pages stay unmarked when storage is unreadable', () => {
-  const marker = { hidden: true }
-  const rows = [{ dataset: { lessonKey: 'en:a' }, querySelector: () => marker }]
-  const progress = { hidden: true, textContent: '', dataset: { template: '{n} of {m}' } }
-  const section = { querySelectorAll: () => rows, querySelector: () => progress }
-  execute(componentScript('src/components/TrackListing.astro'), {
-    document: { querySelectorAll: () => [{ querySelectorAll: () => [section] }] },
-    localStorage: { getItem: () => { throw new Error('blocked') } },
-  })
-  assert.equal(marker.hidden, true)
+test('track pages stay unmarked when storage is unreadable', async () => {
+  const { markCompleted, showProgressCounts } = await import('../src/lib/progress.ts')
+  const rows = [{ dataset: { lessonKey: 'en:a' } }]
+  const progress = { hidden: true, dataset: { lessonIds: 'a', template: '{n} of {m}' }, style: { setProperty() {} }, querySelector: () => null, textContent: '' }
+  const storage = { get length() { throw new Error('blocked') }, key: () => null, getItem: () => { throw new Error('blocked') } }
+  markCompleted(rows, storage)
+  showProgressCounts([progress], storage, 'en')
+  assert.equal(rows[0].dataset.complete, undefined)
   assert.equal(progress.hidden, true)
 })

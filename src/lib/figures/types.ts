@@ -41,7 +41,7 @@ export interface FigureStep {
  * figure can never ship a raw hex. `a11y-contrast.mjs` cannot see a hex inside a
  * component, which is exactly how the explorer's twelve raw colours escaped it.
  */
-export type FigurePigment = 'accent' | 'sonar' | 'coral' | 'kelp' | 'muted'
+export type FigurePigment = 'accent' | 'caution' | 'danger' | 'success' | 'muted'
 
 export interface FlowFigure {
   readonly kind: 'flow'

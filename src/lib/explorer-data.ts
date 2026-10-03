@@ -30,7 +30,6 @@ export interface ExplorerComponent {
   facts: ComponentFacts
   /** Lessons that teach this component, by lesson id. */
   lessons: string[]
-  accent: string
 }
 
 export const COMPONENTS: readonly ExplorerComponent[] = [
@@ -51,7 +50,6 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       variants: 'BPE · SentencePiece · byte-level BPE · Unigram',
     },
     lessons: ['1.2-tokenization-i', '1.3-bpe-step-by-step', '1.4-sentencepiece-byte-level-token-counts'],
-    accent: '#007f91',
   },
   {
     id: 'embedding',
@@ -70,7 +68,6 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       variants: 'Tied vs untied with the LM head',
     },
     lessons: ['1.5-embeddings-meaning-as-geometry', '1.6-word2vec-glove-analogy'],
-    accent: '#287855',
   },
   {
     id: 'positional',
@@ -89,45 +86,6 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       variants: 'Sinusoidal · learned · RoPE · ALiBi · NoPE',
     },
     lessons: ['4.6-positional-encoding-sinusoidal-learned', '4.7-rope', '4.8-alibi-relative-bias'],
-    accent: '#c59e00',
-  },
-  {
-    id: 'attention',
-    name: { en: 'Self-attention', 'pt-br': 'Auto-atenção' },
-    system: { en: 'Information routing', 'pt-br': 'Roteamento de informação' },
-    tagline: { en: 'Every position reads every other', 'pt-br': 'Cada posição lê todas as outras' },
-    summary: {
-      en: 'Each position emits a query, and every earlier position offers a key and a value. The softmax over query·key decides how much of each value to mix in. This is the only place tokens exchange information.',
-      'pt-br':
-        'Cada posição emite uma query, e cada posição anterior oferece uma key e um value. O softmax sobre query·key decide quanto de cada value entra na mistura. É o único lugar onde tokens trocam informação.',
-    },
-    facts: {
-      params: '~25–33% (four d_model × d_model projections)',
-      cost: 'O(n²) in sequence length at prefill',
-      introduced: 'Bahdanau et al., 2014; Vaswani et al., 2017',
-      variants: 'MHA · MQA · GQA · MLA · sliding-window',
-    },
-    lessons: ['4.2-self-attention', '4.3-scaled-dot-product-attention', '4.4-causal-masking', '4.16-hybrid-layouts'],
-    accent: '#d74234',
-  },
-  {
-    id: 'ffn',
-    name: { en: 'Feed-forward network', 'pt-br': 'Rede feed-forward' },
-    system: { en: 'Knowledge storage', 'pt-br': 'Armazenamento de conhecimento' },
-    tagline: { en: 'Where the facts live', 'pt-br': 'Onde os fatos moram' },
-    summary: {
-      en: 'Two projections with a non-linearity between them, applied independently at every position. It holds most of the parameters, and interpretability work keeps finding retrievable facts here rather than in attention.',
-      'pt-br':
-        'Duas projeções com uma não-linearidade entre elas, aplicadas de forma independente em cada posição. Concentra a maior parte dos parâmetros, e trabalhos de interpretabilidade seguem encontrando fatos recuperáveis aqui, não na atenção.',
-    },
-    facts: {
-      params: '~60–67% (the largest single share)',
-      cost: 'Dominates decode; memory-bandwidth bound',
-      introduced: 'Vaswani et al., 2017; SwiGLU: Shazeer, 2020',
-      variants: 'ReLU · GELU · SwiGLU · MoE-sparse',
-    },
-    lessons: ['4.9-feed-forward-block', '4.11-full-transformer-block'],
-    accent: '#c59e00',
   },
   {
     id: 'norm',
@@ -146,26 +104,24 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       variants: 'LayerNorm · RMSNorm · pre-norm vs post-norm',
     },
     lessons: ['2.8-initialization-normalization-residuals', '4.10-residuals-pre-norm-post-norm'],
-    accent: '#58717b',
   },
   {
-    id: 'residual',
-    name: { en: 'Residual stream', 'pt-br': 'Fluxo residual' },
-    system: { en: 'The highway', 'pt-br': 'A via expressa' },
-    tagline: { en: 'Every block reads it and writes back', 'pt-br': 'Cada bloco lê e escreve de volta' },
+    id: 'attention',
+    name: { en: 'Self-attention', 'pt-br': 'Self-attention' },
+    system: { en: 'Information routing', 'pt-br': 'Roteamento de informação' },
+    tagline: { en: 'Every position reads every other', 'pt-br': 'Cada posição lê todas as outras' },
     summary: {
-      en: 'Not a layer but a shared bus. Each block adds its output to the running sum, so information can skip any number of layers untouched. Interpretability treats it as the model’s working memory.',
+      en: 'Each position emits a query, and every earlier position offers a key and a value. The softmax over query·key decides how much of each value to mix in. This is the only place tokens exchange information.',
       'pt-br':
-        'Não é uma camada, e sim um barramento compartilhado. Cada bloco soma sua saída ao acumulado, então a informação pode pular quantas camadas quiser intacta. A interpretabilidade o trata como a memória de trabalho do modelo.',
+        'Cada posição emite uma query, e cada posição anterior oferece uma key e um value. O softmax sobre query·key decide quanto de cada value entra na mistura. É o único lugar onde tokens trocam informação.',
     },
     facts: {
-      params: 'None (an addition)',
-      cost: 'Free',
-      introduced: 'He et al., 2015 (ResNet)',
-      variants: 'Scaled residuals · DeepNorm',
+      params: '~25–33% (four d_model × d_model projections)',
+      cost: 'O(n²) in sequence length at prefill',
+      introduced: 'Bahdanau et al., 2014; Vaswani et al., 2017',
+      variants: 'MHA · MQA · GQA · MLA · sliding-window',
     },
-    lessons: ['4.10-residuals-pre-norm-post-norm', '2.8-initialization-normalization-residuals'],
-    accent: '#287855',
+    lessons: ['4.2-self-attention', '4.3-scaled-dot-product-attention', '4.4-causal-masking', '4.16-hybrid-layouts'],
   },
   {
     id: 'kv-cache',
@@ -184,7 +140,42 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       variants: 'Paged · quantised · sliding-window · MLA-compressed',
     },
     lessons: ['7.2-the-kv-cache', '7.8-pagedattention-and-continuous-batching', '4.15-gated-deltanet'],
-    accent: '#007f91',
+  },
+  {
+    id: 'residual',
+    name: { en: 'Residual stream', 'pt-br': 'Fluxo residual' },
+    system: { en: 'The highway', 'pt-br': 'A via expressa' },
+    tagline: { en: 'Every block reads it and writes back', 'pt-br': 'Cada bloco lê e escreve de volta' },
+    summary: {
+      en: 'Not a layer but a shared bus. Each block adds its output to the running sum, so information can skip any number of layers untouched. Interpretability treats it as the model’s working memory.',
+      'pt-br':
+        'Não é uma camada, e sim um barramento compartilhado. Cada bloco soma sua saída ao acumulado, então a informação pode pular quantas camadas quiser intacta. A interpretabilidade o trata como a memória de trabalho do modelo.',
+    },
+    facts: {
+      params: 'None (an addition)',
+      cost: 'Free',
+      introduced: 'He et al., 2015 (ResNet)',
+      variants: 'Scaled residuals · DeepNorm',
+    },
+    lessons: ['4.10-residuals-pre-norm-post-norm', '2.8-initialization-normalization-residuals'],
+  },
+  {
+    id: 'ffn',
+    name: { en: 'Feed-forward network', 'pt-br': 'Rede feed-forward' },
+    system: { en: 'Knowledge storage', 'pt-br': 'Armazenamento de conhecimento' },
+    tagline: { en: 'Where the facts live', 'pt-br': 'Onde os fatos moram' },
+    summary: {
+      en: 'Two projections with a non-linearity between them, applied independently at every position. It holds most of the parameters, and interpretability work keeps finding retrievable facts here rather than in attention.',
+      'pt-br':
+        'Duas projeções com uma não-linearidade entre elas, aplicadas de forma independente em cada posição. Concentra a maior parte dos parâmetros, e trabalhos de interpretabilidade seguem encontrando fatos recuperáveis aqui, não na atenção.',
+    },
+    facts: {
+      params: '~60–67% (the largest single share)',
+      cost: 'Dominates decode; memory-bandwidth bound',
+      introduced: 'Vaswani et al., 2017; SwiGLU: Shazeer, 2020',
+      variants: 'ReLU · GELU · SwiGLU · MoE-sparse',
+    },
+    lessons: ['4.9-feed-forward-block', '4.11-full-transformer-block'],
   },
   {
     id: 'moe-router',
@@ -205,45 +196,6 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     // Mixture-of-experts has no track of its own yet; 4.9 is where the router
     // is actually taught, as the sparse variant of the feed-forward block.
     lessons: ['4.9-feed-forward-block'],
-    accent: '#c59e00',
-  },
-  {
-    id: 'sampler',
-    name: { en: 'Sampler', 'pt-br': 'Amostrador' },
-    system: { en: 'Decoding', 'pt-br': 'Decodificação' },
-    tagline: { en: 'The model proposes; this disposes', 'pt-br': 'O modelo propõe; ele decide' },
-    summary: {
-      en: 'Turns a distribution over the vocabulary into one chosen token. Temperature, top-k, top-p and min-p all reshape that distribution — and they change output quality far more than most people expect.',
-      'pt-br':
-        'Transforma uma distribuição sobre o vocabulário em um token escolhido. Temperature, top-k, top-p e min-p remodelam essa distribuição — e mudam a qualidade da saída muito mais do que se costuma imaginar.',
-    },
-    facts: {
-      params: 'None',
-      cost: 'Negligible',
-      introduced: 'Nucleus sampling: Holtzman et al., 2019',
-      variants: 'Greedy · temperature · top-k · top-p · min-p · beam',
-    },
-    lessons: ['7.4-sampling', '7.5-beam-search-speculative-decoding-and-medusa'],
-    accent: '#007f91',
-  },
-  {
-    id: 'lm-head',
-    name: { en: 'LM head', 'pt-br': 'Cabeça de linguagem' },
-    system: { en: 'Output projection', 'pt-br': 'Projeção de saída' },
-    tagline: { en: 'Back to vocabulary space', 'pt-br': 'De volta ao espaço do vocabulário' },
-    summary: {
-      en: 'Projects the final hidden state onto one logit per vocabulary entry. Often shares weights with the embedding table, on the argument that reading and writing a word should use the same representation.',
-      'pt-br':
-        'Projeta o estado oculto final em um logit por entrada do vocabulário. Costuma compartilhar pesos com a tabela de embeddings, sob o argumento de que ler e escrever uma palavra deveriam usar a mesma representação.',
-    },
-    facts: {
-      params: '~2–10% (or zero if tied)',
-      cost: 'One large matmul per generated token',
-      introduced: 'Weight tying: Press & Wolf, 2017',
-      variants: 'Tied · untied',
-    },
-    lessons: ['4.11-full-transformer-block', '7.4-sampling'],
-    accent: '#007f91',
   },
   {
     id: 'quantization',
@@ -262,7 +214,42 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
       variants: 'int8 · int4 · MXFP4 · GGUF k-quants · QAT',
     },
     lessons: ['7.9-quantization-i-int8-int4-the-basics', '7.10-quantization-ii-gptq-awq-gguf-qat'],
-    accent: '#d74234',
+  },
+  {
+    id: 'lm-head',
+    name: { en: 'LM head', 'pt-br': 'Cabeça de linguagem' },
+    system: { en: 'Output projection', 'pt-br': 'Projeção de saída' },
+    tagline: { en: 'Back to vocabulary space', 'pt-br': 'De volta ao espaço do vocabulário' },
+    summary: {
+      en: 'Projects the final hidden state onto one logit per vocabulary entry. Often shares weights with the embedding table, on the argument that reading and writing a word should use the same representation.',
+      'pt-br':
+        'Projeta o estado oculto final em um logit por entrada do vocabulário. Costuma compartilhar pesos com a tabela de embeddings, sob o argumento de que ler e escrever uma palavra deveriam usar a mesma representação.',
+    },
+    facts: {
+      params: '~2–10% (or zero if tied)',
+      cost: 'One large matmul per generated token',
+      introduced: 'Weight tying: Press & Wolf, 2017',
+      variants: 'Tied · untied',
+    },
+    lessons: ['4.11-full-transformer-block', '7.4-sampling'],
+  },
+  {
+    id: 'sampler',
+    name: { en: 'Sampler', 'pt-br': 'Amostrador' },
+    system: { en: 'Decoding', 'pt-br': 'Decodificação' },
+    tagline: { en: 'The model proposes; this disposes', 'pt-br': 'O modelo propõe; ele decide' },
+    summary: {
+      en: 'Turns a distribution over the vocabulary into one chosen token. Temperature, top-k, top-p and min-p all reshape that distribution — and they change output quality far more than most people expect.',
+      'pt-br':
+        'Transforma uma distribuição sobre o vocabulário em um token escolhido. Temperature, top-k, top-p e min-p remodelam essa distribuição — e mudam a qualidade da saída muito mais do que se costuma imaginar.',
+    },
+    facts: {
+      params: 'None',
+      cost: 'Negligible',
+      introduced: 'Nucleus sampling: Holtzman et al., 2019',
+      variants: 'Greedy · temperature · top-k · top-p · min-p · beam',
+    },
+    lessons: ['7.4-sampling', '7.5-beam-search-speculative-decoding-and-medusa'],
   },
 ]
 

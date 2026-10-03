@@ -78,3 +78,82 @@ export function costComparison(input: CostInput): { managed: number; rented: num
       : managed < rented ? 'managed' : 'self'
   return { managed, rented, gpus, utilisation, verdict }
 }
+
+/** Up to one decimal place, with no trailing ".0" on whole numbers. */
+export function upToOneDecimal(locale: NumberLocale): Intl.NumberFormat {
+  return new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { maximumFractionDigits: 1 })
+}
+
+/**
+ * Python's `round`: halves go to the even neighbour. The Qwen video processor
+ * snaps each frame side with it, so 720 / 32 = 22.5 becomes 22, where
+ * `Math.round` would say 23 and the lab would disagree with the processor.
+ */
+export function roundHalfEven(value: number): number {
+  const floor = Math.floor(value)
+  const fraction = value - floor
+  if (fraction > 0.5) return floor + 1
+  if (fraction < 0.5) return floor
+  return floor % 2 === 0 ? floor : floor + 1
+}
+
+export type VideoVerdict = 'fits' | 'tight' | 'over'
+
+export interface VideoTokenInput {
+  seconds: number
+  fps: number
+  /** Frame size as fed to the encoder, after the processor's own resize. */
+  width: number
+  height: number
+  patch: number
+  merge: number
+  temporal: number
+  context: number
+}
+
+export interface VideoTokenResult {
+  frames: number
+  groups: number
+  tokensW: number
+  tokensH: number
+  patchesPerGroup: number
+  perGroup: number
+  perFrame: number
+  total: number
+  share: number
+  verdict: VideoVerdict
+}
+
+/**
+ * Lesson 10.1: how many visual tokens a clip becomes. Frames are sampled at
+ * `fps`; a frame count that is not a multiple of the temporal patch is padded
+ * by repeating the last frame; each side snaps to a multiple of
+ * `patch × merge`; and every `merge × merge` block of patches in one temporal
+ * group becomes one token. Returns null when there is nothing to count.
+ */
+export function videoTokens(input: VideoTokenInput): VideoTokenResult | null {
+  if (!Object.values(input).every((value) => Number.isFinite(value) && value > 0)) return null
+  // The epsilon absorbs float error: 0.3 s × 10 fps is 2.9999999999999996.
+  const frames = Math.floor(input.seconds * input.fps + 1e-9)
+  if (frames < 1) return null
+  const factor = input.patch * input.merge
+  const tokensW = Math.max(1, roundHalfEven(input.width / factor))
+  const tokensH = Math.max(1, roundHalfEven(input.height / factor))
+  const groups = Math.ceil(frames / input.temporal)
+  const perGroup = tokensW * tokensH
+  const total = groups * perGroup
+  const share = (total / input.context) * 100
+  const verdict = total > input.context ? 'over' : total > input.context / 2 ? 'tight' : 'fits'
+  return {
+    frames,
+    groups,
+    tokensW,
+    tokensH,
+    patchesPerGroup: tokensW * tokensH * input.merge * input.merge,
+    perGroup,
+    perFrame: perGroup / input.temporal,
+    total,
+    share,
+    verdict,
+  }
+}

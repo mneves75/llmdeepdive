@@ -158,7 +158,7 @@ async function canaryFailures(engineName, base, version, selfTest) {
         })
         await page.waitForTimeout(100)
       }
-      const footer = (await page.locator('.site-footer__version').textContent())?.trim()
+      const footer = (await page.locator('[data-site-version]').textContent())?.trim()
       if (footer !== `v${version}`) failures.push(`${engineName} ${locale || '/'}: footer shows ${footer}, expected v${version}`)
       const cta = page.locator('[data-detail-cta]').first()
       const href = await cta.getAttribute('href')

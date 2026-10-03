@@ -2,6 +2,26 @@
 
 ## Current Direction
 
+- **0.9.0 redraws the frontend as a printed star atlas and adds track 10.**
+  DEPLOY_FACTS_PENDING
+  The curriculum is a sky (`src/lib/sky.ts`, one deterministic layout for the
+  home chart, track pages, lesson plates and the 3D sky); lessons became a
+  course player (syllabus popover/sidebar, step list, reading gauge, continue
+  link, reading time); motion is CSS view transitions + scroll-driven
+  animation, off under reduced motion. Track 10 (video tokens, JEPA, V-JEPA 2
+  and 2.1, VL-JEPA) was written by one agent and fact-checked by another,
+  fresh-context, against the papers: three real findings (Qwen3-VL's released
+  pixel budget caps a video near 12,288 tokens; VL-JEPA's 2.85x came from
+  offline clustering, not an online detector; a misquote) were fixed in both
+  locales before release. CSS delivery changed (ADR 0002): no inline component
+  CSS/JS (CSP line 1,585 → 453), class scoping, prose and lab styles as plain
+  stylesheets, which took the worst lesson route from 87.5 KB to ~67 KB.
+  Traps found on the way: a `pathLength="1"` dash with
+  `vector-effect: non-scaling-stroke` draws only part of a scaled path in
+  Chromium; a view-transition name with no partner on the next page just fades
+  out over the content; an animated reticle at 2.2x scale widened the page at
+  320px until its container clipped it locally.
+
 - **0.8.1 finishes the pt-BR vocabulary.** Deployed on 2026-09-25 from
   `9cce022`, tagged `v0.8.1-beta1` (staging version `e4e33939`) and `v0.8.1`
   (production `33174f97`, apex and www); `verify:live` passed on both. Lesson
@@ -252,12 +272,14 @@
 - The Abyssal Core Atlas redesign is **merged into `main`**, together with the
   explorer-link, 404 and gate work. `design/reimagine-all-pages` is where it was
   developed and is fully contained in `main`.
-- Visual system: **Abyssal Core Atlas**, documented in `DESIGN.md`.
-- Explorer expression: **Signal Observatory** — a mature procedural cutaway
-  with bilingual layer labels, explicit input→output flow and selectable ports
-  for all 12 library components. Version 0.1 replaces rainbow slabs with a
-  graphite/smoked-glass instrument, cyan signal paths, ceramic token tiles and
-  one amber compute core.
+- Visual system since 0.9: **the printed star atlas** (desk/field editions),
+  documented in `DESIGN.md`; the Abyssal Core Atlas (0.1–0.8) is retired.
+- Explorer expression: **Signal Observatory** — a procedural instrument with
+  bilingual layer labels, explicit input→output flow and selectable ports for
+  all 12 library components. 0.9 rebuilt it as an armillary instrument
+  (porcelain and ink-enamel plates, a gold FFN core, attention arcs weighted by
+  attention) on the star-atlas tokens, with a token that steps up the axis
+  every 12 s; the graphite/smoked-glass version (0.1–0.8) is retired.
 - **Fitting the model to a concept render is closed, not adopted.** Chasing a
   reference silhouette cost real accuracy — it added a third residual bypass,
   and a decoder block has exactly two — and the residual gap turned out to be a
@@ -350,7 +372,9 @@
 
 - Use chart fields and abyssal cutaways to encode real curriculum, model, and
   evidence relationships; cartographic motifs are never wallpaper.
-- Preserve zero-network-font rendering and static byte-identical HTML.
+- Preserve static byte-identical HTML. Body text stays on system fonts; since
+  0.9 headings use the self-hosted Mona Sans (ADR 0002), so keep the
+  wide-font render sweep for the swap and fallback.
 - Core explorer content is server-rendered. Three.js remains an optional, lazy
   enhancement behind WebGL detection.
 - English and pt-BR surfaces are equivalent, including technical fact values.

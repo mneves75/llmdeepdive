@@ -1,0 +1,134 @@
+---
+id: "10.1-how-video-models-see-time"
+track: "10-video-and-world-models"
+order: 1
+title: "How video models see time: from frames to tokens"
+summary: "A one-minute clip of 512×384 frames becomes 11,520 visual tokens in Qwen3-VL: 2 fps sampling, two-frame tubelets, 16-pixel patches, 2×2 merging, text timestamps and interleaved MRoPE — and why prefill and the KV cache pay for all of it."
+tier: "frontier"
+locale: "en"
+prerequisites: ["4.17-multimodal-vision-encoder", "7.3-prefill-vs-decode-two-different-machines"]
+unlocks: ["10.2-jepa-predicting-representations"]
+analogy: "A court sketch artist cannot draw every instant of a trial. They glance up twice a second, draw each pair of glances as a single sketch, and draw at a scale where one pencil mark stands for a small square of the room. Before each sketch they write the time in the margin. The judge later reads the stack of sketches, not the trial. Glance more often and the stack grows in step; draw at twice the detail and every sketch has four times the marks. Anything that happened between two glances was never on paper."
+lab:
+  id: "video-tokens"
+  kind: "calculator"
+  budgetKb: 12
+teachBack:
+  prompt: "Count the visual tokens Qwen3-VL produces for a 60-second clip sampled at 2 fps with 512×384 frames, then explain which setting changes the count fastest, how the model knows when each token happened, and why prefill dominates the cost of a short question about the clip."
+  modelAnswer: "At 2 fps the clip yields 120 frames. The temporal patch size of 2 pairs consecutive frames, giving 60 temporal groups. Each frame side snaps to a multiple of 32 pixels, the 16-pixel patch times the 2×2 merge, so one group is cut into 32 by 24 = 768 patches of 2×16×16 pixels, and after the vision encoder the merger turns every 2×2 block into one token: 16 by 12 = 192 tokens per group, 96 per sampled frame on average. 60 groups times 192 is 11,520 visual tokens, about 4.4 percent of a 262,144-token window. Doubling the frame rate doubles the count, but doubling both frame sides quadruples it, so resolution is the faster knob. Time reaches the model twice: a text timestamp such as 3.0 seconds is written before each temporal group, and interleaved MRoPE gives every token a temporal, height and width position spread across all rotary frequencies. A twenty-token question and a fifty-token answer are tiny next to 11,520 visual tokens, all of which go through prefill and stay in the KV cache — about 1.6 GiB of bf16 cache for Qwen3-VL-8B before the question is read. Under the released processor defaults, though, a pixel budget of 25,165,824 pixels caps any clip near 12,288 visual tokens, so a bigger or faster clip is shrunk rather than counted in full."
+quiz:
+  - question: "Qwen3-VL samples a clip at 2 fps with a temporal patch size of 2. How often does a new group of visual tokens begin?"
+    options: ["Once per second, because each group covers two consecutive sampled frames", "Twice per second, once for every sampled frame", "Once every two seconds, because the merge halves time again", "At the video file's native frame rate, typically 30 times per second"]
+    correctIndex: 0
+    explanation: "Sampling at 2 fps gives two frames per second, and the Conv3d patch embedding spans two frames, so each temporal group covers one second of video. The 2×2 merge acts on space, not time."
+  - question: "You double both the width and the height of the frames fed to the encoder and keep everything else fixed. What happens to the number of visual tokens?"
+    options: ["It doubles", "It roughly quadruples, because the token grid grows along both sides", "It stays the same, because the merger always outputs a fixed count", "It halves, because larger patches are used"]
+    correctIndex: 1
+    explanation: "Tokens per temporal group are (width ÷ 32) × (height ÷ 32) for 16-pixel patches and a 2×2 merge, so doubling both sides multiplies the grid by four. Frame rate and duration change the count only linearly."
+  - question: "Why did the Qwen3-VL team replace Qwen2.5-VL's time-synchronised MRoPE with timestamps written as text?"
+    options: ["Text timestamps need no extra tokens at all", "MRoPE cannot encode a temporal axis", "Tying position ids to absolute time made them large and sparse for long videos, and training needed many different frame rates; a text string such as 3.0 seconds before each group is simpler and direct", "Timestamps let the model skip the vision encoder for repeated frames"]
+    correctIndex: 2
+    explanation: "The report names both problems with absolute-time position ids and adopts text timestamps instead, accepting what it calls a modest increase in context length. Interleaved MRoPE still supplies the temporal, height and width positions."
+  - question: "A user asks a twenty-word question about a one-minute clip and gets a fifty-token answer. Where does most of the compute and cache memory for that request go?"
+    options: ["Decoding the fifty answer tokens one at a time", "Tokenizing the question", "Running the timestamps through the vision encoder", "Prefill over roughly 11,520 visual tokens, all of which also stay in the KV cache"]
+    correctIndex: 3
+    explanation: "The visual tokens outnumber the text by more than a hundred to one. Lesson 7.3's prefill processes them all before the first answer token, and every one of them keeps keys and values in the cache for the rest of the conversation."
+citations:
+  - title: "Qwen3-VL Technical Report"
+    authors: "Shuai Bai et al. (Qwen Team)"
+    year: 2025
+    url: "https://arxiv.org/abs/2511.21631"
+  - title: "Qwen3-VL-8B-Instruct configuration files (config.json, video_preprocessor_config.json)"
+    authors: "Qwen Team"
+    year: 2025
+    url: "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct/tree/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
+  - title: "Qwen3-VL video processor, Hugging Face Transformers"
+    authors: "Hugging Face and Qwen Team"
+    year: 2026
+    url: "https://github.com/huggingface/transformers/blob/528c26713c8f3774fb56d409da766bc95452aafb/src/transformers/models/qwen3_vl/video_processing_qwen3_vl.py"
+  - title: "Revisiting Feature Prediction for Learning Visual Representations from Video"
+    authors: "Adrien Bardes et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2404.08471"
+updated: "2026-10-03"
+---
+
+Lesson 4.17 showed how one still image becomes a few dozen vectors in a decoder's sequence. A video looks like the same problem repeated: a stack of images, so cut each one into patches and line them up. That intuition is almost right, and the part where it is wrong is where every interesting decision lives. A video has a time axis that the model must be told about, and it has a budget problem that a single image never has: one minute of footage at a camera's native rate is well over a thousand images. Few inputs cost a vision-language model more per question than a video, and nearly all of that cost is decided before the first layer of the language model runs.
+
+This lesson's reference system is **Qwen3-VL**, because its technical report describes how it handles video and its released configuration files state the exact shapes. Every number below belongs to Qwen3-VL — the report, or the `Qwen3-VL-8B-Instruct` configuration where a specific variant matters — and not to Qwen3.8-27B, the course's running example.
+
+## Step one: the model never sees every frame
+
+A phone records at 30 frames per second or more. A vision-language model does not read those frames; it reads a **sample** of them. The Hugging Face Transformers implementation of the Qwen3-VL video processor samples at **2 frames per second** by default, and the report evaluated most of its video benchmarks at 2 fps as well (Charades-STA, a temporal grounding benchmark, at 4 fps). A 60-second clip therefore becomes $\lfloor 60 \times 2 \rfloor = 120$ frames, whatever its native frame rate was.
+
+This is the first place information is thrown away, and it is thrown away silently. At 2 fps, consecutive samples are half a second apart. An event shorter than that — a ball crossing the frame, a hand flicking a switch — can fall entirely between two samples and never exist for the model. No later layer can recover it. When a video model "misses" something fast, check the sampling rate before blaming the reasoning.
+
+## Step two: frames are paired into tubelets
+
+Lesson 4.17 described a Conv3d patch embedding whose kernel spans **2 frames × 16 × 16 pixels**. That kernel is exactly what video needs. The released Qwen3-VL-8B configuration states `patch_size` 16 and `temporal_patch_size` 2: the encoder never tokenizes a single frame on its own. It cuts each pair of consecutive sampled frames into small space-time blocks, often called **tubelets**, each two frames deep and 16 by 16 pixels wide. The 120 sampled frames become **60 temporal groups**.
+
+Two consequences follow. First, at 2 fps a new group begins once per second, so the effective temporal resolution of what the encoder sees is one step per second, not two. Second, an odd number of frames does not fit evenly. The processor handles that by repeating the last frame until the count is a multiple of the temporal patch size, so a 2.5-second clip at 2 fps (five frames) becomes three groups, not two and a half.
+
+This is not a Qwen invention. The original V-JEPA, which lesson 10.2 builds on, tokenized its 16-frame clips with the same 2×16×16 kernel. Pairing frames halves the sequence. The bet behind it is that two frames half a second apart are usually similar enough for one token to stand for both — a design argument, not a measurement, and the reason fast motion is the first thing to suffer.
+
+## Step three: patches, then a 2×2 merge
+
+Each temporal group is a 2-frame slab of the video. Cut into 16-pixel patches, a 512×384 slab gives a grid of $32 \times 24 = 768$ patches. Those 768 patch vectors go through the vision encoder — the released 8B configuration lists 27 layers at width 1152 — which contextualizes each patch with its neighbours.
+
+Then the **merger** acts. As in Qwen2.5-VL, a two-layer MLP compresses each 2×2 block of neighbouring encoder outputs into one visual token at the language model's width. The 32×24 grid becomes $16 \times 12 = 192$ tokens per group. Because each group covers two frames, that is an effective 96 tokens per sampled frame.
+
+The two spatial numbers multiply into one rule: every token covers a square of $16 \times 2 = 32$ pixels on each side, and the processor snaps each frame side to a multiple of 32. It rounds to the nearest multiple, with exact halves going to the even neighbour, as Python's `round` does: a 720-pixel side is 22.5 blocks and becomes 22, so a 1280×720 frame yields $40 \times 22 = 880$ tokens per group (for a short clip; a long one is shrunk by the pixel budget below).
+
+Put the three steps together and the whole count is one line. With clip length $d$ seconds, sampling rate $f$, temporal patch $T$, spatial patch $p$, merge $m$ and a frame of $W \times H$ pixels as the encoder receives it:
+
+$$
+N = \left\lceil \frac{\lfloor d f \rfloor}{T} \right\rceil \cdot \frac{W}{p m} \cdot \frac{H}{p m}
+$$
+
+For the worked clip, $N = \lceil 120 / 2 \rceil \cdot (512 / 32) \cdot (384 / 32) = 60 \cdot 16 \cdot 12 = 11520$ visual tokens.
+
+<Figure id="video-patch-pipeline" />
+
+:::warning
+The tempting mental model is "a video is N images, and each image costs what a photo costs". It overcounts by a factor of the temporal patch size, because a frame never becomes tokens on its own: one token covers two frames and a 32×32-pixel square. It also hides which knob matters most. Frame rate and duration scale the count linearly at a fixed frame size at the encoder (while the pixel budget is not binding); frame size scales it quadratically, because the grid grows along both sides. Doubling the resolution of a clip costs as much as quadrupling its frame rate.
+:::
+
+## How the model knows when
+
+Space is easy: a token's row and column in the merged grid are its height and width. Time needs more care, and Qwen3-VL uses two mechanisms together.
+
+The first is **interleaved MRoPE**. Lesson 4.7 introduced RoPE, and lesson 4.17 described MRoPE, which gives each element a temporal, a height and a width position by dedicating different rotary frequencies to each axis. The Qwen3-VL report says the original arrangement — contiguous chunks of dimensions for each axis — gave each axis an imbalanced slice of the frequency spectrum and hurt long-video understanding. Qwen3-VL **interleaves** the three axes across the dimensions instead, so each axis is represented in both low- and high-frequency bands. The released 8B configuration shows it directly: `mrope_interleaved` is true, with a section split of 24, 20 and 20 rotary pairs.
+
+The second is **text timestamps**. Qwen2.5-VL tied temporal position ids to absolute time. The report names two problems with that: long videos produce very large, sparse position ids, and the model had to be trained across many frame rates to learn the mapping. Qwen3-VL instead writes the time as ordinary text in front of each temporal group — a string like `<3.0 seconds>` — and trains with both seconds and hours:minutes:seconds formats. The model reads time the way it reads any other words. The report calls the cost "a modest increase in context length"; the exact number of tokens per timestamp depends on the tokenizer, and the report does not give one.
+
+One more detail does *not* cost sequence length. Qwen3-VL's **DeepStack** takes features from three intermediate levels of the vision encoder and adds them, through their own small mergers, to the hidden states of the first three language-model layers. The extra visual detail rides the residual stream, not the token sequence.
+
+## Budgets: where long video breaks
+
+At a fixed 512×384 frame, 2 fps spends 192 tokens on every second of video. That is linear, and it does not stay small:
+
+<Figure id="video-budget-growth" />
+
+A 30-minute clip at that size and rate is $1800 \cdot 192 = 345600$ tokens, past Qwen3-VL's native window of 262,144 tokens before a single word of the question. Real systems defend the budget in three ways, all visible in the sources.
+
+- **The processor shrinks frames.** The released 8B processor configuration sets a pixel budget of 25,165,824 pixels across all sampled frames. The worked clip uses $120 \cdot 512 \cdot 384 = 23592960$ pixels, so it passes unchanged; a longer clip at the same size is scaled down until it fits. The lab therefore asks for the frame size *as the encoder receives it*. Because the budget counts every pixel of every sampled frame, it also caps the count: $25165824 / (32^2 \cdot 2) = 12288$ visual tokens per video under the released defaults. The worked clip sits just under that ceiling, and doubling its frame size or frame rate does not raise it, because the processor shrinks frames to fit. The linear growth above is what happens when a deployment raises the budget, as the report's own evaluations did (up to 224K video tokens).
+- **The processor caps frames.** The Transformers implementation clamps the sample to between 4 and 768 frames by default.
+- **Evaluations set explicit caps.** For its video benchmarks the report capped each video at 2,048 frames and at most 224K video tokens, and set a "maximum number of tokens per frame" of 768 for VideoMMMU and MMVU and 640 elsewhere — the report's own wording, without saying whether that counts per sampled frame or per two-frame group. For a long-video needle-in-a-haystack test on Qwen3-VL-235B-A22B-Instruct, it sampled at 1 fps and adjusted resolution to hold a constant visual token budget, and reports 100% accuracy up to 30 minutes (256K tokens) and 99.5% up to about 2 hours (1M tokens) with YaRN position extension.
+
+:::caveat
+The pixel budget, the frame clamp and their defaults have changed across processor releases, and the lab models none of them. To know what a real deployment sends, read the `video_grid_thw` the processor returns for your clip rather than trusting arithmetic — including this lesson's.
+:::
+
+## Why prefill pays for all of it
+
+Now set a short question beside the worked clip: twenty tokens of question, fifty tokens of answer, 11,520 visual tokens. Lesson 7.3 split inference into prefill, which processes the whole prompt in parallel, and decode, which produces one token at a time. Here the prompt is more than 99% video, so almost every operation in the request happens in prefill, and attention inside it grows with the square of that long sequence.
+
+The cache pays too. From the released `Qwen3-VL-8B-Instruct` configuration — 36 layers, 8 key-value heads, head dimension 128 — a bf16 cache holds
+
+$$
+2 \times 36 \times 8 \times 128 \times 2 = 147456 \ \text{bytes} = 144 \ \text{KiB}
+$$
+
+per token, so the one-minute clip occupies about 1,620 MiB, roughly 1.6 GiB, before the question is read. At the same fixed frame size, the 30-minute clip at 1 fps (172,800 tokens) would need about 23.7 GiB — a thought experiment, since the real processor's frame clamp and pixel budget would never send it. That is why serving video is a memory-planning problem first, and why every lever above exists.
+
+The lab below runs the same arithmetic. Its defaults are the worked clip; move the frame size and watch the quadratic term, then move the rate and watch the linear one.

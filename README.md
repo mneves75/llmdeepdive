@@ -65,10 +65,12 @@ The live explorer is available at
 |---|---|
 | Astro 7 (`output: 'static'`) | no adapter — `dist/` is served directly |
 | Cloudflare Workers Static Assets | static assets only; no Worker script or bindings |
-| Tailwind 4 + hand-written tokens | `light-dark()` theming; "Auto" needs zero JavaScript |
+| Tailwind 4 preflight + hand-written tokens | `light-dark()` theming; "Auto" needs zero JavaScript |
+| Mona Sans (variable, self-hosted) | display face only; body text uses system fonts (`docs/adr/0002`) |
+| CSS view transitions + scroll-driven animation | the motion layer; no script, off under reduced motion |
 | Three.js 0.185 (`WebGLRenderer`) | one long-lived stage, procedural geometry, lazy-loaded |
 | Pagefind | per-language index, fetched on first keystroke |
-| satori + sharp | build-time social cards; fonts bundled into the build, none shipped to the browser |
+| satori + sharp | build-time social cards; static Mona Sans cuts bundled into the build |
 
 Geometry, labels and signal paths are generated in code, not shipped as a model:
 the whole 3D explorer costs tens of kilobytes rather than the tens of megabytes
@@ -85,12 +87,20 @@ site deliberately does not use, are in `AGENTS.md` under **Search metadata**.
 
 ## Current scale
 
-212 lessons live (106 English, 106 Portuguese) across tracks 0–9, with full
+220 lessons live (110 English, 110 Portuguese) across tracks 0–10, with full
 parity enforced by the build. Tracks 0–7 carry the model from first principles
 to efficient inference; track 8 covers the serving stacks that run it (PyTorch,
 Transformers, vLLM, SGLang, TensorRT-LLM, llama.cpp, Ollama, MLX, Modular MAX)
 and track 9 the silicon underneath (NVIDIA, AMD, Apple, Qualcomm, Cerebras).
-Every mechanism is worked through one real model, Qwen3.8-27B.
+Every mechanism is worked through one real model, Qwen3.8-27B. Track 10 steps
+beyond text: how video models turn frames into tokens (with Qwen3-VL as the
+reference system) and the JEPA family of world models (I-JEPA, V-JEPA 2 and
+2.1, VL-JEPA), read from the papers themselves.
+
+Each lesson is a course player: the track's syllabus with reading times and
+completion stars, a step list for the lesson's loop, a reading gauge, and a
+"continue where you left off" link on the home and track pages. All progress
+is read from the browser after render; every visitor gets the same HTML.
 
 ## Systems reference
 

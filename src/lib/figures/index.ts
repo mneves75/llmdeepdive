@@ -14,12 +14,14 @@ import { TRACK_1_FIGURES } from './1-text-to-tensors'
 import { TRACK_4_FIGURES } from './4-transformer'
 import { TRACK_7_FIGURES } from './7-inference-and-efficiency'
 import { TRACK_9_FIGURES } from './9-hardware-and-infrastructure'
+import { TRACK_10_FIGURES } from './10-video-and-world-models'
 
 export const FIGURES = {
   ...TRACK_1_FIGURES,
   ...TRACK_4_FIGURES,
   ...TRACK_7_FIGURES,
   ...TRACK_9_FIGURES,
+  ...TRACK_10_FIGURES,
 } as const satisfies FigureRegistry
 
 export type FigureId = keyof typeof FIGURES

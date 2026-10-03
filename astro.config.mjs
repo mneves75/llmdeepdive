@@ -25,7 +25,18 @@ export default defineConfig({
   // means an HTML request never starts an isolate. See AGENTS.md, Static-only architecture.
   output: 'static',
   trailingSlash: 'always',
-  build: { format: 'directory' },
+  // Scope component CSS with a class (`.astro-xxxx`) rather than an attribute
+  // (`[data-astro-cid-xxxx]`): identical specificity, ten fewer characters on
+  // every scoped selector and element. It kept lesson routes under the 72 KB
+  // render-blocking CSS budget (scripts/bundle-budget.mjs) after the 0.9 redesign.
+  scopedStyleStrategy: 'class',
+  build: {
+    format: 'directory',
+    // Every component stylesheet is linked, never inlined: each distinct inline
+    // <style> costs ~110 characters of the 2,000-character CSP line (AGENTS.md
+    // invariant 6), while a linked file costs nothing and is cached immutable.
+    inlineStylesheets: 'never',
+  },
 
   i18n: {
     locales: ['en', 'pt-br'],
@@ -93,20 +104,25 @@ export default defineConfig({
         // The TeX source of each formula; the rendered MathML text stays, so an
         // excerpt keeps its quantities ("3,000 × 64 KiB = 187.5 MiB").
         'annotation',
-        '.lesson-rail',
-        '.lesson-header__crumb',
-        '.lesson-header__tier',
-        '.updated',
+        // Course-player chrome: navigation, progress, answers and status lines
+        // are not teaching content and would leak into every excerpt.
+        '[data-syllabus]',
+        '[data-lesson-steps]',
+        '[data-here-chart]',
+        '[data-reading-minutes]',
+        '[data-course-progress]',
+        '[data-continue]',
+        '.lesson-head__crumb',
+        '.lesson-head__meta',
         '.prerequisites',
-        '.part-index',
         '[data-teach-back]',
         '[data-lesson-quiz]',
         '.completion',
         '.lesson-nav',
-        '[data-progress]',
-        '[data-done]',
-        '.track-section__open',
-        '.back',
+        '.listing__minutes',
+        '.listing__done',
+        '.track__back',
+        '.track__next',
       ],
     },
   })],
@@ -116,6 +132,10 @@ export default defineConfig({
     build: {
       // Surfaces accidental fat chunks; the real gate is scripts/bundle-budget.mjs.
       chunkSizeWarningLimit: 200,
+      // Processed component scripts are emitted as files, never inlined. Vite's
+      // default (4 KB) inlined every small <script> as a distinct module block,
+      // one CSP hash each; a file costs no hash and is cached immutable.
+      assetsInlineLimit: 0,
     },
   },
 })

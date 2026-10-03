@@ -3,6 +3,14 @@ import { getCollection } from 'astro:content'
 import { COMPONENTS, LENS_LABELS, factText, lensText, type Lens } from '~/lib/explorer-data'
 import { lessonPath, type LessonEntry } from '~/lib/content'
 import { type Locale } from '~/lib/i18n'
+import {
+  DECKS,
+  FRONT_AZIMUTH,
+  RIM_RADIUS,
+  bypassPaths,
+  deckLayout,
+  transformerMarkers,
+} from '~/lib/three/scenes/transformer'
 
 interface Props {
   locale: Locale
@@ -13,16 +21,15 @@ const isPt = locale === 'pt-br'
 
 const t = {
   library: isPt ? 'Biblioteca de componentes' : 'Component library',
-  scrollHint: isPt ? 'Deslize para ver todos →' : 'Swipe to see all →',
+  scrollHint: isPt ? 'Deslize para ver os 12 componentes' : 'Swipe for all 12 components',
+  // Read top to bottom as the instrument stands: output above, input below.
   layerKey: isPt
-    ? [['Saída', 'Cabeça LM'], ['Cálculo', 'Feed-forward'], ['Roteamento', 'Auto-atenção'], ['Entrada', 'Embeddings']]
-    : [['Output', 'LM head'], ['Compute', 'Feed-forward'], ['Routing', 'Self-attention'], ['Input', 'Embeddings']],
-  stageHint: isPt
-    ? 'ESPÉCIME 3D · CLIQUE NUM PONTO PARA EXPLORAR'
-    : '3D SPECIMEN · CLICK A DOT TO EXPLORE',
-  tip: isPt
-    ? ['Arraste para girar', 'Role para aproximar', 'Setas percorrem os pontos', 'Escape fecha']
-    : ['Drag to rotate', 'Scroll to zoom', 'Arrow keys cycle the dots', 'Escape closes'],
+    ? [['lm-head', 'Saída', 'Cabeça de linguagem'], ['ffn', 'Cálculo', 'Feed-forward'], ['attention', 'Roteamento', 'Self-attention'], ['embedding', 'Entrada', 'Embeddings']]
+    : [['lm-head', 'Output', 'LM head'], ['ffn', 'Compute', 'Feed-forward'], ['attention', 'Routing', 'Self-attention'], ['embedding', 'Input', 'Embeddings']],
+  keyTitle: isPt ? 'Camadas, da entrada à saída' : 'Layers, input to output',
+  how: isPt
+    ? 'Arraste para girar · role para aproximar · as setas percorrem as portas · Escape fecha'
+    : 'Drag to rotate · scroll to zoom · arrow keys move between ports · Escape closes',
   viewControls: isPt ? 'Controles da visualização' : 'View controls',
   motion: isPt ? 'Animar' : 'Animate',
   keyFacts: isPt ? 'Dados principais' : 'Key facts',
@@ -37,6 +44,9 @@ const t = {
   cost: isPt ? 'Custo' : 'Cost',
   introduced: isPt ? 'Introduzido' : 'Introduced',
   variants: isPt ? 'Variantes' : 'Variants',
+  posterTitle: isPt
+    ? 'Elevação do instrumento: um bloco transformer, da camada de embeddings, embaixo, até a cabeça LM e o amostrador, em cima, com as 12 portas numeradas'
+    : 'Elevation of the instrument: one transformer block, from the embedding deck at the bottom to the LM head and sampler at the top, with its 12 numbered ports',
 }
 
 const lenses: Lens[] = ['math', 'compare', 'animation', 'failure', 'context']
@@ -67,132 +77,229 @@ for (const component of COMPONENTS) {
   hrefByComponent.set(component.id, lessonPath(locale, lesson))
 }
 const firstLessonHref = hrefByComponent.get(first.id)!
+
+/*
+ * The poster is an engraved elevation of the same instrument, computed from the
+ * scene's own layout, so the drawing a reader sees before (or without) WebGL
+ * cannot disagree with the model that replaces it. A slightly raised
+ * orthographic view from the camera's starting azimuth.
+ */
+const SCALE = 88
+const CX = 150
+const TOP_Y = 1.55
+const CY = 34 + TOP_Y * SCALE
+const TILT = 0.24
+const right = { x: Math.cos(FRONT_AZIMUTH - Math.PI / 2), z: Math.sin(FRONT_AZIMUTH - Math.PI / 2) }
+const toward = { x: Math.cos(FRONT_AZIMUTH), z: Math.sin(FRONT_AZIMUTH) }
+const project = (x: number, y: number, z: number): [number, number] => [
+  CX + SCALE * (x * right.x + z * right.z),
+  CY - SCALE * y + SCALE * TILT * (x * toward.x + z * toward.z),
+]
+const fmt = (n: number): string => n.toFixed(1)
+const layout = deckLayout()
+const deckAt = (id: string) => layout.get(id) ?? { y: 0, plate: 0, rise: 0, top: 0 }
+const rx = SCALE * RIM_RADIUS
+const ry = rx * TILT
+const cylinder = (y: number, thickness: number, radius = RIM_RADIUS) => {
+  const [, top] = project(0, y + thickness / 2, 0)
+  const [, bottom] = project(0, y - thickness / 2, 0)
+  const r = SCALE * radius
+  const e = r * TILT
+  return {
+    band: `M${fmt(CX - r)} ${fmt(top)}V${fmt(bottom)}A${fmt(r)} ${fmt(e)} 0 0 0 ${fmt(CX + r)} ${fmt(bottom)}V${fmt(top)}Z`,
+    top: { cy: fmt(top), rx: fmt(r), ry: fmt(e) },
+  }
+}
+const plates = DECKS.filter((deck) => deck.plate > 0.05).map((deck) => ({
+  id: deck.id,
+  porcelain: deck.id === 'embedding' || deck.id === 'lm-head',
+  ...cylinder(deckAt(deck.id).y, deck.plate),
+}))
+const hoops = DECKS.filter((deck) => deck.plate <= 0.05).map((deck) => ({ id: deck.id, cy: fmt(project(0, deckAt(deck.id).y, 0)[1]) }))
+const attention = deckAt('attention')
+const domeBase = project(0, attention.y + attention.plate / 2, 0)[1]
+const domeHeight = SCALE * (attention.rise - 0.02)
+const domeRx = SCALE * 0.6
+const ffn = deckAt('ffn')
+const coreY = project(0, ffn.y + ffn.plate / 2 + 0.16, 0)[1]
+const lmHead = deckAt('lm-head')
+const logitBase = lmHead.y + lmHead.plate / 2
+const logits = Array.from({ length: 13 }, (_, index) => {
+  const angle = FRONT_AZIMUTH - Math.PI / 2 + (index / 12) * Math.PI
+  const height = index === 6 ? 0.25 : 0.04 + 0.12 * Math.abs(Math.sin(index * 2.4))
+  const [x, y0] = project(Math.cos(angle) * 0.8, logitBase, Math.sin(angle) * 0.8)
+  return { x: fmt(x), y0: fmt(y0), y1: fmt(y0 - SCALE * height), sampled: index === 6 }
+})
+const bypasses = Object.values(bypassPaths()).map((points) =>
+  points.map((point, index) => {
+    const [x, y] = project(point.x, point.y, point.z)
+    return `${index === 0 ? 'M' : 'L'}${fmt(x)} ${fmt(y)}`
+  }).join(''),
+)
+const embedding = deckAt('embedding')
+const plinth = cylinder(-1.94 + 0.07, 0.14, 1.22)
+const [, footY] = project(0, -2.06, 0)
+const [, crownY] = project(0, lmHead.top + 0.2, 0)
+const [, axisBottom] = project(0, -1.8, 0)
+const chevrons = DECKS.slice(0, -1).map((deck, index) => {
+  const above = deckAt(DECKS[index + 1]!.id)
+  const mid = (deckAt(deck.id).top + above.y - above.plate / 2) / 2
+  return fmt(project(0, mid, 0)[1])
+})
+const ports = transformerMarkers()
+  .map((marker, index) => {
+    const [x, y, z] = marker.position
+    const [sx, sy] = project(x, y, z)
+    return { n: index + 1, x: fmt(sx), y: fmt(sy), facing: x * toward.x + z * toward.z > -0.1 }
+  })
+  .filter((port) => port.facing)
 ---
 
 <section class="explorer" data-explorer data-locale={locale}>
-  <!-- Library rail -->
-  <nav class="rail panel" aria-label={t.library}>
-    <p class="eyebrow rail__title">{t.library}</p>
-    <ul class="rail__list">
+  <nav class="index" aria-label={t.library}>
+    <h2 class="index__title">{t.library}</h2>
+    <ol class="index__list">
       {
         COMPONENTS.map((c, i) => (
           <li>
             <button
               type="button"
-              class="rail__item"
+              class="index__item"
               data-component={c.id}
               data-lesson-href={hrefByComponent.get(c.id)}
               aria-current={i === 0 ? 'true' : 'false'}
-              style={`--item-accent:${c.accent}`}
             >
-              <span class="rail__name">{c.name[locale]}</span>
-              <span class="rail__system">{c.system[locale]}</span>
+              <span class="index__port" data-numeric>{i + 1}</span>
+              <span class="index__name">{c.name[locale]}</span>
+              <span class="index__system">{c.system[locale]}</span>
             </button>
           </li>
         ))
       }
-    </ul>
-    <p class="rail__scroll-hint">{t.scrollHint}</p>
+    </ol>
+    <p class="index__hint">{t.scrollHint}</p>
   </nav>
 
-  <!-- Stage -->
-  <div class="stage panel">
-    <aside class="tip" aria-hidden="true">
-      <ul>{t.tip.map((line) => <li>{line}</li>)}</ul>
-    </aside>
-
-    <div class="stage__tools" role="group" aria-label={t.viewControls}>
-      <button type="button" data-tool="isolate" aria-pressed="false" disabled>{t.isolate}</button>
-      <button type="button" data-tool="reset" disabled>{t.reset}</button>
-      <label class="stage__motion">
-        <input type="checkbox" data-tool="motion" checked disabled />
-        <span>{t.motion}</span>
-      </label>
-    </div>
-
-    <div class="stage__canvas-wrap">
-      {/*
-        Poster first. WebGL replaces it only once the renderer is proven to
-        work, so a device without WebGL — or a chunk that fails to load — shows
-        a real diagram rather than a blank box or a spinner stuck at 8%.
-      */}
-      {/*
-        The literal hex below are DELIBERATE, not an oversight — do not "fix"
-        them to design tokens. `.stage` is `background: var(--abyss)`, and
-        --abyss is light-dark(#061a2b, #020d16): this ground is dark in BOTH
-        themes. The poster therefore paints on a fixed dark surface, exactly
-        like the three.js scene that replaces it, and its palette matches that
-        scene's materials rather than the page's.
-
-        Swapping in var(--accent) would break light mode, not repair it: the
-        light-mode accent is #007687, a dark teal that all but vanishes on
-        #061a2b. Verified in a real browser — in light theme the computed stage
-        background is rgb(6, 26, 43).
-      */}
-      <div class="stage__poster" data-poster>
-        <svg viewBox="0 0 280 340" role="img" aria-labelledby="poster-title">
-          <title id="poster-title">
-            {isPt
-              ? 'Diagrama de um bloco transformer, das embeddings até o amostrador'
-              : 'Diagram of a transformer block, from embeddings up to the sampler'}
-          </title>
-          <g fill="none" stroke="#56d7e5" stroke-width="1" opacity="0.38">
-            <path d="M30 28v284M250 28v284" />
-            <path d="M24 42h12M24 170h12M24 298h12M244 42h12M244 170h12M244 298h12" />
-            <path d="M140 28v14M140 298v14" stroke-dasharray="3 4" />
-          </g>
-          {
-            [
-              { y: 280, h: 22, c: '#1bb7c8' },
-              { y: 252, h: 12, c: '#9fb6ba' },
-              { y: 196, h: 48, c: '#f2d45c' },
-              { y: 178, h: 10, c: '#1bb7c8' },
-              { y: 160, h: 12, c: '#9fb6ba' },
-              { y: 110, h: 42, c: '#1bb7c8' },
-              { y: 92, h: 10, c: '#9fb6ba' },
-              { y: 62, h: 22, c: '#f2d45c' },
-            ].map((s) => (
-              <rect x="50" y={s.y} width="180" height={s.h} fill={s.c} stroke="#d7ebeb" stroke-width="1" opacity="0.9" />
-            ))
-          }
-          <g fill="#56d7e5">
-            <circle cx="38" cy="291" r="3" /><circle cx="38" cy="202" r="3" />
-            <circle cx="38" cy="116" r="3" /><circle cx="38" cy="68" r="3" />
-          </g>
-        </svg>
+  <div class="stage">
+    <div class="stage__field">
+      <div class="stage__bar">
+        <div class="stage__tools" role="group" aria-label={t.viewControls}>
+          <button type="button" data-tool="isolate" aria-pressed="false" disabled>{t.isolate}</button>
+          <button type="button" data-tool="reset" disabled>{t.reset}</button>
+          <label class="stage__motion">
+            <input type="checkbox" data-tool="motion" checked disabled />
+            <span>{t.motion}</span>
+          </label>
+        </div>
+        <p class="stage__how">{t.how}</p>
       </div>
-      <canvas class="stage__canvas" data-stage-canvas hidden></canvas>
-      <ol class="stage__layer-key">
-        {t.layerKey.map(([role, layer]) => <li><span>{role}</span>{layer}</li>)}
-      </ol>
+
+      <div class="stage__canvas-wrap">
+        {/*
+          Poster first. WebGL replaces it only once the renderer is proven to
+          work, so a device without WebGL — or a chunk that fails to load —
+          shows a real drawing rather than a blank box or a stuck spinner.
+          Colours are tokens resolved under this field's dark color-scheme.
+        */}
+        <div class="stage__poster" data-poster>
+          <svg viewBox="0 0 320 420" role="img" aria-labelledby="poster-title">
+            <title id="poster-title">{t.posterTitle}</title>
+            <g class="poster__chart">
+              {[150, 108, 66].map((r) => <ellipse cx={CX} cy={fmt(footY)} rx={r} ry={fmt(r * TILT)} />)}
+            </g>
+            <g class="poster__steel">
+              <ellipse cx={CX} cy={fmt(footY)} rx="38" ry={fmt(38 * TILT)} />
+              <path d={`M${CX - 5} ${fmt(footY)}V${fmt(axisBottom)}M${CX + 5} ${fmt(footY)}V${fmt(axisBottom)}`} />
+            </g>
+            <path class="poster__enamel" d={plinth.band} />
+            <ellipse class="poster__enamel poster__engraved" cx={CX} cy={plinth.top.cy} rx={plinth.top.rx} ry={plinth.top.ry} />
+            <path class="poster__path" d={`M${CX} ${fmt(project(0, embedding.top, 0)[1])}V${fmt(crownY - 10)}`} />
+            {bypasses.map((d) => <path class="poster__bypass" d={d} />)}
+            {
+              plates.map((plate) => (
+                <g class={plate.porcelain ? 'poster__porcelain' : 'poster__enamel'}>
+                  <path d={plate.band} />
+                  <ellipse class="poster__engraved" cx={CX} cy={plate.top.cy} rx={plate.top.rx} ry={plate.top.ry} />
+                </g>
+              ))
+            }
+            {hoops.map((hoop) => <ellipse class="poster__hoop" cx={CX} cy={hoop.cy} rx={fmt(rx)} ry={fmt(ry)} />)}
+            <g class="poster__dome">
+              <path d={`M${fmt(CX - domeRx)} ${fmt(domeBase)}C${fmt(CX - domeRx)} ${fmt(domeBase - domeHeight * 1.3)} ${fmt(CX + domeRx)} ${fmt(domeBase - domeHeight * 1.3)} ${fmt(CX + domeRx)} ${fmt(domeBase)}`} />
+              <path d={`M${fmt(CX - domeRx * 0.5)} ${fmt(domeBase + 6)}C${fmt(CX - domeRx * 0.5)} ${fmt(domeBase - domeHeight * 1.2)} ${fmt(CX + domeRx * 0.5)} ${fmt(domeBase - domeHeight * 1.2)} ${fmt(CX + domeRx * 0.5)} ${fmt(domeBase + 6)}`} />
+            </g>
+            <g class="poster__arcs">
+              <path d={`M${CX + 14} ${fmt(domeBase - domeHeight * 0.8)}Q${CX - 10} ${fmt(domeBase - domeHeight * 1.1)} ${fmt(CX - domeRx * 0.8)} ${fmt(domeBase - domeHeight * 0.3)}`} />
+              <path d={`M${CX + 14} ${fmt(domeBase - domeHeight * 0.8)}Q${CX + 30} ${fmt(domeBase - domeHeight * 0.95)} ${fmt(CX + domeRx * 0.75)} ${fmt(domeBase - domeHeight * 0.35)}`} />
+              <path d={`M${CX + 14} ${fmt(domeBase - domeHeight * 0.8)}Q${CX - 4} ${fmt(domeBase - domeHeight * 0.55)} ${fmt(CX - domeRx * 0.3)} ${fmt(domeBase - domeHeight * 0.15)}`} />
+            </g>
+            <g class="poster__stars">
+              <circle cx={CX + 14} cy={fmt(domeBase - domeHeight * 0.8)} r="3.4" />
+              <circle cx={fmt(CX - domeRx * 0.8)} cy={fmt(domeBase - domeHeight * 0.3)} r="2.6" />
+              <circle cx={fmt(CX + domeRx * 0.75)} cy={fmt(domeBase - domeHeight * 0.35)} r="2" />
+              <circle cx={fmt(CX - domeRx * 0.3)} cy={fmt(domeBase - domeHeight * 0.15)} r="1.6" />
+            </g>
+            <circle class="poster__core" cx={CX} cy={fmt(coreY)} r={fmt(SCALE * 0.17)} />
+            <ellipse class="poster__hoop" cx={CX} cy={fmt(coreY)} rx={fmt(SCALE * 0.25)} ry={fmt(SCALE * 0.1)} />
+            <g class="poster__logits">
+              {logits.map((bar) => <path class={bar.sampled ? 'is-sampled' : undefined} d={`M${bar.x} ${bar.y0}V${bar.y1}`} />)}
+            </g>
+            <ellipse class="poster__hoop" cx={CX} cy={fmt(crownY)} rx="14" ry={fmt(14 * TILT)} />
+            <g class="poster__chevrons">
+              {chevrons.map((y) => <path d={`M${CX - 4} ${Number(y) + 3}L${CX} ${Number(y) - 4}L${CX + 4} ${Number(y) + 3}Z`} />)}
+            </g>
+            <g class="poster__ports">
+              {ports.map((port) => (
+                <g>
+                  <circle cx={port.x} cy={port.y} r="7.5" />
+                  <text x={port.x} y={port.y} dy="0.35em">{port.n}</text>
+                </g>
+              ))}
+            </g>
+          </svg>
+        </div>
+        <canvas class="stage__canvas" data-stage-canvas hidden></canvas>
+
+        {/* Leader lines for pinned labels; the client writes each path. */}
+        <svg class="stage__leaders" data-leaders aria-hidden="true" focusable="false">
+          {t.layerKey.map(([deck]) => <path data-leader={deck} />)}
+          <path class="stage__leader-select" data-leader="select" />
+        </svg>
+
+        <div class="stage__key">
+          <p class="stage__key-title">{t.keyTitle}</p>
+          <ol class="stage__layer-key" data-layer-key>
+            {t.layerKey.map(([deck, role, layer]) => <li data-layer-anchor={deck}><span>{role}</span>{layer}</li>)}
+          </ol>
+        </div>
+
+        <div class="callout-card" data-callout hidden>
+          <p class="callout-card__label" data-callout-label></p>
+          <p class="callout-card__detail" data-callout-detail></p>
+        </div>
+      </div>
+
+      {/*
+        Text equivalent of the annotation layer. Linked from the canvas via
+        aria-describedby, so a screen-reader user gets the same content the
+        sighted user gets from the ports.
+      */}
+      <div class="visually-hidden" id="specimen-annotations">{t.annotations}</div>
+
+      <p class="stage__nowebgl" data-nowebgl hidden>{t.noWebgl}</p>
     </div>
-
-    <p class="stage__hint eyebrow">{t.stageHint}</p>
-
-    <!-- DOM callout: anchored to the 3D marker, but real HTML text. -->
-    <div class="callout-card" data-callout hidden>
-      <p class="callout-card__label" data-callout-label></p>
-      <p class="callout-card__detail" data-callout-detail></p>
-    </div>
-
-    {/*
-      Text equivalent of the annotation layer. Not decoration: it is linked from
-      the canvas via aria-describedby, so a screen-reader user gets the same
-      content the sighted user gets from the dots.
-    */}
-    <div class="visually-hidden" id="specimen-annotations">{t.annotations}</div>
-
-    <p class="stage__nowebgl" data-nowebgl hidden>{t.noWebgl}</p>
   </div>
 
-  <!-- Detail panel -->
-  <article class="detail panel" aria-live="polite">
-    <p class="eyebrow" data-detail-system>{first.system[locale]}</p>
-    <h2 data-detail-name>{first.name[locale]}</h2>
-    <p class="detail__tagline aside-hand" data-detail-tagline>{first.tagline[locale]}</p>
+  <article class="detail" aria-live="polite">
+    <h2 class="detail__name">
+      <span class="detail__port" data-numeric data-detail-port>1</span>
+      <span data-detail-name>{first.name[locale]}</span>
+    </h2>
+    <p class="detail__system" data-detail-system>{first.system[locale]}</p>
+    <p class="detail__tagline" data-detail-tagline>{first.tagline[locale]}</p>
     <p class="detail__summary" data-detail-summary>{first.summary[locale]}</p>
 
-    <p class="eyebrow detail__facts-title">{t.keyFacts}</p>
+    <h3 class="detail__facts-title">{t.keyFacts}</h3>
     <dl class="detail__facts">
       <div><dt>{t.params}</dt><dd data-fact-params>{factText(first, 'params', locale)}</dd></div>
       <div><dt>{t.cost}</dt><dd data-fact-cost>{factText(first, 'cost', locale)}</dd></div>
@@ -201,17 +308,16 @@ const firstLessonHref = hrefByComponent.get(first.id)!
     </dl>
 
     <a class="detail__cta" data-detail-cta href={firstLessonHref}>
-      {t.viewLesson} <span aria-hidden="true">→</span>
+      <span>{t.viewLesson}</span> <span aria-hidden="true">→</span>
     </a>
   </article>
 
-  <!-- Five-lens card deck -->
-  <div class="deck">
+  <div class="lenses">
     {
       lenses.map((lens) => (
-        <article class="deck__card panel">
-          <p class="eyebrow deck__lens">{LENS_LABELS[lens][locale]}</p>
-          <p class="deck__body" data-lens={lens}>{lensText(first, lens, locale)}</p>
+        <article class="lenses__item">
+          <h3 class="lenses__title">{LENS_LABELS[lens][locale]}</h3>
+          <p class="lenses__body" data-lens={lens}>{lensText(first, lens, locale)}</p>
         </article>
       ))
     }
@@ -230,87 +336,167 @@ const firstLessonHref = hrefByComponent.get(first.id)!
   .explorer {
     display: grid;
     grid-template-columns: minmax(0, 2fr) minmax(18rem, 0.72fr);
-    grid-template-areas: 'rail rail' 'stage detail' 'deck deck';
-    gap: 1px;
+    grid-template-areas: 'index index' 'stage detail' 'lenses lenses';
     max-width: var(--shell-max);
     margin-inline: auto;
     padding-inline: var(--space-lg);
+  }
+
+  /* ---- Component index: twelve ports, in the order the token meets them ---- */
+
+  .index {
+    grid-area: index;
+    display: grid;
+    grid-template-columns: minmax(9rem, 0.2fr) minmax(0, 1fr);
     border-block: 1px solid var(--rule-strong);
   }
-
-  .rail {
-    grid-area: rail;
-    display: grid;
-    grid-template-columns: minmax(8rem, 0.28fr) minmax(0, 1fr);
-    align-items: stretch;
-    padding: 0;
-    overflow: hidden;
-    background: var(--paper-raised);
-    border: 0;
-    border-block-start: 2px solid var(--accent);
-    border-radius: 0;
+  .index__title {
+    align-self: center;
+    margin: 0;
+    padding: var(--space-sm) var(--space-sm) var(--space-sm) 0;
+    font: var(--weight-semibold) var(--text-sm) / var(--leading-snug) var(--font-display);
+    color: var(--ink);
   }
-  .rail__title { display: grid; align-content: center; margin: 0; padding: var(--space-sm); border-inline-end: 1px solid var(--rule); }
-  .rail__list {
-    list-style: none;
+  /* Two rows of six: every port visible at once where there is room. */
+  .index__list {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     margin: 0;
     padding: 0;
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(9.5rem, 1fr);
-    overflow-x: auto;
-    scroll-snap-type: inline proximity;
+    list-style: none;
   }
-  .rail__list li { display: grid; border-inline-end: 1px solid var(--rule); scroll-snap-align: start; }
-  .rail__scroll-hint { display: none; }
+  .index__list li { display: grid; border-inline-start: 1px solid var(--rule); }
+  .index__list li:nth-child(n + 7) { border-block-start: 1px solid var(--rule); }
+  .index__hint { display: none; }
 
-  .rail__item {
-    width: 100%;
+  .index__item {
+    position: relative;
     display: grid;
-    gap: 1px;
-    text-align: start;
-    padding: var(--space-sm);
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    column-gap: var(--space-2xs);
+    row-gap: 2px;
+    align-content: start;
+    width: 100%;
+    padding: var(--space-sm) var(--space-xs);
     border: 0;
-    border-block-end: 3px solid transparent;
     border-radius: 0;
     background: transparent;
-    cursor: pointer;
+    color: var(--ink);
     font: inherit;
-    color: inherit;
-    transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+    text-align: start;
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease-out);
+  }
+  .index__item:hover { background: var(--plate-raised); }
+  .index__item:focus-visible { outline-offset: -3px; }
+
+  /* The port numeral is the 3D port's twin: a porcelain disc with an ink figure. */
+  .index__port {
+    grid-row: 1 / span 2;
+    display: grid;
+    place-items: center;
+    inline-size: 1.75rem;
+    block-size: 1.75rem;
+    border: 1px solid var(--rule-strong);
+    border-radius: 50%;
+    font: var(--weight-bold) var(--text-2xs) / 1 var(--font-display);
+    color: var(--ink);
+    background: var(--plate);
+  }
+  .index__name {
+    font: var(--weight-semibold) var(--text-sm) / var(--leading-snug) var(--font-display);
+    hyphens: auto;
+  }
+  .index__system {
+    font: var(--weight-normal) var(--text-2xs) / var(--leading-snug) var(--font-display);
+    color: var(--ink-muted);
   }
 
-  .rail__item:hover { background: var(--paper-sunken); }
-
-  .rail__item[aria-current='true'] {
-    background: var(--paper-sunken);
-    border-block-end-color: var(--item-accent);
+  /* Current component: the reticle, the site's "you are here" mark. */
+  .index__item[aria-current='true'] { background: var(--plate-raised); }
+  .index__item[aria-current='true'] .index__port {
+    border-color: var(--reticle);
+    box-shadow: 0 0 0 2px var(--plate-raised), 0 0 0 3.5px var(--reticle);
   }
-  .rail__item[aria-current='true'] .rail__system { color: var(--ink-muted); }
-
-  .rail__name { font-family: var(--font-ui); font-size: var(--text-base); font-weight: var(--weight-semibold); }
-  .rail__system {
-    font-family: var(--font-ui);
-    font-size: var(--text-3xs);
-    letter-spacing: var(--tracking-eyebrow);
-    text-transform: uppercase;
-    color: var(--ink-faint);
+  .index__item[aria-current='true']::after {
+    content: '';
+    position: absolute;
+    inset-inline: var(--space-xs);
+    inset-block-end: 0;
+    block-size: 2px;
+    background: var(--reticle);
   }
+
+  /* ---- Stage: the night plate, in both editions ---- */
 
   .stage {
     grid-area: stage;
     position: relative;
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
-    min-height: clamp(38rem, 68vh, 52rem);
-    padding: var(--space-md);
-    overflow: hidden;
-    color: var(--ink-on-abyss);
-    background: var(--abyss);
-    border: 0;
-    border-block-start: 2px solid var(--accent);
-    border-radius: 0;
+    min-height: clamp(38rem, 72vh, 54rem);
+    background: var(--night);
+    color: var(--ink-on-night);
   }
+  /* Tokens inside resolve to the field (dark) edition, whatever the page is. */
+  .stage__field {
+    color-scheme: dark;
+    position: relative;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    min-height: 0;
+    padding: var(--space-md);
+    color: var(--ink);
+  }
+
+  .stage__bar {
+    position: relative;
+    z-index: var(--z-raised);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs) var(--space-md);
+    align-items: center;
+    justify-content: space-between;
+    margin-block-end: var(--space-xs);
+  }
+  .stage__how {
+    margin: 0;
+    font: var(--weight-normal) var(--text-2xs) / var(--leading-snug) var(--font-display);
+    color: var(--ink-muted);
+  }
+
+  .stage__tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    border: 1px solid var(--rule-field);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .stage__tools button,
+  .stage__motion {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-height: 2.5rem;
+    padding: 0 var(--space-sm);
+    border: 0;
+    border-inline-end: 1px solid var(--rule-field);
+    border-radius: 0;
+    background: transparent;
+    color: var(--ink);
+    font: var(--weight-medium) var(--text-xs) / 1 var(--font-display);
+    cursor: pointer;
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+  }
+  .stage__motion { border-inline-end: 0; }
+  .stage__tools button:hover:not(:disabled) { background: var(--accent-soft); }
+  .stage__tools button:focus-visible { outline-offset: -3px; }
+  .stage__tools button[aria-pressed='true'],
+  .stage__tools button[aria-pressed='true']:hover { background: var(--accent); color: var(--accent-ink); }
+  .stage__tools button:disabled { color: var(--ink-faint); cursor: default; }
+  .stage__motion input { margin: 0; accent-color: var(--accent); }
+  .stage__motion:has(input:disabled) { color: var(--ink-faint); cursor: default; }
 
   .stage__canvas-wrap {
     position: relative;
@@ -320,228 +506,263 @@ const firstLessonHref = hrefByComponent.get(first.id)!
     block-size: 100%;
     min-inline-size: 0;
     min-height: 0;
-    border-block: 1px solid rgb(255 255 255 / 0.14);
+    border-block: 1px solid var(--rule);
   }
   /* The renderer updates the canvas width/height attributes for its drawing
      buffer. A replaced element normally feeds that intrinsic ratio back into
      grid sizing, so resizing mobile → desktop could make the stage 1,680px
      tall. Taking it out of flow makes the wrapper the sole layout authority. */
-  .stage__canvas { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; display: block; touch-action: none; }
+  .stage__canvas { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; display: block; touch-action: none; cursor: grab; }
+  .stage__canvas:active { cursor: grabbing; }
+  .stage__canvas[data-over-port] { cursor: pointer; }
   .stage__canvas:focus-visible { outline-offset: -4px; }
-  .stage__poster { display: grid; place-items: center; height: 100%; }
-  .stage__poster svg { max-height: min(100%, 32rem); width: auto; filter: drop-shadow(0 1rem 1.5rem rgb(0 0 0 / 0.28)); }
-  .stage__layer-key {
+
+  .stage__poster { display: grid; place-items: center; inline-size: 100%; block-size: 100%; }
+  .stage__poster svg { inline-size: auto; block-size: min(100%, 34rem); max-inline-size: 100%; overflow: visible; }
+  .poster__chart ellipse { fill: none; stroke: var(--grid); stroke-width: 0.8; }
+  .poster__steel ellipse, .poster__steel path { fill: none; stroke: var(--ink-muted); stroke-width: 1.2; }
+  .poster__enamel, .poster__enamel path, .poster__enamel ellipse { fill: var(--night-raised); stroke: var(--ink-muted); stroke-width: 0.8; }
+  .poster__porcelain path, .poster__porcelain ellipse { fill: var(--ink); stroke: var(--ink-muted); stroke-width: 0.8; }
+  .poster__engraved { stroke: var(--accent); stroke-dasharray: 1 2.2; }
+  .poster__hoop { fill: none; stroke: var(--ink-muted); stroke-width: 1.6; }
+  .poster__path { fill: none; stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 2.5; }
+  .poster__bypass { fill: none; stroke: var(--ink-muted); stroke-width: 1.8; stroke-linejoin: round; }
+  .poster__dome path { fill: none; stroke: var(--grid); stroke-width: 1; }
+  .poster__arcs path { fill: none; stroke: var(--accent); stroke-width: 1.2; }
+  .poster__stars circle { fill: var(--ink); }
+  .poster__core { fill: var(--tier-core); }
+  .poster__logits path { stroke: var(--ink-muted); stroke-width: 2.4; }
+  .poster__logits .is-sampled { stroke: var(--ink); stroke-width: 3; }
+  .poster__chevrons path { fill: var(--ink); }
+  .poster__ports circle { fill: var(--ink); stroke: var(--night); stroke-width: 1.5; }
+  .poster__ports text {
+    fill: var(--night);
+    font: var(--weight-bold) 8px var(--font-display);
+    text-anchor: middle;
+  }
+
+  .stage__leaders { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; overflow: visible; pointer-events: none; }
+  .stage__leaders path { fill: none; stroke: var(--ink-muted); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .stage__leaders .stage__leader-select { stroke: var(--reticle); stroke-width: 1.25; }
+
+  /* The layer key: a legend in the corner, until the live instrument pins each
+     entry beside its own deck (data-pinned, set by the client). */
+  .stage__key {
     position: absolute;
     inset-inline-start: 0;
-    inset-block-end: var(--space-xs);
+    inset-block-end: var(--space-sm);
     z-index: var(--z-raised);
-    display: grid;
-    gap: 0;
-    width: 9.5rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    color: var(--ink-muted-on-abyss);
-    background: var(--abyss);
-    border-block: 1px solid rgb(255 255 255 / 0.16);
-    border-inline-start: 2px solid var(--sonar);
     pointer-events: none;
   }
-  .stage__layer-key li { padding: var(--space-3xs) var(--space-xs); border-block-start: 1px solid rgb(255 255 255 / 0.14); font-family: var(--font-ui); font-size: var(--text-3xs); }
-  .stage__layer-key li:first-child { border-block-start: 0; }
-  .stage__layer-key span { display: block; color: var(--sonar-light); font-family: var(--font-data); letter-spacing: var(--tracking-eyebrow); text-transform: uppercase; }
-
-  .tip {
-    position: absolute;
-    inset-block-start: var(--space-md);
-    inset-inline-end: var(--space-md);
-    z-index: var(--z-raised);
-    max-width: 12rem;
-    padding: var(--space-xs) var(--space-sm);
-    color: var(--ink-muted-on-abyss);
-    background: #0d3045;
-    border: 1px solid rgb(255 255 255 / 0.2);
-    border-radius: 0;
-    font-family: var(--font-data);
+  .stage__key-title {
+    margin: 0 0 var(--space-3xs);
+    font: var(--weight-semibold) var(--text-3xs) / var(--leading-snug) var(--font-display);
+    color: var(--ink-muted);
+  }
+  .stage__layer-key { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+  .stage__layer-key li {
+    display: grid;
+    padding: var(--space-3xs) var(--space-xs);
+    border-inline-start: 1px solid var(--rule-strong);
+    font: var(--weight-medium) var(--text-xs) / var(--leading-snug) var(--font-display);
+    color: var(--ink);
+  }
+  .stage__layer-key span {
     font-size: var(--text-3xs);
-    letter-spacing: 0.02em;
+    font-weight: var(--weight-normal);
+    color: var(--ink-muted);
   }
-  .tip ul { margin: 0; padding-inline-start: var(--space-sm); }
-
-  .stage__tools {
-    position: relative;
-    z-index: var(--z-raised);
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0;
-    align-items: center;
-    width: fit-content;
-    margin-block-end: var(--space-xs);
-    border: 1px solid rgb(255 255 255 / 0.24);
-  }
-  .stage__tools button {
-    font-family: var(--font-ui);
-    font-size: var(--text-2xs);
-    min-height: 2.2rem;
-    padding: 0.3rem 0.8rem;
-    border: 0;
-    border-inline-end: 1px solid rgb(255 255 255 / 0.24);
-    border-radius: 0;
-    background: transparent;
-    color: var(--ink-muted-on-abyss);
-    cursor: pointer;
-  }
-  .stage__tools button:hover { color: var(--ink-on-abyss); background: rgb(255 255 255 / 0.08); }
-  .stage__tools button:disabled { color: var(--ink-muted-on-abyss); background: transparent; cursor: default; opacity: 0.55; }
-  .stage__tools button[aria-pressed='true'] { background: var(--accent); color: var(--accent-ink); }
-  .stage__motion {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    min-height: 2.2rem;
-    padding-inline: 0.8rem;
-    font-family: var(--font-ui);
-    font-size: var(--text-2xs);
-    color: var(--ink-muted-on-abyss);
-  }
-  .stage__motion input { margin: 0; accent-color: var(--accent); }
-  .stage__motion:has(input:disabled) { opacity: 0.55; }
-  .stage__hint { margin: 0; padding-block-start: var(--space-xs); color: var(--ink-muted-on-abyss); }
-  .stage__nowebgl {
-    margin: var(--space-xs) 0 0;
-    padding: var(--space-xs);
-    color: var(--ink-muted-on-abyss);
-    border-inline-start: 2px solid var(--sonar);
-    font-size: var(--text-sm);
+  .stage__key[data-pinned] { inset: 0; }
+  .stage__key[data-pinned] .stage__key-title { display: none; }
+  .stage__key[data-pinned] .stage__layer-key li {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    max-inline-size: 9.5rem;
+    border-inline-start: 0;
+    border-inline-end: 1px solid var(--rule-strong);
+    text-align: end;
+    will-change: transform;
   }
 
+  /* Selection label: real HTML text pinned to the selected port by a leader. */
   .callout-card {
     position: absolute;
+    inset-block-start: 0;
+    inset-inline-start: 0;
     z-index: var(--z-overlay);
-    max-width: 15rem;
+    max-inline-size: 15rem;
     padding: var(--space-2xs) var(--space-xs);
-    color: var(--ink-on-abyss);
-    background: var(--abyss);
-    border: 1px solid var(--accent);
-    border-radius: 0;
-    box-shadow: var(--shadow-md);
+    border: 1px solid var(--reticle);
+    border-radius: var(--radius-xs);
+    background: var(--night);
+    box-shadow: var(--shadow-callout);
+    color: var(--ink);
     pointer-events: none;
+    will-change: transform;
     transition: opacity var(--dur-fast) var(--ease-out);
   }
-  .callout-card[data-behind='true'] { opacity: 0.35; }
-  .callout-card__label { margin: 0; font-family: var(--font-ui); font-size: var(--text-2xs); font-weight: 600; }
-  .callout-card__detail { margin: 0.2rem 0 0; font-size: var(--text-sm); color: var(--ink-muted-on-abyss); line-height: var(--leading-snug); }
+  .callout-card[data-behind='true'] { opacity: 0.4; }
+  .callout-card__label { margin: 0; font: var(--weight-semibold) var(--text-sm) / var(--leading-snug) var(--font-display); }
+  .callout-card__detail { margin: 0.2rem 0 0; font: var(--weight-normal) var(--text-xs) / var(--leading-snug) var(--font-display); color: var(--ink-muted); }
+
+  .stage__nowebgl {
+    margin: var(--space-xs) 0 0;
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-sm);
+    font: var(--weight-normal) var(--text-sm) / var(--leading-snug) var(--font-display);
+    color: var(--ink-muted);
+  }
+
+  /* ---- Evidence drawer ---- */
 
   .detail {
     grid-area: detail;
-    padding: var(--space-lg) var(--space-md);
     align-content: start;
-    background: var(--paper-raised);
-    border: 0;
-    border-block-start: 2px solid var(--sonar);
-    border-radius: 0;
+    padding: var(--space-lg) 0 var(--space-lg) var(--space-lg);
+    color: var(--ink);
   }
-  .detail h2 { font-size: clamp(var(--text-2xl), 3vw, var(--text-3xl)); margin-block: var(--space-3xs) var(--space-2xs); }
-  .detail__tagline { margin-block: 0 var(--space-sm); color: var(--accent); font-family: var(--font-ui); }
-  .detail__summary { font-size: var(--text-sm); color: var(--ink-muted); }
-  .detail__facts-title { margin-block-start: var(--space-lg); padding-block-start: var(--space-sm); border-block-start: 1px solid var(--rule-strong); }
-  .detail__facts { margin: var(--space-2xs) 0 0; display: grid; gap: 0; }
-  .detail__facts div { display: grid; gap: 1px; padding-block: var(--space-xs); border-block-start: 1px solid var(--rule); }
-  .detail__facts dt {
-    font-family: var(--font-ui);
-    font-size: var(--text-3xs);
-    letter-spacing: var(--tracking-eyebrow);
-    text-transform: uppercase;
-    color: var(--ink-faint);
+  .detail__name {
+    display: flex;
+    gap: var(--space-xs);
+    align-items: baseline;
+    margin: 0;
+    font: var(--weight-bold) clamp(var(--text-2xl), 2.6vw, var(--text-3xl)) / var(--leading-tight) var(--font-display);
+    letter-spacing: var(--tracking-tight);
+    text-wrap: balance;
+    overflow-wrap: break-word;
   }
-  .detail__facts dd { margin: 0; font-size: var(--text-sm); }
+  .detail__port {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    inline-size: 2.25rem;
+    block-size: 2.25rem;
+    translate: 0 -0.2em;
+    border: 1.5px solid var(--reticle);
+    border-radius: 50%;
+    font: var(--weight-bold) var(--text-sm) / 1 var(--font-display);
+    letter-spacing: 0;
+  }
+  .detail__system {
+    margin: var(--space-2xs) 0 0;
+    font: var(--weight-medium) var(--text-sm) / var(--leading-snug) var(--font-display);
+    color: var(--ink-muted);
+  }
+  .detail__tagline {
+    margin: var(--space-md) 0 var(--space-2xs);
+    font: var(--weight-semibold) var(--text-lg) / var(--leading-snug) var(--font-display);
+    color: var(--accent);
+  }
+  .detail__summary { margin: 0; font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--ink-muted); }
+  .detail__facts-title {
+    margin: var(--space-lg) 0 0;
+    padding-block-start: var(--space-sm);
+    border-block-start: 1px solid var(--rule-strong);
+    font: var(--weight-semibold) var(--text-sm) / var(--leading-snug) var(--font-display);
+  }
+  .detail__facts { display: grid; margin: var(--space-2xs) 0 0; }
+  .detail__facts div { display: grid; gap: 2px; padding-block: var(--space-xs); border-block-start: 1px solid var(--rule); }
+  .detail__facts div:first-child { border-block-start: 0; }
+  .detail__facts dt { font: var(--weight-medium) var(--text-2xs) / var(--leading-snug) var(--font-display); color: var(--ink-muted); }
+  .detail__facts dd { margin: 0; font-size: var(--text-sm); line-height: var(--leading-snug); }
 
   .detail__cta {
     display: inline-flex;
-    justify-content: space-between;
     gap: var(--space-sm);
+    align-items: center;
+    justify-content: space-between;
+    min-block-size: 2.75rem;
     margin-block-start: var(--space-md);
-    padding: var(--space-2xs) var(--space-sm);
+    padding: 0 var(--space-md);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
     background: var(--accent);
     color: var(--accent-ink);
-    border: 1px solid var(--accent);
-    border-radius: 0;
-    font-family: var(--font-ui);
-    font-size: var(--text-sm);
+    font: var(--weight-semibold) var(--text-sm) / 1 var(--font-display);
     text-decoration: none;
+    transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
   }
   .detail__cta:hover { background: transparent; color: var(--accent); }
 
-  .deck {
-    grid-area: deck;
+  /* ---- Five reading lenses ---- */
+
+  .lenses {
+    grid-area: lenses;
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 0;
-    margin-block-start: 0;
-    border-block-start: 1px solid var(--rule-strong);
-    counter-reset: lens;
+    border-block: 1px solid var(--rule-strong);
   }
-  .deck__card {
-    min-height: 10rem;
-    padding: var(--space-md);
-    container-type: inline-size;
-    background: var(--paper-raised);
-    border: 0;
-    border-inline-start: 1px solid var(--rule);
-    border-radius: 0;
-    counter-increment: lens;
-  }
-  .deck__card:first-child { border-inline-start: 0; }
-  .deck__lens { display: flex; gap: var(--space-xs); align-items: baseline; color: var(--accent); }
-  .deck__lens::before { content: '0' counter(lens); color: var(--ink-faint); font-family: var(--font-data); }
-  .deck__body { font-size: var(--text-sm); color: var(--ink-muted); margin-block: var(--space-2xs) 0; }
-
+  .lenses__item { padding: var(--space-md) var(--space-md) var(--space-lg); border-inline-start: 1px solid var(--rule); container-type: inline-size; }
+  .lenses__item:first-child { border-inline-start: 0; padding-inline-start: 0; }
+  .lenses__title { margin: 0; font: var(--weight-semibold) var(--text-sm) / var(--leading-snug) var(--font-display); color: var(--ink); }
+  .lenses__body { margin: var(--space-2xs) 0 0; font-size: var(--text-sm); line-height: var(--leading-normal); color: var(--ink-muted); }
   @container (min-width: 260px) {
-    .deck__body { font-size: var(--text-base); }
+    .lenses__body { font-size: var(--text-base); }
   }
 
   @media (max-width: 1180px) {
-    .explorer {
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-areas: 'rail' 'stage' 'detail' 'deck';
-    }
+    .explorer { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'index' 'stage' 'detail' 'lenses'; }
+    .index { grid-template-columns: minmax(0, 1fr); }
+    .index__title { padding: var(--space-xs) 0; border-block-end: 1px solid var(--rule); }
+    .index__list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .index__list li:nth-child(n + 7) { border-block-start: 0; }
+    .index__list li:nth-child(n + 5) { border-block-start: 1px solid var(--rule); }
+    .index__list li:nth-child(4n + 1) { border-inline-start: 0; }
     .stage { min-height: clamp(36rem, 66vh, 46rem); }
-    .detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 0.7fr); column-gap: var(--space-xl); }
+    .detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, 0.7fr); column-gap: var(--space-xl); padding-inline: 0; }
     .detail > :not(.detail__facts-title, .detail__facts) { grid-column: 1; }
     .detail__facts-title, .detail__facts { grid-column: 2; }
     .detail__facts-title { grid-row: 1; margin-block-start: 0; }
-    .detail__facts { grid-row: 2 / span 4; }
-    .deck { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .deck__card:nth-child(odd) { border-inline-start: 0; }
-    .deck__card:nth-child(n + 3) { border-block-start: 1px solid var(--rule); }
+    .detail__facts { grid-row: 2 / span 5; }
+    .lenses { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .lenses__item { padding-inline-start: var(--space-md); }
+    .lenses__item:nth-child(odd) { border-inline-start: 0; padding-inline-start: 0; }
+    .lenses__item:nth-child(n + 3) { border-block-start: 1px solid var(--rule); }
   }
 
   @media (max-width: 42rem) {
     .explorer { padding-inline: var(--space-sm); }
-    .rail { grid-template-columns: 1fr; }
-    .rail__title { padding: var(--space-xs) var(--space-sm); border-inline-end: 0; border-block-end: 1px solid var(--rule); }
-    .rail__list { grid-auto-columns: minmax(10.5rem, 72vw); }
-    .rail__scroll-hint {
+    /* One swipeable row on a phone, snapped per port. */
+    .index__list {
+      grid-template-columns: none;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(9.5rem, 62vw);
+      overflow-x: auto;
+      scroll-snap-type: inline proximity;
+      scrollbar-width: thin;
+      scrollbar-color: var(--rule-strong) transparent;
+    }
+    .index__list li { scroll-snap-align: start; }
+    .index__list li:nth-child(n) { border-block-start: 0; border-inline-start: 1px solid var(--rule); }
+    .index__list li:first-child { border-inline-start: 0; }
+    .index__hint {
       display: block;
       margin: 0;
-      padding: var(--space-3xs) var(--space-sm);
+      padding: var(--space-3xs) 0;
       border-block-start: 1px solid var(--rule);
-      font-family: var(--font-ui);
-      font-size: var(--text-3xs);
-      letter-spacing: var(--tracking-eyebrow);
+      font: var(--weight-normal) var(--text-2xs) / var(--leading-snug) var(--font-display);
       text-align: end;
-      text-transform: uppercase;
-      color: var(--ink-faint);
+      color: var(--ink-muted);
     }
-    .rail__item { padding: var(--space-xs) var(--space-sm); }
-    .stage { min-height: min(34rem, 70vh); padding: var(--space-sm); }
-    .stage__layer-key { width: 8.5rem; }
-    .callout-card { display: none; }
-    .tip { display: none; }
-    .detail { display: block; padding: var(--space-md); }
-    .detail__facts-title { margin-block-start: var(--space-md); }
-    .deck { grid-template-columns: 1fr; }
-    .deck__card { min-height: 0; border-inline-start: 0; border-block-start: 1px solid var(--rule); }
-    .deck__card:first-child { border-block-start: 0; }
+    .index__item { padding: var(--space-xs); }
+    .stage { min-height: min(34rem, 72vh); margin-inline: calc(-1 * var(--space-sm)); }
+    .stage__field { padding: var(--space-sm); }
+    .stage__how { display: none; }
+    /* A strip under the model, read left to right from input to output. */
+    .stage__key { inset-inline: 0; inset-block-end: 0; }
+    .stage__key-title { display: none; }
+    .stage__layer-key { display: flex; flex-direction: row-reverse; gap: 0; }
+    .stage__layer-key li { flex: 1 1 0; min-inline-size: 0; padding: 2px var(--space-2xs); font-size: var(--text-2xs); overflow-wrap: break-word; }
+    .callout-card { max-inline-size: min(15rem, 70%); }
+    .detail { display: block; padding: var(--space-md) 0; }
+    .lenses { grid-template-columns: minmax(0, 1fr); }
+    .lenses__item, .lenses__item:nth-child(odd) { padding-inline: 0; border-inline-start: 0; border-block-start: 1px solid var(--rule); }
+    .lenses__item:first-child { border-block-start: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .index__item, .stage__tools button, .detail__cta, .callout-card { transition: none; }
   }
 </style>

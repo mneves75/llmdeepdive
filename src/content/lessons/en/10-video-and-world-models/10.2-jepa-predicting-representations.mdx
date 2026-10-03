@@ -1,0 +1,129 @@
+---
+id: "10.2-jepa-predicting-representations"
+track: "10-video-and-world-models"
+order: 2
+title: "JEPA: predicting representations instead of pixels"
+summary: "I-JEPA and V-JEPA learn by predicting the embeddings of masked regions, not their pixels: a context encoder, a narrow predictor, an EMA target encoder behind a stop-gradient, block masks — and why the collapse defence is partly hypothesis."
+tier: "frontier"
+locale: "en"
+prerequisites: ["10.1-how-video-models-see-time", "1.5-embeddings-meaning-as-geometry"]
+unlocks: ["10.3-v-jepa-2-world-models-that-plan"]
+analogy: "Cover part of a photograph and ask two students what is under your hand. One must paint it: every leaf, every reflection, every grain of sensor noise, and is marked down for each wrong pixel. The other only has to write a short description, and is marked against a description a slightly older version of themselves wrote while looking at the uncovered photo. The painter spends most of their effort on detail nobody could have predicted. The describer spends it on what the scene must contain. The trap is the describer's easy way out: always write 'a photo', which always matches. The older version of themselves changes slowly and is never graded, and that is what keeps the trap from closing."
+teachBack:
+  prompt: "Explain how a JEPA is trained — what each of the three networks does, where the loss is computed, and what masking strategy I-JEPA uses — then explain what representation collapse is, how JEPA tries to avoid it, and which parts of that defence are measured rather than argued."
+  modelAnswer: "A JEPA cuts an input into a visible context and hidden targets. The context encoder turns the visible patches into one vector each. A narrow predictor receives those vectors plus a mask token carrying the position of every hidden patch, and outputs a guess of each hidden patch's vector. The target encoder sees the whole input and produces the vectors to be matched. The loss is a distance between predicted and target vectors — the average squared L2 in I-JEPA, L1 in V-JEPA — never a comparison of pixels. I-JEPA samples four target blocks covering 15 to 20 percent of the image each, and one large context block of 85 to 100 percent with the target regions removed; the paper reports that large targets and an informative context are crucial. Collapse is the trivial solution in which the encoder outputs the same vector for every input, which makes any prediction perfect and teaches nothing. JEPA avoids it with asymmetry: gradients reach only the context encoder and predictor, and the target encoder is an exponential moving average of the context encoder behind a stop-gradient, with momentum rising from 0.996 to 1.0. That the recipe trains without collapsing, and that its features beat pixel targets on frozen-backbone probes, is measured. Why it works is argued: V-JEPA's analysis assumes an optimal predictor and states the moving-average explanation as a hypothesis."
+quiz:
+  - question: "Context encoder and target encoder are both trained so that the predictor's output matches the target's embedding. What goes wrong if gradients flow into both encoders freely?"
+    options: ["Nothing; the loss simply converges faster", "Both encoders can output the same constant vector for every input, making every prediction perfect and every representation useless", "The predictor overfits to pixel noise", "The masking strategy stops working because targets become visible"]
+    correctIndex: 1
+    explanation: "This is representation collapse. V-JEPA's paper states the naive regression admits exactly this trivial solution; the stop-gradient and the moving-average target encoder are the asymmetry that keeps it from being reached in practice."
+  - question: "What did the I-JEPA paper report as crucial in its masking strategy?"
+    options: ["Masking single random patches, as in BERT-style training", "Predicting tiny targets so the task stays easy", "Sampling sufficiently large target blocks and a spatially informative context block, with overlapping regions removed from the context", "Hiding the whole image and predicting it from noise"]
+    correctIndex: 2
+    explanation: "I-JEPA samples four target blocks at 15–20% scale and one context block at 85–100% scale, then removes target regions from the context. The authors report that semantic-scale targets and an informative context are what push the features toward semantics."
+  - question: "In I-JEPA's ablation, a ViT-L/16 scored 66.9% on 1% ImageNet linear probing with representation targets and 40.7% with pixel targets. What is the most careful reading?"
+    options: ["Pixel targets are always 26 points worse on every task", "The comparison is perfectly matched, so the gap is purely the target", "The gap is real but says nothing about the target choice", "On that benchmark, representation targets were far better, even though the pixel model trained longer — 800 epochs against 500"]
+    correctIndex: 3
+    explanation: "Table 7 of the I-JEPA paper is a single low-shot linear-probe benchmark. The pixel model had more epochs, which makes the gap more striking, but it is one setting, not a law for every downstream task."
+  - question: "A JEPA has learned to predict missing regions. How would you see what it 'imagines' is under a mask?"
+    options: ["Train a separate decoder on the frozen model's outputs to map predicted representations back to pixels, as I-JEPA did for its visualisations", "Read the predictor's output as an image directly", "Run the target encoder backward", "Sample tokens from the predictor's vocabulary"]
+    correctIndex: 0
+    explanation: "A JEPA never produces pixels. To visualise its predictions, the I-JEPA authors froze the encoder and predictor and trained a separate generative decoder (the RCDM framework) to render the predicted representations."
+citations:
+  - title: "Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture"
+    authors: "Mahmoud Assran et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2301.08243"
+  - title: "Revisiting Feature Prediction for Learning Visual Representations from Video"
+    authors: "Adrien Bardes et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2404.08471"
+  - title: "V-JEPA 2.1: Unlocking Dense Features in Video Self-Supervised Learning"
+    authors: "Lorenzo Mur-Labadia et al."
+    year: 2026
+    url: "https://arxiv.org/abs/2603.14482"
+updated: "2026-10-03"
+---
+
+Almost everything in this course so far learns by predicting the data itself. A language model predicts the next token. A masked autoencoder hides patches of an image and reconstructs their pixels. Both are **generative** objectives: the training signal is the raw thing, and the model is marked on how well it reproduces it.
+
+For text that works remarkably well, partly because a token is already a compressed, meaningful unit. For images and video it has a cost that is easy to miss. A photograph of a tree contains leaves whose exact arrangement no one could predict from the rest of the picture, and a pixel loss demands it anyway. The JEPA papers argue that a model trained to reconstruct pixels therefore spends capacity on texture and noise that carry no meaning, simply because the loss counts them. This lesson is about an alternative: predict a **representation** of the missing part instead of the part itself.
+
+## Three ways to learn without labels
+
+The I-JEPA paper describes three architectures for self-supervised vision.
+
+- **Invariance-based joint embedding.** Two augmented views of the same image — cropped, rescaled, colour-jittered — should map to similar embeddings. These methods learn semantic features, but the augmentations are hand-crafted assumptions about what should not matter, and the paper notes they can be wrong for some tasks.
+- **Generative, or reconstruction.** Hide part of the input and rebuild it in pixel or token space. This needs few assumptions and extends to any modality, but the paper reports its off-the-shelf features are typically less semantic.
+- **Joint-embedding predictive architectures (JEPA).** Hide part of the input, and predict the *embedding* of the hidden part from the embedding of the visible part, given where the hidden part is.
+
+The JEPA comes from Yann LeCun's 2022 position paper, *A Path Towards Autonomous Machine Intelligence*, which every JEPA paper in this track cites as its origin. I-JEPA (2023) applied it to images, and V-JEPA (2024) carried it to video.
+
+## The three networks
+
+A JEPA has three parts, and the asymmetry between them is the whole design.
+
+1. The **context encoder** $f_\theta$, a Vision Transformer, sees only the visible patches and outputs one vector per patch.
+2. The **predictor** $g_\phi$, a *narrow* Vision Transformer, receives those vectors plus one **mask token** for each hidden patch it must predict. Each mask token is a shared learnable vector plus a positional embedding, so the predictor knows *where* to predict without seeing *what* is there.
+3. The **target encoder** $f_{\bar\theta}$ sees the whole, unmasked input and produces the vectors the predictor must match.
+
+The loss compares vectors with vectors. In I-JEPA, with $M$ target blocks whose patch indices are $B_i$, it is the average squared L2 distance:
+
+$$
+\mathcal{L} = \frac{1}{M} \sum_{i=1}^{M} \sum_{j \in B_i} \lVert \hat{s}_{y_j} - s_{y_j} \rVert_2^2
+$$
+
+where $\hat{s}_{y_j}$ is the predictor's output for patch $j$ and $s_{y_j}$ is the target encoder's. No pixel is ever compared with another pixel.
+
+<Figure id="jepa-training-step" />
+
+## Collapse, and the asymmetry that prevents it
+
+There is a cheap way to make that loss zero: have every encoder output the same constant vector for every input. Then every prediction is perfect and the representation is worthless. This is **representation collapse**, and every joint-embedding method has to defend against it. The I-JEPA paper lists the known defences: contrastive losses that push apart embeddings of different images, losses that penalise redundancy across embedding dimensions, clustering methods that keep the average embedding spread out, and **architectural asymmetry**.
+
+JEPA uses asymmetry. Gradients update the context encoder and the predictor. The target encoder receives no gradient at all — a **stop-gradient** sits on its output — and its weights are instead an **exponential moving average** of the context encoder's:
+
+$$
+\bar\theta \leftarrow m \, \bar\theta + (1 - m) \, \theta
+$$
+
+I-JEPA starts the momentum $m$ at 0.996 and raises it linearly to 1.0 over training, so the target encoder changes ever more slowly. The original V-JEPA wrote the same idea with the stop-gradient explicit and switched to an L1 distance, which its authors found more stable:
+
+$$
+\min_{\theta, \phi} \ \lVert P_\phi(E_\theta(x), \Delta_y) - \mathrm{sg}(\bar{E}_\theta(y)) \rVert_1
+$$
+
+Here $x$ is the masked clip, $y$ the hidden region, and $\Delta_y$ the positions to predict.
+
+:::caveat
+Separate what is measured from what is argued. Measured: with this recipe the models train without collapsing, and their frozen features do well on downstream probes. Argued: *why*. V-JEPA adapts an analysis from BYOL — if the predictor were optimal, it would output the conditional median of the target, and the encoder's gradient would push it to capture as much information about the video as possible. The paper then says the moving average keeps the predictor near optimal and calls that "the hypothesis". It is a well-supported working explanation, not a proof.
+:::
+
+## Masking decides what gets learned
+
+If the hidden region is tiny, the predictor can fill it in from adjacent patches with almost no understanding — local interpolation. If the context is a thin sliver, there is nothing to reason from. I-JEPA's choice:
+
+- four **target blocks**, each covering 15–20% of the image, with aspect ratio between 0.75 and 1.5;
+- one **context block** covering 85–100% of the image, square, with any region that overlaps a target removed.
+
+The paper names two things as crucial: targets large enough to be semantic, and a context that is spatially spread out enough to be informative.
+
+Video adds a shortcut: a patch hidden in one frame is usually visible in the next. V-JEPA therefore masks in **3D**. It samples short-range masks (the union of 8 blocks at 15% of a frame each) and long-range masks (the union of 2 blocks at 70% each), repeats each spatial block across every frame of the clip so the hidden content cannot simply be copied from a neighbouring frame, and hides about 90% of the clip on average. In its ablations, low spatial or temporal coverage made the task trivial, and masking 90% of random space-time tubes produced features of low semantic quality. Clips are 16 frames with a stride of 4, tokenized by the same 2×16×16 tubelets lesson 10.1 described.
+
+## What the experiments show
+
+Three results carry the case, each with its own setting.
+
+| Comparison | Setting | Result |
+| --- | --- | --- |
+| Representation vs pixel targets | I-JEPA, ViT-L/16, 1% ImageNet-1K linear probe | 66.9% vs 40.7% (500 vs 800 epochs) |
+| I-JEPA vs MAE | ImageNet-1K linear probe, ViT-H/14 | 79.3% (300 epochs) vs 77.2% (1,600 epochs) |
+| V-JEPA, video only | ViT-H/16 at 384 px, frozen backbone, attentive probe | 81.9% Kinetics-400, 72.2% SSv2, 77.4% ImageNet-1K (77.9% with a two-layer probe) |
+
+The first row is the cleanest evidence for predicting representations: the pixel-target model trained *longer* and still scored far lower. It is one low-shot benchmark, so read it as strong evidence in that setting, not a law. The paper also reports efficiency: a ViT-H/14 pretrained on ImageNet in under 72 hours on 16 A100 GPUs, under 1,200 GPU-hours, which it puts at over ten times less than MAE for the same architecture. V-JEPA trained on about 2 million public videos with no text, no pretrained image encoder and no negative examples.
+
+## What a JEPA is not
+
+A JEPA is not a generator. It cannot show you what it predicts, because it never predicts pixels. To visualise I-JEPA's predictions, its authors froze the encoder and predictor and trained a *separate* generative decoder to render the predicted representations; the pictures show high-level object parts with the correct pose but not exact detail, which is the point. Nor is a JEPA judged by its loss: the loss is a distance to a moving target. JEPAs are judged by **probes** — small classifiers trained on frozen features — and by what can be built on top of them.
+
+That last point is where this track goes next. A representation that predicts *what happens* in a masked part of a video is a candidate for a model of how the world evolves. Lesson 10.3 shows V-JEPA 2 turning one into a planner for a robot arm.

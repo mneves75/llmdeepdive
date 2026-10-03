@@ -288,8 +288,9 @@ test('structured data describes each page with Google-supported types only', () 
       // Google "strongly recommends" type and url on the author itself.
       assert.deepEqual({ type: who['@type'], name: who.name, url: who.url }, { type: 'Organization', name: BRAND, url: `${SITE}/` }, `${route}: ${role}`)
     }
-    const sources = html.match(/<section class="sources"[\s\S]*?<\/section>/u)?.[0]
-    // Astro stamps a scope attribute on each item, so match the tag, not `<li>`.
+    // Astro adds a scope class to each element, so match the class token and
+    // the tag, never an exact attribute value.
+    const sources = html.match(/<section class="sources\b[^"]*"[\s\S]*?<\/section>/u)?.[0]
     const cited = sources ? [...sources.matchAll(/<li[\s>]/gu)].length : 0
     assert.equal((article.citation ?? []).length, cited, `${route}: citation count ≠ visible sources`)
     for (const citation of article.citation ?? []) assert.match(citation.url, /^https?:\/\//u)

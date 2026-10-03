@@ -20,7 +20,7 @@ const FIGURE_TAG = /<Figure\s+id="([^"]+)"\s*\/>/gu
 const REGISTRY_ID = /^\s*'?([a-z0-9][a-z0-9-]*)'?\s*:\s*\{$/u
 
 /** Lab ids, so a figure id can never collide with one. See the note below. */
-const LAB_IDS = ['kv-budget', 'cost-per-token']
+const LAB_IDS = ['kv-budget', 'cost-per-token', 'video-tokens']
 
 /**
  * Terms AGENTS.md keeps in English inside Portuguese prose. A pt-BR label equal
@@ -43,6 +43,7 @@ function registryIds() {
     'src/lib/figures/4-transformer.ts',
     'src/lib/figures/7-inference-and-efficiency.ts',
     'src/lib/figures/9-hardware-and-infrastructure.ts',
+    'src/lib/figures/10-video-and-world-models.ts',
   ]
   const entries = new Map()
   for (const file of files) {

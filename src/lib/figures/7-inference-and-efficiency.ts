@@ -64,9 +64,9 @@ export const TRACK_7_FIGURES = {
           steps: [
             { label: { en: 'KV heads', 'pt-br': 'Cabeças KV' }, detail: { en: String(QWEN.kvHeads.value), 'pt-br': String(QWEN.kvHeads.value) }, pigment: 'accent' },
             { label: { en: 'Head dimension', 'pt-br': 'Dimensão da cabeça' }, detail: { en: String(QWEN.headDim.value), 'pt-br': String(QWEN.headDim.value) }, pigment: 'accent' },
-            { label: { en: 'Keys and values', 'pt-br': 'Chaves e valores' }, detail: { en: '× 2', 'pt-br': '× 2' }, pigment: 'sonar' },
-            { label: { en: 'bfloat16', 'pt-br': 'bfloat16' }, detail: { en: `× ${QWEN.bytesPerElement.value} B`, 'pt-br': `× ${QWEN.bytesPerElement.value} B` }, pigment: 'sonar' },
-            { label: { en: '4 KiB per token', 'pt-br': '4 KiB por token' }, detail: { en: 'per layer', 'pt-br': 'por camada' }, pigment: 'kelp' },
+            { label: { en: 'Keys and values', 'pt-br': 'Chaves e valores' }, detail: { en: '× 2', 'pt-br': '× 2' }, pigment: 'caution' },
+            { label: { en: 'bfloat16', 'pt-br': 'bfloat16' }, detail: { en: `× ${QWEN.bytesPerElement.value} B`, 'pt-br': `× ${QWEN.bytesPerElement.value} B` }, pigment: 'caution' },
+            { label: { en: '4 KiB per token', 'pt-br': '4 KiB por token' }, detail: { en: 'per layer', 'pt-br': 'por camada' }, pigment: 'success' },
           ],
         },
       },
@@ -83,7 +83,7 @@ export const TRACK_7_FIGURES = {
             {
               label: { en: 'Assumed: all layers cache', 'pt-br': 'Suposto: todas as camadas fazem cache' },
               detail: { en: `${QWEN.layers.value} layers → ${QWEN_COMMON_MISTAKE.kvGibFullContextIfEveryLayerCached.value} GiB`, 'pt-br': `${QWEN.layers.value} camadas → ${QWEN_COMMON_MISTAKE.kvGibFullContextIfEveryLayerCached.value} GiB` },
-              pigment: 'coral',
+              pigment: 'danger',
               weight: QWEN.layers.value,
             },
           ],
@@ -102,13 +102,13 @@ export const TRACK_7_FIGURES = {
             {
               label: { en: 'Gated DeltaNet layers', 'pt-br': 'Camadas Gated DeltaNet' },
               detail: { en: `${QWEN.deltaNetLayers.value} layers · ~${QWEN.deltaNetStateMib.value} MiB total, constant`, 'pt-br': `${QWEN.deltaNetLayers.value} camadas · ~${QWEN.deltaNetStateMib.value} MiB no total, constante` },
-              pigment: 'kelp',
+              pigment: 'success',
               weight: QWEN.deltaNetLayers.value,
             },
             {
               label: { en: 'Full-attention layers', 'pt-br': 'Camadas de atenção completa' },
               detail: { en: `${QWEN.attentionLayers.value} layers · ${QWEN.kvKibPerToken.value} KiB per token · ${QWEN.kvGibFullContext.value} GiB at full context`, 'pt-br': `${QWEN.attentionLayers.value} camadas · ${QWEN.kvKibPerToken.value} KiB por token · ${QWEN.kvGibFullContext.value} GiB no contexto completo` },
-              pigment: 'sonar',
+              pigment: 'caution',
               weight: QWEN.attentionLayers.value,
             },
           ],
@@ -169,7 +169,7 @@ export const TRACK_7_FIGURES = {
             'pt-br':
               'iQ, oQ4e, 4bit. Só os nomes Q e IQ do GGUF significam algo fora da cabeça do autor.',
           },
-          pigment: 'coral',
+          pigment: 'danger',
         },
         {
           label: { en: 'Bits per weight', 'pt-br': 'Bits por peso' },
@@ -177,7 +177,7 @@ export const TRACK_7_FIGURES = {
             en: '3.8bpw — an average over every tensor, metadata included. A number, not a name.',
             'pt-br': '3.8bpw — média sobre cada tensor, metadados inclusos. Um número, não um nome.',
           },
-          pigment: 'kelp',
+          pigment: 'success',
         },
       ],
     },

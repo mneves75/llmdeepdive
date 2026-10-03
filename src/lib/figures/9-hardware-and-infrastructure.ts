@@ -82,7 +82,7 @@ export const TRACK_9_FIGURES = {
         },
         {
           label: { en: 'Compute roof', 'pt-br': 'Teto de computação' },
-          pigment: 'coral',
+          pigment: 'danger',
           points: [
             [RIDGE, PEAK_TFLOPS],
             [10000, PEAK_TFLOPS],
@@ -131,19 +131,19 @@ export const TRACK_9_FIGURES = {
         {
           label: { en: 'KV cache, one full-context sequence', 'pt-br': 'Cache KV, uma sequência de contexto completo' },
           detail: { en: `${QWEN.kvGibFullContext.value} GiB · grows per token`, 'pt-br': `${QWEN.kvGibFullContext.value} GiB · cresce por token` },
-          pigment: 'sonar',
+          pigment: 'caution',
           weight: QWEN.kvGibFullContext.value,
         },
         {
           label: { en: 'DeltaNet recurrent state', 'pt-br': 'Estado recorrente DeltaNet' },
           detail: { en: `~${QWEN.deltaNetStateMib.value} MiB · constant`, 'pt-br': `~${QWEN.deltaNetStateMib.value} MiB · constante` },
-          pigment: 'kelp',
+          pigment: 'success',
           weight: QWEN.deltaNetStateMib.value / 1024,
         },
         {
           label: { en: 'Activations, fragmentation, runtime', 'pt-br': 'Ativações, fragmentação, runtime' },
           detail: { en: 'reserve, never zero', 'pt-br': 'reserva, nunca zero' },
-          pigment: 'coral',
+          pigment: 'danger',
           weight: RESERVE_GIB,
         },
       ],

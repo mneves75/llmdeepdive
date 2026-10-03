@@ -1,7 +1,9 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { SKY_PERIOD_S } from './clock'
 import { disposeSubtree } from './dispose'
 import { STAGE_FLOOR_Y } from './envelope'
+import { FIELD_PALETTE, type ScenePalette } from './palette'
 
 /**
  * A single long-lived WebGL stage that scenes are swapped into.
@@ -25,6 +27,8 @@ export interface StageOptions {
   /** Orbit distance clamp. */
   minDistance?: number
   maxDistance?: number
+  /** Token colours for the floor chart and lights; defaults to the field edition. */
+  palette?: ScenePalette
 }
 
 export interface SceneModule {
@@ -49,6 +53,11 @@ export interface SceneContext {
 }
 
 const AUTOROTATE_RESUME_MS = 3000
+/**
+ * One full turn of the instrument per half sky period (90 s). OrbitControls
+ * turns `2π / 60 * speed` radians per second when it is given the frame time.
+ */
+const AUTOROTATE_SPEED = 60 / (SKY_PERIOD_S / 2)
 
 export class Stage {
   readonly renderer: THREE.WebGLRenderer
@@ -70,6 +79,7 @@ export class Stage {
   onMotionChange: ((motion: boolean) => void) | null = null
 
   private readonly canvas: HTMLCanvasElement
+  private readonly palette: ScenePalette
   private readonly timer = new THREE.Timer()
   private readonly env: THREE.Texture
   private readonly resizeObserver: ResizeObserver
@@ -99,6 +109,7 @@ export class Stage {
 
   constructor(opts: StageOptions) {
     this.canvas = opts.canvas
+    this.palette = opts.palette ?? FIELD_PALETTE
     // Reduced motion disables idle rotation and the token flow by default. The
     // reference project we studied handled reduced motion only for CSS
     // keyframes, leaving its model spinning forever — the single most
@@ -118,27 +129,32 @@ export class Stage {
     // Decided once. A dynamic pixel-ratio controller ratchets down under vsync
     // quantisation and never recovers, which looks like a permanent regression.
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, lowPower ? 1.5 : 2))
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.08
+    // Neutral, not ACES: ACES pushes the token pigments toward orange and
+    // desaturates the porcelain, so the enamel would stop matching the page.
+    this.renderer.toneMapping = THREE.NeutralToneMapping
+    this.renderer.toneMappingExposure = 1
+    // The night plate is the page's own `--night`, painted behind a clear canvas,
+    // so the stage can never disagree with the surface around it.
+    this.renderer.setClearColor(0x000000, 0)
     // No shadow maps: a baked contact shadow costs one textured quad instead of
     // an entire extra scene pass every frame.
     this.renderer.shadowMap.enabled = false
 
     this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(0x06141d)
-    this.scene.fog = new THREE.Fog(0x06141d, 8.5, 18)
     this.scene.add(this.root)
 
     this.camera = new THREE.PerspectiveCamera(opts.fov ?? 39, 1, 0.1, 100)
-    this.camera.position.set(4.5, 3, 7.2)
+    this.camera.position.set(3.72, 1.22, 5.95)
 
     this.controls = new OrbitControls(this.camera, this.canvas)
-    this.controls.target.set(0, 0.05, 0)
+    this.controls.target.set(0, -0.28, 0)
     this.controls.dampingFactor = 0.055
     this.controls.enablePan = false
-    this.controls.minDistance = opts.minDistance ?? 4.8
-    this.controls.maxDistance = opts.maxDistance ?? 12
-    this.controls.autoRotateSpeed = 0.65
+    this.controls.minDistance = opts.minDistance ?? 4.4
+    this.controls.maxDistance = opts.maxDistance ?? 11
+    this.controls.autoRotateSpeed = AUTOROTATE_SPEED
+    // Never look up through the chart floor.
+    this.controls.maxPolarAngle = Math.PI * 0.53
     this.controls.update()
     this.controls.addEventListener('start', () => {
       this.interactionUntil = performance.now() + AUTOROTATE_RESUME_MS
@@ -148,7 +164,7 @@ export class Stage {
     this.env = this.buildEnvironment()
     this.scene.environment = this.env
     this.addLighting()
-    this.addContactShadow()
+    this.addChartFloor()
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(this.canvas)
@@ -171,30 +187,36 @@ export class Stage {
   }
 
   /**
-   * Image-based lighting from a 32x64 gradient baked through PMREM. Real IBL
-   * quality for zero downloaded bytes — no HDR file to fetch.
+   * Image-based lighting from a small procedural studio baked through PMREM:
+   * a night dome with one broad overhead softbox and a narrow side strip.
+   * Enamel and nickel need something bright to reflect, and this gives them
+   * clean, long highlights for zero downloaded bytes.
    */
   private buildEnvironment(): THREE.Texture {
-    const w = 32
-    const h = 64
+    const w = 64
+    const h = 32
     const data = new Uint8Array(w * h * 4)
+    const night = new THREE.Color(this.palette.plate)
+    const sky = new THREE.Color(this.palette.accent)
     for (let y = 0; y < h; y += 1) {
-      const t = y / (h - 1)
+      const v = y / (h - 1)
       for (let x = 0; x < w; x += 1) {
-        const horizon = Math.exp(-Math.pow((t - 0.48) / 0.2, 2))
-        const key = Math.max(0, Math.cos((x / w) * Math.PI * 2 - 0.7)) ** 8
-        // Cool observatory ambience with one warm, directional reflection.
-        const r = Math.round(7 + 24 * (1 - t) + 42 * horizon + 90 * key)
-        const g = Math.round(13 + 44 * (1 - t) + 58 * horizon + 64 * key)
-        const b = Math.round(20 + 58 * (1 - t) + 70 * horizon + 40 * key)
+        const u = x / w
+        // Overhead softbox, a vertical strip light, and a faint chart-blue horizon.
+        const softbox = Math.exp(-(((v - 0.12) / 0.09) ** 2)) * Math.exp(-(((u - 0.3) / 0.16) ** 2))
+        const strip = Math.exp(-(((u - 0.78) / 0.025) ** 2)) * (v > 0.15 && v < 0.6 ? 1 : 0)
+        const horizon = Math.exp(-(((v - 0.5) / 0.08) ** 2)) * 0.18
+        const light = Math.min(1, softbox * 1.6 + strip * 0.9)
         const i = (y * w + x) * 4
-        data[i] = r
-        data[i + 1] = g
-        data[i + 2] = b
+        data[i] = Math.round(255 * Math.min(1, night.r * 1.6 + sky.r * horizon + light))
+        data[i + 1] = Math.round(255 * Math.min(1, night.g * 1.6 + sky.g * horizon + light))
+        data[i + 2] = Math.round(255 * Math.min(1, night.b * 1.6 + sky.b * horizon + light))
         data[i + 3] = 255
       }
     }
     const tex = new THREE.DataTexture(data, w, h)
+    tex.mapping = THREE.EquirectangularReflectionMapping
+    tex.colorSpace = THREE.SRGBColorSpace
     tex.needsUpdate = true
     const pmrem = new THREE.PMREMGenerator(this.renderer)
     const env = pmrem.fromEquirectangular(tex).texture
@@ -204,59 +226,74 @@ export class Stage {
   }
 
   private addLighting(): void {
-    const key = new THREE.DirectionalLight(0xf4fbff, 2.2)
-    key.position.set(4.8, 6.2, 5.4)
-    const fill = new THREE.DirectionalLight(0x8fbdcb, 0.62)
-    fill.position.set(-4.6, 1.8, 2.6)
-    const rim = new THREE.DirectionalLight(0xffd29c, 1.05)
-    rim.position.set(-2.2, 3.4, -5.5)
-    const ambient = new THREE.HemisphereLight(0x8ebdca, 0x071018, 0.42)
+    const key = new THREE.DirectionalLight(0xffffff, 1.9)
+    key.position.set(3.5, 6.5, 5.5)
+    const fill = new THREE.DirectionalLight(this.palette.accent, 0.45)
+    fill.position.set(-5, 1.5, 2.5)
+    const rim = new THREE.DirectionalLight(0xffffff, 0.8)
+    rim.position.set(-2, 3, -6)
+    const ambient = new THREE.HemisphereLight(this.palette.accent, this.palette.plate, 0.35)
     this.scene.add(key, fill, rim, ambient)
   }
 
-  private addContactShadow(): void {
-    const size = 256
+  /**
+   * The instrument stands on a star chart: a polar graticule in chart blue,
+   * fading toward its edge, with a soft contact shadow under the foot. Lines,
+   * not a lit surface, so the plate colour behind the canvas shows through.
+   */
+  private addChartFloor(): void {
+    const size = 2048
     const c = document.createElement('canvas')
     c.width = size
     c.height = size
     const ctx = c.getContext('2d')
     if (!ctx) return
-    const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
-    grad.addColorStop(0, 'rgba(0,6,10,0.46)')
-    grad.addColorStop(0.55, 'rgba(0,6,10,0.16)')
-    grad.addColorStop(1, 'rgba(0,6,10,0)')
-    ctx.fillStyle = grad
+    const centre = size / 2
+    const accent = new THREE.Color(this.palette.grid)
+    const rgb = `${Math.round(accent.r * 255)} ${Math.round(accent.g * 255)} ${Math.round(accent.b * 255)}`
+    const fade = (radius: number): number => Math.max(0, 1 - (radius / centre) ** 2.2)
+    // Parallels every half unit (the plane is 9 units across).
+    for (let ring = 1; ring <= 9; ring += 1) {
+      const radius = (ring / 9) * centre
+      ctx.strokeStyle = `rgb(${rgb} / ${0.5 * fade(radius)})`
+      ctx.lineWidth = ring % 3 === 0 ? 2.4 : 1.3
+      ctx.beginPath()
+      ctx.arc(centre, centre, radius, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+    // Meridians every 15 degrees, drawn as short faded segments.
+    for (let line = 0; line < 24; line += 1) {
+      const angle = (line / 24) * Math.PI * 2
+      for (let step = 0; step < 24; step += 1) {
+        const r0 = (step / 24) * centre
+        const r1 = ((step + 1) / 24) * centre
+        if (r0 < centre * 0.12) continue
+        ctx.strokeStyle = `rgb(${rgb} / ${0.42 * fade(r1)})`
+        ctx.lineWidth = line % 6 === 0 ? 2 : 1.1
+        ctx.beginPath()
+        ctx.moveTo(centre + Math.cos(angle) * r0, centre + Math.sin(angle) * r0)
+        ctx.lineTo(centre + Math.cos(angle) * r1, centre + Math.sin(angle) * r1)
+        ctx.stroke()
+      }
+    }
+    // Contact shadow under the foot.
+    const shadow = ctx.createRadialGradient(centre, centre, 0, centre, centre, centre * 0.2)
+    shadow.addColorStop(0, 'rgb(0 0 0 / 0.55)')
+    shadow.addColorStop(1, 'rgb(0 0 0 / 0)')
+    ctx.fillStyle = shadow
     ctx.fillRect(0, 0, size, size)
 
     const tex = new THREE.CanvasTexture(c)
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(7.5, 7.5),
-      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }),
-    )
-    mesh.rotation.x = -Math.PI / 2
-    mesh.position.y = STAGE_FLOOR_Y
-    mesh.name = '__contact-shadow'
-
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy()
     const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(18, 18),
-      new THREE.MeshStandardMaterial({
-        color: 0x071820,
-        roughness: 0.88,
-        metalness: 0.14,
-        envMapIntensity: 0.18,
-      }),
+      new THREE.PlaneGeometry(9, 9),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false }),
     )
     floor.rotation.x = -Math.PI / 2
-    floor.position.y = STAGE_FLOOR_Y - 0.02
-    floor.name = '__graphite-floor'
-
-    const grid = new THREE.GridHelper(12, 24, 0x315361, 0x17313c)
-    grid.position.y = STAGE_FLOOR_Y + 0.02
-    grid.material.transparent = true
-    grid.material.opacity = 0.16
-    grid.material.depthWrite = false
-    grid.name = '__reference-grid'
-    this.scene.add(floor, mesh, grid)
+    floor.position.y = STAGE_FLOOR_Y
+    floor.name = '__chart-floor'
+    this.scene.add(floor)
   }
 
   mount(module: SceneModule): void {
@@ -345,7 +382,8 @@ export class Stage {
     // Suspension can leave the timer untouched for minutes. Limit the first
     // resumed step so time-based objects do not all jump to the same state.
     const dt = Math.min(this.timer.update(now).getDelta(), 0.1)
-    const controlsChanged = this.controls.update()
+    // Given the frame time, autorotation is the same speed at 60 and 120 Hz.
+    const controlsChanged = this.controls.update(dt)
     const moduleWants = this.module?.update?.(this.context(), dt) ?? false
 
     if (!this.dirty && !controlsChanged && !moduleWants && now >= this.busyUntil) return

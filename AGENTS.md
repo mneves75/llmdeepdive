@@ -103,10 +103,24 @@ renderer per lab.
 The explorer's current contract is the **Signal Observatory**: every component
 in `COMPONENTS` has a selectable 3D port, an evidence-drawer state and a valid
 lesson link. The specimen keeps visible input→output direction and bilingual
-layer identity. Its material hierarchy is graphite frame + smoked glass +
-ceramic tokens, with cyan reserved for signal and one amber FFN core; do not
+layer identity. Since 0.9 it is an armillary instrument on one steel axis:
+porcelain embedding and LM-head plates, ink-enamel decks with engraved
+dials, attention as a dome whose query–key arcs thicken with the attention
+weight, one warm gold FFN core (`--tier-core`), calibration hoops for norms
+and porcelain side meridians for the two residual bypasses; the selected port
+carries the crimson reticle. Colours come from the CSS tokens
+(`src/lib/three/palette.ts` reads them, re-read on theme change); motion runs
+on the shared clock (`src/lib/three/clock.ts`, the 180 s sky period). Do not
 restore rainbow slabs. Keep the model procedural unless a real interaction
-requirement justifies a downloaded asset. Update
+requirement justifies a downloaded asset.
+
+The home and tracks-index charts lift onto a 3D sky (`src/lib/sky-client.ts`,
+`src/lib/three/scenes/sky.ts`) built from the server-rendered SVG itself, so
+the two cannot disagree. Same rules as the explorer: dynamic import only after
+an IntersectionObserver, a WebGL check, page load and idle; a real `.catch()`
+that leaves the poster; no wheel or touch-scroll capture; stopped offscreen,
+when hidden, when paused (`[data-motion-toggle]`) and under reduced motion.
+It owns its own renderer — one WebGL context per page, never two. Update
 `tests/transformer-scene.test.mjs` when that mapping or geometry changes, then
 verify `/explore/` in a real desktop and mobile browser.
 
@@ -141,10 +155,13 @@ Two rules the geometry has already broken once each:
 **6. The CSP lives on one `_headers` line with a hard 2,000-character limit.**
 Cloudflare *drops* a `_headers` line above 2,000 characters, and the site then
 serves **no CSP at all** — silently, with every local gate green. The line is at
-1,585. `gen-headers.mjs` appends a sha256 per distinct inline `<script>` (~55
-chars) and per distinct inline `<style>` (~110, because style hashes go into
-both `style-src` and `style-src-elem`). That is roughly five scripts or two
-styles of headroom below the 1,900 budget.
+453 characters since 0.9: `build.inlineStylesheets: 'never'` and
+`vite.build.assetsInlineLimit: 0` (astro.config.mjs) make every component
+stylesheet and processed script a hashed file, so only the two `is:inline`
+scripts (theme pre-paint, Pagefind loader) are hashed. `gen-headers.mjs` would
+append a sha256 per distinct inline `<script>` (~55 chars) and per distinct
+inline `<style>` (~110, in both `style-src` and `style-src-elem`); see
+`docs/adr/0002`.
 
 Three rules follow, and they are why the figure system ships zero JavaScript:
 
@@ -153,12 +170,14 @@ Three rules follow, and they are why the figure system ships zero JavaScript:
   values as `style="--x: 42"` attributes; `style-src-attr 'unsafe-inline'`
   permits them.
 - **A component's `<script>` must be data-free and byte-identical everywhere**,
-  reading parameters from `data-*`. That is why 238 routes produce only seven
-  distinct script hashes. An `is:inline` script is a classic script sharing
-  one global lexical scope with every other one, so wrap its body in a block.
-- A static scoped `<style>` in an `.astro` file costs **zero** hashes — Astro
-  links it into `_astro/*.css`. All component CSS goes there, and per-route CSS
-  is budgeted at 72 KB by `bundle-budget.mjs`.
+  reading parameters from `data-*`, so one bundled file serves every route.
+  An `is:inline` script is a classic script sharing one global lexical scope
+  with every other one, so wrap its body in a block.
+- A static scoped `<style>` in an `.astro` file costs **zero** hashes — it is
+  linked from `_astro/*.css`. Per-route render-blocking CSS is budgeted at
+  72 KB by `bundle-budget.mjs` (worst lesson route ~67 KB in 0.9). Lesson prose
+  and the calculator labs are plain stylesheets imported by `Lesson.astro`
+  (`src/styles/prose.css`, `src/styles/lab.css`), not scoped copies.
 
 `gen-headers.mjs` fails the build when the line exceeds 1,900, so
 `pnpm deploy:*` after `pnpm build` cannot ship a dropped policy;
@@ -168,7 +187,7 @@ inline code it finds — a new inline block must be a reviewed change there.
 
 ## Frontend rules that have failed silently
 
-- **An element a script creates carries no Astro scope attribute**, so a scoped
+- **An element a script creates carries no Astro scope class**, so a scoped
   selector never matches it. Style runtime-built markup with `:global()` under a
   scoped parent (`.search__results :global(a)`). Search results shipped as one
   unstyled run-on paragraph because of this, with every gate green.
@@ -180,15 +199,36 @@ inline code it finds — a new inline block must be a reviewed change there.
 - **Completion is written once.** The lesson page owns the rule (teach-back
   and quiz) and records `ldd:complete:<locale>:<id>`; track pages only read
   that key. Nothing else re-derives completion.
-- **The survey bar stops being sticky below 50rem**; a lesson's section strip is
+- **The masthead stops being sticky below 50rem**; a lesson's step strip is
   then the only sticky chrome, and `scroll-padding-top` follows it so focus is
   never hidden (WCAG 2.4.11). Change both together.
 - **No kicker above a heading, and no Unicode glyph as an icon.** A label may
-  precede a heading only when it carries data the heading does not (a tier and
-  lesson count, the explorer's instrument labels); a sequence number rides
-  inside its heading when the order is information (`01/05`). Icons come from
-  `src/components/Icon.astro` and markers are drawn (`.sounding-marker`); an
-  arrow inside a text label (“Next lesson →”) is type, not an icon.
+  precede a heading only when it carries data the heading does not (a track or
+  lesson position numeral, the explorer's instrument labels). A lesson's `<h1>`
+  is exactly its title — the Article headline repeats it (`seo.test.mjs`) — so
+  the position numeral sits outside it, `aria-hidden`, with the crumb carrying
+  it for assistive tech. Icons come from `src/components/Icon.astro` and marks
+  are drawn (`.star-mark`, `.reticle`); an arrow inside a text label (“Next
+  lesson →”) is type, not an icon. No monospace eyebrow labels and no
+  numbered section labels (`01/02`) unless the sequence is data.
+- **Astro scopes with a class** (`scopedStyleStrategy: 'class'`), so tests and
+  scripts match class *tokens*, never an exact `class="…"` value: every scoped
+  element carries an extra `astro-…` class.
+- **View-transition names must be unique per page**, or the browser skips the
+  whole transition. A lesson's star (`star-4-2`), its track's chart
+  (`chart-4`) and the track title (`track-title-4`) share names across the
+  track page, the home/index catalogs and the lesson, which is what makes the
+  constellation fly into the lesson plate. `tests/course-player.test.mjs`
+  checks uniqueness on every page; names in CSS (`masthead`, `syllabus`,
+  `lesson-steps`) appear once per page by construction.
+- **A closed `popover` is only `display: none`.** The syllabus is one
+  `<nav popover>`: a drawer (light dismiss, Escape, focus return for free)
+  below 80rem, shown in place as a sticky sidebar above it by overriding that
+  style. Preflight zeroes the popover's `margin`/`inset`; restate them.
+- **Progress is applied after render by `progress-client.ts`**, reading
+  `ldd:complete:<locale>:<id>` and `ldd:last:<locale>` (the continue link,
+  validated as untrusted input by `parseLastVisit`). Everything it fills ships
+  `hidden`; the HTML stays identical for every visitor.
 - **Anchor offsets have one source: `scroll-padding-top` on the root.** A
   `scroll-margin-top` on a heading adds to it, and every jump lands a header
   too low (measured at ~107px instead of ~16px while both were set).
@@ -287,8 +327,9 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
   registered: its Google sign-in failed with `oauth_failure`, and it reads the
   sitemap from `robots.txt` until someone adds the site there.
 - **`www` redirects to the apex in the zone, not in this repo.** A Single
-  Redirect (`https://www.*` → `https://${1}`, 301, query string preserved) runs
-  before the Worker. Keep `www.llmdeepdive.com` as a custom domain in
+  Redirect matching host `www.llmdeepdive.com` on both http and https (301 to
+  `https://llmdeepdive.com` plus the path, query string preserved; widened from
+  the earlier `https://www.*` wildcard on 2026-10-03) runs before the Worker. Keep `www.llmdeepdive.com` as a custom domain in
   `wrangler.jsonc` anyway: it provides the DNS record and certificate the
   redirect needs. A byte-comparison canary against `www` now follows one
   redirect.
@@ -387,10 +428,11 @@ Two MathML layout traps, both shipped once and both invisible to every gate:
 `pnpm render:check` guards both traps in three engines, and its
 `--self-test` injects each defect and requires the gate to fail.
 
-**Layout depends on the visitor's fonts.** The zero-network-font rule means
-system stacks, so a heading sized for condensed Avenir on macOS overflowed a
-320px screen under Linux's wider fallback, and a wide-font sweep found 109
-such routes. Headings carry `overflow-wrap: break-word`, uppercase display
+**Layout still depends on the visitor's fonts.** Headings use the self-hosted
+Mona Sans (ADR 0002) but render in the fallback during the swap or if it
+fails, and body text is a system stack: a heading sized for condensed Avenir
+on macOS once overflowed a 320px screen under Linux's wider fallback, and a
+wide-font sweep found 109 such routes. Headings carry `overflow-wrap: break-word`, uppercase display
 titles add `hyphens: auto`, a single-column grid is `minmax(0, 1fr)` rather
 than `1fr`, and long identifiers in links wrap. `render:check` repeats the
 Chromium sweep with Verdana / DejaVu Sans forced, so this fails on any machine.
@@ -428,13 +470,17 @@ JavaScript, zero CSP hashes, zero bundle budget, keyboard operation free. The
 input is `.visually-hidden` and **never** `display: none`, which would remove it
 from the tab order; the focus ring moves to the visible label.
 
-Two cascade traps, both already hit: `.prose :global(ol)` in `Lesson.astro` has
-specificity (0,1,1) while Astro scopes components with `:where()`, contributing
-**zero** — so a single-class figure selector loses and every flow renders as a
-prose list. Figure list roots double their class. And `.prose` sets
-`font-size: 1.3rem`, so figures set their own sizes explicitly.
+Two cascade traps, both already hit: `.prose ol` (`src/styles/prose.css`) has
+specificity (0,1,1), and a single-class figure selector can lose to it, which
+once rendered every flow as a prose list. Figure list roots double their
+class, and prose.css excludes `figure` lists explicitly. And `.prose` sets its
+own reading size, so figures set their own sizes explicitly.
 
-Numbers come from `src/lib/model-facts.ts` and nowhere else.
+Numbers about the course model come from `src/lib/model-facts.ts` and nowhere
+else. Track 10's figures describe other systems (Qwen3-VL, the JEPA papers):
+their numbers live in `src/lib/figures/10-video-and-world-models.ts` with a
+source comment beside each, and the 10.1 plot calls the same `videoTokens`
+function as the lab.
 
 `pnpm content:figures` resolves every referenced id against the real registry
 and the real corpus, requires both locales to reference the same figures, and
@@ -502,8 +548,11 @@ than leaving the last valid answer beside it.
 
 ## External systems reference
 
-The published corpus is tracks 0–9; documentation must describe that shipped
-scope exactly.
+The published corpus is tracks 0–10 (110 lessons per locale); documentation
+must describe that shipped scope exactly. Track 10 (video and world models)
+cites Qwen3-VL's technical report for video tokenisation and the JEPA papers
+(I-JEPA, V-JEPA, V-JEPA 2, V-JEPA 2.1, VL-JEPA) directly; none of it is a claim
+about Qwen3.8-27B.
 
 The Kimi K3 implementation reference is
 [Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c). For the streaming

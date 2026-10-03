@@ -20,14 +20,15 @@ import { TIERS, type Tier } from './content'
 const resolvePackage = createRequire(join(process.cwd(), 'package.json')).resolve
 const fontFile = (specifier: string): Buffer => readFileSync(resolvePackage(specifier))
 
-// Roboto Condensed is the display face's own fallback in tokens.css. It has no
-// √ (lesson 4.3's title) or ≈, so Roboto's math subset — same design — follows it.
+// Mona Sans, the site's display face, in its static cuts: satori reads woff,
+// not the variable woff2 the site serves. It has no √ (lesson 4.3's title) or
+// ≈, so Roboto's math subset follows it for those glyphs alone.
 const FONTS = [
-  { name: 'Roboto Condensed', weight: 400, data: fontFile('@fontsource/roboto-condensed/files/roboto-condensed-latin-400-normal.woff') },
-  { name: 'Roboto Condensed', weight: 500, data: fontFile('@fontsource/roboto-condensed/files/roboto-condensed-latin-500-normal.woff') },
-  { name: 'Roboto Condensed', weight: 700, data: fontFile('@fontsource/roboto-condensed/files/roboto-condensed-latin-700-normal.woff') },
+  { name: 'Mona Sans', weight: 500, data: fontFile('@fontsource/mona-sans/files/mona-sans-latin-500-normal.woff') },
+  { name: 'Mona Sans', weight: 700, data: fontFile('@fontsource/mona-sans/files/mona-sans-latin-700-normal.woff') },
+  { name: 'Mona Sans', weight: 800, data: fontFile('@fontsource/mona-sans/files/mona-sans-latin-800-normal.woff') },
   { name: 'Roboto', weight: 700, data: fontFile('@fontsource/roboto/files/roboto-math-700-normal.woff') },
-] as const satisfies ReadonlyArray<{ name: string; weight: 400 | 500 | 700; data: Buffer }>
+] as const satisfies ReadonlyArray<{ name: string; weight: 500 | 700 | 800; data: Buffer }>
 
 /**
  * satori asks for more fonts only when none of the bundled ones has a glyph.
@@ -38,16 +39,22 @@ async function missingGlyph(languageCode: string, segment: string): Promise<neve
   throw new Error(`social card: no bundled font draws "${segment}" (${languageCode}); add a font subset in src/lib/og-render.ts`)
 }
 
-// DESIGN.md: abyss ground, on-abyss inks, cyan reserved for signal. Idle strata
-// use muted-ink: abyss-raised all but vanished at thumbnail size.
+// DESIGN.md: the field edition — night plate, white ink, the reticle for the
+// mark, and the tier's spectral pigment for the line that places the page.
 const COLOR = {
-  abyss: '#061a2b',
-  stratum: '#3f5a66',
-  ink: '#f2f7f5',
-  muted: '#b9cdcf',
-  signal: '#5de7ee',
-  rule: 'rgba(255, 255, 255, 0.16)',
+  night: '#0a1230',
+  ink: '#eef2fc',
+  muted: '#b6c0dc',
+  idle: '#5a6582',
+  reticle: '#ff6b81',
+  rule: 'rgba(214, 224, 255, 0.18)',
 } as const
+const TIER_COLOR: Record<Tier, string> = {
+  foundations: '#72c8f2',
+  core: '#f1cd6b',
+  advanced: '#ff9b57',
+  frontier: '#ff7aa0',
+}
 
 type Style = Record<string, string | number>
 interface Node {
@@ -66,18 +73,28 @@ function headlineSize(text: string): number {
   return 66
 }
 
+/** The reticle mark: a ring with four ticks and a centre star point. */
 function mark(): Node {
-  const line = { position: 'absolute', background: COLOR.signal }
-  return div({ position: 'relative', width: 40, height: 40, border: `3px solid ${COLOR.signal}`, borderRadius: '50%' }, [
-    div({ ...line, left: -5, top: 16, width: 44, height: 2 }),
-    div({ ...line, left: 16, top: -5, width: 2, height: 44 }),
-    div({ ...line, left: 12, top: 12, width: 10, height: 10, borderRadius: '50%' }),
+  const tick = { position: 'absolute', background: COLOR.ink }
+  return div({ position: 'relative', width: 44, height: 44, border: `3px solid ${COLOR.ink}`, borderRadius: '50%' }, [
+    div({ ...tick, left: 17, top: -14, width: 3, height: 12 }),
+    div({ ...tick, left: 17, top: 40, width: 3, height: 12 }),
+    div({ ...tick, left: -14, top: 17, width: 12, height: 3 }),
+    div({ ...tick, left: 40, top: 17, width: 12, height: 3 }),
+    div({ position: 'absolute', left: 12, top: 12, width: 14, height: 14, borderRadius: '50%', background: COLOR.reticle }),
   ])
 }
 
-function strata(tier: Tier): Node {
-  return div({ gap: 8 }, TIERS.map((candidate) =>
-    div({ width: 64, height: 12, borderRadius: 2, background: candidate === tier ? COLOR.signal : COLOR.stratum }),
+/** The four tiers as stars: open rings, the page's own filled in its pigment. */
+function tierStars(tier: Tier): Node {
+  return div({ gap: 14, alignItems: 'center' }, TIERS.map((candidate) =>
+    div({
+      width: 22,
+      height: 22,
+      borderRadius: '50%',
+      border: `3px solid ${candidate === tier ? TIER_COLOR[candidate] : COLOR.idle}`,
+      background: candidate === tier ? TIER_COLOR[candidate] : 'transparent',
+    }),
   ))
 }
 
@@ -87,22 +104,21 @@ function cardTree(card: Card): Node {
     width: OG_IMAGE.width,
     height: OG_IMAGE.height,
     padding: '0 72px',
-    background: COLOR.abyss,
-    borderTop: `8px solid ${COLOR.signal}`,
+    background: COLOR.night,
     color: COLOR.ink,
-    fontFamily: 'Roboto Condensed',
+    fontFamily: 'Mona Sans',
   }, [
-    div({ alignItems: 'center', gap: 18, paddingTop: 48 }, [
+    div({ alignItems: 'center', gap: 22, paddingTop: 56 }, [
       mark(),
-      div({ fontSize: 40, fontWeight: 700, letterSpacing: -1 }, BRAND),
+      div({ fontSize: 40, fontWeight: 800, letterSpacing: -1 }, BRAND),
     ]),
     div({ flexDirection: 'column', justifyContent: 'center', flexGrow: 1 }, [
-      div({ fontSize: 28, fontWeight: 500, letterSpacing: 2, textTransform: 'uppercase', color: COLOR.signal }, card.kicker),
-      div({ marginTop: 20, maxWidth: 1056, fontSize: headlineSize(card.headline), fontWeight: 700, lineHeight: 1.04, letterSpacing: -1 }, card.headline),
+      div({ fontSize: 28, fontWeight: 700, letterSpacing: 3, textTransform: 'uppercase', color: card.tier ? TIER_COLOR[card.tier] : COLOR.reticle }, card.kicker),
+      div({ marginTop: 22, maxWidth: 1056, fontSize: headlineSize(card.headline), fontWeight: 800, lineHeight: 1.02, letterSpacing: -2 }, card.headline),
     ]),
-    div({ alignItems: 'center', justifyContent: 'space-between', gap: 32, padding: '24px 0 44px', borderTop: `1px solid ${COLOR.rule}` }, [
-      div({ fontSize: 28, fontWeight: 400, color: COLOR.muted }, card.footer),
-      ...(card.tier ? [strata(card.tier)] : []),
+    div({ alignItems: 'center', justifyContent: 'space-between', gap: 32, padding: '26px 0 46px', borderTop: `1px solid ${COLOR.rule}` }, [
+      div({ fontSize: 28, fontWeight: 500, color: COLOR.muted }, card.footer),
+      ...(card.tier ? [tierStars(card.tier)] : []),
     ]),
   ])
 }
