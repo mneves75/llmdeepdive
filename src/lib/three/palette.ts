@@ -85,26 +85,43 @@ export function parseCssColor(value: string): number | null {
 }
 
 /**
- * Resolve every token as it paints inside `surface`. The probe is appended,
- * read and removed synchronously, so it never renders.
+ * A hidden probe inside `surface` for resolving tokens by painting them.
+ *
+ * Transitions are switched off on it, with `!important`: under reduced motion
+ * global.css sets `transition-duration: 0.01ms !important` on every element,
+ * and `transition-property` defaults to `all`, so changing the probe's colour
+ * starts a transition and `getComputedStyle` in the same task returns the
+ * colour it is leaving. Every token after the first then reads as the first
+ * one, which once drew the home sky white on a white plate. An inline
+ * `!important` declaration outranks the stylesheet's.
  */
-export function readPalette(surface: Element, fallback: Readonly<ScenePalette> = FIELD_PALETTE): ScenePalette {
+function withProbe<T>(surface: Element, read: (resolve: (token: string) => string) => T): T {
   const probe = document.createElement('span')
   probe.setAttribute('aria-hidden', 'true')
-  probe.style.position = 'absolute'
-  probe.style.visibility = 'hidden'
+  probe.style.setProperty('transition', 'none', 'important')
+  probe.style.setProperty('position', 'absolute')
+  probe.style.setProperty('visibility', 'hidden')
   surface.append(probe)
-  const palette = { ...fallback }
   try {
-    for (const key of Object.keys(TOKENS) as PaletteToken[]) {
-      probe.style.color = `var(${TOKENS[key]})`
-      const resolved = parseCssColor(getComputedStyle(probe).color)
-      if (resolved !== null) palette[key] = resolved
-    }
+    return read((token) => {
+      probe.style.setProperty('color', `var(${token})`)
+      return getComputedStyle(probe).color
+    })
   } finally {
     probe.remove()
   }
-  return palette
+}
+
+/** Resolve every token as it paints inside `surface`. */
+export function readPalette(surface: Element, fallback: Readonly<ScenePalette> = FIELD_PALETTE): ScenePalette {
+  return withProbe(surface, (resolve) => {
+    const palette = { ...fallback }
+    for (const key of Object.keys(TOKENS) as PaletteToken[]) {
+      const resolved = parseCssColor(resolve(TOKENS[key]))
+      if (resolved !== null) palette[key] = resolved
+    }
+    return palette
+  })
 }
 
 /** A token that carries its own alpha (hairlines: `--grid`, `--rule-strong`). */
@@ -126,23 +143,15 @@ function parseCssAlpha(value: string): number {
  * Tokens that do not resolve are left out of the result.
  */
 export function readTokens(surface: Element, tokens: readonly string[]): Map<string, TokenColor> {
-  const probe = document.createElement('span')
-  probe.setAttribute('aria-hidden', 'true')
-  probe.style.position = 'absolute'
-  probe.style.visibility = 'hidden'
-  surface.append(probe)
-  const out = new Map<string, TokenColor>()
-  try {
+  return withProbe(surface, (resolve) => {
+    const out = new Map<string, TokenColor>()
     for (const token of tokens) {
-      probe.style.color = `var(${token})`
-      const value = getComputedStyle(probe).color
+      const value = resolve(token)
       const color = parseCssColor(value)
       if (color !== null) out.set(token, { color, alpha: parseCssAlpha(value) })
     }
-  } finally {
-    probe.remove()
-  }
-  return out
+    return out
+  })
 }
 
 /** The font a scene should draw numerals with: the display face, as resolved. */
