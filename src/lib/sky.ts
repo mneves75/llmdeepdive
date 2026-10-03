@@ -89,6 +89,8 @@ const round = (value: number): number => Math.round(value * 10) / 10
 const MIN_RADIUS = 2.2
 const MAX_RADIUS = 6
 const MAX_DEGREE_FOR_SCALE = 6
+/** Air between any star and the plate's neatline, in sky units. */
+const PLATE_MARGIN = 16
 
 export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly SkyLessonInput[]): Sky {
   const ordered = [...tracks].sort((left, right) => left.order - right.order)
@@ -137,8 +139,14 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     const maxY = Math.max(...ys, 0)
     const spanX = Math.max(maxX - minX, 1)
     const spanY = Math.max(maxY - minY, 1)
-    const scale = Math.min(width / spanX, height / spanY)
-    const offsetX = centerX - ((minX + maxX) / 2) * scale
+    // Small tracks stay small: a four-lesson track is a small figure, not one
+    // stretched across its whole column.
+    const scale = Math.min(width / spanX, height / spanY, 12 + trackLessons.length * 3)
+    // Keep the figure off the plate's neatline: shift it inward if its column
+    // sits at the edge of the chart.
+    const halfWidth = (spanX * scale) / 2 + MAX_RADIUS
+    const clampedX = Math.min(Math.max(centerX, PLATE_MARGIN + halfWidth), SKY_WIDTH - PLATE_MARGIN - halfWidth)
+    const offsetX = clampedX - ((minX + maxX) / 2) * scale
     const offsetY = centerY - ((minY + maxY) / 2) * scale
 
     const stars = raw.map(({ lesson, x, y }): SkyStar => {

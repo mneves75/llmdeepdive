@@ -90,3 +90,19 @@ test('the layout is deterministic and identical across locales', () => {
   const ptSky = buildSky(pt.tracks, pt.lessons)
   assert.deepEqual(ptSky.stars.map(({ id, x, y, r }) => ({ id, x, y, r })), sky.stars.map(({ id, x, y, r }) => ({ id, x, y, r })))
 })
+
+test('no star sits on the plate border', () => {
+  // `r` alone lets a star touch the neatline; the chart needs air at its edges.
+  const MARGIN = 14
+  for (const star of sky.stars) {
+    assert.ok(star.x - star.r >= MARGIN && star.x + star.r <= SKY_WIDTH - MARGIN, `${star.id} x=${star.x} is on the border`)
+  }
+})
+
+test('small tracks draw small figures instead of being stretched across their column', () => {
+  for (const constellation of sky.constellations) {
+    const count = constellation.stars.length
+    if (count > 6) continue
+    assert.ok(constellation.box.width <= 26 * count, `${constellation.id}: ${count} lessons spread over ${constellation.box.width} units`)
+  }
+})

@@ -63,6 +63,12 @@ course player, and a new track teaches how models learn from video.
   same chart, read from the page's own SVG, curves onto a slowly turning sky.
   three.js loads only after the page is idle; scrolling is never captured, and
   it stops off screen, when paused and under reduced motion.
+- **Lesson figures assemble as they scroll into view**: a flow's stages arrive
+  in reading order, a stack's bars grow to their share, a plot's curves draw
+  left to right. Complete and still wherever scroll-driven animation is
+  unavailable or motion is reduced.
+- **The 404 pages are a gap in the chart**: an empty patch of the atlas, a
+  reticle that sweeps three times and settles, and the three routes back.
 - **Display face: Mona Sans**, self-hosted and preloaded (98 KB, Latin only on
   a given page); body text keeps system fonts. Social cards are redrawn in
   the same face and system.

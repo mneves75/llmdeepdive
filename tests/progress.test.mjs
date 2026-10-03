@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { completeKey, lastVisitKey, parseLastVisit, serializeLastVisit, countComplete, fillTemplate } from '../src/lib/progress.ts'
+import { completeKey, lastVisitKey, parseLastVisit, countComplete, fillTemplate } from '../src/lib/progress.ts'
+
+// Lesson.astro writes the record as JSON of exactly these four fields.
+const serializeLastVisit = (visit) => JSON.stringify(visit)
 
 const visit = { id: '4.2-self-attention', path: '/lessons/4-transformer/4.2-self-attention/', title: 'Self-attention', position: '4.2' }
 

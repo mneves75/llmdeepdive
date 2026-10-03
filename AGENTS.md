@@ -112,7 +112,9 @@ carries the crimson reticle. Colours come from the CSS tokens
 (`src/lib/three/palette.ts` reads them, re-read on theme change); motion runs
 on the shared clock (`src/lib/three/clock.ts`, the 180 s sky period). Do not
 restore rainbow slabs. Keep the model procedural unless a real interaction
-requirement justifies a downloaded asset.
+requirement justifies a downloaded asset. Update
+`tests/transformer-scene.test.mjs` when that mapping or geometry changes, then
+verify `/explore/` in a real desktop and mobile browser.
 
 The home and tracks-index charts lift onto a 3D sky (`src/lib/sky-client.ts`,
 `src/lib/three/scenes/sky.ts`) built from the server-rendered SVG itself, so
@@ -120,9 +122,10 @@ the two cannot disagree. Same rules as the explorer: dynamic import only after
 an IntersectionObserver, a WebGL check, page load and idle; a real `.catch()`
 that leaves the poster; no wheel or touch-scroll capture; stopped offscreen,
 when hidden, when paused (`[data-motion-toggle]`) and under reduced motion.
-It owns its own renderer — one WebGL context per page, never two. Update
-`tests/transformer-scene.test.mjs` when that mapping or geometry changes, then
-verify `/explore/` in a real desktop and mobile browser.
+It owns its own renderer — one WebGL context per page, never two. Its contract
+(poster-identical first frame, no three.js in the boot module, every point in
+view over the sway) is `tests/sky-scene.test.mjs`; the 2D layout it lifts is
+`tests/sky-layout.test.mjs`.
 
 **Leaving mid-load is not a failure.** WebKit and Firefox reject the three.js
 import the moment navigation starts, so `explorer-client.ts` marks the page as
@@ -407,7 +410,7 @@ defaults to `htmlAndMathml`, which emits two parallel renderings and relies on
 `katex.min.css` to hide one. That stylesheet is not imported here, so the
 default renders every formula *twice* — invisible to every gate, because both
 halves are valid HTML. `output: 'mathml'` renders natively, needs no
-stylesheet and no font download (the zero-network-font rule), and is what a
+stylesheet and no font download (formulas render in system maths fonts), and is what a
 screen reader reads. Importing the CSS instead would cost ~23 KB
 render-blocking plus font files.
 
@@ -534,8 +537,9 @@ reader without JavaScript gets a worked example, not an apology — and those
 defaults must reproduce the lesson's own worked numbers, or the page contradicts
 itself. Do not add a no-JS submit button: pages are prerendered and never read a
 query string, so the control would lie. `pnpm budget` enforces the declared
-`budgetKb` and counts **inline** script bytes, because Astro inlines small
-scripts and they are otherwise invisible to every budget.
+`budgetKb` and also counts **inline** script bytes: since 0.9 Astro emits
+every processed script as a file (`assetsInlineLimit: 0`), but an inline one
+would otherwise be invisible to every budget.
 
 Lab arithmetic lives in `src/lib/lab-math.ts` and input handling in
 `src/lib/lab-form.ts`; the server-rendered defaults and the browser both call

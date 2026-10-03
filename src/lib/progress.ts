@@ -37,10 +37,6 @@ function lessonPathPattern(locale: ProgressLocale): RegExp {
   return new RegExp(`^${prefix}/lessons/\\d+-[a-z0-9-]+/\\d+\\.\\d+-[a-z0-9-]+/$`, 'u')
 }
 
-export function serializeLastVisit(visit: LastVisit): string {
-  return JSON.stringify(visit)
-}
-
 /**
  * Storage is untrusted input: another script, an old build or a hand edit may
  * have written anything. A record becomes a link only when it is a lesson
@@ -78,7 +74,7 @@ export function countComplete(storage: ReadableStorage, locale: ProgressLocale, 
   return lessonIds.reduce((total, id) => total + (isComplete(storage, locale, id) ? 1 : 0), 0)
 }
 
-/** "{n} of {m}" → "3 of 116". Unknown slots stay as written. */
+/** "{n} of {m}" → "3 of 110". Unknown slots stay as written. */
 export function fillTemplate(template: string, values: Readonly<Record<string, number | string>>): string {
   return template.replace(/\{([a-z]+)\}/gu, (slot, name: string) => (name in values ? String(values[name]) : slot))
 }

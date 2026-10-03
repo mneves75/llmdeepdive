@@ -69,9 +69,9 @@ export default defineConfig({
         // "LL". 340 display blocks and 817 inline spans across 91 lessons.
         //
         // Importing katex.min.css would fix the duplication but costs ~23 KB of
-        // render-blocking CSS (the per-route budget is 72 KB against 58.9 KB
-        // used) plus its self-hosted font files — and the design system's
-        // zero-network-font rule exists precisely to avoid that. MathML Core is
+        // render-blocking CSS (the per-route budget is 72 KB against ~67 KB
+        // used in 0.9) plus its KaTeX font files, all on the critical path of
+        // every lesson for something the browser already draws. MathML Core is
         // native in every current browser, needs no stylesheet and no font
         // download, and is what a screen reader wants to read anyway.
         [rehypeKatex, { output: 'mathml' }],

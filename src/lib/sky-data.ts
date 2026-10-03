@@ -28,6 +28,11 @@ export function starTransitionName(lessonId: string): string {
   return `star-${(lessonId.split('-')[0] ?? lessonId).replace('.', '-')}`
 }
 
+/** A CSS ident for a track's title: catalogs and the track page name it, and the lesson crumb receives it. */
+export function trackTitleTransitionName(trackId: string): string {
+  return `track-title-${trackId.split('-')[0] ?? trackId}`
+}
+
 /** A CSS ident for a track's chart, shared by the track page and its lessons. */
 export function chartTransitionName(trackId: string): string {
   return `chart-${trackId.split('-')[0] ?? trackId}`

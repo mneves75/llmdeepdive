@@ -10,19 +10,24 @@ See `package.json`. All runtime and build dependencies are OSI-licensed; run
 
 ## Fonts
 
-**None are shipped to a browser.** The site ships no `@font-face` rule and no font
-file; `src/styles/tokens.css` names only fonts already present on the operating
-system, with a stack that degrades to `sans-serif` and `monospace`. No font is
-downloaded on any page load, and the CSP's `font-src 'self'` would block a CDN
-even if one were added.
+**Mona Sans** (GitHub's Mona Sans Project, SIL Open Font License 1.1, Reserved
+Font Name "Mona") is the one font shipped to a browser, since 0.9 (see
+`docs/adr/0002`). It is self-hosted from `@fontsource-variable/mona-sans`
+5.3.0, unmodified: the variable weight-and-width face in Latin, Latin Extended
+and Vietnamese subsets, each fetched only when a page uses a character in its
+range, from this origin (`font-src 'self'`; nothing is fetched from a third
+party). It sets headings and interface labels; body text and data keep the
+visitor's system fonts (`src/styles/tokens.css`).
 
-The social cards under `/og/` are the one place a bundled font is used: at build
-time, `src/lib/og-render.ts` turns card text into vector outlines with
-**Roboto Condensed** (400, 500, 700) and the maths subset of **Roboto** (700),
-both from Fontsource and both under the SIL Open Font License 1.1, which permits
-embedding glyphs in images. The font files stay in `node_modules`; only the
-rendered PNGs are deployed. Earlier revisions of this file credited Newsreader,
-Inter, JetBrains Mono and Caveat; those were never shipped.
+The social cards under `/og/` are drawn at build time by
+`src/lib/og-render.ts`, which turns card text into vector outlines with the
+static **Mona Sans** cuts (500, 700, 800; `@fontsource/mona-sans`, OFL 1.1) and
+the maths subset of **Roboto** (700, `@fontsource/roboto`, OFL 1.1) for √ and ≈.
+The OFL permits embedding glyphs in images; those font files stay in
+`node_modules`, and only the rendered PNGs are deployed. Roboto Condensed,
+used for the cards until 0.8, is no longer a dependency. Earlier revisions of
+this file credited Newsreader, Inter, JetBrains Mono and Caveat; those were
+never shipped.
 
 ## Imagery
 
