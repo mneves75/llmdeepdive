@@ -45,7 +45,8 @@ course player, and a new track teaches how models learn from video.
 
 - **New visual system** (DESIGN.md): two editions of one atlas, a white plate
   by day and a night plate in dark mode; tier colours follow stellar spectral
-  classes; state is a drawn mark, never colour alone; a crimson reticle marks
+  classes (the frontier tier is brown-dwarf magenta); the home chart prints its
+  key; state is a drawn mark, never colour alone; a crimson reticle marks
   where you are and is the focus ring.
 - **Motion**, all CSS and all off under reduced motion: opening a lesson from
   its track flies the constellation into the lesson's plate and the track

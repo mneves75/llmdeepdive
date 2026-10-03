@@ -53,7 +53,7 @@ const TIER_COLOR: Record<Tier, string> = {
   foundations: '#72c8f2',
   core: '#f1cd6b',
   advanced: '#ff9b57',
-  frontier: '#ff7aa0',
+  frontier: '#e59cf3',
 }
 
 type Style = Record<string, string | number>

@@ -166,3 +166,13 @@ test('no stylesheet references a token the system no longer defines', () => {
     assert.ok(!defined.has(retired) && !used.has(retired), `retired token ${retired} still in CSS`)
   }
 })
+
+test('a star fills only for its own lesson, never because an ancestor is complete', () => {
+  // The lesson <article> carries data-complete="true" once the lesson is done;
+  // a descendant selector would then fill every star inside it (prerequisites,
+  // the plate, the syllabus) whether or not those lessons were completed.
+  const astro = join(DIST, '_astro')
+  const css = readdirSync(astro).filter((name) => name.endsWith('.css')).map((name) => readFileSync(join(astro, name), 'utf8')).join('\n')
+  const loose = [...css.matchAll(/\[data-complete=["']?true["']?\]\s+\.star-mark/gu)]
+  assert.deepEqual(loose.map((match) => match[0]), [], 'star marks must key on their own row ([data-complete] > .star-mark), not on any ancestor')
+})
