@@ -79,28 +79,48 @@ async function layoutFailures(page) {
     const wrong = [...document.querySelectorAll('.math-scroll, .table-scroll')]
       .filter((region) => (region.scrollWidth > region.clientWidth + 1) !== (region.getAttribute('role') === 'region'))
     if (wrong.length) failures.push(`${wrong.length} scroll wrapper(s) with region semantics that disagree with their overflow`)
+    // Text an accessible name or a sentence is made of: rendered (checkVisibility
+    // keeps visually-hidden text and drops display:none) and not aria-hidden.
+    const textNodes = (root) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      const nodes = []
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const parent = node.parentElement
+        if (node.textContent.trim() && parent?.checkVisibility() && !parent.closest('[aria-hidden="true"]')) nodes.push(node)
+      }
+      return nodes
+    }
     // WCAG 4.1.2: a narrow layout once hid the syllabus button's only text and
-    // left an unnamed icon. innerText counts visually-hidden text and skips
-    // display:none, which is exactly what the accessibility tree does here.
-    // Charts are aria-hidden duplicates of the lesson lists, so their links are
-    // outside the accessibility tree and need no name of their own.
+    // left an unnamed icon. Charts are aria-hidden duplicates of the lesson
+    // lists, so their links are outside the accessibility tree and need no name.
     const shown = (element) =>
       element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden' && !element.closest('[aria-hidden="true"], [inert]')
     const nameOf = (element) =>
       (element.getAttribute('aria-label') ??
         (element.getAttribute('aria-labelledby') ?? '').split(/\s+/u).map((id) => document.getElementById(id)?.textContent ?? '').join(' ')).trim() ||
-      element.innerText.trim() ||
-      [...element.querySelectorAll('img[alt]')].map((image) => image.alt).join(' ').trim() ||
+      textNodes(element).map((node) => node.textContent).join('').trim() ||
+      [...element.querySelectorAll('img[alt]')].filter((image) => !image.closest('[aria-hidden="true"]')).map((image) => image.alt).join(' ').trim() ||
       (element.getAttribute('title') ?? '').trim()
-    const unnamed = [...document.querySelectorAll('button, a[href], [role="button"]')].filter((element) => shown(element) && !nameOf(element))
-    if (unnamed.length) failures.push(`unnamed control(s): ${unnamed.slice(0, 3).map((element) => element.outerHTML.slice(0, 80)).join(' | ')}`)
+    for (const element of [...document.querySelectorAll('button, a[href], [role="button"]')].filter((control) => shown(control) && !nameOf(control)).slice(0, 5)) {
+      failures.push(`unnamed control: ${element.outerHTML.slice(0, 80)}`)
+    }
     // WCAG 1.4.1: a link inside running text must not differ by colour alone.
     // Tailwind's preflight sets `text-decoration: inherit`, which removed every
-    // underline site-wide while the global rule still styled its colour.
-    const inText = (link) => [...link.parentElement.childNodes].some((node) => node !== link && node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0)
+    // underline site-wide while the global rule still styled its colour. The
+    // sentence is the link's inline formatting context: climb inline wrappers
+    // (<em>, <span>) to the block that holds it, then look for other text there.
+    const blockOf = (node) => {
+      let element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node
+      while (element && getComputedStyle(element).display === 'inline') element = element.parentElement
+      return element
+    }
+    const inText = (link) => {
+      const block = blockOf(link)
+      return block !== null && textNodes(block).some((node) => !link.contains(node) && blockOf(node) === block)
+    }
     const unmarked = [...document.querySelectorAll('main a[href]')]
-      .filter((link) => shown(link) && getComputedStyle(link).display === 'inline' && inText(link) && !getComputedStyle(link).textDecorationLine.includes('underline'))
-    if (unmarked.length) failures.push(`link(s) in running text without an underline: ${unmarked.slice(0, 3).map((link) => link.textContent.trim().slice(0, 30)).join(' | ')}`)
+      .filter((link) => shown(link) && getComputedStyle(link).display === 'inline' && !getComputedStyle(link).textDecorationLine.includes('underline') && inText(link))
+    for (const link of unmarked.slice(0, 5)) failures.push(`link in running text without an underline: ${link.textContent.trim().slice(0, 30)}`)
     return failures
   })
 }
@@ -278,11 +298,15 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
           const wide = document.createElement('span')
           wide.style.cssText = 'display: inline-block; inline-size: 2000px; block-size: 1px'
           document.querySelector('main')?.prepend(wide)
-          const icon = document.createElement('button')
-          icon.innerHTML = '<svg width="16" height="16" aria-hidden="true"></svg>'
-          const prose = document.createElement('p')
-          prose.innerHTML = 'Read <a href="#" style="text-decoration: none">the source</a> first.'
-          document.querySelector('main')?.append(icon, prose)
+          // Each planted control and link must be reported on its own.
+          const planted = document.createElement('div')
+          planted.innerHTML = [
+            '<button data-planted="icon"><svg width="16" height="16" aria-hidden="true"></svg></button>',
+            '<button data-planted="hidden-glyph"><span aria-hidden="true">×</span></button>',
+            '<p>Read <a href="#" style="text-decoration: none">planted direct link</a> first.</p>',
+            '<p>Read <em><a href="#" style="text-decoration: none">planted wrapped link</a></em> first.</p>',
+          ].join('')
+          document.querySelector('main')?.append(planted)
         })
       }
       await settle(page)
@@ -329,8 +353,10 @@ try {
   if (selfTest) {
     const expected = engines.flatMap((engine) => [
       `${engine} ${checked[0]}: page overflows`,
-      `${engine} ${checked[0]}: unnamed control(s)`,
-      `${engine} ${checked[0]}: link(s) in running text without an underline`,
+      `${engine} ${checked[0]}: unnamed control: <button data-planted="icon"`,
+      `${engine} ${checked[0]}: unnamed control: <button data-planted="hidden-glyph"`,
+      `${engine} ${checked[0]}: link in running text without an underline: planted direct link`,
+      `${engine} ${checked[0]}: link in running text without an underline: planted wrapped link`,
       ...(engine === 'chromium' ? [`chromium+wide-fonts ${checked[0]}: page overflows`] : []),
       ...BASELINE_ROUTES.map((route) => `${engine} ${route} @1280: inline maths moves`),
       ...(explorerEngines.includes(engine)
