@@ -2,7 +2,7 @@
 
 ## Current Direction
 
-- **0.9.1 deployed on 2026-10-04 from `6167fc0`** (PRs #4–#6, CI passed),
+- **0.9.1 deployed on 2026-10-03 (23:06 -03; 02:06 UTC on 10-04) from `6167fc0`** (PRs #4–#6, CI passed),
   tagged `v0.9.1-beta4` (staging version `0e4c0854`) and `v0.9.1` (production
   `c37ddfee`, apex and www). `verify:live` passed on both (822 files
   byte-identical, CSP, Brotli, www redirect, explorer → lesson in three
@@ -15,7 +15,8 @@
   checklist: round 1 FAIL on one filler sentence in lesson 0.1 (removed) with
   WebKit blocked by its sandbox (`Abort trap: 6`; round 2 drove a WebKit
   `launchServer` started outside it), round 2 PASS. Dependabot's six undici
-  alerts are stale: the lockfile holds only the patched 7.29.1.
+  alerts were still open at release (last updated 10:46 UTC on 10-03) although
+  the lockfile holds only the patched 7.29.1; cause not established.
 - **0.9.1 is a search and accessibility pass from a live audit.** Google
   already indexed the site (a `site:` query on 2026-10-03 showed home, tracks,
   explorer and lessons in both languages, with a stale favicon and pre-0.8.0
