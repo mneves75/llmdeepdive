@@ -137,3 +137,17 @@ test('small tracks draw small figures instead of being stretched across their co
     assert.ok(constellation.box.width <= 26 * count, `${constellation.id}: ${count} lessons spread over ${constellation.box.width} units`)
   }
 })
+
+test('a name never enters from outside the plate', () => {
+  // Names fade in by sliding into place. Starting below their resting point,
+  // the bottom row (hanging under its figures) sat up to 2.6px past the plate
+  // on a 320px phone until each staggered entrance began.
+  const css = readFileSync('src/components/SkyChart.astro', 'utf8')
+  const startY = (name) => Number(css.match(new RegExp(`@keyframes ${name} \\{ from \\{[^}]*translate: -50% (-?\\d+)%`, 'u'))?.[1])
+  const animationFor = (selector) => css.match(new RegExp(`${selector.replace(/[[\]]/gu, '\\$&')} \\{ animation: ([\\w-]+)`, 'u'))?.[1]
+  const above = animationFor('.sky__names li')
+  const below = animationFor(".sky__names li[data-anchor='below']")
+  assert.ok(above && below, 'both rows declare an entrance')
+  assert.ok(startY(above) >= -50, `names above their figures start at ${startY(above)}%, outside the top edge`)
+  assert.ok(startY(below) <= -50, `names below their figures start at ${startY(below)}%, outside the bottom edge`)
+})
