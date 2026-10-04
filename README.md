@@ -100,7 +100,9 @@ and track 9 the silicon underneath (NVIDIA, AMD, Apple, Qualcomm, Cerebras).
 Every mechanism is worked through one real model, Qwen3.8-27B. Track 10 steps
 beyond text: how video models turn frames into tokens (with Qwen3-VL as the
 reference system) and the JEPA family of world models (I-JEPA, V-JEPA 2 and
-2.1, VL-JEPA), read from the papers themselves. Tracks 11–13 are hands-on: the Mac Studio
+2.1, VL-JEPA), read from the papers themselves.
+
+Tracks 11–13 are hands-on: the Mac Studio
 Ultra with MLX, mlx-lm and MLX serving (`mlx_lm.server`, mlx-serve); NVIDIA's
 DGX Spark and DGX Station with the CUDA programming model and stack; and
 llama.cpp in depth (ggml backends, making a GGUF, `llama-server`, `llama-bench`,
