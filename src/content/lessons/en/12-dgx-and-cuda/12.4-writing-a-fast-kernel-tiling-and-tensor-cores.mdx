@@ -1,0 +1,142 @@
+---
+id: "12.4-writing-a-fast-kernel-tiling-and-tensor-cores"
+track: "12-dgx-and-cuda"
+order: 4
+title: "Writing a Fast Kernel: Tiling and Tensor Cores"
+summary: "Shared-memory tiling lifts the naive matrix multiply from 0.25 to 4 FLOP per byte, Tensor Cores take over the multiply, and batch-1 decode stays a bandwidth-bound matrix-vector product."
+tier: "frontier"
+locale: "en"
+prerequisites: ["12.3-the-cuda-programming-model", "7.7-flashattention-and-io-awareness"]
+unlocks: ["12.5-the-cuda-stack-for-llms"]
+analogy: "A joiner must cut a thousand pieces from boards stored at the far end of the yard. Walking out for each piece wastes the day. So the joiner carries a stack of boards to the bench, cuts everything that stack can give, and only then fetches the next stack. The bench is shared memory, the yard is DRAM, and the stack is the tile. A Tensor Core is a bench saw that cuts a whole panel in one stroke, but only if a whole panel is waiting."
+teachBack:
+  prompt: "Explain how shared-memory tiling changes the arithmetic intensity of a matrix multiply, what Tensor Cores add on top, why batch-1 decode is a bandwidth-bound matrix-vector product that Tensor Cores do not rescue, and what you would read in Nsight Compute to confirm it."
+  modelAnswer: "The naive kernel loads two 4-byte values for each multiply-add, so its intensity is 0.25 FLOP per byte if no load hits a cache. With a 16 by 16 tile, a block stages tiles of A and B in shared memory and each loaded element serves 16 threads, so global traffic falls sixteen-fold and intensity reaches about 4 FLOP per byte. Both barriers are needed, and every thread must reach them, so out-of-range elements are zero-filled instead of skipped. Tensor Cores then perform a whole tile multiply-accumulate per warp instruction, reached through WMMA, CUTLASS or cuBLAS. Batch-1 decode multiplies a weight matrix by one vector, so each weight is used once for 2 FLOP: about 1 FLOP per byte in bf16. A vector fills at most one column of a 16-wide tile, so the kernel is written as a streaming read that targets DRAM bandwidth. In Nsight Compute, high memory throughput with low compute throughput means the kernel is near its roofline."
+quiz:
+  - question: "With a 16 by 16 shared-memory tile, each loaded element is reused 16 times. What happens to the naive kernel's arithmetic intensity of 0.25 FLOP per byte?"
+    options: ["It stays at 0.25, because the FLOP count is unchanged", "It doubles to 0.5", "It rises sixteen-fold to about 4 FLOP per byte, because global traffic falls by the tile width", "It falls, because of the extra copies into shared memory"]
+    correctIndex: 2
+    explanation: "FLOPs stay the same and bytes from global memory fall by the tile width, so the ratio rises by that factor, until a compute or shared-memory limit takes over."
+  - question: "Why do Tensor Cores not speed up batch-1 decode of Qwen3.8-27B?"
+    options: ["Tensor Cores cannot read bf16", "Decode is a matrix-vector product: each weight is used once, so the work is bandwidth-bound, and a single vector fills only a small part of a matrix tile", "Tensor Cores run only during prefill by hardware design", "Tensor Cores need FP32 inputs"]
+    correctIndex: 1
+    explanation: "Lesson 9.1 put decode near one operation per weight byte. Tensor Cores add arithmetic throughput, which this kernel does not lack."
+  - question: "An Nsight Compute report for a decode matrix-vector kernel shows high memory throughput and low compute throughput. What is the right reading?"
+    options: ["The kernel is badly written, so move the arithmetic to Tensor Cores", "The kernel is near its bandwidth roof, and only fewer bytes or more work per byte can help", "The GPU was idle during the launch", "The profiler cannot measure batch 1"]
+    correctIndex: 1
+    explanation: "Lesson 9.2 showed that a kernel at 0.3 percent of peak FLOPs can sit exactly on its roofline. The fix is intensity, not instruction scheduling."
+citations:
+  - title: "CUDA Programming Guide: Writing SIMT Kernels (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html"
+  - title: "CUDA Programming Guide: C++ Language Extensions, Warp Matrix Functions (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html"
+  - title: "CUDA Programming Guide: Compute Capabilities (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html"
+  - title: "CUTLASS 4.8.0: Efficient GEMM in CUDA"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://github.com/NVIDIA/cutlass/blob/v4.8.0/media/docs/cpp/efficient_gemm.md"
+  - title: "Nsight Compute Profiling Guide (2026.3.1)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html"
+  - title: "Nsight Compute Command Line Interface (2026.3.1)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html"
+  - title: "CUDA Toolkit 13.4 Update 1 Release Notes"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/index.html"
+  - title: "Introducing NVFP4 for Efficient and Accurate Low-Precision Inference"
+    authors: "NVIDIA Corporation"
+    year: 2025
+    url: "https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/"
+updated: "2026-10-04"
+---
+
+The naive matrix multiply of lesson 12.3 is correct and wasteful. Every thread streams a full row of `A` and a full column of `B` from global memory, and neighbouring threads fetch the same numbers again. The fix is the oldest trick in the roofline playbook of lesson 9.2: raise the arithmetic intensity by reusing bytes you already moved.
+
+A block cooperates. It loads one square tile of `A` and one of `B` into shared memory, synchronizes, lets every thread multiply out of that fast memory, synchronizes again, and slides to the next tile.
+
+```cpp
+#define TILE 16
+__global__ void matmulTiled(const float* A, const float* B, float* C, int M, int N, int K) {
+    __shared__ float As[TILE][TILE];
+    __shared__ float Bs[TILE][TILE];
+    int row = blockIdx.y * TILE + threadIdx.y;
+    int col = blockIdx.x * TILE + threadIdx.x;
+    float acc = 0.0f;
+    for (int t = 0; t < (K + TILE - 1) / TILE; ++t) {
+        int aCol = t * TILE + threadIdx.x;
+        int bRow = t * TILE + threadIdx.y;
+        As[threadIdx.y][threadIdx.x] = (row < M && aCol < K) ? A[row * K + aCol] : 0.0f;
+        Bs[threadIdx.y][threadIdx.x] = (bRow < K && col < N) ? B[bRow * N + col] : 0.0f;
+        __syncthreads();                      // tiles are complete
+        for (int k = 0; k < TILE; ++k) acc += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+        __syncthreads();                      // everyone is done before the tiles are overwritten
+    }
+    if (row < M && col < N) C[row * N + col] = acc;
+}
+// launch: dim3 block(TILE, TILE); dim3 grid((N + TILE - 1) / TILE, (M + TILE - 1) / TILE);
+```
+
+Two details carry the correctness. First, every thread of the block that has not exited must reach the same `__syncthreads()`, so a barrier never sits inside a branch that only some threads take. Out-of-range elements are loaded as zero instead of skipped because the tile is shared: a thread whose own output lies outside the matrix still fills its slot, which its neighbours read, so it stays in the loop rather than returning early. Second, the barrier after the multiply stops a fast thread from refilling the tiles while a slow one still reads them.
+
+Now the gain. Each element in a tile is loaded once from global memory and used by 16 threads. Global traffic falls by the tile width, so the intensity of 0.25 FLOP/B rises by the same factor:
+
+$$
+I_{\text{tiled}} = 16\times 0.25\ \text{FLOP/B} = 4\ \text{FLOP/B}, \qquad 273\ \text{GB/s}\times 4\ \text{FLOP/B} \approx 1.1\ \text{TFLOP/s}.
+$$
+
+The second figure uses the Spark's vendor bandwidth. It is the bandwidth roof at that intensity, a planning number and not a measurement. A bigger tile reuses more, but it needs more shared memory. The Programming Guide's tables give 100 KiB per SM on compute capability 12.x, and up to 228 KiB on 10.3. A tile size tuned on the Station may not fit the Spark. Shared-memory allocations above 48 KiB per block also need dynamic allocation and an explicit opt-in.
+
+Now the Tensor Cores. They multiply a small tile per warp instruction. The warp matrix functions expose them in C++, and every thread in the warp must take part.
+
+```cpp
+#include <cuda_fp16.h>
+#include <mma.h>
+using namespace nvcuda;
+
+__global__ void matmulWmma(const half* A, const half* B, float* C, int M, int N, int K) {
+    int tileRow = blockIdx.y * 16, tileCol = blockIdx.x * 16;      // one warp per block
+    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
+    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
+    wmma::fill_fragment(acc, 0.0f);
+    for (int k = 0; k < K; k += 16) {
+        wmma::load_matrix_sync(a, A + tileRow * K + k, K);
+        wmma::load_matrix_sync(b, B + k * N + tileCol, N);
+        wmma::mma_sync(acc, a, b, acc);
+    }
+    wmma::store_matrix_sync(C + tileRow * N + tileCol, acc, N, wmma::mem_row_major);
+}
+// launch: matmulWmma<<<dim3(N / 16, M / 16), 32>>>(A, B, C, M, N, K);  M, N, K multiples of 16
+```
+
+This kernel is correct but not fast. It has no shared-memory staging and one warp per block. Fast Tensor Core code stacks the same two ideas: a block tile staged through shared memory, a warp tile, then the instruction. That is exactly the loop nest of CUTLASS's "Efficient GEMM in CUDA", so in practice you call CUTLASS or cuBLAS. The Programming Guide says to use Tensor Cores through cuDNN, cuBLAS, cuFFT or CUTLASS. The warp matrix table lists FP16, BF16, TF32, FP64, INT8 and sub-byte integer types (preview), and no FP4 float. Blackwell's FP4 instructions are architecture-specific (llama.cpp builds them with a `121a` target), and NVIDIA strongly recommends reaching them through the libraries. Library versions matter. The CUDA 13.4 Update 1 release notes list, under cuBLAS 13.2, up to 3 times faster NVFP4 and MXFP8 GEMM on the DGX Spark for selected large shapes. That is a vendor claim about one library release.
+
+Why do none of these tricks speed up batch-1 decode? Decode is a matrix-vector product, a GEMV. Each weight is read once and used for one multiply-add, which is 2 FLOP. In bf16 that is about 1 FLOP per byte (lesson 9.1). At NVFP4's 4.5 bits per value, counting the block scales, it is $2 / (4.5/8) \approx 3.6$ FLOP per byte, still far below any ridge point. A single vector also fills one column of a 16-wide tile, at most 1/16 of the work. So decode kernels stream weights with wide loads, accumulate in registers and reduce across the warp. They aim at a share of DRAM bandwidth, not at FLOPs. Batching and prefill give Tensor Cores a full tile.
+
+:::warning
+Profile before you tune. A decode kernel at 0.3 percent of peak FLOPs may be at 90 percent of its bandwidth roof, and a rewrite then buys nothing. Read the Speed Of Light section first, then the roofline sections: Nsight Compute has hierarchical roofline charts for Tensor Core kernels, and says to enable the one that matches your data path.
+:::
+
+```bash
+nvcc -O3 -arch=sm_121 -lineinfo matmul.cu -o matmul
+ncu --set full -k regex:matmul -c 1 -o matmul-report ./matmul
+```
+
+The `-k regex:` filter picks kernels by name, `-c 1` profiles only the first match, and `--set full` collects every section. Open `matmul-report.ncu-rep` in the Nsight Compute interface. The command line prints nothing when `-o` is set and `--page` is not, so add `--page details` to read the numbers in the terminal.
+
+:::caveat
+The listings follow the Programming Guide, and their index logic was checked against a reference matrix multiply in a CPU model. The authors have not run them on a GPU. Compile them for your target, run `compute-sanitizer`, and compare against cuBLAS before you trust a timing.
+:::
+
+The durable idea is that every fast kernel moves fewer bytes per useful operation, and every profile asks which roof you are under. Lesson 12.5 steps back from single kernels to the stack that ships them: drivers, toolkits, libraries and the servers that call them.

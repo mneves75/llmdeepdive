@@ -1,0 +1,117 @@
+---
+id: "13.5-speculative-decoding-and-rpc-in-llama-cpp"
+track: "13-llama-cpp-in-depth"
+order: 5
+title: "Speculative decoding and RPC in llama.cpp"
+summary: "Turn on a draft model in llama-server and read its acceptance statistics, then split a model across machines with the RPC backend and see which bytes cross the link and which cost dominates."
+tier: "frontier"
+locale: "en"
+prerequisites: ["13.4-benchmarking-with-llama-bench", "7.5-beam-search-speculative-decoding-and-medusa"]
+unlocks: []
+analogy: "A slow expert signs every page of a contract. An assistant drafts three pages ahead, and the expert reads all three at once and stamps those that are right. When the draft is dull boilerplate, three pages pass per sitting. When it is a new clause, the expert corrects page one and the rest is wasted. Separately, you can hire a second expert in another city and mail pages between them. Each trip to the post office costs a day, however thin the envelope. The draft is speculative decoding, and the post office is the network."
+teachBack:
+  prompt: "Describe how to enable a draft model in llama-server at b11380, how to read the acceptance statistics, and what actually crosses the network when you split a model over RPC."
+  modelAnswer: "At b11380, passing -md with a draft file only loads the draft. You also need --spec-type draft-simple, otherwise the speculative counters stay at zero. The server then drafts up to --spec-draft-n-max tokens, three by default, and the target verifies them in one pass. By default the target samples every position itself and accepts a draft token only when it matches, so the output is what the target would have sampled. The log line draft acceptance and the metrics llamacpp:spec_decode_* give accepted over generated, and mean len, which is one plus accepted drafts per verification step. Acceptance depends on the text: on the same two small models it was 82 of 84 on a counting prompt and 57 of 183 on an open creative prompt. For RPC, ggml-rpc-server exposes a device and the client uses --rpc. The weights cross once at load, and a local cache can skip that. Per token only small hidden-state vectors, the output logits if the output layer is remote and a graph message cross, and a reused graph needs only a tiny recompute message. So with the default layer split the link rarely limits decode by bandwidth. Round trips and message count do, and tensor split mode makes that worse."
+quiz:
+  - question: "At b11380, llama-server -m TARGET.gguf -md DRAFT.gguf runs without --spec-type. What do the metrics show after a request?"
+    options: ["High acceptance, because the draft model is loaded", "An error saying that the draft and target vocabularies differ", "The same as draft-simple, because -md implies it", "The draft model is loaded but llamacpp:spec_decode_num_draft_tokens_total stays 0, so nothing is drafted"]
+    correctIndex: 3
+    explanation: "Both b11380 and build 11146 loaded the draft and drafted nothing. With --spec-type draft-simple the same pair drafted 84 tokens and had 82 accepted on a counting prompt."
+  - question: "With the default layer split over RPC, which bytes cross the link on every decoded token in the debug log of a Qwen3-1.7B run?"
+    options: ["The full 1.7 GB of weights", "Small hidden-state vectors, the logits when the output layer is remote, and a graph message that is tiny when the graph is reused", "The whole KV cache", "A complete graph description with 637 tensors, every time"]
+    correctIndex: 1
+    explanation: "The server log showed 8,192-byte writes (2,048 values at 4 bytes), a 607,744-byte read of logits, and graph_recompute messages after the first graph_compute. The weight writes, the largest 330 MB, happened at load."
+  - question: "On the same Qwen3-1.7B target and Qwen3-0.6B draft, mean len was 3.93 for a counting prompt and 1.92 for a creative prompt. What follows?"
+    options: ["The draft model is broken for creative text and must be replaced", "Mean len measures wall-clock speedup directly", "Acceptance depends on how predictable the text is, so you must measure it on your own traffic", "Speculative decoding changes the target's output distribution when acceptance is low"]
+    correctIndex: 2
+    explanation: "Mean len is one plus accepted drafts per verification step, which counts tokens per target pass and ignores the cost of drafting. It varies with the text. The default path keeps the target's own sampling."
+citations:
+  - title: "llama.cpp speculative decoding guide (docs/speculative.md at b11380)"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/docs/speculative.md"
+  - title: "llama.cpp RPC backend README (tools/rpc at b11380)"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/rpc/README.md"
+  - title: "ggml RPC backend source (ggml-rpc.cpp at b11380)"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/ggml/src/ggml-rpc/ggml-rpc.cpp"
+  - title: "Draft acceptance in sampling (common/sampling.cpp at b11380)"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/common/sampling.cpp"
+  - title: "RPC Tensor-parallel: Caching graphs to reduce network overhead (discussion 29253)"
+    authors: "Alexander2995"
+    year: 2026
+    url: "https://github.com/ggml-org/llama.cpp/discussions/29253"
+updated: "2026-10-04"
+---
+
+Lesson 13.4 gave you two numbers, pp and tg, and said decode is the slow one. Two features touch decode. A small model that guesses ahead commits more tokens per weight read. A second machine adds capacity and costs latency. Lesson 7.5 owns the theory of speculation. This lesson shows what the flags do at tag `b11380`, and what the RPC protocol sends. Everything ran on one Mac, with Qwen3-1.7B Q8_0 as the target and Qwen3-0.6B Q8_0 as the draft. The RPC test used loopback only, so no network was measured.
+
+## A draft model needs two flags
+
+```
+llama-server -m TARGET.gguf -md DRAFT.gguf --spec-type draft-simple \
+  -c 4096 -np 1 --metrics
+```
+
+A first attempt with `-md` alone loaded the draft model, answered a request, and left `llamacpp:spec_decode_num_draft_tokens_total` at 0. Both b11380 and Homebrew build 11146 behaved this way. The type must be named: `--spec-type draft-simple`. The same flag selects other methods that docs/speculative.md lists: `draft-eagle3`, `draft-dflash`, `draft-dspark`, `draft-mtp` ("Use Multi Token Prediction (MTP) heads from the main model"), and model-free n-gram types such as `ngram-simple`, which suit rewriting code. Only `draft-simple` was run. Whether a Qwen3.8-27B GGUF with multi-token-prediction heads loads at this tag was not tested, so that claim is left out. `convert_hf_to_gguf.py --mtp` exists to export such heads.
+
+Defaults to know: `--spec-draft-n-max 3`, `--spec-draft-n-min 0`, and the draft runs on the GPU with `-ngld auto`. The draft needs a compatible vocabulary, and it costs memory next to the target.
+
+## Reading acceptance
+
+With the draft active, the response `timings` gained `draft_n` and `draft_n_accepted`, the log printed `draft acceptance`, and `/metrics` counted drafts and accepted tokens per position. The same two models, two prompts:
+
+| Prompt | Drafted | Accepted | Acceptance | Mean len |
+|---|---|---|---|---|
+| Count from 1 to 40, temperature 0 | 84 | 82 | 0.976 | 3.93 |
+| Open poem, temperature 0 | 191 | 55 | 0.288 | 1.86 |
+| Open poem, temperature 0.8 | 183 | 57 | 0.311 | 1.92 |
+
+`mean len` is, in the source, one plus accepted drafts divided by verification steps: tokens committed per target pass. With three drafts the ceiling is 4. It ignores what the draft costs, so it bounds the gain and is not the gain. These runs were not timed, so no speedup is claimed.
+
+Two practical limits follow. A draft that costs a large share of a target pass gains little, because every guess needs a forward pass of its own, and a draft with a different vocabulary cannot be used at all. Acceptance also moves with the sampler, so test at the temperature you will serve. The two poem rows differ by about 0.02, which is within what one prompt can swing, so do not read a trend into them.
+
+Correctness is the point lesson 7.5 stressed, and the code supports it. In the default path the target samples every position with its own sampler, and a draft token is accepted only if it equals that sample. Every committed token is a target sample. The option `--spec-draft-sampling probabilistic`, new since build 11146, lets the draft sample and verifies by rejection with probability min(1, p/q), which the source comment says "preserves the target distribution exactly". The default path is exact too, but it is not the min(1, p/q) rejection rule that lesson 7.5 describes: a draft token counts only when it equals the target's own sample. At temperature above 0, acceptance can therefore be lower than with `--spec-draft-sampling probabilistic`.
+
+## RPC: the binary and the protocol
+
+At b11380 the server binary is `ggml-rpc-server`, not `rpc-server`. It binds `127.0.0.1:50052` by default.
+
+```
+ggml-rpc-server -p 50152
+llama-completion -m MODEL.gguf --rpc 127.0.0.1:50152 -dev MTL0,RPC0 -ts 1,1 -ngl 99 \
+  -c 2048 -n 6 -p "The capital of France is" -no-cnv --no-warmup
+```
+
+`--list-devices` then shows `RPC0: 127.0.0.1:50152`. The Homebrew build 11146 has no `--rpc` option, because it was built without `GGML_RPC`, which is a build setting and not a version difference. With `GGML_RPC_DEBUG=1` set on `ggml-rpc-server`, the log shows what crossed the link for Qwen3-1.7B, whose hidden size is 2,048 and vocabulary 151,936:
+
+| Message | Size | When |
+|---|---|---|
+| largest weight write (`set_tensor`) | 330,612,736 B | at load only |
+| hidden state in | 8,192 B = 2,048 x 4 | each token |
+| logits read back (`get_tensor`) | 607,744 B = 151,936 x 4 | each token, output layer remote |
+| `graph_compute` | 637 tensors x 296 B, about 184 KiB | when the graph changes |
+| `graph_recompute` | a few bytes | when it repeats |
+
+Over six tokens the server saw two `graph_compute` messages and four `graph_recompute`. Weights are the only large transfer, and a tensor above 10 MiB is first offered by hash, so a server started with `-c` (local cache) can skip the transfer on a second load.
+
+## Where the network becomes the roofline
+
+The load is the bandwidth case. At line rate, 17.1 GB (lesson 8.7's Q4_K_M) takes 13.7 s over 10 GbE at 1.25 GB/s and about 1.7 s at 10 GB/s, the Thunderbolt 5 planning rate from lesson 11.5 (1.1 s at Apple's quoted 15 GB/s). Real links are slower.
+
+Decode is a *latency* case. With the output layer remote, a layer split moves a hidden-state vector per token plus the logits, and the logits dominate. In the Qwen3-1.7B run that is 8,192 B of hidden state and 607,744 B of logits. For Qwen3.8-27B, with a hidden size of 5,120, a vocabulary of 248,320 rows and fp32 values, the derived figures are 20,480 B of hidden state and 993,280 B of logits per token, assuming the GGUF keeps that vocabulary size. Both models move about 1 MB per token or less (for Qwen3.8-27B, 1,013,760 B, about 1.01 MB, before protocol and graph messages), against the 17.1 GB each token reads from local memory, so link bandwidth is not the ceiling. What the link adds is a round trip per hop and per message. Tensor split (`-sm tensor`, marked experimental in the README) synchronises more often. A user report in discussion 29253 (two mini PCs, 2.5 GbE, Vulkan, tensor split, Qwen3 4B Q8_0) read 18.04 tokens/s on one machine and 5.41 over RPC; the author's unmerged graph-cache patch reached 13.21. It is one unreviewed run, so take it as a pointer. This is a more precise claim than "the network is the roofline": for loading it is bandwidth, for decoding it is the count of synchronous steps.
+
+:::warning
+The README calls the RPC backend a proof of concept: "fragile and insecure. Never run the RPC server on an open network or in a sensitive environment!" Keep it on loopback or a private link.
+:::
+
+:::caveat
+RDMA over Thunderbolt was not run. The README says it needs Thunderbolt 5, macOS 26.2 or later, and `rdma_ctl enable` from Recovery, and that you connect through the peer's Thunderbolt address. `GGML_RPC_NO_RDMA=1` forces TCP. No cluster was tested, so every network claim is from the source.
+:::
+
+The durable idea: speculation spends spare compute to commit more tokens per weight read, and RPC buys capacity with a latency bill. Measure acceptance on your own text and count the round trips before you promise either.

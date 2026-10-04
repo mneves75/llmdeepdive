@@ -110,6 +110,21 @@ Ollama, MLX, Modular MAX — and ends in a bake-off. Track 9 covers the silicon
 underneath, from NVIDIA and AMD to Apple, Qualcomm and Cerebras, and ends by
 pricing the same workload three ways.
 
+Tracks 11 to 13 go one level closer to the machine on your desk. Track 11 is
+the Mac Studio Ultra and MLX: what 1.2 TB/s and up to 512 GB actually buy, how
+MLX evaluates and compiles, how to convert and fine-tune with mlx-lm, how to
+serve an API from a Mac, and what clustering Macs over Thunderbolt 5 can and
+cannot do. Track 12 is NVIDIA's DGX Spark and DGX Station plus CUDA itself,
+from threads and warps to a tiled Tensor Core kernel and the driver/toolkit
+stack. Track 13 opens llama.cpp: the ggml graph and its backends, making your
+own GGUF, running `llama-server` for real traffic, benchmarking honestly, and
+speculative decoding and RPC. The software is pinned (MLX 0.32.3, mlx-lm
+0.32.0, mlx-serve v26.10.1, llama.cpp b11380), because flags change from one
+release to the next. Every command the hardware here could run was run against
+those pins. CUDA code needs an NVIDIA machine, so it was checked against
+NVIDIA's own guides instead, and the kernel lessons say plainly that their
+listings were not run on a GPU.
+
 The discipline that made 212 documents agree with each other is worth copying: a
 single fact sheet, verified against the model's own `config.json`, and a rule
 that no lesson may state a number that is not on it. The model has no published

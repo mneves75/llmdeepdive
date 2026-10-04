@@ -5,6 +5,64 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-04
+
+Three hands-on tracks about running models on the machines people actually
+buy: a Mac Studio Ultra with MLX, an NVIDIA DGX machine with CUDA, and
+llama.cpp on either. The course now has 125 lessons per language across 14
+tracks.
+
+### Added
+
+- **Track 11, Mac Studio Ultra & MLX** (pt-BR “Mac Studio Ultra e MLX”), five
+  lessons: what the M5 Ultra's 1.2 TB/s and 96–512 GB buy (11.1 owns the
+  bandwidth quotients, about 70 tok/s on the pinned 17.1 GB artifact as a
+  planning heuristic); MLX evaluation, `mx.compile`, streams, custom Metal
+  kernels and memory limits; mlx-lm conversion, quantization recipes, LoRA and
+  prompt caching; serving with `mlx_lm.server` and ddalcu/mlx-serve (which binds
+  all interfaces by default); and clustering Macs with `mx.distributed` over
+  Thunderbolt 5.
+- **Track 12, DGX & CUDA** (“DGX e CUDA”), five lessons: the DGX Spark
+  (128 GB at 273 GB/s, strong at prefill, bandwidth-bound at decode); the DGX
+  Station's 252 GB of HBM3e beside 496 GB of LPDDR5X, and why “coherent” is
+  not “uniform”; the CUDA programming model; a tiled and a WMMA Tensor Core
+  kernel read against the roofline; and the driver, toolkit and library stack
+  that gets vLLM, TensorRT-LLM and llama.cpp running on an aarch64 Blackwell
+  box.
+- **Track 13, llama.cpp in Depth** (“llama.cpp a fundo”), five lessons: ggml
+  graphs, backends and MoE expert offload; making a GGUF with an importance
+  matrix and judging it with KL divergence; `llama-server` slots, cache types,
+  prompt reuse, keys and metrics; honest `llama-bench` comparisons; and
+  speculative decoding and RPC.
+- The software these tracks teach is pinned: MLX 0.32.3, mlx-lm 0.32.0,
+  mlx-serve v26.10.1 and llama.cpp b11380. The MLX and llama.cpp commands in
+  the lessons were run on those versions on Apple silicon, except the steps
+  that need several machines or a system setting (clustering, RDMA, the GPU
+  wired-memory sysctl), which the lessons mark as not run. The CUDA listings
+  need an NVIDIA GPU and say they were not run. Each track was fact-checked against its
+  primary sources by a separate reviewer before release, and every finding was
+  fixed. A new test fails a track that cites two revisions of one upstream
+  repository.
+- Lessons 7.5, 7.13, 8.7, 8.9, 9.4 and 9.6 now unlock the new lessons that
+  build on them.
+
+### Fixed
+
+- Lesson 9.6 called 800 GB/s the figure for Apple's “Ultra-class” parts. It is
+  the M3 Ultra's (Apple, March 2025); the lesson now says so, cites it, and
+  points to 11.1 for the M5 Ultra. Its 192 GB example is now the M3 Ultra's
+  256 GB.
+- With fourteen constellations, the first and last names on the home and
+  tracks charts ran up to 9px past the plate at 580–720px, and two pt-BR names
+  overlapped at 580–640px (already at 600px in 0.9.1). The plate now keeps a
+  wider side margin, so edge names stay 100 chart units inside it, and names
+  show from a 38rem chart (numbers only below it). On a 320px phone the
+  number-only labels keep apart, so every track number stays a separate tap
+  target.
+- Quiz options that quote long identifiers, such as
+  `max_recommended_working_set_size`, now wrap instead of widening a 320px
+  page; `render:check` caught three lessons overflowing by 37–137px.
+
 ## [0.9.1] — 2026-10-03
 
 A search pass from a live audit. Google already indexes the site (home, tracks, explorer and lessons in both languages); the crawl of all 248 sitemap URLs found every page returning 200 with one H1, a self-referencing canonical, reciprocal language alternates, a unique description, no `noindex` and no orphan. These are the gaps it did find.

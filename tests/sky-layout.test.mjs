@@ -58,6 +58,36 @@ test('every star and every name sits on the plate', () => {
   }
 })
 
+test('every name fits across the plate at its widest', () => {
+  // Names are widest relative to the plate just above the 38rem container
+  // query that hides them (SkyChart.astro): ~174 sky units at a 602px chart,
+  // ~192 at 545px, because the minimum font clamp holds while the plate
+  // shrinks. Fourteen tracks once pushed the first and last names up to 9px
+  // past the plate.
+  for (const constellation of sky.constellations) {
+    const { x } = constellation.label
+    assert.ok(x - 100 >= 0 && x + 100 <= SKY_WIDTH, `${constellation.id} name x=${x} leaves the plate`)
+  }
+})
+
+test('number-only names on a phone do not collide', () => {
+  // Below the 38rem container query a name shrinks to its track number, but
+  // at a fixed 0.75rem, so on a 288px chart (a 320px phone) each one measured
+  // 24x26px with one digit and 32x26px with two: ~84 or ~112 by 90 sky units.
+  // Clamping the last figure inward once put the 11 and 13 tap targets on top
+  // of each other there.
+  const boxes = sky.constellations.map((item) => {
+    const w = String(item.order).length > 1 ? 112 : 84
+    return { id: item.id, x: item.label.x - w / 2, y: item.label.y - 45, w, h: 90 }
+  })
+  for (const [index, a] of boxes.entries()) {
+    for (const b of boxes.slice(index + 1)) {
+      const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+      assert.ok(!overlap, `number names of ${a.id} and ${b.id} overlap on a phone`)
+    }
+  }
+})
+
 test('figures stay landscape, so no chart swallows its page', () => {
   for (const constellation of sky.constellations) {
     if (constellation.stars.length < 4) continue
@@ -105,5 +135,21 @@ test('small tracks draw small figures instead of being stretched across their co
     const count = constellation.stars.length
     if (count > 6) continue
     assert.ok(constellation.box.width <= 26 * count, `${constellation.id}: ${count} lessons spread over ${constellation.box.width} units`)
+  }
+})
+
+test('a name entrance never moves or exposes its link', () => {
+  // Names once slid into place. While sliding, a bottom-row name sat 2.6px
+  // past the plate on a 320px phone, and at 720px a still-transparent pt-BR
+  // name lay over its neighbour and took the tap (track 6 for track 4). The
+  // entrance now only fades, and a name that is not yet shown takes no taps.
+  const css = readFileSync('src/components/SkyChart.astro', 'utf8')
+  const names = [...css.matchAll(/\.sky__names li(\[[^\]]*\])? \{ animation: ([\w-]+)/gu)].map((match) => match[2])
+  assert.ok(names.length > 0, 'names declare an entrance')
+  for (const name of new Set(names)) {
+    const frames = css.match(new RegExp(`@keyframes ${name} \\{(.*)\\}\\s*$`, 'mu'))?.[1] ?? ''
+    assert.ok(frames, `@keyframes ${name} exists`)
+    assert.doesNotMatch(frames, /translate|transform/u, `${name} moves the link while it enters`)
+    assert.match(frames, /from \{[^}]*visibility: hidden/u, `${name} leaves a transparent link tappable before it shows`)
   }
 })

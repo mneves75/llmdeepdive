@@ -92,7 +92,7 @@ site deliberately does not use, are in `AGENTS.md` under **Search metadata**.
 
 ## Current scale
 
-220 lessons live (110 English, 110 Portuguese) across tracks 0–10, with full
+250 lessons live (125 English, 125 Portuguese) across tracks 0–13, with full
 parity enforced by the build. Tracks 0–7 carry the model from first principles
 to efficient inference; track 8 covers the serving stacks that run it (PyTorch,
 Transformers, vLLM, SGLang, TensorRT-LLM, llama.cpp, Ollama, MLX, Modular MAX)
@@ -101,6 +101,13 @@ Every mechanism is worked through one real model, Qwen3.8-27B. Track 10 steps
 beyond text: how video models turn frames into tokens (with Qwen3-VL as the
 reference system) and the JEPA family of world models (I-JEPA, V-JEPA 2 and
 2.1, VL-JEPA), read from the papers themselves.
+
+Tracks 11–13 are hands-on: the Mac Studio
+Ultra with MLX, mlx-lm and MLX serving (`mlx_lm.server`, mlx-serve); NVIDIA's
+DGX Spark and DGX Station with the CUDA programming model and stack; and
+llama.cpp in depth (ggml backends, making a GGUF, `llama-server`, `llama-bench`,
+speculative decoding and RPC). Every command was run against a pinned release
+where the hardware allowed; CUDA code is checked against NVIDIA's guides.
 
 Each lesson is a course player: the track's syllabus with reading times and
 completion stars, a step list for the lesson's loop, a reading gauge, and a

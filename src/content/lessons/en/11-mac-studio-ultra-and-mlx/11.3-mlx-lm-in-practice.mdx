@@ -1,0 +1,167 @@
+---
+id: "11.3-mlx-lm-in-practice"
+track: "11-mac-studio-ultra-and-mlx"
+order: 3
+title: "mlx-lm in practice"
+summary: "Convert and quantize with mlx_lm.convert, check the bits per weight it reports, tune with mlx_lm.lora, fuse without erasing the adapter, and use the prompt-cache and KV-cache flags that exist at mlx-lm 0.32.0."
+tier: "frontier"
+locale: "en"
+prerequisites: ["11.2-mlx-in-depth-lazy-graphs-compile-streams", "7.9-quantization-i-int8-int4-the-basics"]
+unlocks: ["11.4-serving-from-a-mac-mlx-lm-server-and-mlx-serve"]
+analogy: "A workshop turns a raw casting into a tuned part in four stations: a lathe that cuts it to size, a gauge that checks the cut, a fitter who adds a small custom bracket, and a bolt that fixes the bracket for good. Each station is one command. The costly mistakes happen at the join between stations, when a tool silently re-cuts a part that was already finished."
+teachBack:
+  prompt: "Walk through the mlx-lm path from a 16-bit checkpoint to a served, tuned model, and name two checks that stop a silent failure: one at the fuse step and one for the KV-cache flags on a hybrid model."
+  modelAnswer: "Convert the checkpoint with mlx_lm.convert, choosing the mode, bits and group size, and read the bits per weight it prints, because each group stores a scale and a bias on top of the codes. Check the result with a held-out perplexity run. Tune with mlx_lm.lora, which becomes QLoRA when the base is quantized. Fusing into a quantized base dequantizes, adds the adapter and quantizes again, so compare the logits of the fused model with base plus adapter. Keep the 16-bit fuse, or keep the adapter separate, if 4 bits erases it. On a hybrid Qwen3.5-style model, the model builds its own cache, so max-kv-size is ignored, and kv-bits changes only the full-attention layers. Combining max-kv-size with kv-bits on a dense model raises an error."
+quiz:
+  - question: "On the test model, mlx_lm.convert reported 4.501 bits per weight at group size 64 and 5.001 at group size 32, both with 4-bit codes. Why does the smaller group cost more?"
+    options: ["The codes grow to 5 bits when the group is small", "The converter keeps a second copy of every tensor", "Small groups switch the mode to mxfp8", "Each group stores a scale and a bias, so the overhead per weight is about 32 divided by the group size: 0.5 bits at 64 and 1.0 at 32"]
+    correctIndex: 3
+    explanation: "Affine quantization stores a scale and a bias per group, in the dtype of the input. For a 16-bit model that is 32 extra bits per group, 0.5 per weight at group size 64 and 1.0 at 32. The reported 4.501 and 5.001 match, the remainder being tensors left unquantized."
+  - question: "You fuse a LoRA adapter into a 4-bit base without the dequantize flag. What should you check, and why?"
+    options: ["Nothing: fuse adds the adapter exactly", "Compare the fused model's logits with base plus adapter, because fuse dequantizes, adds the delta and quantizes again, which can erase a small adapter", "The tokenizer, because fuse rewrites it", "The adapter rank, because fuse changes it"]
+    correctIndex: 1
+    explanation: "In mlx-lm, the LoRA fuse step dequantizes the base weight, adds the low-rank delta, and calls from_linear to quantize again. Re-rounding can swamp a small delta. In the lesson's toy run the 4-bit fuse lost the adapter's top token, and the 16-bit fuse kept it."
+  - question: "On a hybrid Qwen3.5-style model at mlx-lm 0.32.0, what do --max-kv-size and --kv-bits do?"
+    options: ["max-kv-size is ignored because the model builds its own cache, and kv-bits changes only the full-attention layers", "max-kv-size rotates every layer, and kv-bits also quantizes the DeltaNet state", "Both raise NotImplementedError on every layer", "max-kv-size caps the DeltaNet state, and kv-bits is ignored"]
+    correctIndex: 0
+    explanation: "make_prompt_cache returns the model's own make_cache result when the model has one. The qwen3_5 model returns ArraysCache for linear layers and KVCache for attention layers, and only KVCache has a working to_quantized."
+citations:
+  - title: "mlx-lm v0.32.0 README"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/README.md"
+  - title: "mlx-lm v0.32.0 convert.py"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/convert.py"
+  - title: "mlx-lm v0.32.0 server documentation"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/SERVER.md"
+  - title: "mlx-lm v0.32.0 LoRA documentation"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/LORA.md"
+  - title: "mlx-lm v0.32.0 LoRA layer fuse source"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/tuner/lora.py"
+  - title: "mlx-lm v0.32.0 KV cache source"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/models/cache.py"
+  - title: "mlx-lm v0.32.0 learned quantization guide"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/LEARNED_QUANTS.md"
+  - title: "MLX v0.32.3 quantize documentation (modes, group sizes, scale types)"
+    authors: "Apple Machine Learning Research"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx/blob/v0.32.3/python/src/ops.cpp"
+updated: "2026-10-04"
+---
+
+Lesson 8.9 showed one conversion command. This lesson follows a checkpoint through the whole mlx-lm path (convert, check, tune, fuse, cache) at version 0.32.0, and marks the joins where a tool silently redoes work. All commands below ran on mlx-lm 0.32.0 with MLX 0.32.3, using a cached 4-bit Qwen3 4B model as a stand-in for the course model. A 4B stand-in checks the procedure, not the 27B's quality or speed.
+
+## Convert, and read the bits per weight
+
+`mlx_lm.convert` takes `-q` to quantize, `--q-bits`, `--q-group-size`, `--q-mode` (`affine`, `mxfp4`, `nvfp4` or `mxfp8`), `--dtype` for the unquantized tensors, and `-d` to dequantize. If you leave bits and group size out, the defaults depend on the mode: `affine` uses 4 bits with group size 64, `mxfp4` 4 bits with group size 32, `nvfp4` 4 bits with group size 16, and `mxfp8` 8 bits with group size 32. A layer whose last dimension is not a multiple of the group size is skipped and stays unquantized. The `--quant-predicate` recipes `mixed_2_6`, `mixed_3_4`, `mixed_3_6` and `mixed_4_6` keep the `lm_head` and parts of `v_proj` and `down_proj` at the higher width. They apply to `affine` only.
+
+The stand-in is already 4-bit, so the first command dequantizes it into a 16-bit source. Real conversions start from the original checkpoint, and this round trip is only a way to run every flag:
+
+```bash
+mlx_lm.convert --hf-path mlx-community/Qwen3-4B-Instruct-2507-4bit -d --mlx-path src16
+mlx_lm.convert --hf-path src16 -q --q-bits 4 --q-group-size 64 --mlx-path q4-g64
+mlx_lm.convert --hf-path src16 -q --q-bits 4 --q-group-size 32 --mlx-path q4-g32
+mlx_lm.convert --hf-path src16 -q --quant-predicate mixed_4_6 --mlx-path q-mixed46
+mlx_lm.convert --hf-path src16 -q --q-mode mxfp4 --mlx-path q-mxfp4
+```
+
+Each run ends with a line such as `Quantized model with 4.501 bits per weight`. On this 4B model the four runs printed 4.501, 5.001, 4.747 and 4.251. Affine mode stores a scale and a bias per group, in the dtype of the input, so on a 16-bit model a 4-bit code costs about $4 + 32/g$ bits: 4.5 at $g = 64$ and 5.0 at $g = 32$. The `mxfp4` mode stores one 8-bit scale per 32 elements and no bias, which gives $4 + 8/32 = 4.25$. Lesson 7.9's rule holds here too: effective bits exceed the nominal width, so read the printed number and compare file sizes. Learned methods (`mlx_lm.dwq`, `awq`, `dynamic_quant`, `gptq`) refine this, and the guide in the citations covers them. This lesson did not run them.
+
+## Check, then tune
+
+A quant needs a check on held-out text. `mlx_lm.perplexity` evaluates a model on a Hugging Face dataset or a local folder in the mlx-lm format, and needs the `datasets` package (`pip install "mlx-lm[train]"`). `mlx_lm.lora` reads `train.jsonl`, an optional `valid.jsonl` and `test.jsonl`, in `chat`, `completions`, `tools` or `text` format. When `--model` is quantized, training is QLoRA. Build a tiny set and tune on it:
+
+```python
+import json, os
+
+os.makedirs("data", exist_ok=True)
+rows = [
+    {"messages": [
+        {"role": "user", "content": f"Reply with the ticket tag for item {i}."},
+        {"role": "assistant", "content": f"TICKET-{i:03d}"},
+    ]}
+    for i in range(1, 25)
+]
+for name, part in [("train", rows[:20]), ("valid", rows[20:22]), ("test", rows[22:])]:
+    with open(f"data/{name}.jsonl", "w") as f:
+        f.writelines(json.dumps(r) + "\n" for r in part)
+```
+
+```bash
+mlx_lm.perplexity --model q4-g64 --data-path data --num-samples 2 --sequence-length 64 --batch-size 1
+mlx_lm.lora --model mlx-community/Qwen3-4B-Instruct-2507-4bit --train --data data \
+  --iters 30 --batch-size 1 --num-layers 4 --mask-prompt --grad-checkpoint \
+  --adapter-path adapters --test
+```
+
+`--mask-prompt` computes the loss on the completion only. `--num-layers` (default 16), `--batch-size`, `--grad-accumulation-steps` and `--grad-checkpoint` are the memory levers in `LORA.md`. The adapter config records rank 8, scale 20, no dropout and a learning rate of 1e-5. Tuning also worked on a Qwen3.5 9B build, the course model's architecture family.
+
+## The classic wrong turn: fusing into a quantized base
+
+`mlx_lm.fuse` merges the adapter into the weights. In `tuner/lora.py`, a quantized layer is dequantized, the delta is added, and the sum is quantized again. A small delta can disappear in that re-rounding. `--dequantize` keeps 16 bits instead. Fuse both ways and compare the logits with base plus adapter:
+
+```bash
+mlx_lm.fuse --model mlx-community/Qwen3-4B-Instruct-2507-4bit --adapter-path adapters --save-path fused-q
+mlx_lm.fuse --model mlx-community/Qwen3-4B-Instruct-2507-4bit --adapter-path adapters --save-path fused-16 --dequantize
+```
+
+```python
+import mlx.core as mx
+from mlx_lm import load
+
+base = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+prompt = "Reply with the ticket tag for item 7."
+
+def last_logits(path, **kw):
+    model, tok = load(path, **kw)
+    ids = tok.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True)
+    out = model(mx.array(ids)[None])[:, -1, :].astype(mx.float32)
+    mx.eval(out)
+    return out
+
+plain = last_logits(base)
+ref = last_logits(base, adapter_path="adapters")
+print("adapter vs base:", round(mx.abs(ref - plain).max().item(), 2))
+for name in ("fused-q", "fused-16"):
+    got = last_logits(name)
+    print(name, "gap:", round(mx.abs(got - ref).max().item(), 2),
+          "top token = adapter's:", got.argmax().item() == ref.argmax().item(),
+          "= base's:", got.argmax().item() == plain.argmax().item())
+```
+
+In this toy run (30 steps), the adapter moved the logits by up to about 29. The 4-bit fuse sat about 23 away from base plus adapter, and its top token went back to the base model's. The 16-bit fuse sat 0.25 away and kept the adapter's token. The figures shift a little from run to run, and the adapter was too weak to be useful, so they prove nothing about quality. They show that the check catches the join. Quantizing the 16-bit fuse did not help on this stand-in: the gap was 25.62 and the top token reverted to the base model's. A weak adapter does not survive 4-bit rounding either way. Keep the 16-bit fuse, or keep the adapter separate and load it with `--adapter-path`. Evaluate any 4-bit export as you would any quant.
+
+## Prompt cache and KV-cache flags
+
+`mlx_lm.cache_prompt` saves the prefill of a shared prefix, and `mlx_lm.generate --prompt-cache-file` treats it as a prefix of the new prompt (and reads the model from the file):
+
+```bash
+printf 'Release notes for the fictional Harbor service. Version 4 adds a retry budget of three attempts per request. The retry delay doubles after each failure.\n' > doc.txt
+mlx_lm.cache_prompt --model mlx-community/Qwen3-4B-Instruct-2507-4bit --prompt - --prompt-cache-file harbor.safetensors < doc.txt
+mlx_lm.generate --prompt-cache-file harbor.safetensors --prompt "How many attempts does the retry budget allow?" --max-tokens 40
+mlx_lm.generate --model mlx-community/Qwen3-4B-Instruct-2507-4bit --prompt "Name one planet." --max-tokens 20 --kv-bits 4 --quantized-kv-start 0
+```
+
+`--max-kv-size n` swaps in a rotating cache that keeps the first four tokens and the latest window. `--kv-bits` quantizes the cache with `--kv-group-size` (default 64), starting at `--quantized-kv-start`, which defaults to 5,000 tokens. A short test with the default start shows no effect, which is why the last command sets it to 0.
+
+:::warning
+The two cache flags do not compose and do not always apply. On the dense stand-in, `--kv-bits` with `--max-kv-size` stops with `NotImplementedError: RotatingKVCache Quantization NYI`. On a Qwen3.5 9B build, whose `model_type` the course model shares, `make_prompt_cache` returns the model's own cache, 24 DeltaNet `ArraysCache` layers and 8 attention `KVCache` layers, whatever `--max-kv-size` says. Only the attention layers can be quantized. The DeltaNet state is not a KV cache, so the 27B's savings apply to its 16 attention layers alone. Also, the `SERVER.md` file warns that attention on a quantized cache keeps a score matrix of prefill step size by context length, so lower `--prefill-step-size` when you quantize.
+:::
+
+:::caveat
+`LORA.md` lists model families that predate the hybrid layers, so run your architecture before you plan a tuning job.
+:::
+
+The durable idea is that each mlx-lm command is cheap and silent, so the checks between them carry the quality. Lesson 11.4 puts the result behind an HTTP API.

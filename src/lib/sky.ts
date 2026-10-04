@@ -93,6 +93,8 @@ const MAX_DEGREE_FOR_SCALE = 6
 const LABEL_STAGGER = 68
 /** Air between any star and the plate's neatline, in sky units. */
 const PLATE_MARGIN = 16
+/** Half the widest name, in sky units, where names are shown (a chart of 38rem or more): ~174 wide at 602px, ~192 at 545px. A first or last figure stays this far from the edge so its centred name does too. */
+const NAME_HALF_WIDTH = 100
 
 export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly SkyLessonInput[]): Sky {
   const ordered = [...tracks].sort((left, right) => left.order - right.order)
@@ -102,7 +104,10 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     for (const prerequisite of lesson.prerequisites) inDegree.set(prerequisite, (inDegree.get(prerequisite) ?? 0) + 1)
   }
 
-  const marginX = 34
+  // Wide enough that the first and last columns sit about NAME_HALF_WIDTH in
+  // from the edge, so edge names stay on the plate without being pulled onto
+  // a neighbour.
+  const marginX = 70
   const cell = (SKY_WIDTH - marginX * 2) / count
   const constellations = ordered.map((track, index): SkyConstellation => {
     const trackLessons = lessons
@@ -144,10 +149,12 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     // Small tracks stay small: a four-lesson track is a small figure, not one
     // stretched across its whole column.
     const scale = Math.min(width / spanX, height / spanY, 22 + trackLessons.length * 3)
-    // Keep the figure off the plate's neatline: shift it inward if its column
+    // Keep the figure off the plate's neatline, and far enough in that the
+    // name centred over it stays on the plate: shift it inward if its column
     // sits at the edge of the chart.
     const halfWidth = (spanX * scale) / 2 + MAX_RADIUS
-    const clampedX = Math.min(Math.max(centerX, PLATE_MARGIN + halfWidth), SKY_WIDTH - PLATE_MARGIN - halfWidth)
+    const inset = Math.max(PLATE_MARGIN + halfWidth, NAME_HALF_WIDTH)
+    const clampedX = Math.min(Math.max(centerX, inset), SKY_WIDTH - inset)
     const offsetX = clampedX - ((minX + maxX) / 2) * scale
     const offsetY = centerY - ((minY + maxY) / 2) * scale
 
@@ -171,7 +178,10 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     const bottom = Math.max(...stars.map((star) => star.y))
     const box = { x: round(left), y: round(top), width: round(right - left), height: round(bottom - top) }
     // The vertical line is set below, once every figure in the row is known.
-    const label = { x: round((left + right) / 2), y: high ? top : bottom, anchor: high ? 'above' as const : 'below' as const }
+    // A seeded figure is not symmetric about its column, so the name is held
+    // inside the plate as well; at the bound it still hangs over its figure.
+    const labelX = Math.min(Math.max((left + right) / 2, NAME_HALF_WIDTH), SKY_WIDTH - NAME_HALF_WIDTH)
+    const label = { x: round(labelX), y: high ? top : bottom, anchor: high ? 'above' as const : 'below' as const }
 
     return {
       id: track.id,

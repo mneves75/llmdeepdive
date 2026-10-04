@@ -1,0 +1,143 @@
+---
+id: "11.4-serving-from-a-mac-mlx-lm-server-and-mlx-serve"
+track: "11-mac-studio-ultra-and-mlx"
+order: 4
+title: "Serving from a Mac with mlx_lm.server and mlx-serve"
+summary: "Two ways to put an OpenAI-style API on a Mac: the first-party mlx_lm.server and the third-party mlx-serve, with what each batches and caches, how to bind and secure them, and how to measure time to first token honestly."
+tier: "frontier"
+locale: "en"
+prerequisites: ["11.3-mlx-lm-in-practice", "7.8-pagedattention-and-continuous-batching"]
+unlocks: ["11.5-clustering-macs-mlx-distributed"]
+analogy: "A shop can serve customers through a hatch at the front or through a door that anyone in the street can walk through. The goods and the staff are identical. What differs is who can reach the counter, how many orders the staff take at once, and whether the clock for 'how long did I wait' starts when the customer is first greeted or when the first item is handed over."
+teachBack:
+  prompt: "Compare mlx_lm.server and mlx-serve on batching, prompt reuse and network exposure, then describe how you would measure time to first token and decode rate so that two servers can be compared fairly."
+  modelAnswer: "mlx_lm.server 0.32.0 batches by default, with decode concurrency 32 and prompt concurrency 8, but serves a request alone when a draft model, a KV-cache quantization setting or a seed is in play. It keeps an LRU prompt cache and reports reuse as cached_tokens in the usage block. It binds to 127.0.0.1 by default, has no authentication, and allows any browser origin by default. mlx-serve v26.10.1 binds to 0.0.0.0 by default, whatever its SECURITY.md says, serves OpenAI, Anthropic and Ollama APIs, decodes one request at a time unless max-concurrent is raised, and keeps its own prefix cache. Pass an explicit loopback host to both. For measurement, use the client clock, count time to first token at the first chunk with text rather than the first byte, compute decode rate from completion tokens after the first, separate cold from warm runs, repeat, and match concurrency and speculative decoding across servers."
+quiz:
+  - question: "In mlx-lm 0.32.0, which condition makes mlx_lm.server handle a request on its own instead of batching it?"
+    options: ["More than one client being connected", "Setting --kv-bits, sending a seed, or loading a draft model", "Using the chat endpoint instead of the completions endpoint", "A prompt longer than the prefill step size"]
+    correctIndex: 1
+    explanation: "The server marks a request batchable only when there is no draft model, every cache type can merge, no seed is given and kv_bits is unset. A quantized KV cache cannot be batched, so --kv-bits serves requests one at a time."
+  - question: "You start mlx-serve v26.10.1 with only --model and --serve. Who can reach the server?"
+    options: ["Only this Mac, as the SECURITY.md file says", "Only clients that present an API key", "Every device on the network, because the default bind address is 0.0.0.0, so pass --host 127.0.0.1", "Nobody until --lan-share is set"]
+    correctIndex: 2
+    explanation: "The binary's own help text and the source both give 0.0.0.0 as the default and note that a future version may change it. SECURITY.md says the opposite. Trust the binary, and always pass an explicit loopback address."
+  - question: "Which timestamp is time to first token for a streamed reply?"
+    options: ["When the response headers arrive", "When the first byte arrives, keep-alive comments included", "When the first chunk with non-empty text content arrives", "When the last chunk arrives"]
+    correctIndex: 2
+    explanation: "Servers can send headers, role chunks or keep-alive comments before any token exists. mlx_lm.server sends comment lines while it processes the prompt. Time to first token starts at the request and stops at the first chunk that carries text."
+citations:
+  - title: "mlx-lm v0.32.0 server source"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/server.py"
+  - title: "mlx-lm v0.32.0 server documentation"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/SERVER.md"
+  - title: "mlx-lm v0.32.0 cache source (prompt cache and merge)"
+    authors: "Apple Machine Learning Research and contributors"
+    year: 2026
+    url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/models/cache.py"
+  - title: "mlx-serve v26.10.1 README"
+    authors: "David Dalcu and contributors"
+    year: 2026
+    url: "https://github.com/ddalcu/mlx-serve/blob/v26.10.1/README.md"
+  - title: "mlx-serve v26.10.1 command-line reference"
+    authors: "David Dalcu and contributors"
+    year: 2026
+    url: "https://github.com/ddalcu/mlx-serve/blob/v26.10.1/docs/cli.md"
+  - title: "mlx-serve v26.10.1 server entry point (bind address default)"
+    authors: "David Dalcu and contributors"
+    year: 2026
+    url: "https://github.com/ddalcu/mlx-serve/blob/v26.10.1/src/main.zig"
+updated: "2026-10-04"
+---
+
+A Mac Studio on a desk is a fine inference server for a team, and two programs turn it into one. `mlx_lm.server` ships with mlx-lm, from Apple's ml-explore project. `mlx-serve` is a separate Zig project by David Dalcu (an unrelated project, raspoli/mlx-serve, shares the name, so check the owner), pinned here at v26.10.1. Both speak an OpenAI-style API. They differ in what they batch, what they cache, and who can reach them by default.
+
+## mlx_lm.server at 0.32.0
+
+Start it on loopback, then query it from a second terminal:
+
+```bash
+mlx_lm.server --model mlx-community/Qwen3-4B-Instruct-2507-4bit --host 127.0.0.1 --port 8080
+```
+
+```bash
+curl -s http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"system","content":"You are a terse assistant for the fictional Harbor service. Retry budget is three attempts. Delay starts at 200 ms and doubles."},{"role":"user","content":"How many attempts?"}],"max_tokens":24,"temperature":0}'
+```
+
+The endpoints are `/v1/chat/completions` (also `/chat/completions`), `/v1/completions`, `/v1/models` and `/health`. Run the chat request twice. The first reply carries `"cached_tokens": 0` in `usage.prompt_tokens_details`. The second repeats the prompt and reports 44 of its 45 tokens cached. That field is how you see prompt reuse from outside. Inside, an LRU of distinct caches (10 by default, capped in bytes by `--prompt-cache-bytes`) is searched for the nearest cached token prefix.
+
+Batching is on by default, with `--decode-concurrency 32` and `--prompt-concurrency 8`. A request is batched only if the server has no draft model, every cache type can merge, the request sets no `seed`, and `--kv-bits` is unset. Otherwise the server drains the batch and serves it alone. Lesson 11.3's KV quantization therefore trades batching for memory: at this version a server started with `--kv-bits` handles one request at a time.
+
+## mlx-serve v26.10.1
+
+mlx-serve is one native binary that serves MLX models and, through an embedded llama.cpp, GGUF files. It speaks the OpenAI, Anthropic and Ollama wire formats on one port. Its `LICENSE` is MIT for its own code, with third-party components under their own terms. Download the release, check the hash against the digest GitHub shows, and start it on loopback:
+
+```bash
+gh release download v26.10.1 --repo ddalcu/mlx-serve --pattern 'mlx-serve-bin-macos-arm64.tar.gz'
+shasum -a 256 mlx-serve-bin-macos-arm64.tar.gz
+tar -xzf mlx-serve-bin-macos-arm64.tar.gz
+./mlx-serve-macos-arm64/mlx-serve --version
+./mlx-serve-macos-arm64/mlx-serve --model q4-g64 --serve --host 127.0.0.1 --port 11234 --max-concurrent 4
+```
+
+In a second terminal, ask for an Anthropic-style reply:
+
+```bash
+curl -s http://127.0.0.1:11234/v1/messages -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' -d '{"model":"mlx-serve","max_tokens":16,"messages":[{"role":"user","content":"Name one planet."}]}'
+```
+
+The `--version` line reports the MLX it embeds, 0.32.3 for this release. The directory `q4-g64` is the MLX model that lesson 11.3 converted. Continuous batching is off until you pass `--max-concurrent N`, and its prefix cache is on by default. Its responses add a `timings` object, which is the server's own clock.
+
+## The classic wrong turn
+
+The wrong turn is to compare two servers by one number from two different clocks. Time to first token is not the first byte. `mlx_lm.server` writes SSE comment lines such as `: keepalive 10/11` while it processes the prompt, and both servers sent bytes before any text. Measure on the client, and stop the clock at the first chunk that carries text:
+
+```python
+import json, sys, time, urllib.request
+
+def measure(base, prompt, max_tokens=64):
+    body = json.dumps({
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens, "temperature": 0, "stream": True,
+        "stream_options": {"include_usage": True},
+    }).encode()
+    req = urllib.request.Request(base + "/v1/chat/completions", body,
+                                 {"Content-Type": "application/json"})
+    t0 = time.perf_counter()
+    first_byte = first_text = last_text = usage = None
+    with urllib.request.urlopen(req) as resp:
+        for raw in resp:
+            now = time.perf_counter() - t0
+            first_byte = now if first_byte is None else first_byte
+            line = raw.decode().strip()
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            chunk = json.loads(line[6:])
+            usage = chunk.get("usage") or usage
+            for choice in chunk.get("choices", []):
+                if choice.get("delta", {}).get("content"):
+                    first_text = now if first_text is None else first_text
+                    last_text = now
+    n = usage["completion_tokens"]
+    return {"first_byte_s": first_byte, "ttft_s": first_text,
+            "decode_tok_s": (n - 1) / (last_text - first_text),
+            "cached": usage.get("prompt_tokens_details", {}).get("cached_tokens")}
+
+print(measure(sys.argv[1], sys.argv[2]))
+```
+
+Run `python ttft.py http://127.0.0.1:8080 "Write two sentences about harbors."` against each server. Decode rate counts tokens after the first, from the usage block, over the time between the first and last text. For a fair comparison, use the same weights and prompt at temperature 0, record `cached` so cold and warm runs stay apart, repeat and report the spread, and match the settings that change work. That means `--decode-concurrency` against `--max-concurrent`, and mlx-serve's speculative decoding, since Prompt Lookup Decoding is on by default and `--no-pld` turns it off. Do not quote numbers from another Mac or another model.
+
+:::warning
+Neither server is a hardened internet service. `mlx_lm.server` documents that it implements only basic security checks. It has no authentication, `--allowed-origins` defaults to `*`, and a request's `model` field can name another model for the server to load. mlx-serve defaults to `0.0.0.0`, in its help text and in `main.zig`, although its `SECURITY.md` says 127.0.0.1 is the default. Its `--api-key` exempts loopback unless you add `--api-key-strict`, and `--lan-share` advertises models over Bonjour. Always pass `--host 127.0.0.1`, and put a real proxy with authentication in front of anything shared.
+:::
+
+:::caveat
+mlx-serve's README table lists mlx-lm as having no OpenAI-compatible API and no continuous batching. The pinned mlx-lm source has both. Read the pinned source, not a comparison table, including this lesson's. The throughput claims in that README were not reproduced here. The servers were run only to confirm the commands and response shapes above.
+:::
+
+The durable idea is that serving adds three questions to inference: who can connect, what is batched or cached, and whose clock you trust. Lesson 11.5 asks what changes when one Mac is not enough.

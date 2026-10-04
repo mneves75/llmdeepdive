@@ -574,8 +574,18 @@ than leaving the last valid answer beside it.
 
 ## External systems reference
 
-The published corpus is tracks 0–10 (110 lessons per locale); documentation
-must describe that shipped scope exactly. Track 10 (video and world models)
+The published corpus is tracks 0–13 (125 lessons per locale); documentation
+must describe that shipped scope exactly. Tracks 11–13 (Mac Studio Ultra and
+MLX, DGX and CUDA, llama.cpp in depth) pin their software: MLX `v0.32.3`,
+mlx-lm `v0.32.0`, ddalcu/mlx-serve `v26.10.1` and llama.cpp `b11380`. Re-read
+a flag at the pinned tag before changing it, and move the pin in every lesson
+of the track at once (`tests/content-pins.test.mjs` fails a track that cites
+two revisions of one repository). Lesson 11.1 owns the M5 Ultra bandwidth
+quotients, 12.1 the DGX Spark's and 12.2 the DGX Station's; the rest reference
+them. Hardware figures there are vendor claims read on 2026-10-03, labelled as
+such.
+
+Track 10 (video and world models)
 cites Qwen3-VL's technical report for video tokenisation and the JEPA papers
 (I-JEPA, V-JEPA, V-JEPA 2, V-JEPA 2.1, VL-JEPA) directly; none of it is a claim
 about Qwen3.8-27B.

@@ -1,0 +1,106 @@
+---
+id: "13.3-llama-server-in-production"
+track: "13-llama-cpp-in-depth"
+order: 3
+title: "llama-server em produção"
+summary: "Como o llama-server divide um contexto entre slots, agrupa requisições concorrentes, quantiza o KV cache, reaproveita prompts, protege seus endpoints e exporta métricas, com as flags lidas na tag b11380 e as principais executadas."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["13.2-making-your-own-gguf-convert-imatrix-quantize", "7.2-the-kv-cache", "7.8-pagedattention-and-continuous-batching"]
+unlocks: ["13.4-benchmarking-with-llama-bench"]
+analogy: "Uma clínica tem um número fixo de salas e um único armário de suprimentos compartilhado. Os pacientes chegam ao acaso. O gerente pode dividir o armário em prateleiras iguais, uma por sala, ou deixá-lo aberto para que cada sala pegue o que precisar. Prateleiras iguais são justas e desperdiçam espaço. O armário aberto é eficiente até que três procedimentos longos comecem juntos. Os slots são as salas, o KV cache é o armário, e a flag que você escolhe decide quem ganha uma prateleira."
+teachBack:
+  prompt: "Você inicia o llama-server com -c 8192 e depois com -c 8192 -np 4. Explique que contexto cada slot recebe em cada caso, o que mais o servidor faz para atender vários usuários ao mesmo tempo e como você o protegeria e observaria."
+  modelAnswer: "Com -np no padrão auto, o b11380 inicia quatro slots e um pool de KV unificado. Cada slot informa n_ctx_slot 8192, mas todos dividem um pool de 8.192 tokens, então quatro conversas longas não conseguem usar a janela inteira ao mesmo tempo. Com um -np 4 explícito o pool unificado fica desligado por padrão, o contexto é dividido e cada slot recebe 8.192 dividido por 4, ou seja, 2.048. O continuous batching vem ligado por padrão, então um passo de decode carrega tokens de todos os slots ocupados; a métrica n_busy_slots_per_decode mostra quantos. O KV cache pode ser guardado como q8_0 ou outros tipos com -ctk e -ctv, mas um cache V quantizado exige flash attention, e -fa off com -ctv q8_0 falha na inicialização. O cache de prompt vem ligado por padrão, então uma requisição que compartilha prefixo com um slot o reaproveita. Para proteger o servidor, faça o bind em 127.0.0.1 ou ponha um proxy na frente, defina --api-key ou --api-key-file, e lembre que só o /health é público. Para observá-lo, inicie com --metrics, que vem desligado por padrão, e faça o scrape de /metrics com a chave."
+quiz:
+  - question: "O llama-server -c 8192 -np 4 inicia no b11380. O que o log de slots diz sobre o contexto por slot?"
+    options: ["n_ctx_slot = 8192 em cada slot, com 32.768 tokens de KV no total", "n_ctx_slot = 4096, porque o servidor sempre usa dois slots por requisição", "n_ctx_slot = 2048 com kv_unified = false, porque 8.192 é dividido por 4", "n_ctx_slot = 8192 com kv_unified = true, o mesmo que deixar o -np sem definir"]
+    correctIndex: 2
+    explanation: "Um -np explícito desliga o pool unificado por padrão, então o contexto é dividido: 8.192 dividido por 4 dá 2.048. Com -np sem definir, o log diz n_slots = 4, n_ctx_slot = 8192, kv_unified = true."
+  - question: "Qual comando falha na inicialização no b11380 e no build 11146 do Homebrew?"
+    options: ["llama-server -m MODEL.gguf -ctk q8_0 -ctv q8_0", "llama-server -m MODEL.gguf -fa on -ctv q8_0", "llama-server -m MODEL.gguf -np 2 -c 8192", "llama-server -m MODEL.gguf -ctv q8_0 -fa off"]
+    correctIndex: 3
+    explanation: "Os dois builds imprimem 'quantized V cache requires flash_attn to be enabled' e saem com status 1. Com o -fa no padrão auto, os mesmos tipos de cache iniciaram."
+  - question: "Duas requisições de chat compartilham um prefixo de 536 tokens, e a segunda informa cache_n 536 e prompt_n 11. O que aconteceu?"
+    options: ["O servidor descartou 536 tokens num context shift", "O slot manteve o prefixo no KV cache, então só 11 tokens novos do prompt foram avaliados", "A segunda requisição usou o slot da primeira por engano", "O servidor respondeu a partir de um cache de respostas sem rodar o modelo"]
+    correctIndex: 1
+    explanation: "O cache de prompt vem ligado por padrão. O prefixo comum ficou no slot, e com cache_prompt em false a mesma requisição avaliou os 547 tokens de novo."
+citations:
+  - title: "README do llama-server (b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/server/README.md"
+  - title: "Inicialização do llama-server: slots automáticos e KV unificado (server.cpp no b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/server/server.cpp"
+  - title: "Middleware de chave de API do llama-server (server-http.cpp no b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/server/server-http.cpp"
+  - title: "Dimensionamento de contexto por sequência (llama-context.cpp no b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/src/llama-context.cpp"
+updated: "2026-10-04"
+---
+
+Um servidor é um scheduler com uma interface HTTP. A lição 7.8 explicou o continuous batching em abstrato. Aqui você conhece as flags que o controlam no `llama-server`. Toda flag abaixo vem do `tools/server/README.md` na tag `b11380`. As configurações de slots, batching, tipos de cache, reaproveitamento de prompt, chave de API e métricas foram executadas contra um servidor em 127.0.0.1, com o Qwen3-1.7B Q8_0 como modelo substituto. O aviso no fim lista as flags que foram só lidas, sem execução. Caminhos e chaves são marcadores.
+
+```
+llama-server -m MODEL.gguf -c 16384 -np 4 -fa on -ctk q8_0 -ctv q8_0 \
+  --metrics --api-key-file KEYS.txt --host 127.0.0.1 --port 8080
+```
+
+## Slots e o contexto
+
+Um **slot** é uma conversa independente, com a sua própria posição no KV cache. O `-np` define quantos existem, e o padrão do README é `-1`, que significa auto. No `server.cpp`, auto quer dizer quatro slots e um pool de KV **unificado**, e um `-np` explícito desliga esse padrão. A suposição clássica é que o `-c` se divide entre os slots. Isso só é meia verdade, e o log mostra as duas metades:
+
+| Comando | Linha do log |
+|---|---|
+| `-c 8192` | `n_slots = 4, n_ctx_slot = 8192, kv_unified = 'true'` |
+| `-c 8192 -np 4` | `n_slots = 4, n_ctx_slot = 2048, kv_unified = 'false'` |
+
+O `GET /slots` devolveu o mesmo `n_ctx` por slot, e o build 11146 do Homebrew imprimiu as mesmas duas linhas. No caso unificado cada slot pode crescer até o pool inteiro, mas os quatro juntos ainda cabem em 8.192 tokens. No caso explícito o código divide o `-c` pelo número de slots e arredonda para múltiplos de 256, então nenhum slot passa de 2.048. O primeiro é melhor quando as requisições têm tamanhos diferentes. O segundo dá um teto rígido por usuário. Acrescentar `-kvu` religa o pool unificado: `-c 8192 -np 4 -kvu` registrou `n_ctx_slot = 8192` e `kv_unified = 'true'`. O `--kv-unified-per-slot N` dimensiona o pool como slots vezes N quando você omite o `-c`. A lição 9.3 é dona do orçamento de memória para o contexto que você escolher.
+
+## Batching, tipos de cache, flash attention
+
+O continuous batching vem ligado por padrão (`-cb`). Duas gerações de 200 tokens enviadas ao mesmo tempo deram `llamacpp:n_busy_slots_per_decode` 1,957. Quase toda chamada de decode carregou tokens dos dois slots, que é a razão de ser do recurso.
+
+`-ctk` e `-ctv` definem os tipos do cache K e V. O README permite `f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1`, com padrão `f16`. O cache V tem uma regra: `-ctv q8_0 -fa off` saiu com status 1 e `quantized V cache requires flash_attn to be enabled`, nos dois builds. Com o `-fa` no padrão `auto`, `-ctk q8_0 -ctv q8_0` iniciou. Um cache menor comporta mais slots, e o custo em qualidade é seu para medir com as ferramentas da lição 13.2.
+
+## Reaproveitamento de prompt
+
+O `--cache-prompt` vem ligado por padrão. O teste enviou um prompt de chat de 547 tokens e depois o mesmo texto de sistema com outra última mensagem. A segunda resposta informou `cache_n` 536 e `prompt_n` 11. Com `cache_prompt` em `false` ela avaliou os 547 de novo. Existem três controles relacionados: `--cache-reuse N` tenta reaproveitar trechos deslocando o KV cache (padrão 0, desligado), `--cache-ram` limita o cache de prompts na memória do host (padrão 8192 MiB), e `--slot-save-path` habilita `POST /slots/{id}?action=save` e `restore` para snapshots explícitos. Para o reaproveitamento funcionar, ponha no fim do prompt o que muda.
+
+## No limite
+
+O que acontece quando uma conversa passa do tamanho do seu slot? O `--context-shift` decide se o servidor pode descartar tokens antigos para continuar gerando, e o README o lista como desligado por padrão. O caminho de estouro não foi testado, então verifique com o seu próprio cliente antes do lançamento: envie um prompt maior que `n_ctx_slot` e veja se vem um erro, um truncamento ou um shift. Mais duas flags importam em tarefas longas. O `-to` define o timeout de leitura e escrita em segundos (padrão 3.600), e o `--sleep-idle-seconds` deixa um servidor ocioso descarregar o modelo e o KV cache (padrão desligado). O `GET /slots` mostra o `n_ctx` de cada slot e se ele está processando, e o `?fail_on_no_slot=1` devolve 503 quando não há slot livre, o que serve ao health check de um balanceador.
+
+## Portas, trancas e medidores
+
+O `--jinja` vem habilitado por padrão, então o servidor renderiza o chat template do próprio modelo. O `POST /apply-template` devolve o prompt renderizado, que é o jeito mais rápido de ver o que o modelo de fato recebe. Os templates do Qwen3 leem `enable_thinking`, que os testes definiram por requisição com `chat_template_kwargs`; o `--chat-template-kwargs` define isso para o servidor inteiro.
+
+Os endpoints são as rotas da OpenAI (`/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`), a rota da Anthropic (`/v1/messages`) e os nativos `/completion`, `/tokenize`, `/props`, `/slots` e `/metrics`.
+
+O `--host` tem padrão `127.0.0.1`. Sem chave, o log avisa `no API key is set and CORS allows all origins`. Com `--api-key` ou `--api-key-file` (uma chave por linha, `#` para comentários), os status medidos foram:
+
+| Requisição | Status |
+|---|---|
+| `/health`, sem chave | 200 |
+| `/v1/models`, sem chave | 401 |
+| `/metrics`, sem chave | 401 |
+| `/metrics`, `Authorization: Bearer KEY` | 200 |
+| `/v1/models`, `X-Api-Key: KEY` | 200 |
+
+Só `/health` e `/v1/health` são públicos, além dos assets da interface web. O `/metrics` fica desligado a menos que você passe `--metrics`, e o seu scraper então precisa da chave. Ele exporta contadores do Prometheus, como `llamacpp:prompt_tokens_total` e `llamacpp:tokens_predicted_total`, e medidores (gauges), como `llamacpp:requests_processing` e `llamacpp:n_busy_slots_per_decode`. O exportador também emitiu `llamacpp:prompt_tokens_cached_total`, que a tabela do README não lista.
+
+:::warning
+Uma chave de API na linha de comando fica visível na lista de processos, então prefira `--api-key-file`. Para uma implantação pública, o README recomenda uma chave de API e um proxy reverso. O `--tools` está marcado como experimental e o `--agent` traz o aviso do README para não habilitá-lo em ambientes não confiáveis. Eles expõem acesso a arquivos e uma ferramenta de shell, então deixe-os desligados num servidor compartilhado.
+:::
+
+:::caveat
+Estas flags vêm só do README e não foram executadas: `--cache-reuse`, `--cache-ram`, `--slot-save-path`, `--context-shift`, `-to`, `--sleep-idle-seconds`, `--kv-unified-per-slot`, `--chat-template-kwargs`, `--tools` e `--agent`. TLS (`--ssl-key-file`, `--ssl-cert-file`), o modo roteador (`--models-dir`) e a lista de várias chaves também não foram testados.
+:::
+
+A ideia durável: um servidor tem três orçamentos, o pool de contexto, os slots que o dividem e os tipos de cache que o encolhem. Escolha-os a partir do tráfego e depois leia o log de inicialização para confirmar o que você obteve. A seguir, a lição 13.4 mede o resultado com o `llama-bench`.
