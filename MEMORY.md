@@ -3,7 +3,19 @@
 ## Current Direction
 
 - **0.9.0 redraws the frontend as a printed star atlas and adds track 10.**
-  DEPLOY_FACTS_PENDING
+  Deployed on 2026-10-03 from `98deb54` (PR #3, CI passed), tagged
+  `v0.9.0-beta1` (staging version `c3ad1ae5`) and `v0.9.0` (production
+  `f7e8b406`, apex and www). `verify:live` passed on both (822 files
+  byte-identical, CSP, Brotli, www redirect, explorer → lesson in three
+  engines); its self-test caught 29/29 on staging and 30/30 on production. On
+  the real edge the inline view-transition opt-in survives the CSP: 8/8
+  transitions, zero CSP violations, with an injected-script control refused.
+  Staging bench: 248/248 routes under the 50 ms server p95 (one first-pass
+  spike, 86.3 ms, cleared at 11.1 ms; control 10.0 ms). Independent
+  verification by a different model took three rounds; round 3 passed 7 of 8
+  criteria, and criterion 5 failed only on the literal wording of a clause the
+  builder wrote ("no lesson attributes video capability to Qwen3.8-27B"),
+  which the model's own card contradicts — lessons 4.17 and 10.1 are right.
   The curriculum is a sky (`src/lib/sky.ts`, one deterministic layout for the
   home chart, track pages, lesson plates and the 3D sky); lessons became a
   course player (syllabus popover/sidebar, step list, reading gauge, continue
