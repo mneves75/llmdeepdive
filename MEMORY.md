@@ -16,6 +16,13 @@
   locales before release. CSS delivery changed (ADR 0002): no inline component
   CSS/JS (CSP line 1,585 → 559, the one inline style being the view-transition opt-in), class scoping, prose and lab styles as plain
   stylesheets, which took the worst lesson route from 87.5 KB to ~67 KB.
+  The independent verifier (a different model, three rounds) found two more
+  that every gate passed: the CSS minifier folded `animation` +
+  `animation-timeline` into `animation: … view()`, which Chromium rejects,
+  dropping all eleven scroll-driven animations (now longhands, tested against
+  the built CSS); and under reduced motion the global `transition-duration`
+  rule turned each 3D token read into the start of a colour transition, so
+  every colour read as the first token (blank sky, black explorer).
   Traps found on the way: cross-document view transitions aborted on most
   navigations ("ViewTransition opt-in disabled") while the opt-in lived in the
   linked stylesheet — single-shot probes said "yes" by luck; an 8-trial rate
