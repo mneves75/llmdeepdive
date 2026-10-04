@@ -10,6 +10,8 @@ test('model-answer prose stays text while paired inline math becomes MathML', ()
   assert.equal(parts[0]?.kind === 'text' ? parts[0].value : '', 'Applying ')
   assert.match(parts[1]?.kind === 'math' ? parts[1].html : '', /<math xmlns="http:\/\/www\.w3\.org\/1998\/Math\/MathML">/u)
   assert.doesNotMatch(parts[1]?.kind === 'math' ? parts[1].html : '', /katex-html|style=/u)
+  // The TeX source is search-engine text, not reader text (see seo.test.mjs).
+  assert.doesNotMatch(parts[1]?.kind === 'math' ? parts[1].html : '', /<annotation/u)
   assert.equal(parts[2]?.kind === 'text' ? parts[2].value : '', ' keeps <img src=x onerror=alert(1)> as prose.')
 })
 

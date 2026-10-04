@@ -5,6 +5,10 @@ export type ModelAnswerPart =
   | { kind: 'math'; html: string }
 
 const INLINE_MATH = /(\$[^$\n]+\$)/gu
+// Search engines index KaTeX's TeX annotation as page text; see
+// src/lib/markdown/math-annotation.mjs. KaTeX escapes `<` inside it, so the
+// annotation body never contains a tag and this match is exact.
+const TEX_ANNOTATION = /<annotation encoding="application\/x-tex">[^<]*<\/annotation>/gu
 
 /**
  * Render the small inline-math subset allowed in teach-back frontmatter.
@@ -26,7 +30,7 @@ export function renderModelAnswer(answer: string): ModelAnswerPart[] {
         strict: 'ignore',
         throwOnError: true,
         trust: false,
-      }),
+      }).replace(TEX_ANNOTATION, ''),
     }]
   })
 }

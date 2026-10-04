@@ -11,6 +11,7 @@ import rehypeKatex from 'rehype-katex'
 import rehypeSlug from 'rehype-slug'
 import rehypeAutolinkHeadings from 'rehype-autolink-headings'
 import { remarkCallouts } from './src/lib/markdown/callouts.mjs'
+import { rehypeDropTexAnnotation } from './src/lib/markdown/math-annotation.mjs'
 import { rehypeMathScroll } from './src/lib/markdown/math-scroll.mjs'
 import { rehypeTableScroll } from './src/lib/markdown/tables.mjs'
 import { lastmodByPath } from './scripts/sitemap-lastmod.mjs'
@@ -75,6 +76,7 @@ export default defineConfig({
         // native in every current browser, needs no stylesheet and no font
         // download, and is what a screen reader wants to read anyway.
         [rehypeKatex, { output: 'mathml' }],
+        rehypeDropTexAnnotation,
         rehypeMathScroll,
         rehypeSlug,
         [rehypeAutolinkHeadings, { behavior: 'wrap', properties: { className: 'heading-anchor' } }],
@@ -98,12 +100,10 @@ export default defineConfig({
     indexConfig: {
       // Index what a lesson teaches, not the page chrome around it. Without a
       // root, every excerpt began with the skip link ("…cachecontent Advanced")
-      // and carried quiz answers, dates and raw TeX from MathML annotations.
+      // and carried quiz answers and dates. (The TeX source of each formula
+      // never reaches the HTML: math-annotation.mjs drops it.)
       rootSelector: 'main',
       excludeSelectors: [
-        // The TeX source of each formula; the rendered MathML text stays, so an
-        // excerpt keeps its quantities ("3,000 × 64 KiB = 187.5 MiB").
-        'annotation',
         // Course-player chrome: navigation, progress, answers and status lines
         // are not teaching content and would leak into every excerpt.
         '[data-syllabus]',

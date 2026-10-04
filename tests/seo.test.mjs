@@ -327,6 +327,23 @@ test('the sitemap lists exactly the indexable pages, with lastmod from the corpu
   }
 })
 
+test('no page ships TeX source beside its rendered maths', () => {
+  // KaTeX's MathML carries the TeX as an <annotation>. Browsers never render it,
+  // but Google reads it: lesson 4.3's result snippet showed "d k \sqrt{d_k}".
+  const leaking = PAGES.filter((p) => p.html.includes('<annotation')).map((p) => p.route)
+  assert.deepEqual(leaking, [], 'pages with a TeX annotation')
+  assert.ok(PAGES.some((p) => p.html.includes('<math')), 'no page renders maths, so the check would pass vacuously')
+})
+
+test('descriptions read as plain sentences, without the "X — and Y" hook', () => {
+  // Lesson summaries are the descriptions search results show. A quarter of
+  // them had grown the same dash-and-twist ending; one is enough to notice.
+  const hooked = PAGES.filter((p) => !p.html.includes('<meta name="robots" content="noindex"'))
+    .filter((p) => / — (?:and|e) /u.test(decode(p.html.match(/<meta name="description" content="([^"]*)"/u)?.[1] ?? '')))
+    .map((p) => p.route)
+  assert.deepEqual(hooked, [], 'descriptions with the dash hook')
+})
+
 test('llms.txt follows llmstxt.org and links every lesson in both languages', () => {
   const text = readFileSync(join(DIST, 'llms.txt'), 'utf8')
   const lines = text.split('\n')

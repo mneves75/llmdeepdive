@@ -79,6 +79,28 @@ async function layoutFailures(page) {
     const wrong = [...document.querySelectorAll('.math-scroll, .table-scroll')]
       .filter((region) => (region.scrollWidth > region.clientWidth + 1) !== (region.getAttribute('role') === 'region'))
     if (wrong.length) failures.push(`${wrong.length} scroll wrapper(s) with region semantics that disagree with their overflow`)
+    // WCAG 4.1.2: a narrow layout once hid the syllabus button's only text and
+    // left an unnamed icon. innerText counts visually-hidden text and skips
+    // display:none, which is exactly what the accessibility tree does here.
+    // Charts are aria-hidden duplicates of the lesson lists, so their links are
+    // outside the accessibility tree and need no name of their own.
+    const shown = (element) =>
+      element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden' && !element.closest('[aria-hidden="true"], [inert]')
+    const nameOf = (element) =>
+      (element.getAttribute('aria-label') ??
+        (element.getAttribute('aria-labelledby') ?? '').split(/\s+/u).map((id) => document.getElementById(id)?.textContent ?? '').join(' ')).trim() ||
+      element.innerText.trim() ||
+      [...element.querySelectorAll('img[alt]')].map((image) => image.alt).join(' ').trim() ||
+      (element.getAttribute('title') ?? '').trim()
+    const unnamed = [...document.querySelectorAll('button, a[href], [role="button"]')].filter((element) => shown(element) && !nameOf(element))
+    if (unnamed.length) failures.push(`unnamed control(s): ${unnamed.slice(0, 3).map((element) => element.outerHTML.slice(0, 80)).join(' | ')}`)
+    // WCAG 1.4.1: a link inside running text must not differ by colour alone.
+    // Tailwind's preflight sets `text-decoration: inherit`, which removed every
+    // underline site-wide while the global rule still styled its colour.
+    const inText = (link) => [...link.parentElement.childNodes].some((node) => node !== link && node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0)
+    const bare = [...document.querySelectorAll('main a[href]')]
+      .filter((link) => shown(link) && getComputedStyle(link).display === 'inline' && inText(link) && !getComputedStyle(link).textDecorationLine.includes('underline'))
+    if (bare.length) failures.push(`link(s) in running text without an underline: ${bare.slice(0, 3).map((link) => link.textContent.trim().slice(0, 30)).join(' | ')}`)
     return failures
   })
 }
@@ -256,6 +278,11 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
           const wide = document.createElement('span')
           wide.style.cssText = 'display: inline-block; inline-size: 2000px; block-size: 1px'
           document.querySelector('main')?.prepend(wide)
+          const icon = document.createElement('button')
+          icon.innerHTML = '<svg width="16" height="16" aria-hidden="true"></svg>'
+          const prose = document.createElement('p')
+          prose.innerHTML = 'Read <a href="#" style="text-decoration: none">the source</a> first.'
+          document.querySelector('main')?.append(icon, prose)
         })
       }
       await settle(page)
@@ -302,6 +329,8 @@ try {
   if (selfTest) {
     const expected = engines.flatMap((engine) => [
       `${engine} ${checked[0]}: page overflows`,
+      `${engine} ${checked[0]}: unnamed control(s)`,
+      `${engine} ${checked[0]}: link(s) in running text without an underline`,
       ...(engine === 'chromium' ? [`chromium+wide-fonts ${checked[0]}: page overflows`] : []),
       ...BASELINE_ROUTES.map((route) => `${engine} ${route} @1280: inline maths moves`),
       ...(explorerEngines.includes(engine)
