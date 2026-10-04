@@ -2,6 +2,30 @@
 
 ## Current Direction
 
+- **0.10.0 adds tracks 11–13** (Mac Studio Ultra & MLX, DGX & CUDA, llama.cpp
+  in Depth; 15 lessons per language, 125 per language in all), on branch
+  `release/0.10.0`. The owner asked for "MAC ULTRA / DGX / CUDA / MLX /
+  MLX-SERVE / LLAMA.CPP tracks / lessons"; the default taken was three tracks
+  pairing hardware with its own stack, because six one-topic tracks would be
+  thin and mlx-serve alone is not a track. "mlx-serve" is ddalcu/mlx-serve
+  (the popular Zig server), taught beside first-party `mlx_lm.server`; the
+  unrelated raspoli/mlx-serve is named once. Pins: MLX 0.32.3, mlx-lm 0.32.0,
+  mlx-serve v26.10.1, llama.cpp b11380 (`tests/content-pins.test.mjs` keeps
+  one pin per repository per track). One writer per track, then a separate
+  fact-checker per track against primary sources: 13 findings on track 12,
+  16 on track 13 and 10 on track 11 (four high: Apple's clustering footnote
+  does name its test, MLX's memory limit is min(1.5x recommended, 95% of RAM),
+  Apple does say M5 Ultra fuses two M5 Max chips, re-quantizing a 16-bit LoRA
+  fuse loses the adapter), all fixed. Facts worth keeping: Thunderbolt 5 is
+  80 Gb/s symmetric (120 only with Bandwidth Boost, Intel 2023), so 11.5 plans
+  with 10 GB/s; llama.cpp's RPC binary is `ggml-rpc-server`, `-md` drafts
+  only with `--spec-type draft-simple`, and `-c` splits across slots only with
+  an explicit `-np`; mlx-serve binds 0.0.0.0 by default against its own
+  SECURITY.md. `render:check` caught quiz options with long identifiers
+  widening 320px pages (fixed in the quiz CSS), and the 14-column sky pushed
+  edge names off the plate (fixed in `sky.ts`, names from 38rem).
+  Deployment record follows below once it exists.
+
 - **0.9.1 deployed on 2026-10-03 (23:06 -03; 02:06 UTC on 10-04) from `6167fc0`** (PRs #4–#6, CI passed),
   tagged `v0.9.1-beta4` (staging version `0e4c0854`) and `v0.9.1` (production
   `c37ddfee`, apex and www). `verify:live` passed on both (822 files
