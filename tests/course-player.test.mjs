@@ -190,3 +190,15 @@ test('every page opts in to cross-document view transitions inline, before any s
     assert.match(html.slice(optIn, optIn + 200), /prefers-reduced-motion:\s*no-preference/u, `${route}: the opt-in must stay off under reduced motion`)
   }
 })
+
+test('scroll-driven animations keep their timeline out of the animation shorthand', () => {
+  // The CSS minifier folded `animation: x linear both; animation-timeline:
+  // view()` into `animation: linear both x view()`. Chromium rejects a
+  // timeline inside the shorthand (it is a reset-only sub-property), so every
+  // scroll-driven animation was silently dropped while all gates stayed green.
+  const astro = join(DIST, '_astro')
+  const css = readdirSync(astro).filter((name) => name.endsWith('.css')).map((name) => readFileSync(join(astro, name), 'utf8')).join('\n')
+  const folded = [...css.matchAll(/animation:[^;}]*(?:view\(|scroll\(|\s--[a-z][\w-]*\s*(?:[;}]|$))/gu)].map((match) => match[0])
+  assert.deepEqual(folded, [], 'a timeline must be set with animation-timeline, never inside the animation shorthand')
+  assert.ok(/animation-timeline:\s*view\(\)/u.test(css), 'the build should still declare view() timelines')
+})
