@@ -58,6 +58,18 @@ test('every star and every name sits on the plate', () => {
   }
 })
 
+test('every name fits across the plate at its widest', () => {
+  // Names are widest relative to the plate just above the 38rem container
+  // query that hides them (SkyChart.astro): ~174 sky units at a 602px chart,
+  // ~192 at 545px, because the minimum font clamp holds while the plate
+  // shrinks. Fourteen tracks once pushed the first and last names up to 9px
+  // past the plate.
+  for (const constellation of sky.constellations) {
+    const { x } = constellation.label
+    assert.ok(x - 100 >= 0 && x + 100 <= SKY_WIDTH, `${constellation.id} name x=${x} leaves the plate`)
+  }
+})
+
 test('figures stay landscape, so no chart swallows its page', () => {
   for (const constellation of sky.constellations) {
     if (constellation.stars.length < 4) continue
