@@ -2,6 +2,20 @@
 
 ## Current Direction
 
+- **0.9.1 deployed on 2026-10-04 from `6167fc0`** (PRs #4–#6, CI passed),
+  tagged `v0.9.1-beta4` (staging version `0e4c0854`) and `v0.9.1` (production
+  `c37ddfee`, apex and www). `verify:live` passed on both (822 files
+  byte-identical, CSP, Brotli, www redirect, explorer → lesson in three
+  engines); self-test 30/30 on production. `v0.9.1-beta1` was pushed by mistake
+  on `1c372ee` (0.9.0) and never deployed; beta2 (`c2c3fbe`) and beta3
+  (`963795e`) were earlier verified staging attempts. Review trail: two-axis
+  code review (4 judgement calls fixed), Codex autoreview (2 P2 false negatives
+  in the new render:check gates, fixed, rerun clean), and an independent
+  GPT-6 verifier against staging on 20 criteria frozen from the owner's
+  checklist: round 1 FAIL on one filler sentence in lesson 0.1 (removed) with
+  WebKit blocked by its sandbox (`Abort trap: 6`; round 2 drove a WebKit
+  `launchServer` started outside it), round 2 PASS. Dependabot's six undici
+  alerts are stale: the lockfile holds only the patched 7.29.1.
 - **0.9.1 is a search and accessibility pass from a live audit.** Google
   already indexed the site (a `site:` query on 2026-10-03 showed home, tracks,
   explorer and lessons in both languages, with a stale favicon and pre-0.8.0
