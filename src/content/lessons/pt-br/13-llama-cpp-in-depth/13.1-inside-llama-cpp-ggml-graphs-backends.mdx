@@ -1,0 +1,99 @@
+---
+id: "13.1-inside-llama-cpp-ggml-graphs-backends"
+track: "13-llama-cpp-in-depth"
+order: 1
+title: "Por dentro do llama.cpp: grafos e backends do ggml"
+summary: "O llama.cpp monta um grafo ggml para cada batch e um scheduler coloca cada operação num backend, de modo que o lugar onde um peso mora decide onde a conta dele roda; esta lição lê essa colocação no log de carregamento."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["8.7-llama-cpp-and-gguf"]
+unlocks: ["13.2-making-your-own-gguf-convert-imatrix-quantize"]
+analogy: "Uma cozinha tem estações: a chapa, o forno, a bancada fria. A receita é uma lista de passos, não um lugar. O chefe manda cada passo para a estação que já guarda os ingredientes, e um ajudante leva os pratos de uma estação a outra sempre que dois passos vizinhos caem em estações diferentes. Mover um ingrediente grande é lento, então o chefe prefere mandar o passo até o ingrediente. O ggml é a receita, os backends são as estações, o scheduler é o chefe, e cada cópia entre backends é uma viagem do ajudante que você consegue contar no log."
+teachBack:
+  prompt: "Explique como o llama.cpp decide qual backend calcula cada operação, o que -ngl e --n-cpu-moe mudam, e o que --n-cpu-moe faz com a memória num Mac."
+  modelAnswer: "O llama.cpp não executa camada por camada. Para cada batch ele monta um grafo ggml em que cada operação é um nó, e um scheduler de backends atribui cada nó a um backend com duas regras: o backend precisa suportar a operação, e uma operação segue o buffer que guarda os seus pesos. Depois o scheduler corta o grafo em splits, executa cada split no seu backend e copia tensores entre backends nas costuras. A flag -ngl decide quais camadas recebem pesos na GPU: as últimas camadas e a camada de saída vão para lá, e as primeiras ficam na CPU. --n-cpu-moe N e -ot sobrescrevem isso para tensores nomeados, por exemplo as matrizes de experts das primeiras N camadas de um modelo mixture-of-experts. Cada sobrescrita acrescenta costuras, então a contagem de splits cresce. Numa máquina de memória unificada não existe VRAM separada para aliviar. O buffer de CPU dos experts é uma cópia reempacotada adicional, e a conta dos experts passa da GPU para a CPU. Com mmap o consumo sobe; com --load-mode none ele fica igual e só a parcela do Metal encolhe. A flag desloca trabalho, não libera memória, e o orçamento de GPU de um Mac é o limite wired, não o pool inteiro."
+quiz:
+  - question: "No arquivo Qwen3-1.7B Q8_0, de 28 camadas, o llama-completion com -ngl 10 imprime 'offloaded 10/29 layers to GPU'. Quais camadas guardam os pesos no dispositivo Metal?"
+    options: ["As camadas de 0 a 9, as dez primeiras", "Uma camada em cada três, para espalhar o trabalho", "A tabela de embeddings e as nove primeiras camadas", "As últimas camadas e a camada de saída: as camadas 19 a 28 no log de debug, com a camada 28 sendo a saída"]
+    correctIndex: 3
+    explanation: "O loader calcula a primeira camada de GPU como o total de camadas mais um menos -ngl. O log de debug mostra as camadas 0 a 18 atribuídas à CPU e 19 a 28 ao MTL0, com a camada de saída contada como a última."
+  - question: "Você roda --n-cpu-moe 20 num Mac de 64 GB com o arquivo Qwen3.6-35B-A3B Q4_K_XL. O que o log de carregamento mostra?"
+    options: ["A memória unificada encolhe cerca de 9 GB porque os experts saem da GPU", "Aparece um novo buffer CPU_REPACK de 9.378 MiB e os splits do grafo sobem de 2 para 42", "Nada muda, porque a flag só vale para builds CUDA", "O modelo se recusa a carregar porque o mmap é incompatível com sobrescritas"]
+    correctIndex: 1
+    explanation: "Os experts das primeiras 20 camadas são sobrescritos para um buffer de CPU reempacotado, uma alocação nova. Duas costuras extras por camada sobrescrita levam a contagem de splits de 2 para 42. A única objeção do mmap é um aviso."
+  - question: "Com -ngl 0 o grafo do prompt ainda tem 281 splits e o grafo de decode tem 1. Que uma das razões o código-fonte do b11380 dá?"
+    options: ["O backend de CPU não processa mais de um token por vez", "O tokenizer roda na GPU", "O scheduler descarrega para um backend mais rápido as multiplicações de matrizes cujos pesos estão na memória do host quando o batch tem pelo menos 32 linhas", "Flash attention força todo prompt para a GPU"]
+    correctIndex: 2
+    explanation: "Metal e CUDA consideram uma operação digna de offload quando o tamanho do batch chega a 32 por padrão (GGML_OP_OFFLOAD_MIN_BATCH). Um passo de decode tem uma linha e fica na CPU. Essa é uma das razões no código-fonte; os splits restantes não foram rastreados."
+citations:
+  - title: "Scheduler de backends do ggml (ggml-backend.h no b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/ggml/include/ggml-backend.h"
+  - title: "Modelo de tensores e grafos do ggml (ggml.h no b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/ggml/include/ggml.h"
+  - title: "README do llama-server: parâmetros comuns (b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/server/README.md"
+  - title: "Padrões de sobrescrita de experts MoE (common/common.h no b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/common/common.h"
+updated: "2026-10-04"
+---
+
+A lição 8.7 deixou você com um arquivo e o comando `llama-server -m model.gguf -ngl 99`. Esta lição pergunta o que esse comando faz com cada tensor e como conferir. A resposta está no log de carregamento, se você souber lê-lo. Todos os logs abaixo vêm do llama.cpp na tag `b11380`, num Apple M5 Pro com 64 GB, e o build 11146 do Homebrew imprimiu os mesmos buffers na execução com `--n-cpu-moe 20`.
+
+## Grafos, não camadas
+
+O ggml é a biblioteca de tensores por baixo do llama.cpp. Um tensor ggml carrega seu formato e seus strides em bytes, a operação que o produz, ponteiros para os tensores de origem e o buffer que guarda seus dados. O cabeçalho diz que definir uma função "não envolve nenhuma computação de fato": você monta um grafo, e uma chamada separada o executa. O llama.cpp monta um grafo desses para cada batch de tokens e o reaproveita quando o formato se repete; a linha de log `graphs reused` conta isso.
+
+Cada backend é uma forma de executar nós: CPU, Metal, CUDA, Vulkan, RPC e outros. Um **scheduler** (escalonador) decide qual deles executa cada nó. O comentário em `ggml-backend.h` nomeia duas regras. O backend precisa suportar a operação, e uma operação é atribuída de preferência ao mesmo backend do buffer que guarda os seus pesos. O scheduler então corta o grafo em **splits**, um para cada sequência de nós no mesmo backend, e copia tensores em cada costura. Ou seja: os pesos decidem a colocação, e cada costura custa uma cópia.
+
+## O que o `-ngl` faz
+
+No b11380 o `-ngl` tem padrão `auto` e o `--fit` vem ligado. O servidor primeiro estima a memória e ajusta os valores não definidos. No arquivo de 35B abaixo, o log diz `projected to use 26808 MiB of device memory vs. 53020 MiB of free device memory`, então nada mudou. O `-ngl 99` da lição 8.7 é uma sobrescrita manual desse padrão.
+
+Experimente um número. No arquivo Qwen3-1.7B Q8_0, de 28 camadas, `-ngl 10` imprimiu `offloaded 10/29 layers to GPU`. O log de debug pôs as camadas 0 a 18 na CPU e 19 a 28 no `MTL0`. A 29ª "camada" é a projeção de saída, e as **últimas** camadas vão para a GPU. O KV cache acompanha a sua camada: 152 MiB na CPU, 72 MiB no Metal.
+
+O modo de carregamento segue a mesma lógica. Segundo o README, `-lm auto` mapeia o arquivo com mmap, a menos que um dispositivo não consiga, e o `Mapped` em `MTL0_Mapped` marca um buffer apoiado nesse mapeamento. O `--load-mode none` lê os pesos para memória alocada, e o aviso do loader mostrado adiante o recomenda quando você sobrescreve tensores para a CPU. Nenhum dos modos foi cronometrado. Depois de qualquer mudança, compare três coisas no log: a linha `offloaded`, os tamanhos dos buffers e a contagem de splits.
+
+## Experts: `--n-cpu-moe` e `-ot`
+
+Um modelo mixture-of-experts guarda a maior parte dos bytes em matrizes de experts, com nomes como `blk.N.ffn_up_exps.weight`, `ffn_gate_exps` e `ffn_down_exps`. O `llama-gguf` confirmou os nomes no arquivo Qwen3.6-35B-A3B Q4_K_XL. O Qwen3.8-27B é denso, então esse modelo serve apenas como exemplo público de MoE. O padrão de `common.h` que seleciona esses nomes é `\.ffn_(up|down|gate|gate_up)_(ch|)exps`.
+
+```
+llama-completion -m MODEL.gguf -c 4096 -n 2 -p "Hello" -no-cnv --no-warmup -v \
+  --n-cpu-moe 20
+```
+
+`--n-cpu-moe N` acrescenta essa sobrescrita para as primeiras N camadas, `-cmoe` faz isso para todas, e `-ot "ffn_.*_exps=CPU"` é a forma escrita à mão. Foi isto que o log mostrou:
+
+| Execução (Qwen3.6-35B-A3B Q4_K_XL) | Experts na CPU | Novo buffer de CPU | Splits do grafo |
+|---|---|---|---|
+| padrão (contexto de 262.144 tokens do modelo) | nenhum | nenhum | 2 |
+| `--n-cpu-moe 20` | 20 camadas | 9.378 MiB | 42 |
+| `-ot "ffn_.*_exps=CPU"` | 40 camadas | 18.760 MiB | 82 |
+
+Os splits crescem de dois em dois por camada sobrescrita, o que combina com uma costura para entrar na CPU e outra para sair. O buffer de 9.378 MiB se chama `CPU_REPACK`: o llama.cpp copia os pesos para um layout que os kernels de CPU preferem. Com `--no-repack` o buffer virou `CPU_Mapped` e o grafo do prompt teve 62 splits contra 42 do decode.
+
+## O erro clássico
+
+Flags como essas existem para uma GPU discreta cuja VRAM é menor que o modelo. O reflexo é copiar a receita para um Mac "para economizar memória". Num Mac não há VRAM separada para economizar. Com o mmap padrão, o consumo de pico subiu de 0,36 GB para 10,2 GB, porque a cópia reempacotada fica ao lado do mapeamento de 21.314 MiB. Com `--load-mode none` o total fica em 21.314 MiB e o buffer do Metal encolhe para 11.421 MiB. Nos dois casos nada é liberado. Os experts só mudam de processador. O limite wired (lição 11.1) é o orçamento de GPU do Mac. O mesmo raciocínio vale para um pool unificado como o do DGX Spark (lição 12.1), mas não foi executado lá. A lição 12.2 trata do caso em que a colocação importa de verdade, uma Station com pools rápidos e lentos.
+
+:::warning
+Com `-ot` ou `--n-cpu-moe` e mmap ligado, o `llama_model_loader` imprime `tensor overrides to CPU are used with mmap enabled - consider using --load-mode none for better performance`. Leia os avisos desse log. Eles vêm do loader, que conhece a sua colocação.
+:::
+
+## O prompt ainda chega à GPU
+
+Com `-ngl 0` o grafo do prompt teve 281 splits e o de decode teve 1. O código do scheduler explica parte disso: quando um peso está na memória do host e um backend mais rápido responde `offload_op`, a operação vai para lá. Metal e CUDA aceitam quando o batch tem pelo menos 32 linhas (`GGML_OP_OFFLOAD_MIN_BATCH`, padrão 32). Um passo de decode tem uma linha e fica na CPU. `--no-op-offload` desliga isso. A contagem caiu para 201, não para 1, e o restante não foi rastreado.
+
+:::caveat
+Contagens de splits, tamanhos de buffer e o formato de log `pp bs=512, tg bs=1` pertencem a um build e a uma máquina. O build 11146 imprimiu um único número de splits. Trate um log como evidência sobre a sua própria execução, não como constante.
+:::
+
+A ideia durável: um grafo ggml não conhece a colocação, e a colocação dos pesos decide onde cada nó roda e quantas costuras ele atravessa. Leia `offloaded`, as linhas de buffer e a contagem de splits antes de ajustar qualquer coisa. A seguir, a lição 13.2 produz o seu próprio GGUF.

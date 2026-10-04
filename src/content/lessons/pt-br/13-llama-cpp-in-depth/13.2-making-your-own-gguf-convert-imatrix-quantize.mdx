@@ -1,0 +1,110 @@
+---
+id: "13.2-making-your-own-gguf-convert-imatrix-quantize"
+track: "13-llama-cpp-in-depth"
+order: 2
+title: "Criando seu próprio GGUF: converter, imatrix, quantizar"
+summary: "Converta um checkpoint do Hugging Face para GGUF em bf16, colete uma matriz de importância, quantize com sobrescritas por tensor e meça o estrago com divergência KL num texto que a calibração nunca viu."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["13.1-inside-llama-cpp-ggml-graphs-backends", "7.13-choosing-and-judging-a-community-quant"]
+unlocks: ["13.3-llama-server-in-production"]
+analogy: "Uma costureira ajusta um terno. Primeiro ela copia todas as medidas do tecido original para o papel, sem perder nenhuma. Depois pergunta onde você se dobra e onde estica o braço, porque as costuras desses lugares pedem mais linha. Só então começa o corte. Pule o segundo passo e o terno ainda serve num manequim. Peça a um cliente que ficou sentado durante a prova para julgar o resultado, e o veredito vale pouco. Converter é a cópia, o imatrix é a prova, quantizar é o corte, e um texto separado é o cliente que não foi à prova."
+teachBack:
+  prompt: "Descreva os quatro passos que transformam um checkpoint do Hugging Face num GGUF Q4_K_M conferido e nomeie duas maneiras de o processo falhar ou enganar."
+  modelAnswer: "Primeiro o convert_hf_to_gguf.py lê o checkpoint em safetensors e escreve um GGUF bf16 sem perdas. Segundo, o llama-imatrix passa texto de calibração por esse arquivo bf16 e guarda, por coluna de tensor, a soma das ativações ao quadrado. Terceiro, o llama-quantize lê o arquivo bf16 e escreve o tipo de destino, opcionalmente com --imatrix e sobrescritas por tensor como --tensor-type attn_v=q6_k. Quarto, o llama-perplexity grava uma vez os logits do bf16 com --kl-divergence-base e depois compara cada arquivo quantizado com eles usando --kl-divergence. Ele falha alto de duas maneiras: o llama-quantize se recusa a requantizar um arquivo já quantizado e se recusa a gerar os tipos de menos bits sem matriz de importância. E engana de formas mais sutis. Calibrar e avaliar no mesmo texto favorece a matriz. Ler só a perplexidade esconde o deslocamento da distribuição. Uma única execução num modelo pequeno, com um conjunto de calibração, não ordena nada. Meça em texto do seu próprio uso."
+quiz:
+  - question: "Na execução com o Qwen3-0.6B, acrescentar --imatrix ao mesmo comando Q4_K_M manteve o tamanho quantizado em 456,11 MiB. O que mudou?"
+    options: ["A divergência KL média contra o bf16 caiu de cerca de 0,104 para cerca de 0,069", "Os bits por peso caíram abaixo de 5", "O tokenizer foi retreinado com o texto de calibração", "O tensor de saída passou sozinho para Q8_0"]
+    correctIndex: 0
+    explanation: "A matriz de importância muda como o quantizador gasta o seu erro, não quantos bytes ele escreve. O mesmo tamanho quantizado deu uma divergência KL menor, que é justamente o objetivo da matriz."
+  - question: "Por que a lição mede divergência KL em vez de ler só a perplexidade?"
+    options: ["A divergência KL roda mais rápido que a perplexidade", "A perplexidade não pode ser calculada para arquivos quantizados", "A perplexidade compara um modelo com um texto, enquanto a divergência KL compara a distribuição quantizada com a do modelo original, token a token", "A divergência KL não precisa de arquivo de referência"]
+    correctIndex: 2
+    explanation: "O README do perplexity descreve gravar os logits do modelo FP16 e calcular a divergência KL contra eles. Isso mostra o quanto a distribuição se moveu, o que uma nota de perplexidade pode esconder."
+  - question: "Você calibra a matriz de importância no mesmo arquivo Wikitext que depois usa para pontuar a quantização. Qual é o risco?"
+    options: ["A nota favorece a matriz, então é preciso pontuar num texto que ela nunca viu", "O quantizador trava por falta de memória", "A matriz é descartada porque o texto se sobrepõe", "Nenhum, porque as ativações não dependem do texto"]
+    correctIndex: 0
+    explanation: "A matriz guarda estatísticas de ativação do texto de calibração. Pontuar nesse mesmo texto premia o ajuste a ele. A execução aqui calibrou com a documentação do llama.cpp e pontuou com o teste do Wikitext-2."
+citations:
+  - title: "README do llama-quantize (b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/quantize/README.md"
+  - title: "README do llama-imatrix (b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/imatrix/README.md"
+  - title: "README do llama-perplexity: divergência KL e placar (b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/perplexity/README.md"
+  - title: "convert_hf_to_gguf.py (b11380)"
+    authors: "Georgi Gerganov e colaboradores"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/convert_hf_to_gguf.py"
+updated: "2026-10-04"
+---
+
+A lição 7.13 ensinou a julgar uma quantização feita por outra pessoa. Esta lição faz uma, em quatro passos, com uma conferência depois de cada um. Todos os comandos abaixo foram executados no llama.cpp na tag `b11380`, num substituto pequeno, o Qwen3-0.6B, porque uma receita que você não consegue repetir em minutos não ensina nada. A receita não foi executada no Qwen3.8-27B. Os caminhos são marcadores.
+
+## Escreva primeiro como isso falha
+
+Cinco coisas dão errado, então os comandos se protegem de cada uma:
+
+1. O conversor não conhece a arquitetura. Rode `python convert_hf_to_gguf.py --print-supported-models` antes de baixar qualquer coisa.
+2. Você quantiza um arquivo já quantizado. O `llama-quantize` recusa: `requantizing from type q4_K is disabled`. A flag `--allow-requantize` existe, e o README avisa que ela "pode reduzir severamente a qualidade" (tradução nossa).
+3. Você pede um tipo de poucos bits sem matriz. O `IQ2_XXS` termina com `this quantization requires an imatrix!`.
+4. Você calibra e pontua no mesmo texto.
+5. Você confia num número de uma execução.
+
+## Os quatro passos
+
+```
+python convert_hf_to_gguf.py MODEL_DIR --outtype bf16 --outfile model-bf16.gguf
+llama-imatrix -m model-bf16.gguf -f calib.txt -o imatrix.gguf -ngl 99
+llama-quantize --imatrix imatrix.gguf model-bf16.gguf model-Q4_K_M.gguf Q4_K_M
+llama-perplexity -m model-bf16.gguf -f wiki.test.raw --kl-divergence-base base.kld --chunks 20 -ngl 99
+llama-perplexity -m model-Q4_K_M.gguf -f wiki.test.raw --kl-divergence-base base.kld --kl-divergence --chunks 20 -ngl 99
+```
+
+**Converter.** Escreva sempre primeiro o arquivo sem perdas (`bf16`, ou `auto` para o tipo de 16 bits de maior fidelidade). Todo passo seguinte lê esse arquivo. A conversão do Qwen3-0.6B escreveu 311 tensores e um arquivo de 1,5 GB.
+
+**Coletar.** A matriz é a soma das ativações ao quadrado por coluna de tensor, como a lição 7.13 explicou. No b11380 a saída vai por padrão para `imatrix.gguf`. Só `--output-format dat` escreve o formato legado. Um nome `.dat` sozinho ainda escreve GGUF e emite um aviso. O texto de calibração aqui foi a documentação do llama.cpp e os READMEs das ferramentas, 523.956 bytes, o que deu 305 chunks de 512 tokens. Para o seu modelo, use texto parecido com o seu tráfego, no formato de chat que você serve (`--parse-special` lê tokens especiais no texto).
+
+O README mostra `llama-imatrix --in-file imatrix.gguf --show-statistics`. Tanto o b11380 quanto o build 11146 do Homebrew responderam `error: --model is required`. Acrescente `-m model-bf16.gguf` e funciona; a tabela sai em stderr. Ela mostra a soma das ativações ao quadrado por tensor e, neste modelo, varre ordens de grandeza: 15,68 para `attn_k` na camada 1 contra 192.029,52 na camada 26.
+
+**Quantizar.** As sobrescritas são expressões regulares sobre nomes de tensores. A execução acrescentou `--tensor-type attn_v=q6_k --token-embedding-type q8_0`, e o log confirmou `applying manual override: q4_K -> q6_K` por camada.
+
+O README lista mais botões. `--pure` desliga as misturas dos k-quants e usa um único tipo em tudo, `--leave-output-tensor` mantém o `output.weight` sem quantizar, e `--include-weights` ou `--exclude-weights` limita a matriz a tensores nomeados (os dois não se misturam). O `llama-imatrix` pula o `output.weight` por padrão, porque o README diz que em geral é melhor não aplicar a matriz ali; `--process-output` muda isso.
+
+**Medir.** A primeira execução do perplexity grava uma vez os logits do bf16. A segunda compara cada candidato com eles.
+
+A procedência é barata, então guarde-a. No arquivo feito com matriz, o `llama-gguf` listou as chaves de metadados `quantize.imatrix.file`, `quantize.imatrix.dataset`, `quantize.imatrix.entries_count` e `quantize.imatrix.chunks_count`, e o arquivo sem matriz não tinha nenhuma delas. Guarde o arquivo bf16, porque toda receita nova parte dele. Escreva o comando exato, o build e o corpus de calibração ao lado de qualquer arquivo que você compartilhar, para que um leitor possa repeti-lo.
+
+## O que a execução mostrou
+
+| Qwen3-0.6B, 20 chunks do teste do Wikitext-2 | Tamanho dos tensores quantizados | Divergência KL média | Mesmo token no topo |
+|---|---|---|---|
+| Q4_K_M, sem matriz | 456,11 MiB | 0,1036 ± 0,0022 | 83,3 % |
+| Q4_K_M, imatrix | 456,11 MiB | 0,0689 ± 0,0016 | 85,8 % |
+| imatrix, `attn_v` em Q6_K, embeddings em Q8_0 | 533,91 MiB | 0,0616 ± 0,0014 | 86,3 % |
+
+A referência bf16 imprimiu perplexidade 23,6783 ± 1,12824 na execução que gravou seus logits, e os relatórios de KL imprimem `Mean PPL(base)` 23,405638 ± 1,096843 nos mesmos 20 chunks. Os tamanhos da tabela são o `quant size` do próprio quantizador; em disco os arquivos tinham 461,8 e 539,6 MiB. A matriz não custou byte nenhum e removeu cerca de um terço da divergência KL. As sobrescritas compraram um ganho menor por 78 MiB, na maior parte a tabela de embeddings, que é grande num modelo de 0,6B. Se essa troca vale a pena depende do seu modelo e da sua memória.
+
+Por que divergência KL? O README do perplexity separa as duas. A perplexidade pergunta quão bem o modelo prevê um texto. A divergência KL, e estatísticas como a fração de tokens em que os dois modelos escolhem o mesmo token no topo, perguntam o quanto a distribuição quantizada se afastou da original. O README também avisa que os valores de perplexidade do llama.cpp "não são diretamente comparáveis" (tradução nossa) aos de outros projetos, nem entre modelos com tokenizers diferentes.
+
+Uma última conferência custa um comando. Carregue o arquivo quantizado no `llama-completion` ou no `llama-server` e leia as primeiras respostas a olho nu antes de confiar em qualquer número, porque um arquivo pode pontuar bem e ainda assim falhar no seu template ou no seu idioma. Use o chat template que você vai servir. Uma calibração feita com texto simples diz pouco sobre tokens especiais.
+
+## O erro clássico
+
+O erro fácil é calibrar e pontuar no mesmo arquivo. A matriz parece então melhor do que é, porque foi ajustada àquilo com que você a avalia. Mantenha os conjuntos disjuntos: a documentação para calibrar, o teste do Wikitext-2 para pontuar. O mesmo cuidado vale para o arquivo de logits. Ele cresce com o tamanho do vocabulário vezes os tokens pontuados, e o arquivo daqui chegou a 1,55 GB para 20 chunks curtos com um vocabulário de 151.936 linhas. Um conjunto de teste completo com um vocabulário grande exige disco de verdade, então planeje o volume antes de começar.
+
+:::warning
+Não publique uma quantização com base numa execução. Os valores ± acima são o erro de amostragem de 20 chunks num modelo pequeno. Repita em texto do seu próprio trabalho antes de confiar num ranking de receitas, incluindo esta tabela.
+:::
+
+:::caveat
+O placar do README usa o Llama 3 8B numa GPU CUDA. Não leve esses números para o Qwen3.8-27B, nem estes. Uma receita é um procedimento; a tabela é um resultado sobre um único modelo de 0,6B.
+:::
+
+A ideia durável: a conversão preserva, a calibração orienta, a quantização gasta e a medição em texto separado julga. Cada passo tem uma recusa ou um número que você consegue ler, então nunca é preciso adivinhar. A seguir, a lição 13.3 serve o arquivo que você construiu.

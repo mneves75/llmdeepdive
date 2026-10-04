@@ -1,0 +1,136 @@
+---
+id: "12.3-the-cuda-programming-model"
+track: "12-dgx-and-cuda"
+order: 3
+title: "O modelo de programação CUDA"
+summary: "Threads, blocos, grids e warps se mapeiam nos streaming multiprocessors, e a compute capability do chip, 12.1 no GB10, define os limites e o alvo do nvcc."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["12.2-dgx-station-hbm-beside-a-big-pool", "9.2-the-roofline-model"]
+unlocks: ["12.4-writing-a-fast-kernel-tiling-and-tensor-cores"]
+analogy: "Uma agência dos correios tria uma pilha enorme de cartas dando a cada funcionário uma carta e um número. O funcionário usa o número para achar a carta, lê o endereço e a põe na caixa certa. Os funcionários trabalham em grupos de 32 que andam juntos. Vários grupos dividem uma mesa e uma parede de escaninhos, e um gerente sabe quantas mesas cabem no prédio. O programador escreve a regra para um funcionário e diz quantos contratar."
+teachBack:
+  prompt: "Explique como um kernel CUDA mapeia threads, blocos, grids e warps no hardware, por que threads consecutivas devem tocar endereços consecutivos e o que as opções de alvo do nvcc significam para um GB10."
+  modelAnswer: "Um kernel é uma função que muitas threads executam. As threads se agrupam em blocos de até 1.024 threads, e o grid é o conjunto de blocos. Cada bloco vive num streaming multiprocessor e pode compartilhar memória rápida e sincronizar. Dentro de um bloco, o hardware executa as threads em conjunto, como um warp de 32, então os tamanhos de bloco devem ser múltiplos de 32. Cada thread calcula seu índice global a partir de blockIdx, blockDim e threadIdx e o compara com o tamanho do array. Quando threads consecutivas leem endereços consecutivos, o pedido de um warp vira poucas transações de memória cheias; com um passo grande, desperdiça a maior parte de cada transação. Occupancy é a razão entre warps ativos e o máximo, e registradores e memória compartilhada a limitam. O GB10 tem compute capability 12.1, então nvcc -arch=sm_121 gera PTX e código de máquina para ele. -arch=native gera código de máquina só para a GPU visível, sem PTX. Código 12.1 não roda na GPU 10.3 do Station, então um binário para as duas máquinas precisa de dois alvos. Um alvo com sufixo a roda apenas naquela capability exata."
+quiz:
+  - question: "Um vetor de 1.000 floats é somado por quatro blocos de 256 threads, e o kernel não tem verificação de limites. O que acontece?"
+    options: ["As threads de índice 1.000 a 1.023 leem e escrevem além do fim dos arrays, porque o lançamento cria 1.024 threads", "O lançamento falha com erro antes de qualquer thread rodar", "As 24 threads extras são puladas automaticamente", "O runtime cria só 1.000 threads"]
+    correctIndex: 0
+    explanation: "Um lançamento sempre cria gridDim vezes blockDim threads. A guarda que compara o índice com o tamanho é tarefa do programador."
+  - question: "Na compute capability 12.x, um SM comporta no máximo 1.536 threads residentes. Com blocos de 256 threads, quantos blocos podem estar residentes se registradores e memória compartilhada permitirem?"
+    options: ["4", "8", "6", "24"]
+    correctIndex: 2
+    explanation: "1.536 dividido por 256 dá 6, ou seja, 48 warps de 32 threads. O limite de 24 blocos residentes por SM não pesa aqui."
+  - question: "Por que um binário compilado com -arch=native num DGX Spark não roda num DGX Station?"
+    options: ["Builds nativos usam ponteiros de 32 bits", "O Station não tem CUDA runtime", "O nvcc não consegue rodar em Arm", "Ele leva código de máquina só para a GPU do Spark, compute capability 12.1, e esse código não roda na GPU 10.3 do Station"]
+    correctIndex: 3
+    explanation: "O GB10 é 12.1 e o GB300 é 10.3, e código compilado para um não roda no outro. Um build sm_121 simples falharia do mesmo jeito. O manual do nvcc acrescenta que -arch=native não gera PTX, então esse binário também não passaria para uma GPU posterior."
+citations:
+  - title: "CUDA Programming Guide: Intro to CUDA C++ (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/intro-to-cuda-cpp.html"
+  - title: "CUDA Programming Guide: Writing SIMT Kernels (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html"
+  - title: "CUDA Programming Guide: Compute Capabilities (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html"
+  - title: "NVIDIA CUDA Compiler Driver NVCC (13.4)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html"
+  - title: "CUDA C++ Best Practices Guide"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html"
+  - title: "CUDA GPUs: Compute Capability"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://developer.nvidia.com/cuda-gpus"
+  - title: "CUTLASS 4.8.0 README: supported GPUs and minimum CUDA Toolkit"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://github.com/NVIDIA/cutlass/blob/v4.8.0/README.md"
+updated: "2026-10-04"
+---
+
+Você tem um Spark e abre um kernel que outra pessoa escreveu. Não há laço sobre os dados. Há um índice montado com três nomes estranhos e uma linha de lançamento com colchetes angulares triplos. O modelo CUDA é pequeno. Esta lição o constrói a partir da soma de vetores do Programming Guide da NVIDIA e termina na flag do compilador que decide se o seu binário roda na sua máquina.
+
+Um kernel é uma função marcada com `__global__`. Milhares de threads a executam ao mesmo tempo, e cada thread descobre qual elemento é o seu. As threads se agrupam em blocos de no máximo 1.024 threads. O conjunto de blocos é o grid. Um bloco vive num streaming multiprocessor (SM), compartilha memória rápida do chip e pode sincronizar. Dentro de um bloco, as threads executam em warps de 32 sob o modelo SIMT; o warp emite uma instrução por vez, mas cada thread mantém seu próprio fluxo de controle, então não conte com lockstep. Threads de um warp que tomam ramos diferentes são mascaradas em turnos, então mantenha os ramos uniformes dentro do warp. Um tamanho de bloco que não seja múltiplo de 32 deixa parte do último warp vazia, então mantenha os tamanhos de bloco múltiplos de 32.
+
+```cpp
+__global__ void vecAdd(const float* A, const float* B, float* C, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;   // my element
+    if (i < n) C[i] = A[i] + B[i];                   // guard: the grid is rounded up
+}
+
+float *A, *B, *C;                                    // unified memory, no copies
+cudaMallocManaged(&A, n * sizeof(float));
+cudaMallocManaged(&B, n * sizeof(float));
+cudaMallocManaged(&C, n * sizeof(float));
+// ... fill A and B on the host ...
+int threads = 256;
+int blocks  = (n + threads - 1) / threads;           // ceiling division
+vecAdd<<<blocks, threads>>>(A, B, C, n);
+cudaDeviceSynchronize();                             // launches are asynchronous
+```
+
+O grid arredondado para cima cria `blocks * threads` threads, normalmente mais que `n`. Sem a guarda, as threads extras escrevem além dos arrays. É o primeiro bug mais comum.
+
+Agora a memória, porque o roofline da lição 9.2 é desenhado contra ela. Os registradores pertencem a uma thread. A memória compartilhada pertence a um bloco e fica no SM, no mesmo recurso físico do cache L1. O cache L2 atende o chip inteiro, e a memória global é a DRAM. Para a compute capability 12.x, o Programming Guide lista 64 K registradores por SM, 100 KiB de memória compartilhada por SM com 99 KiB utilizáveis por um bloco, 1.536 threads residentes (48 warps) por SM e 24 blocos residentes. Esses são os limites que o GB10 herda.
+
+O padrão de acesso vem primeiro. A memória global se move em transações de 32 bytes. Se threads consecutivas de um warp leem palavras consecutivas de 4 bytes, o pedido do warp é de 128 bytes, atendido por quatro transações, com uso total. Se threads vizinhas estão 32 bytes ou mais afastadas, o warp precisa de 32 transações, 1.024 bytes de tráfego para 128 bytes usados. É uma eficiência de 12,5 por cento. A regra é deixar `threadIdx.x`, o índice que muda mais depressa, andar pela dimensão contígua.
+
+Eis uma multiplicação de matrizes ingênua que segue a regra. A coluna `col` vem de `threadIdx.x`, então as leituras de `B` e as escritas em `C` são coalescidas, e as threads de uma linha compartilham cada leitura de `A`.
+
+```cpp
+__global__ void matmulNaive(const float* A, const float* B, float* C, int M, int N, int K) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < M && col < N) {
+        float acc = 0.0f;
+        for (int k = 0; k < K; ++k) acc += A[row * K + k] * B[k * N + col];
+        C[row * N + col] = acc;
+    }
+}
+
+dim3 block(16, 16);
+dim3 grid((N + 15) / 16, (M + 15) / 16);             // x covers columns, y covers rows
+matmulNaive<<<grid, block>>>(A, B, C, M, N, K);
+```
+
+Está correto e lento. Cada passo do laço `k` carrega dois valores de 4 bytes e faz uma multiplicação com soma, que são 2 FLOP. Se nenhuma leitura acertasse um cache, a arithmetic intensity seria
+
+$$
+\frac{2\ \text{FLOP}}{2\times 4\ \text{B}} = 0.25\ \text{FLOP/B}, \qquad 273\ \text{GB/s}\times 0.25\ \text{FLOP/B} \approx 68\ \text{GFLOP/s}.
+$$
+
+O segundo número usa a bandwidth do fabricante para o Spark e é um número de planejamento pessimista, porque L1 e L2 capturam parte da reutilização. A distância entre ele e o pico aritmético do chip é o espaço que a lição 12.4 preenche.
+
+A occupancy é o outro número que um profiler mostra. O Best Practices Guide a define como warps ativos por SM sobre o máximo, e avisa que mais nem sempre é mais rápido. Com blocos de 256 threads na compute capability 12.x, seis blocos dão 1.536 threads, ou seja, 48 warps e occupancy total. Isso vale só se cada thread usar no máximo cerca de 42 registradores, já que 65.536 / 1.536 é 42,7, e antes do arredondamento de alocação. A memória compartilhada também limita. `nvcc -res-usage` imprime os registradores por thread.
+
+Agora o alvo. `nvidia-smi --query-gpu=name,compute_cap` imprime a capability. A lista da NVIDIA dá 12.1 ao GB10 do Spark e 10.3 ao GB300 do Station. `nvcc -arch=sm_121` embute PTX, um assembly virtual, e código de máquina para esse chip. O exemplo do manual para `sm_100` expande para `compute_100` mais `sm_100`, e `sm_121` segue a mesma regra. Sem nenhuma flag `-arch`, o padrão do manual é `sm_75`, então o código ainda pode rodar por recompilação do PTX, mas não usa o que o chip ganhou desde então.
+
+```bash
+nvcc -O3 -arch=sm_121 -lineinfo matmul.cu -o matmul-spark       # GB10, compute capability 12.1
+nvcc -O3 -arch=sm_103 -lineinfo matmul.cu -o matmul-station     # GB300, compute capability 10.3
+nvcc -O3 -gencode arch=compute_121,code=sm_121 \
+        -gencode arch=compute_103,code=sm_103 matmul.cu -o matmul   # one binary, both machines
+```
+
+A tabela de hardware do CUTLASS 4.8 lista o CUDA 13.0 como o toolkit mínimo que o próprio CUTLASS exige para as duas capabilities.
+
+O desvio errado clássico é compilar numa máquina e copiar o binário para a outra. O `-arch=native` facilita isso: ele detecta a GPU visível e gera código de máquina para ela, sem PTX. Mas a causa da falha é a capability. Código para 12.1 não roda numa GPU 10.3, com ou sem PTX, então um build simples com `-arch=sm_121` também falha no Station. O build de dois alvos acima dá código de máquina nativo nas duas máquinas. Um build que leve PTX `compute_100` também iniciaria nas duas por JIT, mas sem os recursos `a`. A falta de PTX é um custo separado: um binário nativo também não passa para uma GPU posterior.
+
+:::warning
+Os sufixos estreitam o alvo. Um alvo `a`, como `sm_121a`, libera os recursos específicos de arquitetura, incluindo as instruções mais novas dos Tensor Cores, e o guia afirma que esse código roda apenas na compute capability exata para a qual foi compilado. Um alvo `f` cobre uma família: `compute_120f` roda em 12.0 e 12.1. Use o alvo menos específico que ainda tenha os recursos de que você precisa: simples primeiro, depois `f`, depois `a`.
+:::
+
+:::caveat
+As listagens seguem os padrões do Programming Guide da NVIDIA, mas os autores do curso não as executaram numa GPU. Rode-as primeiro sob o `compute-sanitizer`. Os lançamentos são assíncronos, então um erro de um kernel pode aparecer na próxima sincronização. Chame `cudaGetLastError()` depois de um lançamento e verifique o resultado de `cudaDeviceSynchronize()`.
+:::
+
+A ideia durável é que um programa CUDA é uma regra para uma thread, um formato de lançamento e um alvo. A regra decide a correção, o padrão de acesso decide quantos bytes se movem e o alvo decide onde o binário roda. A lição 12.4 reescreve a multiplicação de matrizes para que menos bytes se movam.

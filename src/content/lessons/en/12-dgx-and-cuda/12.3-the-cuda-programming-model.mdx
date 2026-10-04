@@ -1,0 +1,136 @@
+---
+id: "12.3-the-cuda-programming-model"
+track: "12-dgx-and-cuda"
+order: 3
+title: "The CUDA Programming Model"
+summary: "Threads, blocks, grids and warps map onto streaming multiprocessors, and the chip's compute capability, 12.1 on the GB10, sets the limits and the nvcc target."
+tier: "frontier"
+locale: "en"
+prerequisites: ["12.2-dgx-station-hbm-beside-a-big-pool", "9.2-the-roofline-model"]
+unlocks: ["12.4-writing-a-fast-kernel-tiling-and-tensor-cores"]
+analogy: "A post office sorts one huge pile of letters by giving each clerk one letter and a number. The clerk uses the number to find the letter, reads the address and puts it in the right bin. Clerks work in squads of 32 who move together. Several squads share one table and one pigeonhole wall, and a manager knows how many tables fit in the building. The programmer writes the rule for one clerk and says how many clerks to hire."
+teachBack:
+  prompt: "Explain how a CUDA kernel maps threads, blocks, grids and warps to the hardware, why consecutive threads should touch consecutive addresses, and what the nvcc target options mean for a GB10."
+  modelAnswer: "A kernel is one function that many threads run. Threads are grouped into blocks of up to 1,024 threads, and a grid is the set of blocks. Each block lives on one streaming multiprocessor and can share fast memory and synchronize. Within a block, hardware runs threads together as a warp of 32, so block sizes should be multiples of 32. Each thread computes its global index from blockIdx, blockDim and threadIdx and checks it against the array length. When consecutive threads read consecutive addresses, a warp's request becomes a few full memory transactions; with a large stride it wastes most of every transaction. Occupancy is active warps over the maximum, and registers and shared memory limit it. The GB10 has compute capability 12.1, so nvcc -arch=sm_121 emits PTX and machine code for it. -arch=native emits machine code for the visible GPU only, with no PTX. Code for 12.1 does not run on the Station's 10.3 GPU, so one binary for both machines needs two targets. An a-suffixed target runs only on that exact capability."
+quiz:
+  - question: "A vector of 1,000 floats is added by four blocks of 256 threads, and the kernel has no bounds check. What happens?"
+    options: ["Threads with index 1,000 to 1,023 read and write past the end of the arrays, because the launch creates 1,024 threads", "The launch fails with an error before any thread runs", "The extra 24 threads are skipped automatically", "The runtime creates only 1,000 threads"]
+    correctIndex: 0
+    explanation: "A launch always creates gridDim times blockDim threads. The guard comparing the index with the length is the programmer's job."
+  - question: "On compute capability 12.x an SM holds at most 1,536 resident threads. With 256-thread blocks, how many blocks can be resident if registers and shared memory allow?"
+    options: ["4", "8", "6", "24"]
+    correctIndex: 2
+    explanation: "1,536 divided by 256 is 6, which is 48 warps of 32 threads. The limit of 24 resident blocks per SM does not bind here."
+  - question: "Why does a binary built with -arch=native on a DGX Spark not run on a DGX Station?"
+    options: ["Native builds use 32-bit pointers", "The Station has no CUDA runtime", "nvcc cannot run on Arm", "It carries machine code for the Spark's GPU only, compute capability 12.1, and that code does not run on the Station's 10.3 GPU"]
+    correctIndex: 3
+    explanation: "The GB10 is 12.1 and the GB300 is 10.3, and code built for one does not run on the other. A plain sm_121 build would fail the same way. The nvcc manual adds that -arch=native emits no PTX, so such a binary would not move to a later GPU either."
+citations:
+  - title: "CUDA Programming Guide: Intro to CUDA C++ (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/intro-to-cuda-cpp.html"
+  - title: "CUDA Programming Guide: Writing SIMT Kernels (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html"
+  - title: "CUDA Programming Guide: Compute Capabilities (v13.4.2)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/compute-capabilities.html"
+  - title: "NVIDIA CUDA Compiler Driver NVCC (13.4)"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html"
+  - title: "CUDA C++ Best Practices Guide"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html"
+  - title: "CUDA GPUs: Compute Capability"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://developer.nvidia.com/cuda-gpus"
+  - title: "CUTLASS 4.8.0 README: supported GPUs and minimum CUDA Toolkit"
+    authors: "NVIDIA Corporation"
+    year: 2026
+    url: "https://github.com/NVIDIA/cutlass/blob/v4.8.0/README.md"
+updated: "2026-10-04"
+---
+
+You own a Spark and open a kernel somebody else wrote. It has no loop over the data. It has an index built from three odd names, and a launch line with triple angle brackets. The CUDA model is small. This lesson builds it up from the vector add in NVIDIA's Programming Guide and ends with the compiler flag that decides whether your binary runs on your machine.
+
+A kernel is a function marked `__global__`. Thousands of threads run it at once, and each thread works out which element is its own. Threads are grouped into blocks of at most 1,024 threads. The set of blocks is the grid. A block lives on one streaming multiprocessor (SM), shares fast on-chip memory and can synchronize. Inside a block, threads execute in warps of 32 under the SIMT model; the warp issues one instruction at a time, but each thread keeps its own control flow, so do not rely on lockstep. Threads in a warp that take different branches are masked off in turn, so keep branches uniform within a warp. A block size that is not a multiple of 32 leaves part of its last warp empty, so keep block sizes a multiple of 32.
+
+```cpp
+__global__ void vecAdd(const float* A, const float* B, float* C, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;   // my element
+    if (i < n) C[i] = A[i] + B[i];                   // guard: the grid is rounded up
+}
+
+float *A, *B, *C;                                    // unified memory, no copies
+cudaMallocManaged(&A, n * sizeof(float));
+cudaMallocManaged(&B, n * sizeof(float));
+cudaMallocManaged(&C, n * sizeof(float));
+// ... fill A and B on the host ...
+int threads = 256;
+int blocks  = (n + threads - 1) / threads;           // ceiling division
+vecAdd<<<blocks, threads>>>(A, B, C, n);
+cudaDeviceSynchronize();                             // launches are asynchronous
+```
+
+The rounded-up grid creates `blocks * threads` threads, usually more than `n`. Without the guard, the extra threads write past the arrays. That is the commonest first bug.
+
+Now memory, because the roofline of lesson 9.2 is drawn against it. Registers belong to one thread. Shared memory belongs to one block and sits on the SM, on the same physical resource as the L1 cache. The L2 cache serves the whole chip, and global memory is the DRAM. For compute capability 12.x, the Programming Guide lists 64 K registers per SM, 100 KiB of shared memory per SM with 99 KiB usable by one block, 1,536 resident threads (48 warps) per SM and 24 resident blocks. Those are the limits that the GB10 inherits.
+
+Access pattern comes first. Global memory moves in 32-byte transactions. If consecutive threads of a warp read consecutive 4-byte words, the warp's request is 128 bytes, served by four transactions, with full use. If neighbouring threads are 32 bytes or more apart, the warp needs 32 transactions, 1,024 bytes of traffic for 128 bytes used. That is 12.5 percent efficiency. The rule is to let `threadIdx.x`, the fastest-moving index, step along the contiguous dimension.
+
+Here is a naive matrix multiply that follows the rule. Column `col` comes from `threadIdx.x`, so reads of `B` and writes of `C` are coalesced, and the threads of one row share each `A` load.
+
+```cpp
+__global__ void matmulNaive(const float* A, const float* B, float* C, int M, int N, int K) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < M && col < N) {
+        float acc = 0.0f;
+        for (int k = 0; k < K; ++k) acc += A[row * K + k] * B[k * N + col];
+        C[row * N + col] = acc;
+    }
+}
+
+dim3 block(16, 16);
+dim3 grid((N + 15) / 16, (M + 15) / 16);             // x covers columns, y covers rows
+matmulNaive<<<grid, block>>>(A, B, C, M, N, K);
+```
+
+It is correct and slow. Each step of the `k` loop loads two 4-byte values and does one multiply-add, which is 2 FLOP. If no load hit a cache, the arithmetic intensity would be
+
+$$
+\frac{2\ \text{FLOP}}{2\times 4\ \text{B}} = 0.25\ \text{FLOP/B}, \qquad 273\ \text{GB/s}\times 0.25\ \text{FLOP/B} \approx 68\ \text{GFLOP/s}.
+$$
+
+The second figure uses the Spark's vendor bandwidth and is a pessimistic planning number, because L1 and L2 do catch some reuse. The distance between it and the chip's arithmetic peak is the room that lesson 12.4 fills.
+
+Occupancy is the other number a profiler shows. The Best Practices Guide defines it as active warps per SM over the maximum, and warns that more is not always faster. With 256-thread blocks on compute capability 12.x, six blocks give 1,536 threads, which is 48 warps and full occupancy. That holds only if each thread uses at most about 42 registers, since 65,536 / 1,536 is 42.7, and before allocation rounding. Shared memory limits it as well. `nvcc -res-usage` prints registers per thread.
+
+Now the target. `nvidia-smi --query-gpu=name,compute_cap` prints the capability. NVIDIA's list gives 12.1 for the GB10 in the Spark and 10.3 for the GB300 in the Station. `nvcc -arch=sm_121` embeds PTX, a virtual assembly, and machine code for that chip. The manual's example for `sm_100` expands to `compute_100` plus `sm_100`, and `sm_121` follows the same rule. With no `-arch` flag, the manual's default is `sm_75`, so the code may still run through PTX recompilation but does not use what the chip added since.
+
+```bash
+nvcc -O3 -arch=sm_121 -lineinfo matmul.cu -o matmul-spark       # GB10, compute capability 12.1
+nvcc -O3 -arch=sm_103 -lineinfo matmul.cu -o matmul-station     # GB300, compute capability 10.3
+nvcc -O3 -gencode arch=compute_121,code=sm_121 \
+        -gencode arch=compute_103,code=sm_103 matmul.cu -o matmul   # one binary, both machines
+```
+
+CUTLASS 4.8's hardware table lists CUDA 13.0 as the minimum toolkit CUTLASS itself requires for both capabilities.
+
+The classic wrong turn is to build on one machine and copy the binary to the other. `-arch=native` makes it easy: it detects the visible GPU and emits machine code for it, with no PTX. But the capability is the cause of the failure. Code for 12.1 cannot run on a 10.3 GPU, with or without PTX, so a plain `-arch=sm_121` build fails on the Station too. The two-target build above gives native machine code on both machines. A build that carries `compute_100` PTX would also start on both through JIT, but without the `a` features. The missing PTX is a separate cost: a native binary will not carry forward to a later GPU either.
+
+:::warning
+Suffixes narrow the target. An `a` target, such as `sm_121a`, unlocks the architecture-specific features, including the newest Tensor Core instructions, and the guide states that such code runs only on the exact compute capability it was built for. An `f` target covers a family: `compute_120f` runs on 12.0 and 12.1. Use the least specific target that still has the features you need: plain first, then `f`, then `a`.
+:::
+
+:::caveat
+The listings follow the patterns in NVIDIA's Programming Guide, but this course's authors have not run them on a GPU. Run them under `compute-sanitizer` first. Launches are asynchronous, so an error from a kernel can surface at the next synchronization. Call `cudaGetLastError()` after a launch and check the result of `cudaDeviceSynchronize()`.
+:::
+
+The durable idea is that a CUDA program is a rule for one thread, a launch shape, and a target. The rule decides correctness, the access pattern decides how many bytes move, and the target decides where the binary runs. Lesson 12.4 rewrites the matrix multiply so that fewer bytes move.

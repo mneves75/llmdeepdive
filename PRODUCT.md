@@ -43,9 +43,10 @@ The interface supports light, dark, and operating-system themes.
 
 ## Capabilities and Constraints
 
-- 110 current lessons in each of English and pt-BR across eleven ordered
+- 125 current lessons in each of English and pt-BR across fourteen ordered
   tracks, with parity enforced at build time; track 10 covers video models and
-  JEPA-family world models.
+  JEPA-family world models, and tracks 11–13 cover running models on a Mac
+  Studio Ultra with MLX, on NVIDIA DGX machines with CUDA, and with llama.cpp.
 - three interactive labs (memory budget, cost per token, video tokens) that
   server-render their defaults and stay usable without JavaScript.
 - a course player on every lesson: the track's syllabus with reading times and

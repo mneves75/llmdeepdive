@@ -1,0 +1,110 @@
+---
+id: "13.2-making-your-own-gguf-convert-imatrix-quantize"
+track: "13-llama-cpp-in-depth"
+order: 2
+title: "Making your own GGUF: convert, imatrix, quantize"
+summary: "Convert a Hugging Face checkpoint to bf16 GGUF, collect an importance matrix, quantize with per-tensor overrides, and measure the damage with KL divergence on text the calibration never saw."
+tier: "frontier"
+locale: "en"
+prerequisites: ["13.1-inside-llama-cpp-ggml-graphs-backends", "7.13-choosing-and-judging-a-community-quant"]
+unlocks: ["13.3-llama-server-in-production"]
+analogy: "A tailor takes in a suit. First the tailor copies every measurement from the original cloth onto paper, without losing any. Then the tailor asks where you bend and reach, because seams in those places need more thread. Only then does the cutting start. Skip the second step and the suit still fits a mannequin. Ask a customer who sat during the fitting to judge it, and the verdict means little. Convert is the copy, imatrix is the fitting, quantize is the cutting, and a held-out text is a customer who did not attend the fitting."
+teachBack:
+  prompt: "Describe the four steps that turn a Hugging Face checkpoint into a checked Q4_K_M GGUF, and name two ways the process fails or misleads."
+  modelAnswer: "First convert_hf_to_gguf.py reads the safetensors checkpoint and writes a lossless bf16 GGUF. Second llama-imatrix runs calibration text through that bf16 file and stores, per tensor column, the sum of squared activations. Third llama-quantize reads the bf16 file and writes the target type, optionally with --imatrix and per-tensor overrides such as --tensor-type attn_v=q6_k. Fourth llama-perplexity records the bf16 logits once with --kl-divergence-base, then compares each quantized file against them with --kl-divergence. It fails loudly in two ways: llama-quantize refuses to requantize an already quantized file, and it refuses the lowest-bit types without an importance matrix. It misleads in subtler ways. Calibrating and evaluating on the same text flatters the matrix. Reading perplexity alone hides drift in the distribution. A single run on a small model, with one calibration set, ranks nothing. Measure on text from your own use."
+quiz:
+  - question: "In the Qwen3-0.6B run, adding --imatrix to the same Q4_K_M command kept the quantized size at 456.11 MiB. What changed?"
+    options: ["Mean KL divergence against bf16 fell from about 0.104 to about 0.069", "The bits per weight dropped below 5", "The tokenizer was retrained on the calibration text", "The output tensor moved to Q8_0 automatically"]
+    correctIndex: 0
+    explanation: "The importance matrix changes how the quantizer spends its error, not how many bytes it writes. The same quantized size gave a lower KL divergence, which is the whole point of the matrix."
+  - question: "Why does the lesson measure KL divergence instead of reading perplexity alone?"
+    options: ["KL divergence runs faster than perplexity", "Perplexity cannot be computed for quantized files", "Perplexity compares a model with a text, while KL divergence compares the quantized distribution with the original model's, token by token", "KL divergence needs no reference file"]
+    correctIndex: 2
+    explanation: "The perplexity README describes recording the logits of the FP16 model and computing KL divergence against them. That shows how far the distribution moved, which a perplexity score can hide."
+  - question: "You calibrate the importance matrix on the same Wikitext file you then use to score the quant. What is the risk?"
+    options: ["The score favours the matrix, so you must score on text it never saw", "The quantizer crashes with an out-of-memory error", "The matrix is discarded because the text overlaps", "Nothing, because activations do not depend on text"]
+    correctIndex: 0
+    explanation: "The matrix stores activation statistics from the calibration text. Scoring on that same text rewards the fit to it. The run here calibrated on the llama.cpp documentation and scored on Wikitext-2 test."
+citations:
+  - title: "llama-quantize README (b11380)"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/quantize/README.md"
+  - title: "llama-imatrix README (b11380)"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/imatrix/README.md"
+  - title: "llama-perplexity README: KL divergence and scoreboard (b11380)"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/tools/perplexity/README.md"
+  - title: "convert_hf_to_gguf.py (b11380)"
+    authors: "Georgi Gerganov and contributors"
+    year: 2023
+    url: "https://github.com/ggml-org/llama.cpp/blob/b11380/convert_hf_to_gguf.py"
+updated: "2026-10-04"
+---
+
+Lesson 7.13 taught you to judge a quant somebody else made. This lesson makes one, in four steps, with a check after each. Every command below was run at llama.cpp tag `b11380` on a small stand-in, Qwen3-0.6B, because a recipe you cannot rerun in minutes teaches nothing. The recipe was not run on Qwen3.8-27B. Paths are placeholders.
+
+## Write down how it fails first
+
+Five things go wrong, so the commands guard against each:
+
+1. The converter does not know the architecture. Run `python convert_hf_to_gguf.py --print-supported-models` before you download anything.
+2. You quantize an already quantized file. `llama-quantize` refuses: `requantizing from type q4_K is disabled`. The flag `--allow-requantize` exists and the README warns it "can severely reduce quality".
+3. You ask for a very low-bit type with no matrix. `IQ2_XXS` exits with `this quantization requires an imatrix!`.
+4. You calibrate and score on the same text.
+5. You trust one number from one run.
+
+## The four steps
+
+```
+python convert_hf_to_gguf.py MODEL_DIR --outtype bf16 --outfile model-bf16.gguf
+llama-imatrix -m model-bf16.gguf -f calib.txt -o imatrix.gguf -ngl 99
+llama-quantize --imatrix imatrix.gguf model-bf16.gguf model-Q4_K_M.gguf Q4_K_M
+llama-perplexity -m model-bf16.gguf -f wiki.test.raw --kl-divergence-base base.kld --chunks 20 -ngl 99
+llama-perplexity -m model-Q4_K_M.gguf -f wiki.test.raw --kl-divergence-base base.kld --kl-divergence --chunks 20 -ngl 99
+```
+
+**Convert.** Always write the lossless file first (`bf16`, or `auto` for the highest-fidelity 16-bit type). Every later step reads it. The Qwen3-0.6B conversion wrote 311 tensors and a 1.5 GB file.
+
+**Collect.** The matrix is the sum of squared activations per tensor column, as lesson 7.13 explained. At b11380 the output defaults to `imatrix.gguf`. Only `--output-format dat` writes the legacy format. A `.dat` file name alone still writes GGUF and logs a warning. The calibration text here was the llama.cpp documentation and tool READMEs, 523,956 bytes, which gave 305 chunks of 512 tokens. For your model, use text that looks like your traffic, in the chat format you serve (`--parse-special` reads special tokens in the text).
+
+The README shows `llama-imatrix --in-file imatrix.gguf --show-statistics`. Both b11380 and the Homebrew build 11146 answered `error: --model is required`. Add `-m model-bf16.gguf` and it works; the table goes to stderr. It shows the sum of squared activations per tensor, and on this model it spans orders of magnitude: 15.68 for `attn_k` in layer 1 against 192,029.52 in layer 26.
+
+**Quantize.** Overrides are regular expressions on tensor names. The run added `--tensor-type attn_v=q6_k --token-embedding-type q8_0`, and the log confirmed `applying manual override: q4_K -> q6_K` per layer.
+
+The README lists more knobs. `--pure` turns off the k-quant mixtures and uses one type everywhere, `--leave-output-tensor` keeps `output.weight` unquantized, and `--include-weights` or `--exclude-weights` limits the matrix to named tensors (you cannot mix the two). `llama-imatrix` skips `output.weight` by default, because the README says it is usually better not to apply the matrix there; `--process-output` changes that.
+
+**Measure.** The first perplexity run records the bf16 logits once. The second compares each candidate against them.
+
+Provenance is cheap, so keep it. For the file made with a matrix, `llama-gguf` listed the metadata keys `quantize.imatrix.file`, `quantize.imatrix.dataset`, `quantize.imatrix.entries_count` and `quantize.imatrix.chunks_count`, and the plain file had none of them. Keep the bf16 file, because every new recipe starts from it. Write the exact command, the build and the calibration corpus next to any file you share, so a reader can repeat it.
+
+## What the run showed
+
+| Qwen3-0.6B, 20 chunks of Wikitext-2 test | Quantized tensor size | Mean KL divergence | Same top token |
+|---|---|---|---|
+| Q4_K_M, no matrix | 456.11 MiB | 0.1036 ± 0.0022 | 83.3 % |
+| Q4_K_M, imatrix | 456.11 MiB | 0.0689 ± 0.0016 | 85.8 % |
+| imatrix, `attn_v` at Q6_K, embeddings at Q8_0 | 533.91 MiB | 0.0616 ± 0.0014 | 86.3 % |
+
+The bf16 reference printed perplexity 23.6783 ± 1.12824 in the run that recorded its logits, and the KL reports print `Mean PPL(base)` 23.405638 ± 1.096843 on the same 20 chunks. The sizes in the table are the quantizer's own `quant size`; on disk the files were 461.8 and 539.6 MiB. The matrix cost no bytes and removed about a third of the KL divergence. The overrides bought a smaller gain for 78 MiB, mostly the embedding table, which is large in a 0.6B model. Whether that trade is worth it is a decision for your model and your memory.
+
+Why KL divergence? The perplexity README separates the two. Perplexity asks how well the model predicts a text. KL divergence, and statistics such as the share of tokens where both models pick the same top token, ask how far the quantized distribution moved from the original one. The README also warns that llama.cpp perplexity values are "not directly comparable" to other projects, and not comparable across models with different tokenizers.
+
+A last check costs one command. Load the quantized file in `llama-completion` or `llama-server` and read the first answers by eye before you trust any number, because a file can score well and still fail on your template or your language. Use the chat template you will serve. A calibration made on plain text says little about special tokens.
+
+## The classic wrong turn
+
+The easy mistake is to calibrate and score on the same file. The matrix then looks better than it is, because it was fitted to what you grade it on. Keep the sets disjoint: docs for calibration, Wikitext-2 test for scoring. The same care applies to the logits file. It grows with vocabulary size times scored tokens, and the file here reached 1.55 GB for 20 short chunks on a 151,936-row vocabulary. A full test set on a large vocabulary needs real disk, so plan the volume before you start.
+
+:::warning
+Do not publish a quant on one run. The ± values above are the sampling error of 20 chunks on one small model. Rerun on text from your own work before you trust a ranking of recipes, including this table.
+:::
+
+:::caveat
+The README's scoreboard uses Llama 3 8B on a CUDA GPU. Do not carry its numbers over to Qwen3.8-27B, and do not carry these. A recipe is a procedure; the table is a result about one 0.6B model.
+:::
+
+The durable idea: conversion preserves, calibration steers, quantization spends, and held-out measurement judges. Each step has a refusal or a number you can read, so you never have to guess. Next, lesson 13.3 serves the file you built.
