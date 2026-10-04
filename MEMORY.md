@@ -2,6 +2,21 @@
 
 ## Current Direction
 
+- **0.9.1 is a search and accessibility pass from a live audit.** Google
+  already indexed the site (a `site:` query on 2026-10-03 showed home, tracks,
+  explorer and lessons in both languages, with a stale favicon and pre-0.8.0
+  titles). Fixed: 2,086 TeX `<annotation>`s on 182 pages that Google read as
+  snippet text; 54 descriptions with the "X — and Y" hook; link underlines that
+  Tailwind's preflight had removed (WCAG 1.4.1); the unnamed narrow-screen
+  syllabus button (WCAG 4.1.2); and the 2-hop `http://www` redirect (zone rule,
+  applied 2026-10-03 with the owner's approval; the previous rule is
+  `https://www.*` → `https://${1}`). Rejected with reasons: FAQ markup (Google
+  stopped showing FAQ results on 7 May 2026), descriptions cut to 160
+  characters (Google documents no limit), translating the five pt-BR titles
+  that keep English terms, and a third crumb row on track pages. Search
+  Console's page-indexing report was not read: the browser profile's Google
+  account has no access to the property.
+
 - **0.9.0 redraws the frontend as a printed star atlas and adds track 10.**
   Deployed on 2026-10-03 from `98deb54` (PR #3, CI passed), tagged
   `v0.9.0-beta1` (staging version `c3ad1ae5`) and `v0.9.0` (production

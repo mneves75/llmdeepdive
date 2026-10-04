@@ -26,7 +26,8 @@ pnpm content:figures     # every <Figure id> resolves; both locales; labels diff
 pnpm links               # every internal link in dist/ resolves (runs in build)
 pnpm a11y:contrast       # palette stays above accessible contrast ratios
 pnpm render:check        # every route in Chromium, WebKit, Firefox: 320px overflow,
-                         #   duplicate ids, page errors, scroll regions, inline-maths baseline,
+                         #   duplicate ids, page errors, scroll regions, unnamed controls,
+                         #   un-underlined links in running text, inline-maths baseline,
                          #   explorer leave-mid-boot and failed-import handling
                          #   (needs `pnpm build` and `pnpm exec playwright install`)
 pnpm budget              # per-route JS budget
@@ -201,6 +202,13 @@ inline code it finds — a new inline block must be a reviewed change there.
   unstyled run-on paragraph because of this, with every gate green.
 - **Tailwind's preflight zeroes a `<dialog>`'s user-agent `margin: auto`**, so
   a modal pins to the left edge unless its margin is restated.
+- **Tailwind's preflight also removes every link underline** (`text-decoration:
+  inherit`). Until 0.9.1 the global `a` rule styled the underline's colour while
+  no underline was drawn, so links in running text differed by colour alone
+  (WCAG 1.4.1). `global.css` restates `text-decoration-line: underline`; a link
+  that is a control rather than part of a sentence opts out with
+  `text-decoration: none`. `render:check` fails an inline link in running text
+  without an underline, and any visible control without an accessible name.
 - **Pagefind indexes `<main>` minus `excludeSelectors`** (`astro.config.mjs`).
   Anything new that is chrome rather than teaching — status lines, answers,
   navigation — belongs in that list, or it leaks into every search excerpt.
@@ -392,6 +400,15 @@ whole contract against `dist/`.
 - **Lesson titles gain their track only when the whole title fits 60
   characters; every other title is written to fit it.** Titles must stay
   unique within a locale.
+- **Summaries are the descriptions search results show**, so they are plain
+  sentences. 0.9.1 rewrote 54 that ended in the same "X — and Y" twist;
+  `tests/seo.test.mjs` fails a description containing " — and " or " — e ".
+  An appositive dash is ordinary punctuation and stays legal.
+- **No TeX reaches the HTML.** KaTeX attaches each formula's source as a MathML
+  `<annotation>`; browsers never show it, but Google indexed it (lesson 4.3's
+  snippet read "d k \sqrt{d_k}"). `math-annotation.mjs` drops it from Markdown
+  and `learning-model-answer.ts` from model answers; `tests/seo.test.mjs`
+  fails any built page that carries one.
 - `/llms.txt` keeps the llmstxt.org shape (one H1, a blockquote, H2 sections of
   link lists only; Lighthouse's agentic-browsing audit fails anything else) and
   is served `noindex`. Google Search does not read it: do not claim a ranking effect.

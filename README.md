@@ -86,7 +86,8 @@ Every page carries a canonical URL, English/Portuguese alternates, a
 corpus-dated sitemap entry, one JSON-LD graph (`WebSite`, `BreadcrumbList`,
 `Article`, depending on the page) and its own 1200×630 social card, all built
 from the same content collections as the page. `/llms.txt` indexes every lesson
-in both languages for agents. The contract, and the structured-data types this
+in both languages for agents. Formulas ship as MathML without their TeX source,
+so search snippets quote the sentence, not the markup. The contract, and the structured-data types this
 site deliberately does not use, are in `AGENTS.md` under **Search metadata**.
 
 ## Current scale

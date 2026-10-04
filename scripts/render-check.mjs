@@ -98,9 +98,9 @@ async function layoutFailures(page) {
     // Tailwind's preflight sets `text-decoration: inherit`, which removed every
     // underline site-wide while the global rule still styled its colour.
     const inText = (link) => [...link.parentElement.childNodes].some((node) => node !== link && node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0)
-    const bare = [...document.querySelectorAll('main a[href]')]
+    const unmarked = [...document.querySelectorAll('main a[href]')]
       .filter((link) => shown(link) && getComputedStyle(link).display === 'inline' && inText(link) && !getComputedStyle(link).textDecorationLine.includes('underline'))
-    if (bare.length) failures.push(`link(s) in running text without an underline: ${bare.slice(0, 3).map((link) => link.textContent.trim().slice(0, 30)).join(' | ')}`)
+    if (unmarked.length) failures.push(`link(s) in running text without an underline: ${unmarked.slice(0, 3).map((link) => link.textContent.trim().slice(0, 30)).join(' | ')}`)
     return failures
   })
 }

@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-10-03
+
+A search pass from a live audit. Google already indexes the site (home, tracks, explorer and lessons in both languages); the crawl of all 248 sitemap URLs found every page returning 200 with one H1, a self-referencing canonical, reciprocal language alternates, a unique description, no `noindex` and no orphan. These are the gaps it did find.
+
+### Fixed
+
+- Search snippets showed TeX source. KaTeX attaches each formula's source as an invisible MathML `<annotation>`, and Google indexed it: lesson 4.3's result read "d k \sqrt{d_k}". 0.9.0 served 2,086 of them across 182 pages; the build now drops them from lesson Markdown and from teach-back model answers, and `tests/seo.test.mjs` fails any page that carries one. Formulas render as before. Pagefind's exclusion for annotations went with them.
+- 54 descriptions (25 lesson summaries and 2 track summaries in each language) ended in the same "X — and Y" twist. They are now plain sentences with the same facts, and the 50 changed lessons are dated 2026-10-04. `tests/seo.test.mjs` fails a description with " — and " or " — e ".
+- Links in running text had no underline, so they differed from their sentence by colour alone (WCAG 1.4.1). Tailwind's preflight removes text decoration, and the site's link rule set the underline's colour without restoring it. Source citations, lesson cross-references, prerequisite links and the home page's systems reference are underlined again.
+- On screens narrower than 58rem the lesson's syllabus button showed only an icon and had no accessible name (WCAG 4.1.2), on all 220 lessons. It is now named "Track lessons" ("Aulas da trilha"), the text it shows on wider screens.
+- `http://www.llmdeepdive.com` reached the apex in two redirects (to `https://www`, then to the apex). The zone's redirect now matches the `www` host on either scheme and answers with one 301, path and query preserved.
+
+### Added
+
+- `pnpm render:check` fails, on every route in Chromium, WebKit and Firefox, any visible control without an accessible name and any inline link in running text without an underline. Its self-test plants both defects and requires them to be caught.
+
 ## [0.9.0] — 2026-10-03
 
 The whole frontend is redrawn as a printed star atlas, the lessons become a
