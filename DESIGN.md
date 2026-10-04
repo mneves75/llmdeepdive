@@ -471,8 +471,9 @@ row's outermost figure (the stagger is 68 units), so neighbouring names never
 land level. Each name hangs from the edge of its figure on a `1px` leader in
 `rule-strong`, its length set in container units (1cqi = 10 chart units) so
 the same rule serves the flat chart and the 3D sky. Under a `38rem` container
-only the numbers show, and the first and last figures keep their names 100
-chart units from the plate edge (`NAME_HALF_WIDTH` in `src/lib/sky.ts`). The chart always prints its key below it: an open
+only the numbers show. The plate keeps a 70-unit side margin, so the first and
+last names stay 100 chart units inside it (`NAME_HALF_WIDTH` in
+`src/lib/sky.ts`) and the number-only labels on a 320px phone never touch. The chart always prints its key below it: an open
 ring for a lesson, a filled ring for completed on this device, a larger ring
 for a lesson many others build on, a solid line for course order, and a
 dashed line for the bridge to the next track.

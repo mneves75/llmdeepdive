@@ -70,6 +70,24 @@ test('every name fits across the plate at its widest', () => {
   }
 })
 
+test('number-only names on a phone do not collide', () => {
+  // Below the 38rem container query a name shrinks to its track number, but
+  // at a fixed 0.75rem, so on a 288px chart (a 320px phone) each one measured
+  // 24x26px with one digit and 32x26px with two: ~84 or ~112 by 90 sky units.
+  // Clamping the last figure inward once put the 11 and 13 tap targets on top
+  // of each other there.
+  const boxes = sky.constellations.map((item) => {
+    const w = String(item.order).length > 1 ? 112 : 84
+    return { id: item.id, x: item.label.x - w / 2, y: item.label.y - 45, w, h: 90 }
+  })
+  for (const [index, a] of boxes.entries()) {
+    for (const b of boxes.slice(index + 1)) {
+      const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+      assert.ok(!overlap, `number names of ${a.id} and ${b.id} overlap on a phone`)
+    }
+  }
+})
+
 test('figures stay landscape, so no chart swallows its page', () => {
   for (const constellation of sky.constellations) {
     if (constellation.stars.length < 4) continue

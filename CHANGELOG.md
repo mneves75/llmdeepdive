@@ -54,9 +54,11 @@ tracks.
   256 GB.
 - With fourteen constellations, the first and last names on the home and
   tracks charts ran up to 9px past the plate at 580–720px, and two pt-BR names
-  overlapped at 580–640px (already at 600px in 0.9.1). Edge figures and names
-  now stay 100 chart units inside the plate, and names show from a 38rem chart
-  (numbers only below it).
+  overlapped at 580–640px (already at 600px in 0.9.1). The plate now keeps a
+  wider side margin, so edge names stay 100 chart units inside it, and names
+  show from a 38rem chart (numbers only below it). On a 320px phone the
+  number-only labels keep apart, so every track number stays a separate tap
+  target.
 - Quiz options that quote long identifiers, such as
   `max_recommended_working_set_size`, now wrap instead of widening a 320px
   page; `render:check` caught three lessons overflowing by 37–137px.

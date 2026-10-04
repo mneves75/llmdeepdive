@@ -104,7 +104,10 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     for (const prerequisite of lesson.prerequisites) inDegree.set(prerequisite, (inDegree.get(prerequisite) ?? 0) + 1)
   }
 
-  const marginX = 34
+  // Wide enough that the first and last columns sit about NAME_HALF_WIDTH in
+  // from the edge, so edge names stay on the plate without being pulled onto
+  // a neighbour.
+  const marginX = 70
   const cell = (SKY_WIDTH - marginX * 2) / count
   const constellations = ordered.map((track, index): SkyConstellation => {
     const trackLessons = lessons
