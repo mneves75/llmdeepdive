@@ -25,6 +25,8 @@ const LEAKS = [
   ['unknown-email', 'authenticated as someone.else@example.org while deploying'],
   ['unknown-email', 'authenticated as someone.else@github.com while deploying'],
   ['unknown-email', 'contact noreply@github.com.example.org'],
+  // Another account's GitHub noreply alias is still a personal address here.
+  ['unknown-email', 'Merge by 12345+someoneelse@users.noreply.github.com'],
 ]
 
 for (const [rule, line] of LEAKS) {
@@ -45,6 +47,9 @@ const CLEAN = [
   'GitHub <noreply@github.com>',
   'Signed-off-by: dependabot[bot] <support@github.com>',
   'Questions go to contato@mvneves.dev',
+  // GitHub authors a web-UI merge as the owner's noreply alias; the login is
+  // already public in the repository URL.
+  'Merge pull request #10 <12345+mneves75@users.noreply.github.com>',
   // Relative and repo-internal paths are not machine-local.
   "import { finish } from './content-utils.mjs'",
   'Definitions live in `src/lib/figures/<track>.ts` — one file per track.',

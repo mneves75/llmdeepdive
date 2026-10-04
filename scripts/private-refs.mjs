@@ -43,6 +43,10 @@ const ALLOWED_EMAILS = new Set([
   'noreply@github.com',
   'support@github.com',
 ])
+// GitHub authors a merge made in its web UI as the repository owner's noreply
+// alias. The login is already public in the repository URL; the numeric id is
+// matched by shape so it is never written into the repository.
+const OWNER_NOREPLY = /^\d+\+mneves75@users\.noreply\.github\.com$/u
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu
 
 // A citation URL can contain `/home/` as an ordinary path segment — Shannon's
@@ -97,7 +101,7 @@ export function scanText(text, rules = STRUCTURAL_RULES) {
     }
   }
   for (const address of new Set(text.match(EMAIL) ?? [])) {
-    if (ALLOWED_EMAILS.has(address.toLowerCase())) continue
+    if (ALLOWED_EMAILS.has(address.toLowerCase()) || OWNER_NOREPLY.test(address.toLowerCase())) continue
     findings.push({
       rule: 'unknown-email',
       hit: address,
