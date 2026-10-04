@@ -138,16 +138,18 @@ test('small tracks draw small figures instead of being stretched across their co
   }
 })
 
-test('a name never enters from outside the plate', () => {
-  // Names fade in by sliding into place. Starting below their resting point,
-  // the bottom row (hanging under its figures) sat up to 2.6px past the plate
-  // on a 320px phone until each staggered entrance began.
+test('a name entrance never moves or exposes its link', () => {
+  // Names once slid into place. While sliding, a bottom-row name sat 2.6px
+  // past the plate on a 320px phone, and at 720px a still-transparent pt-BR
+  // name lay over its neighbour and took the tap (track 6 for track 4). The
+  // entrance now only fades, and a name that is not yet shown takes no taps.
   const css = readFileSync('src/components/SkyChart.astro', 'utf8')
-  const startY = (name) => Number(css.match(new RegExp(`@keyframes ${name} \\{ from \\{[^}]*translate: -50% (-?\\d+)%`, 'u'))?.[1])
-  const animationFor = (selector) => css.match(new RegExp(`${selector.replace(/[[\]]/gu, '\\$&')} \\{ animation: ([\\w-]+)`, 'u'))?.[1]
-  const above = animationFor('.sky__names li')
-  const below = animationFor(".sky__names li[data-anchor='below']")
-  assert.ok(above && below, 'both rows declare an entrance')
-  assert.ok(startY(above) >= -50, `names above their figures start at ${startY(above)}%, outside the top edge`)
-  assert.ok(startY(below) <= -50, `names below their figures start at ${startY(below)}%, outside the bottom edge`)
+  const names = [...css.matchAll(/\.sky__names li(\[[^\]]*\])? \{ animation: ([\w-]+)/gu)].map((match) => match[2])
+  assert.ok(names.length > 0, 'names declare an entrance')
+  for (const name of new Set(names)) {
+    const frames = css.match(new RegExp(`@keyframes ${name} \\{(.*)\\}\\s*$`, 'mu'))?.[1] ?? ''
+    assert.ok(frames, `@keyframes ${name} exists`)
+    assert.doesNotMatch(frames, /translate|transform/u, `${name} moves the link while it enters`)
+    assert.match(frames, /from \{[^}]*visibility: hidden/u, `${name} leaves a transparent link tappable before it shows`)
+  }
 })
