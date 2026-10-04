@@ -115,8 +115,8 @@ const STAGE_CHUNK = /\/_astro\/stage\.[^/]+\.js$/
 const explorerEngines = []
 const explorerRestoreUncovered = []
 const stageHidden = (page) => page.evaluate(() => document.querySelector('[data-stage-canvas]')?.hidden)
-const stageBoots = (page) => page
-  .waitForFunction(() => document.querySelector('[data-stage-canvas]')?.hidden === false, null, { timeout: 15_000 })
+const stageBoots = (page, timeout = 15_000) => page
+  .waitForFunction(() => document.querySelector('[data-stage-canvas]')?.hidden === false, null, { timeout })
   .then(() => true, () => false)
 
 async function openExplorer(browser, base, handleChunk) {
@@ -163,10 +163,13 @@ async function explorerFailures(browser, name, base) {
     await page.waitForTimeout(1000)
     await page.unroute(STAGE_CHUNK)
     await page.goBack({ waitUntil: 'load' })
-    // Scroll restoration returns below the stage, which loads only in view.
-    // Scrolling is withheld in the self-test, so the stage never boots.
-    if (!selfTest) await page.locator('[data-stage-canvas]').evaluate((canvas) => canvas.parentElement?.scrollIntoView({ block: 'center' }))
-    const booted = await stageBoots(page)
+    // Scroll restoration may return below the stage, which loads only in view.
+    await page.locator('[data-stage-canvas]').evaluate((canvas) => canvas.parentElement?.scrollIntoView({ block: 'center' }))
+    // The self-test gives the boot no time at all, so "did not boot" must be
+    // reported. (Withholding the scroll used to inject this; since 0.9 the
+    // stage sits in the first viewport and boots without one, and tampering
+    // with the page's own canvas destabilised the browser.)
+    const booted = await stageBoots(page, selfTest ? 1 : 15_000)
     await page.waitForTimeout(1500)
     if (left.logged.length) failures.push(`${name} /explore/: leaving mid-boot reported a stage failure: ${left.logged[0]}`)
     if (!booted) failures.push(`${name} /explore/: coming back after leaving mid-boot did not boot the stage`)
@@ -264,7 +267,7 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
     await page.setViewportSize({ width: 1280, height: 900 })
     for (const route of BASELINE_ROUTES) {
       await page.goto(base + route, { waitUntil: 'load' })
-      if (selfTest) await page.addStyleTag({ content: '.lesson-shell .katex:not(.math-scroll) { display: inline-block !important; baseline-source: auto !important; overflow-x: auto !important; }' })
+      if (selfTest) await page.addStyleTag({ content: '.lesson .katex:not(.math-scroll) { display: inline-block !important; baseline-source: auto !important; overflow-x: auto !important; }' })
       await settle(page)
       for (const failure of await baselineFailures(page)) failures.push(`${name} ${route} @1280: ${failure}`)
     }
@@ -329,6 +332,7 @@ try {
   }
 } catch (error) {
   console.error('render:check FAIL — ' + (error instanceof Error ? error.message : String(error)))
+  if (process.env.RENDER_CHECK_STACK && error instanceof Error) console.error(error.stack)
   process.exitCode = 1
 } finally {
   server.close()
