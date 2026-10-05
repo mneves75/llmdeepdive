@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 import type { SceneContext, SceneModule } from '../stage'
 import type { MarkerSpec } from '../markers'
-import type { ScenePalette } from '../palette'
+import { FIELD_PALETTE, type ScenePalette } from '../palette.ts'
 
 /**
  * The Signal Observatory: one decoder block built as a fine instrument.
@@ -401,21 +401,6 @@ export function signalAt(seconds: number): SignalState {
 
 // ---- Materials ----------------------------------------------------------------
 
-/** The night plate's colours, matching tokens.css's field edition. */
-const NIGHT: Readonly<ScenePalette> = {
-  plate: 0x070c1d,
-  ink: 0xe9eefb,
-  inkMuted: 0xb1bbd6,
-  inkFaint: 0x8f9aba,
-  grid: 0x96acff,
-  accent: 0x9db0ff,
-  reticle: 0xff6b81,
-  tierFoundations: 0x72c8f2,
-  tierCore: 0xf1cd6b,
-  tierAdvanced: 0xff9b57,
-  tierFrontier: 0xe59cf3,
-}
-
 interface Materials {
   porcelain: THREE.MeshPhysicalMaterial
   enamel: THREE.MeshPhysicalMaterial
@@ -560,7 +545,7 @@ export class TransformerScene implements SceneModule {
 
   // Written out rather than as a parameter property: that is TypeScript-only
   // syntax, and Node strips types to load this file in the tests.
-  constructor(palette: ScenePalette = NIGHT) {
+  constructor(palette: ScenePalette = FIELD_PALETTE) {
     this.palette = palette
     // Start in phase with the shared clock rather than at the same frame for everyone.
     this.time = (performance.now() / 1000) % JOURNEY_SECONDS

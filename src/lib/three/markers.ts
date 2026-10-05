@@ -46,8 +46,8 @@ export interface MarkerStyle {
 }
 
 const DEFAULT_STYLE: MarkerStyle = {
-  porcelain: '#e9eefb',
-  ink: '#0b1533',
+  porcelain: '#e8e8e8',
+  ink: '#121212',
   reticle: '#ff6b81',
   font: 'system-ui, sans-serif',
 }

@@ -2,22 +2,22 @@
 name: llmdeepdive
 description: A printed star atlas of how language models work, in a desk edition and a field edition.
 colors:
-  plate: "light-dark(#ffffff, #070c1d)"
-  plate-raised: "light-dark(#f2f5fb, #0e1630)"
-  night: "light-dark(#0a1230, #030713)"
-  night-raised: "light-dark(#141f45, #0d1530)"
-  ink: "light-dark(#0b1533, #e9eefb)"
-  ink-muted: "light-dark(#45506d, #b1bbd6)"
-  ink-faint: "light-dark(#5a6582, #8f9aba)"
-  ink-on-night: "#eef2fc"
-  ink-muted-on-night: "#b6c0dc"
+  plate: "light-dark(#ffffff, #121212)"
+  plate-raised: "light-dark(#f2f5fb, #1c1c1c)"
+  night: "light-dark(#121212, #0a0a0a)"
+  night-raised: "light-dark(#222222, #191919)"
+  ink: "light-dark(#0b1533, #e8e8e8)"
+  ink-muted: "light-dark(#45506d, #b7b7b7)"
+  ink-faint: "light-dark(#5a6582, #989898)"
+  ink-on-night: "#eeeeee"
+  ink-muted-on-night: "#bebebe"
   graticule: "light-dark(rgb(43 68 199 / 0.13), rgb(150 172 255 / 0.13))"
-  rule: "light-dark(rgb(11 21 51 / 0.14), rgb(214 224 255 / 0.14))"
-  rule-strong: "light-dark(rgb(11 21 51 / 0.32), rgb(214 224 255 / 0.32))"
-  rule-field: "light-dark(#6c7690, #6f7ca3)"
+  rule: "light-dark(rgb(11 21 51 / 0.14), rgb(255 255 255 / 0.13))"
+  rule-strong: "light-dark(rgb(11 21 51 / 0.32), rgb(255 255 255 / 0.3))"
+  rule-field: "light-dark(#6c7690, #747474)"
   chart-blue: "light-dark(#2b44c7, #9db0ff)"
-  chart-blue-soft: "light-dark(#e3e8fb, #1a2552)"
-  chart-blue-ink: "light-dark(#ffffff, #050a1a)"
+  chart-blue-soft: "light-dark(#e3e8fb, #20283d)"
+  chart-blue-ink: "light-dark(#ffffff, #0d0d0d)"
   reticle: "light-dark(#c8102e, #ff6b81)"
   tier-foundations: "light-dark(#0a6d97, #72c8f2)"
   tier-core: "light-dark(#8a6200, #f1cd6b)"
@@ -173,7 +173,9 @@ stopped carries a crimson reticle. The site is printed as an atlas in two
 editions with the same meanings: the desk edition is black stars on a white
 plate, the field edition is white stars on a night plate. A third surface, the
 night plate, is dark in both editions and holds the explorer stage, the
-lesson's analogy, the home closing plate and the footer.
+lesson's analogy, the home closing plate and the footer. Night is neutral: a
+dark grey with no hue of its own, so every colour on it is a pigment that means
+something.
 
 Charts are real data, never decoration. One deterministic layout
 (`src/lib/sky.ts`, a 1000 × 560 chart) feeds the home sky, each track's
@@ -190,7 +192,7 @@ stops under reduced motion.
 
 **Key Characteristics:**
 
-- A white desk plate and a deep night plate, with one meaning per pigment in both editions.
+- A white desk plate and a neutral night plate, with one meaning per pigment in both editions.
 - Tier pigments that follow stellar spectral class, from hot blue to brown-dwarf magenta.
 - Course state drawn as marks: open ring, filled star, crimson reticle.
 - Mona Sans on its width axis for display, system stacks for reading and data.
@@ -203,6 +205,28 @@ Two editions of one atlas: chart-blue ink on a white plate by day, the same
 roles in light pigments on a night plate in the field edition. Every token is a
 `light-dark()` pair, so a surface that sets `color-scheme: dark` (the night
 plate) resolves to field pigments while the page stays in the desk edition.
+
+The field edition is designed in OKLCH and published as hex, because the 3D
+palette reader and the contrast gate both read sRGB. Its grounds and inks have
+chroma 0. Until 0.11 they were navy (chroma 0.03 to 0.07 at hue 269), which
+tinted every pigment set on them and left no hue free to mean anything.
+
+| Role | OKLCH lightness | Hex |
+| --- | --- | --- |
+| Night plate, sunken plate (field) | 0.145 | `#0a0a0a` |
+| Plate (field), night plate (desk) | 0.18 | `#121212` |
+| Night raised (field) | 0.215 | `#191919` |
+| Raised plate (field) | 0.225 | `#1c1c1c` |
+| Night raised (desk) | 0.25 | `#222222` |
+| Field rule | 0.56 | `#747474` |
+| Faint ink | 0.68 | `#989898` |
+| Muted ink | 0.78 | `#b7b7b7` |
+| Ink | 0.93 | `#e8e8e8` |
+
+The ground is never pure black and the ink never pure white: full contrast
+makes light text bloom on a dark ground, and pure black smears on OLED panels
+when the page scrolls. `pnpm a11y:contrast` holds the chroma, the lightness
+ladder and every text pair.
 
 ### Primary
 
@@ -236,10 +260,12 @@ Verdicts: **Verdict Green** (`success`) for completion and correct answers,
 
 ### Neutral
 
-- **Desk Plate** (`plate`): the page ground; white in the desk edition, night
-  blue in the field edition.
+- **Desk Plate** (`plate`): the page ground; white in the desk edition, neutral
+  near-black in the field edition.
 - **Raised Plate** (`plate-raised`): hover rows, lab panels, figure frames,
-  table heads, inline code.
+  table heads, inline code, and the ground of a code block in the field
+  edition. In the field edition it is lighter than the plate: a dark surface
+  rises by gaining lightness.
 - **Night Plate** (`night`, `night-raised`): dark in both editions; the
   explorer stage, the analogy, the closing plate, the footer, the search
   backdrop and hovered search results.
@@ -265,6 +291,11 @@ is". It is never a tier, a verdict or decoration.
 **The Same Meaning in Both Editions Rule.** The field edition is a second
 printing, not an inversion. Every role keeps its meaning; only the pigment
 lightness changes.
+
+**The Night Has No Hue Rule.** Field-edition grounds, inks, rules and field
+borders are neutral (OKLCH chroma 0). Hue belongs to chart blue, the reticle,
+the tier pigments and the verdicts, and to nothing else. A tinted ground is a
+defect, and the contrast gate fails one above chroma 0.01.
 
 ## Typography
 
@@ -413,6 +444,11 @@ where the action goes.
   into the rule, a 6% wash, `8px` radius, and a filled dot before the label.
   Note is chart blue, insight green, warning red, caveat gold. Never a side
   stripe.
+- **Code blocks:** highlighted by Shiki with `github-light` in the desk edition
+  and `github-dark-default` in the field edition, switched by `light-dark()`
+  so a block follows its surface's `color-scheme`, the theme toggle included.
+  The field ground is the raised plate, not the theme's own blue-grey; every
+  token colour holds 4.5:1 on it (`tests/rendered-html.test.mjs`).
 - **Night plate:** the analogy is read on the field edition inside the page,
   `12px` radius, with night inks.
 - **Lab panel:** raised plate, strong rule, `8px` radius, `2rem` padding;

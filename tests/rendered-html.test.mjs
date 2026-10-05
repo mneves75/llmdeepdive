@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { ratio, token } from '../scripts/palette-tokens.mjs'
 
 const DIST = 'dist'
 
@@ -199,6 +200,56 @@ test('theme script is inline, synchronous, and precedes the first stylesheet', (
       `${p.route}: theme script must not be deferred or async`,
     )
   }
+})
+
+test('every page tells the browser both editions exist before any stylesheet', () => {
+  // Without it the browser paints a white canvas, and white form controls and
+  // scrollbars, until tokens.css arrives; a reader in the field edition sees
+  // the flash. `color-scheme` on :root (the theme toggle) still overrides it.
+  for (const p of pages()) {
+    const meta = p.html.indexOf('<meta name="color-scheme" content="light dark"')
+    assert.notEqual(meta, -1, `${p.route} has no color-scheme meta`)
+    const styleIdx = p.html.indexOf('<link rel="stylesheet"')
+    if (styleIdx !== -1) assert.ok(meta < styleIdx, `${p.route}: color-scheme meta must precede the first stylesheet`)
+  }
+})
+
+/**
+ * Until 0.11 a code block was white in the field edition: Shiki wrote the
+ * light theme as inline `color` and `background-color` and the dark theme as
+ * custom properties nothing read. Every gate was green, because both halves
+ * are valid HTML.
+ */
+test('a code block carries both editions as custom properties, never as inline colours', () => {
+  let blocks = 0
+  for (const p of pages()) {
+    for (const [tag] of p.html.matchAll(/<pre class="astro-code[^>]*>/gu)) {
+      blocks += 1
+      const style = /style="([^"]*)"/u.exec(tag)?.[1] ?? ''
+      assert.doesNotMatch(style, /(?:^|;)\s*(?:background-)?color\s*:/u, `${p.route}: a code block sets an inline colour, which no stylesheet can switch`)
+      for (const name of ['--shiki-light', '--shiki-dark', '--shiki-light-bg']) assert.ok(style.includes(`${name}:`), `${p.route}: a code block is missing ${name}`)
+    }
+    assert.doesNotMatch(p.html, /<span style="color:#/u, `${p.route}: a code token sets an inline colour`)
+  }
+  assert.ok(blocks > 50, `expected the corpus's code blocks, found ${blocks}`)
+})
+
+test('the stylesheet switches code blocks with light-dark()', () => {
+  const css = readdirSync(join(DIST, '_astro')).filter((name) => name.endsWith('.css')).map((name) => readFileSync(join(DIST, '_astro', name), 'utf8')).join('\n')
+  assert.match(css, /light-dark\(var\(--shiki-light\),\s*var\(--shiki-dark\)\)/u)
+  assert.match(css, /light-dark\(var\(--shiki-light-bg\),\s*var\(--plate-raised\)\)/u)
+})
+
+// The field edition only. The desk theme (github-light) is not measured here:
+// its #e36209 is 3.49:1 on white, a defect older than this test.
+test('every field-edition code token colour holds 4.5:1 on the raised plate', () => {
+  const colours = new Set()
+  for (const p of pages()) {
+    for (const [, hex] of p.html.matchAll(/--shiki-dark:(#[0-9a-fA-F]{6})\b/gu)) colours.add(hex)
+  }
+  assert.ok(colours.size > 3, 'expected several token colours')
+  const ground = token('plate-raised').dark
+  assert.deepEqual([...colours].filter((hex) => ratio(hex, ground) < 4.5).map((hex) => `${hex} ${ratio(hex, ground).toFixed(2)}:1`), [])
 })
 
 test('every page declares a language and canonical', () => {

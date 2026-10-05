@@ -85,7 +85,10 @@ export default defineConfig({
     }),
     syntaxHighlight: { type: 'shiki', excludeLangs: ['mermaid'] },
     shikiConfig: {
-      themes: { light: 'github-light', dark: 'github-dark' },
+      themes: { light: 'github-light', dark: 'github-dark-default' },
+      // Both themes as custom properties and no inline colour: prose.css picks
+      // the edition with light-dark(), which an inline declaration would beat.
+      defaultColor: false,
       wrap: false,
     },
   },
