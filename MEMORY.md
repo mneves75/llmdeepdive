@@ -2,12 +2,30 @@
 
 ## Current Direction
 
+- **2026-10-05, after 0.11.1: X still showed an old home card. Nothing was
+  deployed, because production was already right.** The owner's X composer
+  showed the 0.8.1 card for `https://llmdeepdive.com/` (navy, Roboto
+  Condensed, "10 tracks · 106 lessons"; live from 2026-09-25 to 10-03) while
+  WhatsApp showed the current one. Edge analytics (`events.httpRequests`,
+  verified `Page Preview` Twitterbot only): X read `/` and `/og/index.png` on
+  10-01 at 09:04 UTC and again on 10-05 at 04:42 UTC, with 0.11.0 live and the
+  card URL still unversioned, then made no request for `/` up to 14:39 UTC.
+  0.11.1 reached production no earlier than 06:20 UTC (its merge commit), so X
+  has not yet seen a versioned card URL. WhatsApp read both files at 14:29:16
+  UTC, the minute the owner shared the link. X kept the 10-01 picture through
+  its 10-05 read; whether that read was for the same shared address is not
+  known. Open, owner only: paste
+  `https://llmdeepdive.com/?v=0.11.1` into the X composer without posting (the
+  site ignores query strings, the canonical stays `/`). A current card there
+  means a new address is drawn fresh; the plain address changes when X next
+  reads the page, on a schedule X no longer documents.
 - **0.11.1 deployed on 2026-10-05 from `ca0c416`** (PR #12, CI passed on
   `335f17f`; the merge tree equals the candidate's), tagged `v0.11.1-beta1`
   (staging `c0e86ed8`) and `v0.11.1` (production `2edf76ea`). `verify:live`
   passed on both. The owner reported X still showing the old blue card after
-  0.11.0: production served the new PNG, but X caches previews by image URL
-  and no URL had changed. Every `og:image` now carries `?v=` plus the first 8
+  0.11.0: production served the new PNG, and the working theory was that X
+  keeps a preview image by its URL, which had not changed (not confirmed: see
+  the entry above). Every `og:image` now carries `?v=` plus the first 8
   hex of the PNG's SHA-256, stamped in `scripts/finalize-dist.mjs`. Live
   check as `Twitterbot`: home serves `/og/index.png?v=4737648a`, 200, hash
   matches. Posts already published keep their old card.

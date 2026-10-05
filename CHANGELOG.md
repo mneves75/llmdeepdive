@@ -14,7 +14,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one, so a link shared on X still showed the previous card. Each page's `og:image`
   now ends in `?v=` and the first eight hex digits of its PNG's SHA-256, so the
   address changes whenever the picture does. A post already published keeps the
-  card it was published with.
+  card it was published with. The new address reaches a platform when it next
+  reads the page; until then it shows the preview it stored, as X did for the
+  home page on the day of the release.
 
 ## [0.11.0] — 2026-10-05
 

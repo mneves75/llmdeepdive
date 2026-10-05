@@ -410,6 +410,20 @@ whole contract against `dist/`.
   redrawn at an unchanged URL keeps showing the old picture: 0.11.0 redrew all
   284 cards and X went on showing the previous ones. Never write a card URL without
   the version, and never derive the version from anything but the built file.
+- **A stale preview is not a site defect until the crawler has read the page
+  again.** The version reaches a platform only when it fetches the HTML, and X
+  answers from a stored preview without asking the site. On 2026-10-05, after
+  0.11.1, X still showed the home card from its crawl of 2026-10-01, and the
+  edge had logged no X request for `/` since before the release; WhatsApp
+  fetched the page and the card in the minute the link was shared and showed
+  the current one. Check this before changing code: Cloudflare's
+  `events.httpRequests` dataset (`cf analytics sql post` with the zone scope)
+  lists every crawler request. A real X fetch has `userAgent` `Twitterbot/1.0`
+  and `verifiedBotCategory` `Page Preview`; a `curl` that borrows the agent has
+  an empty category. If X has not asked for the page since the release,
+  production is not the cause and no deploy changes what X shows. X's current
+  documentation (`docs.x.com`) has no page on cards, so when it refreshes a
+  stored preview is not known here.
 - **Sitemap `<lastmod>` comes from lesson frontmatter** (`scripts/sitemap-lastmod.mjs`),
   never from the build clock; a page with no content date gets none.
 - **Changing a lesson means moving its `updated` date.** The date is visible
