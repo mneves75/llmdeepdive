@@ -120,7 +120,11 @@ test('every indexable page carries complete search and share metadata', () => {
     assert.equal(one(html, 'name', 'twitter:card', route), 'summary_large_image')
 
     const image = one(html, 'property', 'og:image', route)
-    assert.equal(image, `${SITE}/og/${ogSlug(route)}.png`, `${route}: og:image does not follow the /og/<route>.png rule`)
+    const card = distFileFor(`${SITE}/og/${ogSlug(route)}.png`)
+    assert.ok(card, `${route}: /og/${ogSlug(route)}.png was not built`)
+    // Link previews cache a card by its URL, so the URL has to change whenever the PNG does.
+    const version = createHash('sha256').update(readFileSync(card)).digest('hex').slice(0, 8)
+    assert.equal(image, `${SITE}/og/${ogSlug(route)}.png?v=${version}`, `${route}: og:image is not /og/<route>.png?v=<hash of that PNG>`)
     assert.equal(one(html, 'property', 'og:image:type', route), 'image/png')
     assert.equal(one(html, 'property', 'og:image:width', route), '1200')
     assert.equal(one(html, 'property', 'og:image:height', route), '630')

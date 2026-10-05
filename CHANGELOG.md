@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-10-05
+
+### Fixed
+
+- Link previews show the current social card. X, WhatsApp, LinkedIn and Slack
+  keep a preview image by its URL, and 0.11.0 redrew every card without moving
+  one, so a link shared on X still showed the previous card. Each page's `og:image`
+  now ends in `?v=` and the first eight hex digits of its PNG's SHA-256, so the
+  address changes whenever the picture does. A post already published keeps the
+  card it was published with.
+
 ## [0.11.0] — 2026-10-05
 
 The dark theme is rebuilt on a neutral ground. The light theme is unchanged,

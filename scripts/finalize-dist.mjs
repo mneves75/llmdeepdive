@@ -5,6 +5,7 @@
  * Runs before `gen-headers.mjs`, so anything emitted here is still covered by
  * the generated CSP.
  */
+import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, writeFileSync, statSync, copyFileSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -94,10 +95,42 @@ function sortPagefindLanguages() {
   writeFileSync(file, JSON.stringify(entry))
 }
 
+/**
+ * X, WhatsApp, LinkedIn and Slack keep their own copy of a link-preview image,
+ * keyed by its URL, and do not ask the origin again for a week or more. A card
+ * redrawn at the same URL therefore stays the old picture in every preview.
+ * Each `og:image` gets `?v=` plus the first eight hex digits of its PNG's
+ * SHA-256, so the URL moves exactly when the pixels do and a rebuild of the
+ * same commit still writes the same HTML.
+ *
+ * Done here because the hash is of the built file: a version computed while
+ * rendering the page would have to guess at the PNG from its inputs.
+ */
+function versionCardUrls() {
+  const versions = new Map()
+  let stamped = 0
+  for (const file of filesUnder(DIST, ['.html'])) {
+    const html = readFileSync(file, 'utf8')
+    const out = html.replace(/(<meta property="og:image" content=")([^"?]+)(")/gu, (_, open, url, close) => {
+      const card = join(DIST, new URL(url).pathname)
+      if (!versions.has(card)) {
+        if (!existsSync(card)) throw new Error(`${file}: og:image ${url} was not built`)
+        versions.set(card, createHash('sha256').update(readFileSync(card)).digest('hex').slice(0, 8))
+      }
+      stamped += 1
+      return `${open}${url}?v=${versions.get(card)}${close}`
+    })
+    if (out !== html) writeFileSync(file, out)
+  }
+  if (stamped === 0) throw new Error('no og:image found to version — did the meta tag change shape in Base.astro?')
+  return stamped
+}
+
 const pages = emitLocale404s()
+const cards = versionCardUrls()
 const pruned = pruneUnusedPagefindBundles()
 sortPagefindLanguages()
 console.log(
-  `finalize-dist · ${pages.length} locale 404 page(s), ` +
+  `finalize-dist · ${pages.length} locale 404 page(s), ${cards} card URL(s) versioned, ` +
     `${pruned.length} unused pagefind bundle(s) pruned`,
 )
