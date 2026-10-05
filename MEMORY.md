@@ -2,6 +2,30 @@
 
 ## Current Direction
 
+- **0.11.0 deployed on 2026-10-05 (about 01:13 -03; 04:13 UTC) from `190cac8`**
+  (PR #11, CI passed on `d332000`; the merge tree equals the candidate's),
+  tagged `v0.11.0-beta1` (staging `811f19ff`) and `v0.11.0` (production
+  `6ddbe615`, apex and www). `verify:live` passed on both (934 files
+  byte-identical, CSP, Brotli, www redirect, explorer → lesson in three
+  engines). The owner asked to redo the dark theme because "the blue
+  background is horrible". Field-edition grounds, inks, rules and field
+  borders are now neutral (OKLCH chroma 0, published as hex: plate `#121212`,
+  raised `#1c1c1c`, night `#0a0a0a`, ink `#e8e8e8`); the night plate in the
+  desk edition, the social cards and the favicon follow. Code blocks had been
+  white in the field edition since dual themes were added (Shiki inline
+  colours); `defaultColor: false` plus `light-dark()` in `prose.css` fixes it.
+  `a11y:contrast` now holds chroma, the lightness ladder and the black/white
+  ends (19 failures on the 0.10.0 palette). The 3D instrument keeps its
+  chart-blue enamel and lights on purpose; the owner may ask to neutralise it.
+  An independent verifier (fresh context, another model, browser only) passed
+  6 of 10 frozen criteria and failed 4 on things this release did not change;
+  the owner approved production knowing that. Open, all older than 0.11.0:
+  the desk code theme's `#e36209` is 3.49:1 on white; rows mid-arrival sit at
+  about 0.54 opacity while they enter the viewport; the lesson step strip and
+  explorer library clip their last label at 390px (scrollable, masked). The
+  next-lesson and next-track links carry a deliberate 5% tier wash.
+  `pnpm privacy` fails in a checkout that holds harness checkpoint refs
+  (`git log --all` reads them); run it in a clean clone.
 - **0.10.0 deployed on 2026-10-04 (about 04:25 -03; 07:25 UTC) from `ccd362f`**
   (PR #10 merged without waiting for CI, on the owner's instruction; CI had
   passed on the release branch at `fba4823` and `c2465b5`), tagged
