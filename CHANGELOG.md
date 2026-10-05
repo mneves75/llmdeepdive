@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-10-05
+
 ### Fixed
 
 - Link previews show the current social card. X, WhatsApp, LinkedIn and Slack
