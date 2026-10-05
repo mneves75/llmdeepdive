@@ -34,6 +34,7 @@ export function lessonTitle({ lesson, track }: { lesson: string; track: string }
 /** `/lessons/x/y/` → `lessons/x/y`; the root is `index`. One rule for both ends. */
 export const ogSlug = (fullPath: string): string => fullPath.replace(/^\/|\/$/gu, '') || 'index'
 
+/** The built page carries this plus `?v=<hash of the PNG>`, added by `scripts/finalize-dist.mjs`. */
 export const ogImageUrl = (fullPath: string): string => new URL(`/og/${ogSlug(fullPath)}.png`, SITE).href
 
 export const OG_IMAGE = { width: 1200, height: 630 } as const

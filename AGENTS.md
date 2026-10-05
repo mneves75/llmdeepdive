@@ -404,6 +404,12 @@ whole contract against `dist/`.
   PNG would depend on the build machine and break byte-identical rebuilds. A
   glyph no bundled font covers fails the build; add a font subset in
   `og-render.ts`, never a silent fallback.
+- **`og:image` is `/og/<page path>.png?v=<hash>`**, the first eight hex digits
+  of that PNG's SHA-256, stamped by `finalize-dist.mjs`. X, WhatsApp, LinkedIn
+  and Slack cache a preview image by its URL for a week or more, so a card
+  redrawn at an unchanged URL keeps showing the old picture: 0.11.0 redrew all
+  284 cards and X went on showing the previous ones. Never write a card URL without
+  the version, and never derive the version from anything but the built file.
 - **Sitemap `<lastmod>` comes from lesson frontmatter** (`scripts/sitemap-lastmod.mjs`),
   never from the build clock; a page with no content date gets none.
 - **Changing a lesson means moving its `updated` date.** The date is visible
