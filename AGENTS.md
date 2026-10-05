@@ -24,7 +24,8 @@ pnpm content:citations   # citations present or reason given
 pnpm content:assets      # every referenced asset exists
 pnpm content:figures     # every <Figure id> resolves; both locales; labels differ
 pnpm links               # every internal link in dist/ resolves (runs in build)
-pnpm a11y:contrast       # palette stays above accessible contrast ratios
+pnpm a11y:contrast       # palette stays above accessible contrast ratios; dark grounds
+                         #   and inks stay neutral, with a visible lightness ladder
 pnpm render:check        # every route in Chromium, WebKit, Firefox: 320px overflow,
                          #   duplicate ids, page errors, scroll regions, unnamed controls,
                          #   un-underlined links in running text, inline-maths baseline,
@@ -209,6 +210,19 @@ inline code it finds — a new inline block must be a reviewed change there.
   that is a control rather than part of a sentence opts out with
   `text-decoration: none`. `render:check` fails an inline link in running text
   without an underline, and any visible control without an accessible name.
+- **A dark colour lives in `tokens.css` and is neutral.** Field-edition
+  grounds and inks have OKLCH chroma 0 (DESIGN.md, "The Night Has No Hue");
+  `a11y:contrast` fails a tinted one. Four places cannot read a token and copy
+  it instead: `FIELD_PALETTE`, the marker default style, `og-render.ts` and
+  `favicon.svg`. `tests/palette-sync.test.mjs` keeps them equal. Tokens stay
+  six-digit hex inside `light-dark()`: the 3D palette reader parses computed
+  `rgb()`, and a computed `oklch()` would silently fall back to the field
+  palette in both editions.
+- **Shiki's dual themes need `defaultColor: false`.** With the default, the
+  light theme is inline `color`/`background-color` and the dark one sits in
+  custom properties nothing reads: code blocks stayed white in the field
+  edition through 0.10 with every gate green. `prose.css` picks the edition
+  with `light-dark()`.
 - **Pagefind indexes `<main>` minus `excludeSelectors`** (`astro.config.mjs`).
   Anything new that is chrome rather than teaching — status lines, answers,
   navigation — belongs in that list, or it leaks into every search excerpt.

@@ -19,8 +19,8 @@ outside, private practice inside—is the most important ownership boundary.
 ## The visual map
 
 `src/styles/tokens.css` is the legend for the whole atlas: a white plate by day,
-a night plate in dark mode, chart blue for links, a crimson reticle for "you
-are here", and four spectral pigments for the tiers. `global.css` establishes
+a neutral near-black night plate in dark mode, chart blue for links, a crimson
+reticle for "you are here", and four spectral pigments for the tiers. `global.css` establishes
 reading and focus behavior. `DESIGN.md` explains when each token earns its place.
 
 The curriculum is a star chart (`src/lib/sky.ts`): every lesson a star, every

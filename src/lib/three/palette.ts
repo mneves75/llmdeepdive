@@ -49,13 +49,13 @@ const TOKENS: Record<PaletteToken, string> = {
 /**
  * The field edition (night plate), as published in tokens.css. Used when no
  * document exists (tests) and as the fallback for any token that fails to
- * resolve.
+ * resolve. tests/palette-sync.test.mjs keeps it equal to the tokens.
  */
 export const FIELD_PALETTE: Readonly<ScenePalette> = {
-  plate: 0x070c1d,
-  ink: 0xe9eefb,
-  inkMuted: 0xb1bbd6,
-  inkFaint: 0x8f9aba,
+  plate: 0x121212,
+  ink: 0xe8e8e8,
+  inkMuted: 0xb7b7b7,
+  inkFaint: 0x989898,
   grid: 0x96acff,
   accent: 0x9db0ff,
   reticle: 0xff6b81,

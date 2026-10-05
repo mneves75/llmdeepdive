@@ -42,12 +42,12 @@ async function missingGlyph(languageCode: string, segment: string): Promise<neve
 // DESIGN.md: the field edition — night plate, white ink, the reticle for the
 // mark, and the tier's spectral pigment for the line that places the page.
 const COLOR = {
-  night: '#0a1230',
-  ink: '#eef2fc',
-  muted: '#b6c0dc',
-  idle: '#5a6582',
+  night: '#121212',
+  ink: '#eeeeee',
+  muted: '#bebebe',
+  idle: '#747474',
   reticle: '#ff6b81',
-  rule: 'rgba(214, 224, 255, 0.18)',
+  rule: 'rgba(255, 255, 255, 0.18)',
 } as const
 const TIER_COLOR: Record<Tier, string> = {
   foundations: '#72c8f2',

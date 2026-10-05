@@ -5,6 +5,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-05
+
+The dark theme is rebuilt on a neutral ground. The light theme is unchanged,
+except that its dark surfaces (footer, explorer stage, analogy, closing plate)
+follow the same neutral night.
+
+### Changed
+
+- **The night has no hue.** Dark grounds, inks, rules and field borders were
+  navy (OKLCH chroma 0.03 to 0.07); they are now neutral greys at chroma 0,
+  designed in OKLCH and published as hex. The page ground is `#121212`
+  (lightness 0.18), raised surfaces `#1c1c1c`, the night plate `#0a0a0a`, and
+  body text `#e8e8e8` at 15.29:1. Neither end reaches black or white. Chart
+  blue, the reticle, the tier pigments and the verdicts keep their colours and
+  are now the only hue on a dark surface. `DESIGN.md` records the ramp and the
+  new rule.
+- The selected-answer and current-lesson ground (`accent-soft`) drops from a
+  saturated navy to `#20283d`.
+- Social cards and the favicon use the same neutral night plate. Every card
+  image changes.
+- Code blocks use `github-dark-default` in the dark theme, set on the raised
+  plate.
+
+### Fixed
+
+- **Code blocks were white in the dark theme.** The highlighter wrote the
+  light theme as inline colours and the dark theme as custom properties no
+  stylesheet read. Both themes are now custom properties, and `prose.css`
+  picks one with `light-dark()`, so a block follows the theme toggle and the
+  system setting.
+- Three hairlines and the syllabus backdrop were hard-coded blue tints outside
+  the tokens; they now use `rule`, `rule-strong` and `night`.
+- The 3D instrument kept a second copy of the dark palette; it now uses the
+  one fallback palette.
+
+### Added
+
+- `<meta name="color-scheme" content="light dark">` on every page, so the
+  browser paints the right canvas and controls before the stylesheet arrives.
+- `pnpm a11y:contrast` also fails a dark ground or ink above chroma 0.01, a
+  lightness step smaller than 0.03 between sunken, plate and raised surfaces,
+  and a ground or ink that reaches black or white. It reported 19 failures on
+  the 0.10.0 palette.
+- Tests: every copy of a dark colour (3D fallback palette, port markers,
+  social cards, favicon) equals its token; no code block carries an inline
+  colour; every dark code-token colour holds 4.5:1 on the raised plate.
+
+### Known
+
+- The light code theme's `#e36209` is 3.49:1 on white, below 4.5:1. It
+  predates this release and is not changed here.
+
 ## [0.10.0] — 2026-10-04
 
 Three hands-on tracks about running models on the machines people actually
