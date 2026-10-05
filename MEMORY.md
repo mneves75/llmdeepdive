@@ -2,6 +2,15 @@
 
 ## Current Direction
 
+- **0.11.1 deployed on 2026-10-05 from `ca0c416`** (PR #12, CI passed on
+  `335f17f`; the merge tree equals the candidate's), tagged `v0.11.1-beta1`
+  (staging `c0e86ed8`) and `v0.11.1` (production `2edf76ea`). `verify:live`
+  passed on both. The owner reported X still showing the old blue card after
+  0.11.0: production served the new PNG, but X caches previews by image URL
+  and no URL had changed. Every `og:image` now carries `?v=` plus the first 8
+  hex of the PNG's SHA-256, stamped in `scripts/finalize-dist.mjs`. Live
+  check as `Twitterbot`: home serves `/og/index.png?v=4737648a`, 200, hash
+  matches. Posts already published keep their old card.
 - **0.11.0 deployed on 2026-10-05 (about 01:13 -03; 04:13 UTC) from `190cac8`**
   (PR #11, CI passed on `d332000`; the merge tree equals the candidate's),
   tagged `v0.11.0-beta1` (staging `811f19ff`) and `v0.11.0` (production
