@@ -14,11 +14,13 @@
   has not yet seen a versioned card URL. WhatsApp read both files at 14:29:16
   UTC, the minute the owner shared the link. X kept the 10-01 picture through
   its 10-05 read; whether that read was for the same shared address is not
-  known. Open, owner only: paste
-  `https://llmdeepdive.com/?v=0.11.1` into the X composer without posting (the
-  site ignores query strings, the canonical stays `/`). A current card there
-  means a new address is drawn fresh; the plain address changes when X next
-  reads the page, on a schedule X no longer documents.
+  known. The owner then pasted `https://llmdeepdive.com/?v=0.11.1` into the
+  composer (same bytes, canonical `/`): X read `/` and `/og/index.png` at
+  15:24:26 UTC and drew the current card. So X stores a preview per shared
+  address, and the plain address keeps its stored one until X reads it again,
+  on a schedule X no longer documents. Untested: whether `http://` and `www`,
+  which 301 to the apex and which X had never requested, count as new
+  addresses.
 - **0.11.1 deployed on 2026-10-05 from `ca0c416`** (PR #12, CI passed on
   `335f17f`; the merge tree equals the candidate's), tagged `v0.11.1-beta1`
   (staging `c0e86ed8`) and `v0.11.1` (production `2edf76ea`). `verify:live`

@@ -423,7 +423,11 @@ whole contract against `dist/`.
   an empty category. If X has not asked for the page since the release,
   production is not the cause and no deploy changes what X shows. X's current
   documentation (`docs.x.com`) has no page on cards, so when it refreshes a
-  stored preview is not known here.
+  stored preview is not known here. X stores the preview per shared address:
+  the same day `/?v=0.11.1` drew the current card, and the edge logged X's read
+  in the second the link was pasted. The site ignores query strings, so that
+  address is the same page, and it is the way to share a link before X
+  refreshes the plain one.
 - **Sitemap `<lastmod>` comes from lesson frontmatter** (`scripts/sitemap-lastmod.mjs`),
   never from the build clock; a page with no content date gets none.
 - **Changing a lesson means moving its `updated` date.** The date is visible
