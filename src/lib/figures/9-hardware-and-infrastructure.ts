@@ -42,9 +42,9 @@ export const TRACK_9_FIGURES = {
     title: { en: 'The roofline', 'pt-br': 'O modelo roofline' },
     caption: {
       en:
-        'Attainable performance is the lower of two ceilings. Left of the ridge a kernel is bandwidth-bound and only more arithmetic per byte helps; right of it, only more compute does. Decode sits far to the left, which is why it is a different machine from prefill.',
+        'Attainable performance is the lower of two ceilings: the slanted bandwidth roof and the flat compute roof. Left of the ridge point a kernel is bandwidth-bound, so only more arithmetic per byte or more bandwidth helps. Right of it, only more compute helps. Batch-1 decode sits far to the left and prefill far to the right, which is why the two phases behave like different machines.',
       'pt-br':
-        'O desempenho atingível é o menor de dois tetos. À esquerda da crista o kernel é limitado por banda e só mais aritmética por byte ajuda; à direita, só mais computação. A decodificação fica bem à esquerda, e é por isso que ela é uma máquina diferente do prefill.',
+        'O desempenho atingível é o menor de dois tetos: o teto inclinado da bandwidth e o teto plano de compute. À esquerda do ridge point o kernel é limitado por bandwidth, então só mais aritmética por byte ou mais bandwidth ajuda. À direita, só mais compute ajuda. O decode em batch 1 fica bem à esquerda e o prefill bem à direita, e é por isso que as duas fases se comportam como máquinas diferentes.',
     },
     body: {
       kind: 'plot',
@@ -64,24 +64,24 @@ export const TRACK_9_FIGURES = {
       },
       series: [
         {
-          label: { en: 'Bandwidth roof', 'pt-br': 'Teto de banda' },
+          label: { en: 'Bandwidth roof', 'pt-br': 'Teto de bandwidth' },
           pigment: 'accent',
           points: [
             [0.1, 0.1 * BANDWIDTH_TB_S],
             [RIDGE, PEAK_TFLOPS],
           ],
           marks: [
-            { at: [RIDGE, PEAK_TFLOPS], label: { en: 'ridge', 'pt-br': 'crista' } },
+            { at: [RIDGE, PEAK_TFLOPS], label: { en: 'ridge point', 'pt-br': 'crista (ridge point)' } },
             // Lesson 7.3 establishes single-stream decode at roughly one
             // operation per weight byte: bandwidth-bound, far left of the ridge.
             {
               at: [1, 1 * BANDWIDTH_TB_S],
-              label: { en: 'batch-1 decode', 'pt-br': 'decode lote 1' },
+              label: { en: 'batch-1 decode', 'pt-br': 'decode em batch 1' },
             },
           ],
         },
         {
-          label: { en: 'Compute roof', 'pt-br': 'Teto de computação' },
+          label: { en: 'Compute roof', 'pt-br': 'Teto de compute' },
           pigment: 'danger',
           points: [
             [RIDGE, PEAK_TFLOPS],
@@ -115,7 +115,7 @@ export const TRACK_9_FIGURES = {
       en:
         'Weights are fixed the moment you choose a precision. Everything left over is what decides how many concurrent sequences fit, and the KV cache is the only part that grows with every token generated.',
       'pt-br':
-        'Os pesos são fixos no momento em que você escolhe a precisão. Todo o restante decide quantas sequências simultâneas cabem, e o cache KV é a única parte que cresce a cada token gerado.',
+        'Os pesos são fixos no momento em que você escolhe a precisão. Todo o restante decide quantas sequências simultâneas cabem, e o KV cache é a única parte que cresce a cada token gerado.',
     },
     derivedFrom: '7-inference-and-efficiency/7.2-the-kv-cache',
     body: {
@@ -129,7 +129,7 @@ export const TRACK_9_FIGURES = {
           weight: WEIGHTS_GIB,
         },
         {
-          label: { en: 'KV cache, one full-context sequence', 'pt-br': 'Cache KV, uma sequência de contexto completo' },
+          label: { en: 'KV cache, one full-context sequence', 'pt-br': 'KV cache, uma sequência de contexto completo' },
           detail: { en: `${QWEN.kvGibFullContext.value} GiB · grows per token`, 'pt-br': `${QWEN.kvGibFullContext.value} GiB · cresce por token` },
           pigment: 'caution',
           weight: QWEN.kvGibFullContext.value,

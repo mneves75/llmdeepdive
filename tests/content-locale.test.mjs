@@ -50,7 +50,7 @@ test('content parity permits translated math text and localized numeric prose', 
   try {
     writeBilingualFixture(fixture, {
       en: '$\\text{cached tokens} + x$\n\nQwen3.8 in lesson 7.2 has 262,144 positions; value 1.5; config `temperature=0.7`.',
-      'pt-br': '$\\text{tokens em cache} + x$\n\nO Qwen3.8 na lição 7.2 tem 262.144 posições; valor 1,5; config `temperature=0.7`.',
+      'pt-br': '$\\text{tokens em cache} + x$\n\nO Qwen3.8 na aula 7.2 tem 262.144 posições; valor 1,5; config `temperature=0.7`.',
     })
 
     const result = runParity(fixture)
@@ -81,13 +81,33 @@ test('pt-BR prose calls a course track "trilha", as the interface does', () => {
   const english = { id: 'fixture', body: 'Track 4 shows it.\n\n| Lesson | Track 8 lesson |\n|---|---|\n| a | b |', frontmatter: 'summary: "Covered in track 7."' }
   const lesson = (body, summary) => ({ id: 'fixture', body, frontmatter: `track: "4-transformer"\nsummary: "${summary}"` })
 
-  const failures = bilingualContentFailures(english, lesson('A track 4 mostra isso.\n\n| Lição | Lição da Track 8 |\n|---|---|\n| a | b |', 'Assunto de toda a track 7.'))
+  const failures = bilingualContentFailures(english, lesson('A track 4 mostra isso.\n\n| Aula | Aula da Track 8 |\n|---|---|\n| a | b |', 'Assunto de toda a track 7.'))
   assert.equal(failures.length, 3, failures.join('\n'))
   assert.ok(failures.every((failure) => /says "track"/u.test(failure)), failures.join('\n'))
 
+  // A lesson is an "aula" in pt-BR, as in the step list, the navigation and search.
+  const lessonWord = bilingualContentFailures(english, lesson('Na lição 7.2 e nas Lições anteriores.', 'Retoma a lição 4.3.'))
+  assert.equal(lessonWord.length, 2, lessonWord.join('\n'))
+  assert.ok(lessonWord.every((failure) => /says "lição"/u.test(failure)), lessonWord.join('\n'))
+
+  // "A lição amarga" is the Portuguese name of Sutton's essay, not a course lesson.
+  assert.deepEqual(bilingualContentFailures(english, lesson('Como diz a lição amarga de Sutton, e as lições amargas que vieram depois.', 'Overfitting e a Lição Amarga.')), [])
+
+  // Words that merely contain "aula" are not the forbidden word, and neither is a name.
+  assert.deepEqual(bilingualContentFailures(english, lesson('A Paula saiu da jaula.', 'Nada aqui.')), [])
+
+  // Quiz questions are list items; their prose is checked like any other field.
+  const quiz = { id: 'fixture', body: 'Corpo.', frontmatter: 'track: "4-transformer"\nquiz:\n  - question: "Qual track cobre isso, segundo a lição 4.2?"\n    options: ["A", "B"]' }
+  const quizFailures = bilingualContentFailures(english, quiz)
+  assert.equal(quizFailures.length, 2, quizFailures.join('\n'))
+
+  // "aula 1.5" names a lesson, not a decimal, even when 1.5 also appears in a formula.
+  const reference = { id: 'fixture', body: '$w=1.5$ as in lesson 1.5 and lessons 1.5, 2.3.', frontmatter: '' }
+  assert.deepEqual(bilingualContentFailures(reference, { id: 'fixture', body: '$w=1.5$ como na aula 1.5 e nas aulas 1.5, 2.3.', frontmatter: '' }), [])
+
   // The frontmatter key, inline code and the word inside other words are not prose.
   assert.deepEqual(
-    bilingualContentFailures(english, lesson('A trilha 4 mostra isso; `--track` é uma flag e tracking é outra palavra.\n\n| Lição | Lição da Trilha 8 |\n|---|---|\n| a | b |', 'Assunto de toda a trilha 7.')),
+    bilingualContentFailures(english, lesson('A trilha 4 mostra isso; `--track` é uma flag e tracking é outra palavra.\n\n| Aula | Aula da Trilha 8 |\n|---|---|\n| a | b |', 'Assunto de toda a trilha 7.')),
     [],
   )
 })

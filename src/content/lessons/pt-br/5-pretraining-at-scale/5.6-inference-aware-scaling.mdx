@@ -8,19 +8,19 @@ tier: "advanced"
 locale: "pt-br"
 prerequisites: ["5.5-chinchilla-compute-optimality"]
 unlocks: ["5.7-data-parallelism-zero-fsdp"]
-analogy: "Uma transportadora pode comprar uma van grande que atinge a capacidade-alvo após uma preparação curta, ou passar mais tempo afinando uma van elétrica menor que torna cada rota futura mais barata. Se ela fizer dez entregas, a preparação domina. Se fizer um bilhão, o custo de operação domina. Inference-aware scaling acrescenta a contagem de rotas de vida útil a uma decisão que o scaling só de treino trata como uma corrida única."
+analogy: "Uma transportadora pode comprar uma van grande que atinge a capacidade-alvo após uma preparação curta, ou passar mais tempo afinando uma van elétrica menor que torna cada rota futura mais barata. Se ela fizer dez entregas, o custo de preparação domina. Se fizer um bilhão, o custo de operação domina. Inference-aware scaling acrescenta o número de rotas ao longo da vida a uma decisão que o scaling só de treino trata como uma corrida única."
 teachBack:
   prompt: "Explique inference-aware scaling e depois analise as consequências de serving da grouped-query attention e do layout híbrido 3:1 do Qwen3.8-27B sem atribuir uma justificativa de treino não publicada."
-  modelAnswer: "O compute de treino é pago uma vez; o compute de inferência é pago por token servido, portanto demanda alta ao longo da vida pode deslocar o ótimo para modelos mais baratos por requisição. Treinar um modelo menor com mais tokens é uma alavanca. Arquitetura com contagem fixa de parâmetros é outra: o Qwen3.8-27B tem 24 query heads, mas apenas 4 KV heads, e só 16 de 64 camadas mantêm KV cache crescente. Em relação a um contrafactual todo MHA e todo attention, esses fatos dão fatores de seis e quatro nas dimensões do cache, ou 24 combinados. A lição 7.2 assume a derivação em bytes. A arquitetura e suas consequências são documentadas; as suposições de serving e a justificativa de projeto da equipe não são."
+  modelAnswer: "O compute de treino é pago uma vez, enquanto o compute de inferência é pago a cada token servido. Por isso, uma demanda alta ao longo da vida pode deslocar o ótimo para modelos mais baratos por requisição. Treinar um modelo menor com mais tokens é uma alavanca. A arquitetura com contagem fixa de parâmetros é outra. O Qwen3.8-27B tem 24 query heads, mas apenas 4 KV heads, e só 16 das suas 64 camadas mantêm um KV cache que cresce com a sequência. Comparados a um contrafactual que usa multi-head attention completa em todas as camadas, esses fatos dão fatores de seis e quatro nas dimensões do cache, ou 24 combinados. A aula 7.2 é dona da derivação em bytes. A arquitetura e suas consequências são documentadas; as suposições de serving e a justificativa de projeto da equipe não são."
 quiz:
-  - question: "Quais dois fatos arquiteturais publicados produzem o fator de 24 no KV cache derivado na lição 7.2?"
+  - question: "Quais dois fatos arquiteturais publicados produzem o fator de 24 no KV cache derivado na aula 7.2?"
     options: ["O modelo tem 24 query heads e 64 camadas totais, então 24 + 64 = 88", "O estado DeltaNet e os pesos bf16 por acaso têm o mesmo tamanho", "Quatro KV heads em vez de 24 dão fator 6, e 16 camadas com cache em vez de 64 dão fator 4; 6 × 4 = 24", "O model card documenta uma meta de serving de fator 24"]
     correctIndex: 2
-    explanation: "A GQA muda a contagem de KV heads e o layout híbrido muda o número de camadas com cache crescente. A lição 7.2 deriva as consequências em bytes; o model card não declara uma meta de projeto."
-  - question: "A lição 5.5 definiu over-training em relação a um ponto Chinchilla. Por que isso não é uma crítica a um modelo treinado muito além dele?"
+    explanation: "A GQA muda o número de KV heads, e o layout híbrido muda o número de camadas cujo cache cresce. A aula 7.2 deriva o que isso significa em bytes; o model card não declara uma meta de projeto."
+  - question: "A aula 5.5 definiu over-training em relação a um ponto Chinchilla. Por que isso não é uma crítica a um modelo treinado muito além dele?"
     options: ["Porque a loss deixa de cair além desse ponto", "Porque o piso irredutível se move", "Porque a contagem de tokens não é publicada", "O ótimo de Chinchilla minimiza a loss apenas para um orçamento de treino fixo, e nada diz sobre o custo de serving ao longo da vida"]
     correctIndex: 3
-    explanation: "Tokens extras além do ótimo de compute de treino compram um modelo permanentemente menor para uma qualidade-alvo; isso é um objetivo diferente, não um erro."
+    explanation: "Tokens extras além do ótimo de compute de treino compram um modelo que atinge uma qualidade-alvo continuando permanentemente menor. Isso é um objetivo diferente, não um erro."
   - question: "Qual variável nova muda mais diretamente o ótimo inference-aware?"
     options: ["A demanda de inferência esperada ao longo da vida", "A grafia do nome do modelo", "O número de entradas de citação", "A ordem dos arquivos de treino"]
     correctIndex: 0
@@ -38,37 +38,67 @@ citations:
     authors: "Joshua Ainslie et al."
     year: 2023
     url: "https://arxiv.org/abs/2305.13245"
-updated: "2026-09-25"
+updated: "2026-10-14"
 ---
 
-A otimalidade de compute de treino pergunta como obter a menor loss de um orçamento fixo de pretraining. Um modelo implantado tem uma vida muito mais longa do que essa pergunta imagina. O treino acontece uma vez. A inferência acontece para cada prompt e cada token gerado, em cada réplica, enquanto o checkpoint for servido. Se a demanda for grande, a conta recorrente faz a conta única parecer minúscula, e o alvo da otimização precisa incluir as duas.
+A otimalidade de compute de treino pergunta como obter a menor loss de um orçamento fixo de pretraining. Um modelo implantado vive muito mais do que essa pergunta imagina. O treino acontece uma vez. A inferência acontece para cada prompt e cada token gerado, em cada réplica (cada cópia do modelo atendendo tráfego), enquanto o checkpoint for servido. Se a demanda for grande, a conta recorrente faz a conta única parecer minúscula, e o alvo da otimização precisa incluir as duas.
 
-O enquadramento padrão escreve o custo de vida como
+## Por que a demanda de serving muda o ótimo?
+
+Um exemplo de brinquedo, com unidades inventadas, mostra o efeito. Digamos que o treino custe 100 unidades uma vez e que servir custe 1 unidade por milhão de requisições. Com 10 milhões de requisições ao longo da vida, servir acrescenta 10 unidades, e o treino domina a conta. Com um bilhão de requisições, servir acrescenta 1.000 unidades, dez vezes o custo do treino. Um modelo que custa o dobro para treinar, mas metade por requisição, passa a economizar dinheiro no total.
+
+O enquadramento padrão escreve o custo ao longo da vida como
 
 $$
 C_{life}=C_{train}(N,D)+R\,C_{infer}(N,L),
 $$
 
-com $R$ o volume esperado de inferência e $L$ capturando comprimentos de prompt e de saída. Sardana e colaboradores modificaram a análise no estilo Chinchilla exatamente nessas linhas, treinaram modelos em razões altas de token por parâmetro para validar o comportamento e reportaram que uma demanda de inferência suficientemente grande desloca a solução preferida na direção de modelos menores treinados em mais dados. O ponto de cruzamento deles é condicional aos seus custos, ajustes e suposições de workload — mas a direção é estrutural, não incidental.
+com $R$ o volume esperado de inferência e $L$ capturando os comprimentos de prompt e de saída. Sardana e colaboradores modificaram a análise no estilo Chinchilla exatamente nessas linhas. Eles treinaram modelos com razões altas de tokens por parâmetro para validar o comportamento e reportaram que uma demanda de inferência grande o bastante desloca a solução preferida na direção de modelos menores treinados em mais dados. O ponto de cruzamento deles depende dos seus custos, ajustes e suposições de workload, mas a direção vem da estrutura da fórmula, e não desses detalhes.
 
-Essa é a versão de inference-aware scaling que todo mundo cita, e ela trata $N$ como a única alavanca: escolha menos parâmetros, alimente mais tokens, aceite uma conta de treino maior em troca de um forward pass mais barato para sempre. A lição 5.5 percorreu essa aritmética. Ela é real, e é metade da história.
+## O que dá para mudar além da contagem de parâmetros?
 
-A metade que é pulada é que $C_{infer}$ não é função apenas da contagem de parâmetros. Com 27 bilhões de parâmetros fixos você pode construir arquiteturas cujos custos de serving diferem por mais de uma ordem de magnitude, porque uma requisição servida paga por três coisas: ler os pesos, computar as camadas e guardar o estado por requisição. Só a primeira escala limpo com $N$. A terceira — o KV cache — depende inteiramente de decisões sobre heads e tipos de camada, e é onde a arquitetura publicada do Qwen3.8-27B torna mensuráveis suas consequências de serving.
+Essa é a versão de inference-aware scaling que todo mundo cita, e ela trata $N$ como a única alavanca: escolha menos parâmetros, alimente mais tokens e aceite uma conta de treino maior em troca de um forward pass mais barato para sempre. A [aula 5.5](/pt-br/lessons/5-pretraining-at-scale/5.5-chinchilla-compute-optimality/) percorreu essa aritmética. Ela é real, e é metade da história.
 
-A lição 7.2 assume a aritmética do KV cache deste modelo, portanto esta lição usa seu resultado em vez de derivar um segundo orçamento. O contrafactual relevante mantém head dimension e contagem de camadas, mas troca quatro KV heads por 24 e troca 16 camadas de attention com cache por 64. A GQA reduz a contagem de KV heads por fator seis; o layout híbrido 3:1 reduz a quantidade de camadas com cache crescente por fator quatro. Os fatores estruturais se multiplicam para 24. Totais exatos em bytes, hipóteses de dtype e a conta do estado DeltaNet permanecem na lição 7.2.
+A metade que costuma ser pulada é que $C_{infer}$ não é função apenas da contagem de parâmetros. Com 27 bilhões de parâmetros fixos você pode construir arquiteturas cujos custos de serving diferem por mais de uma ordem de magnitude, porque uma requisição servida paga por três coisas:
+
+1. ler os pesos,
+2. computar as camadas,
+3. guardar o estado por requisição.
+
+Só a primeira escala de forma limpa com $N$. A terceira, o KV cache (as keys e values guardadas dos tokens anteriores, que a attention lê a cada novo passo), depende inteiramente de decisões sobre heads e tipos de camada. É aí que a arquitetura publicada do Qwen3.8-27B torna mensuráveis suas consequências de serving.
+
+## Como o layout do Qwen3.8-27B encolhe o cache?
+
+A [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) é dona da aritmética do KV cache deste modelo, então esta aula usa o resultado dela em vez de derivar um segundo orçamento. Dois fatos publicados importam:
+
+- A **grouped-query attention** (GQA, [aula 7.6](/pt-br/lessons/7-inference-and-efficiency/7.6-mqa-gqa-and-mla/)) deixa várias query heads compartilharem uma mesma head de key e value. O Qwen3.8-27B tem 24 query heads, mas apenas 4 KV heads.
+- O **layout híbrido 3:1** ([aula 4.16](/pt-br/lessons/4-transformer/4.16-hybrid-layouts/)) faz de três em cada quatro camadas uma Gated DeltaNet, que mantém um estado de tamanho fixo em vez de um cache crescente. Só 16 das 64 camadas são camadas de attention com cache.
+
+O contrafactual relevante mantém a head dimension e a contagem de camadas, mas troca as quatro KV heads por 24 e as 16 camadas de attention com cache por 64. A GQA reduz a contagem de KV heads por um fator de seis; o layout híbrido 3:1 reduz o número de camadas com cache crescente por um fator de quatro. Os fatores estruturais se multiplicam para 24. Os totais exatos em bytes, as hipóteses de dtype (formato numérico) e a conta do estado DeltaNet permanecem na aula 7.2.
 
 :::insight
-Nenhuma das mudanças é uma troca de configuração sem perdas no mesmo checkpoint. GQA pode, porém, ser introduzida por uptraining de um checkpoint MHA — o paper de GQA citado demonstra isso com cerca de 5% do compute original de pretraining —, produzindo um checkpoint alterado. Substituir camadas de attention por DeltaNet também exige treinar a nova arquitetura. São intervenções de desenvolvimento do modelo, diferentes de uma otimização apenas de runtime.
+Nenhuma das mudanças é uma troca de configuração sem perdas no mesmo checkpoint. A GQA pode, porém, ser introduzida por uptraining (continuar treinando) um checkpoint construído com multi-head attention completa (MHA). O paper de GQA citado demonstra isso com cerca de 5% do compute original de pretraining, e o resultado é um checkpoint alterado. Substituir camadas de attention por DeltaNet também exige treinar a nova arquitetura. São intervenções de desenvolvimento do modelo, diferentes de uma otimização de cache que só muda o runtime.
 :::
 
-A mesma distinção vale para o restante do projeto. Só 16 camadas mantêm cache que cresce com o comprimento da sequência, e os pesos lançados estão em bf16. Tamanho quantizado, contexto utilizável, throughput e fit total no acelerador dependem do runtime e do orçamento de memória exatos; a arquitetura sozinha não estabelece um alvo de workstation nem a intenção da equipe.
+A mesma distinção vale para o restante do projeto. Só 16 camadas mantêm um cache que cresce com o comprimento da sequência, e os pesos lançados estão em bf16. Tamanho quantizado, contexto utilizável, throughput e se o modelo cabe num dado acelerador dependem do runtime e do orçamento de memória exatos. A arquitetura sozinha não estabelece um alvo de workstation nem a intenção da equipe.
 
 :::warning
 A concepção equivocada mais comum aqui é que inference-aware scaling significa "treine um modelo menor". A contagem de parâmetros é a alavanca que as pessoas conhecem, e é a mais grosseira disponível. Com $N$ fixo, o layout de heads, a composição de camadas, o tratamento de contexto e a presença de um drafter nativo como a multi-token prediction mudam o custo de serving por fatores que fazem os poucos por cento de qualidade dessas escolhas parecerem irrisórios. Se a sua análise inference-aware só varia $N$, você está otimizando um eixo de um espaço de projeto com pelo menos quatro.
 :::
 
-Honestidade sobre o que é e o que não é conhecido importa aqui tanto quanto em qualquer ponto desta trilha. Os fatos arquiteturais acima são verificáveis no model card e no config. O raciocínio atribuído a eles é inferência a partir do projeto, não uma justificativa publicada — não existe relatório técnico deste modelo, e o time nunca declarou suas suposições de serving, orçamento de tokens ou modelo de custo. O que se pode afirmar com confiança é que a arquitetura lançada reduz estado crescente por sequência em relação ao contrafactual declarado. Interpretar esse efeito como objetivo da equipe é plausível, mas continua sendo inferência.
+## O que se sabe, e o que é só inferência?
 
-As ressalvas usuais continuam valendo. Previsões de $R$ erram com frequência nas duas direções, então reporte sensibilidade ao longo de cenários de demanda em vez de uma estimativa pontual. Loss de validação equivalente não garante qualidade equivalente sob latência, factualidade, comportamento multilíngue ou responsividade a post-training. A disponibilidade de dados restringe a alavanca de over-training: tokens únicos extras de alta qualidade podem simplesmente não existir, e repetir dados muda o objetivo efetivo e eleva o risco de memorização. A cadência de atualização também importa — um checkpoint substituído no mês que vem acumula muito menos inferência de vida útil do que um servido por anos.
+Honestidade sobre o que é e o que não é conhecido importa aqui tanto quanto em qualquer ponto desta trilha. Os fatos arquiteturais acima podem ser verificados no model card e no config. O raciocínio atribuído a eles é inferência a partir do projeto, não uma justificativa publicada. Não existe relatório técnico deste modelo, e a equipe nunca declarou suas suposições de serving, seu orçamento de tokens ou seu modelo de custo.
 
-O princípio duradouro é otimizar a vida do sistema em vez de uma única run. O Chinchilla pergunta como gastar um orçamento de pretraining. Inference-aware scaling pergunta o que deve existir depois do treino, dado quão frequentemente será usado — e a resposta é expressa em tokens, em parâmetros e, o que é mais consequente, no formato das próprias camadas.
+O que se pode afirmar com confiança é que a arquitetura lançada reduz o estado por sequência que cresce com o comprimento, em relação ao contrafactual declarado. Ler esse efeito como um objetivo da equipe é plausível, mas continua sendo inferência.
+
+## O que limita uma análise inference-aware?
+
+As ressalvas de sempre continuam valendo:
+
+- Previsões de $R$ erram com frequência nas duas direções, então reporte como a resposta muda ao longo de cenários de demanda, em vez de uma única estimativa pontual.
+- Loss de validação equivalente não garante qualidade equivalente sob limites de latência, factualidade, comportamento multilíngue ou responsividade ao post-training.
+- A disponibilidade de dados restringe a alavanca de over-training. Tokens únicos extras de alta qualidade podem não existir, e repetir dados muda o objetivo efetivo e eleva o risco de memorização.
+- A cadência de atualização importa. Um checkpoint substituído no mês que vem acumula muito menos inferência ao longo da vida do que um servido por anos.
+
+O princípio duradouro é otimizar a vida do sistema em vez de uma única run. O Chinchilla pergunta como gastar um orçamento de pretraining. Inference-aware scaling pergunta o que deve existir depois do treino, dado quão frequentemente será usado. A resposta é expressa em tokens, em parâmetros e, o que é mais consequente, no formato das próprias camadas.

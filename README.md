@@ -22,6 +22,14 @@ The pedagogy is Feynman's, applied literally. Each lesson runs:
 4. **Teach-back** — you explain it, then compare against a model answer
 5. **Quiz** — with an explanation of *why* the answer is right
 
+Lessons are written for a developer who has never studied machine learning:
+every new term is defined where it first appears, a worked case with small
+numbers comes before the general formula, headings name the question each
+part answers, and the first mention of another lesson links to it. The depth
+stays: the maths and the numbers are all there, after the example rather than
+instead of it. [`docs/WRITING.md`](docs/WRITING.md) is the standard every
+lesson is written and reviewed against.
+
 A lesson counts as complete only when your teach-back is substantive **and**
 the quiz is right. Clicking "reveal" is not learning: each explanation opens
 only once you have answered its question correctly, and a wrong check tells

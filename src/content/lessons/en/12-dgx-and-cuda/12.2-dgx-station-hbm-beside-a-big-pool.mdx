@@ -50,14 +50,29 @@ citations:
     authors: "NVIDIA Corporation"
     year: 2026
     url: "https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-NVIDIA's DGX Station page says "748 GB of coherent memory". Read fast, that sounds like one huge pool at the speed of the fastest part. Count what the page lists. The GB300 Grace Blackwell Ultra Desktop Superchip has one Blackwell Ultra GPU and a 72-core Grace CPU. The GPU side has 252 GB of HBM3e at 7.1 TB/s. The CPU side has 496 GB of LPDDR5X at 396 GB/s. NVLink-C2C joins them at 900 GB/s. And 252 plus 496 is 748. Two pools, two speeds, one address space.
+NVIDIA's DGX Station page says "748 GB of coherent memory". Read fast, that sounds like one huge pool at the speed of the fastest part. This lesson counts what the page actually lists, works out what each part means for decode speed, and shows how you control which part your model lands in.
 
-Coherent is a statement about correctness. The CUDA Programming Guide describes hardware-coherent systems such as Grace Hopper: a logically combined page table for CPUs and GPUs, and coherence at cache-line granularity. The Unified Memory guide names DGX Station among hardware-coherent systems, and the attribute query below confirms it on your machine. Any processor can read any byte and see the latest value. The guide does not promise that every byte arrives at the same rate. Speed follows the physical home of the bytes.
+## Two pools behind one number
 
-Apply the method of lesson 9.6 to each pool separately. These are planning heuristics from vendor figures, with the same artifact sizes as lesson 12.1.
+The page lists these parts:
+
+- The GB300 Grace Blackwell Ultra Desktop Superchip, one package that holds both processors: one Blackwell Ultra GPU and a 72-core Grace CPU.
+- The GPU side has 252 GB of HBM3e at 7.1 TB/s. HBM (high-bandwidth memory) is DRAM stacked right beside the GPU, built for speed rather than size.
+- The CPU side has 496 GB of LPDDR5X at 396 GB/s, the same low-power memory type as the Spark's pool in [lesson 12.1](/lessons/12-dgx-and-cuda/12.1-dgx-spark-grace-blackwell-on-a-desk/).
+- NVLink-C2C, NVIDIA's chip-to-chip link, joins them at 900 GB/s.
+
+And 252 plus 496 is 748. Two pools, two speeds, one address space.
+
+Coherent is a statement about correctness. You already rely on it on an ordinary multicore CPU: two cores each keep their own cache, yet both see the same value of a shared variable, because the hardware keeps the copies consistent. The CUDA Programming Guide describes hardware-coherent systems such as Grace Hopper in the same terms. CPUs and GPUs share a logically combined page table (the map from the addresses a program uses to physical memory), and coherence holds at cache-line granularity, the small fixed-size blocks that caches move. The Unified Memory guide names DGX Station among hardware-coherent systems, and the attribute query below confirms it on your machine.
+
+So any processor can read any byte and see the latest value. The guide does not promise that every byte arrives at the same rate. Speed follows the physical home of the bytes. The CPU-cache picture breaks down here. A cache keeps a temporary copy of data while the data's home stays put. On the Station each byte has a home pool, and migration moves the home itself, by the hardware's choice or by your code's.
+
+## Planning rates for each pool
+
+Apply the method of [lesson 9.6](/lessons/9-hardware-and-infrastructure/9.6-apple-silicon-unified-memory/) to each pool separately: bandwidth divided by the bytes read per token. These are planning heuristics from vendor figures, with the same artifact sizes as lesson 12.1 (the 17.1 GB Q4_K_M file and the 54 GB bf16 checkpoint).
 
 $$
 \frac{7100\ \text{GB/s}}{17.1\ \text{GB}} \approx 415\ \text{tok/s}, \qquad \frac{7100\ \text{GB/s}}{54\ \text{GB}} \approx 131\ \text{tok/s}.
@@ -69,7 +84,11 @@ $$
 
 The first line is the Station with every byte in HBM. The second is the Station with every byte in LPDDR5X. HBM is about 26 times the Spark's 273 GB/s. The slow pool alone is about 1.45 times the Spark's only pool. On the same 54 GB artifact, the Station's worst case of 7.3 tok/s beats the Spark's 5.1, and its best case is another world.
 
+## What happens when a model spans both pools?
+
 Now the blend. Put a share of the 54 GB in HBM and the rest in LPDDR5X. Suppose the layers are read one after another with no overlap, so the times add. Time per token is the bytes in each pool divided by that pool's bandwidth.
+
+Take one case by hand first. With 90 percent in HBM, 48.6 GB at 7,100 GB/s takes about 6.8 ms, and the other 5.4 GB at 396 GB/s takes about 13.6 ms. One token takes about 20.5 ms, so about 49 tok/s. The tenth of the bytes in the slow pool costs twice the time of the nine tenths in the fast one. The table repeats the same sum for other shares.
 
 | Share of the 54 GB in HBM | Time per token | Planning rate |
 |---|---|---|
@@ -78,11 +97,17 @@ Now the blend. Put a share of the 54 GB in HBM and the rest in LPDDR5X. Suppose 
 | 50 percent | 72.0 ms | 13.9 tok/s |
 | 0 percent | 136.4 ms | 7.3 tok/s |
 
-Look at the second row. Only 10 percent of the bytes sit in the slow pool, and the rate falls from 131 to 49 tok/s. If a runtime prefetches the next layer while the current one computes, the sum becomes a maximum. The slow pool still sets the pace once it holds more than 396 / (7100 + 396), about 5.3 percent, of the bytes. This is the classic wrong turn: dividing by 7,100 GB/s because the page says 748 GB. Averaging the two rates fails the same way. Times add. Rates do not average.
+Look at the second row again. Only 10 percent of the bytes sit in the slow pool, and the rate falls from 131 to 49 tok/s.
 
-Why would anyone put weights in the slow pool? Because some models do not fit in 252 GB. The share that spills sets the pace. NVIDIA's own vLLM playbook shows the other side. For the Spark it picks a 27B model. For the Station it picks a larger mixture-of-experts model, one that uses the extra memory. A 54 GB checkpoint does not need the Station's capacity. What the Station sells that model is bandwidth.
+A runtime can do better by prefetching: reading the next layer while the current one computes. Then the two reads overlap, and the time per token becomes the larger of the two instead of their sum. That helps, but the slow pool still sets the pace once it holds more than 396 / (7100 + 396), about 5.3 percent, of the bytes. At that share both reads take the same time.
 
-You steer placement with tools the Programming Guide documents. A hardware-coherent system keeps access counters and may migrate pages toward the processor that touches them most. You override that with hints.
+Two shortcuts give the wrong answer here. One divides by 7,100 GB/s because the page says 748 GB. The other averages the two rates, (131 + 7.3) / 2, about 69 tok/s, which fails the same way. Times add. Rates do not average.
+
+Why would anyone put weights in the slow pool? Because some models do not fit in 252 GB. The share that spills sets the pace. NVIDIA's own vLLM playbook shows the other side. For the Spark it picks a 27B model. For the Station it picks a larger mixture-of-experts model (a model with many expert sub-networks, of which each token uses only a few, [lesson 4.9](/lessons/4-transformer/4.9-feed-forward-block/)), one that uses the extra memory. A 54 GB checkpoint does not need the Station's capacity. What the Station sells that model is bandwidth.
+
+## Steering where the bytes live
+
+You steer placement with tools the Programming Guide documents. Memory is managed in pages, fixed-size chunks that can each live in either pool. A hardware-coherent system keeps access counters and may migrate pages, moving them toward the processor that touches them most. You override that with hints. In the listing, `cudaMallocManaged` allocates memory that both processors can address, `cudaMemAdvise` attaches a placement hint to a range, and `cudaMemPrefetchAsync` queues a move of the bytes ahead of first use, in order with the other work on its stream.
 
 ```cpp
 // 1 = every allocation is unified memory; hostTables 1 = coherence in hardware.
@@ -102,16 +127,20 @@ cudaMemAdvise(cold, coldBytes, cudaMemAdviseSetAccessedBy,        gpu);  // map 
 cudaMemPrefetchAsync(hot, hotBytes, gpu, 0, stream);                     // move it now
 ```
 
-Where the platform exposes device memory as a NUMA domain, the guide also describes `numa_alloc_on_node` and `mbind`. Memory pinned that way does not migrate. Check with `numactl --hardware` which nodes your machine shows. Runtimes expose the same idea as flags. Lesson 13.1 shows llama.cpp's tensor-placement options.
+Some platforms expose device memory as a NUMA domain (non-uniform memory access: the operating system sees each memory pool as a separate node). There the guide also describes `numa_alloc_on_node` and `mbind`. Memory pinned that way does not migrate. Check with `numactl --hardware` which nodes your machine shows. Runtimes expose the same idea as flags. [Lesson 13.1](/lessons/13-llama-cpp-in-depth/13.1-inside-llama-cpp-ggml-graphs-backends/) shows llama.cpp's tensor-placement options.
 
 :::warning
-Hints are not guarantees. The guide says a preferred location "does not guarantee" residence, and a later prefetch may override it. Do not assume your weights stayed in HBM. Measure it. Nsight Compute has a `C2CLink` section that reports NVLink-C2C utilization, so a model that streams weights over the link shows up as link traffic. Lesson 12.4 covers profiling.
+Hints are not guarantees. The guide says a preferred location "does not guarantee" residence, and a later prefetch may override it. Do not assume your weights stayed in HBM. Measure it. Nsight Compute, NVIDIA's kernel profiler, has a `C2CLink` section that reports NVLink-C2C utilization, so a model that streams weights over the link shows up as link traffic. [Lesson 12.4](/lessons/12-dgx-and-cuda/12.4-writing-a-fast-kernel-tiling-and-tensor-cores/) covers profiling.
 :::
 
-Compute capability is the other trap. NVIDIA's list puts the GB300 in the DGX Station at 10.3 and the GB10 in the DGX Spark at 12.1. The family name is the same. The build targets are not, and a binary built only for one does not run on the other. Lesson 12.3 shows how to build for both. Beyond the box, a ConnectX-8 SuperNIC gives up to 800 Gb/s, which is 100 GB/s. That is about 1.4 percent of the HBM figure, so the network stays far slower than local memory (lesson 9.9).
+## Compute capability and the network
+
+Compute capability is the other trap. NVIDIA's list puts the GB300 in the DGX Station at 10.3 and the GB10 in the DGX Spark at 12.1. The family name is the same. The build targets are not, and a binary built only for one does not run on the other. [Lesson 12.3](/lessons/12-dgx-and-cuda/12.3-the-cuda-programming-model/) shows how to build for both.
+
+Beyond the box, a ConnectX-8 SuperNIC, NVIDIA's network card, gives up to 800 Gb/s, which is 100 GB/s. That is about 1.4 percent of the HBM figure, so the network stays far slower than local memory ([lesson 9.9](/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/)).
 
 :::caveat
 All figures are NVIDIA's claims, read from its product page on 3 October 2026. The page's FP4 row carries sparsity footnotes that this lesson does not try to resolve, so it quotes no Station FP4 number. The blend table assumes a sequential read with no overlap. A real runtime will land somewhere between the sum and the maximum.
 :::
 
-The durable idea is that coherence gives you an address space and placement gives you a speed. Before you read a spec sheet's total capacity, ask which bytes live where. Lesson 12.3 turns to the programming model that decides how a kernel touches them.
+Coherence gives you an address space, and placement gives you a speed. Before you trust a spec sheet's total capacity, ask which bytes live where. Lesson 12.3 turns to the programming model that decides how a kernel touches them.

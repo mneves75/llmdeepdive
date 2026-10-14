@@ -15,13 +15,13 @@ lab:
   budgetKb: 12
 teachBack:
   prompt: "Orce um acelerador de 80 GB para o Qwen3.8-27B linha a linha e diga quantas conversas de 8.192 tokens ele serve simultaneamente, depois refaça o orçamento com pesos em FP8 e cache em FP8."
-  modelAnswer: "Uma peça de 80 GB reporta aproximadamente 79,6 GiB utilizáveis. Os pesos em bf16 são cerca de 54 GB, ou 50,3 GiB, e uma reserva de runtime de 6 GiB deixa cerca de 23,3 GiB, ou 23.859 MiB, como pool de estado. A lição 7.2 derivou 64 KiB por token, então uma conversa de 8.192 tokens guarda 512 MiB de cache; o estado matricial DeltaNet da referência em float32 acrescenta 144 MiB, dando 656 MiB por sequência e 36 conversas concorrentes. Uma sequência completa precisa de 16.384 MiB de cache mais 144 MiB, então só cabe uma. Com pesos em FP8 e cache em FP8 a 32 KiB por token, o pool cresce para 49.613 MiB e cada sequência de 8.192 tokens custa 256 mais 144, ou 400 MiB, dando 124 conversas concorrentes e cinco sequências de contexto completo."
+  modelAnswer: "Uma peça de 80 GB reporta aproximadamente 79,6 GiB utilizáveis. Os pesos em bf16 são cerca de 54 GB, ou 50,3 GiB. Uma reserva de runtime de 6 GiB então deixa cerca de 23,3 GiB, ou 23.859 MiB, como pool de estado. A aula 7.2 derivou 64 KiB por token, então uma conversa de 8.192 tokens guarda 512 MiB de cache. O estado matricial DeltaNet da referência em float32 acrescenta 144 MiB, dando 656 MiB por sequência e 36 conversas concorrentes. Uma sequência completa de 262.144 tokens precisa de 16.384 MiB de cache mais 144 MiB, então só cabe uma. Agora refaça a conta com pesos em FP8, de cerca de 27 GB, e cache em FP8 a 32 KiB por token. O pool cresce para 49.613 MiB, e cada sequência de 8.192 tokens custa 256 mais 144, ou 400 MiB. Isso dá 124 conversas concorrentes e cinco sequências de contexto completo."
 quiz:
   - question: "Num acelerador de 80 GB rodando o Qwen3.8-27B em bf16, por que a estimativa ingênua de 48 conversas concorrentes de 8.192 tokens supera o resultado calculado de 36?"
     options: ["Ela conta 80 GB como totalmente utilizáveis, ignora a reserva de runtime e omite os 144 MiB de estado matricial DeltaNet em float32 que cada sequência carrega na referência","Ela usa o número errado de KV heads","Ela assume pesos em FP8","Ela esquece que só 16 camadas fazem cache"]
     correctIndex: 0
     explanation: "Capacidade de folheto não é capacidade utilizável, o runtime precisa de vários gibibytes antes de qualquer cache ser alocado, e o estado recorrente constante por sequência é memória real que a aritmética de KV sozinha nunca mostra."
-  - question: "A lição 7.2 derivou o cache do Qwen3.8-27B como 64 KiB por token em vez de 256 KiB. Qual fato arquitetural produz o número menor?"
+  - question: "A aula 7.2 derivou o cache do Qwen3.8-27B como 64 KiB por token em vez de 256 KiB. Qual fato arquitetural produz o número menor?"
     options: ["O cache é armazenado em FP8 por padrão","Só as 16 camadas de full attention fazem cache de keys e values; as outras 48 camadas de Gated DeltaNet mantêm estado de tamanho fixo","A grouped-query attention remove os tensores de value","A torre de visão compartilha o cache"]
     correctIndex: 1
     explanation: "Assumir que todas as 64 camadas fazem cache quadruplica a estimativa; o layout híbrido significa que três quartos da profundidade não contribuem com cache por token algum."
@@ -42,51 +42,78 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Você tem um acelerador de 80 GB e quer servir o Qwen3.8-27B com janelas de 8.192 tokens. Alguém subtrai 54 dos pesos de 80, divide o restante pelos 64 KiB por token da lição 7.2 e reporta 48 usuários. O resultado calculado é 36: a estimativa ingênua fica um terço acima, e o modo de falha é um crash por falta de memória sob carga. Esta lição faz o orçamento linha a linha porque tudo o que vem depois é precificado contra ele.
+Você tem um acelerador de 80 GB e um requisito de produto: servir o Qwen3.8-27B ao maior número de conversas simultâneas que a placa permitir, cada uma com janela de 8.192 tokens. Alguém subtrai 54 dos pesos de 80, divide o restante pelos 64 KiB por token da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) (o tamanho do cache de key-value que cada token acrescenta) e reporta 48 usuários. O resultado calculado é 36. A estimativa ingênua fica um terço acima, e o jeito como ela falha é um crash por falta de memória sob carga. Esta aula faz o orçamento linha a linha, porque toda aula posterior que precifica serving se apoia nele.
 
-Comece pela capacidade utilizável, e não pela capacidade de folheto. Uma peça vendida como 80 GB carrega HBM da classe 80 GiB e reporta aproximadamente 79,6 GiB ao runtime depois que ECC e regiões reservadas de firmware são descontadas, então o número que você consegue de fato alocar é menor que o número na caixa. Fazer o orçamento inteiro numa única família de unidades é a única defesa, então converta tudo para gibibytes e permaneça ali. Os pesos em bf16, cerca de 54 GB pelo número canônico, são 50,3 GiB. Em seguida vem uma linha que a subtração ingênua omite por completo: a reserva de runtime. O contexto do driver, buffers de ativação para o maior batch que você pretende rodar, workspace temporário para os kernels de attention e de feed-forward, e a fragmentação do alocador consomem juntos vários gibibytes antes que exista um único token de cache. Seis gibibytes é um número ilustrativo e nada generoso; frameworks de serving codificam a mesma ideia como uma fração de utilização, retendo por padrão cerca de um décimo do dispositivo. O restante é o pool:
+## Quanto da placa você consegue de fato usar?
+
+Comece pela capacidade utilizável, e não pela capacidade de folheto. Uma peça vendida como 80 GB carrega HBM (sua memória de alta banda) da classe 80 GiB. Ela reporta aproximadamente 79,6 GiB ao runtime depois que ECC (correção de erros) e regiões reservadas de firmware são descontadas. Então o número que você consegue de fato alocar é menor que o número na caixa.
+
+A segunda armadilha são as unidades. Um GB é um bilhão de bytes; um GiB (gibibyte) é 1.024 × 1.024 × 1.024 bytes, cerca de 7 por cento a mais. Fabricantes citam pesos em GB e runtimes reportam memória em GiB, e misturar os dois distorce um orçamento nesses 7 por cento sem nenhuma mensagem de erro. A única defesa é fazer o orçamento inteiro numa única família de unidades: converta tudo para gibibytes e permaneça ali. Os pesos em bf16, cerca de 54 GB pelo número canônico, são 50,3 GiB.
+
+Em seguida vem uma linha que a subtração ingênua omite por completo: a **reserva de runtime**. Várias coisas consomem memória antes que exista um único token de cache:
+
+- o contexto do driver, a contabilidade do lado da GPU que todo processo precisa;
+- buffers de ativação para o maior batch que você pretende rodar (ativações são os resultados intermediários de cada camada);
+- workspace temporário para os kernels de attention e de feed-forward;
+- a fragmentação do alocador: memória livre partida em blocos pequenos ou espalhados demais para atender à alocação que está sendo pedida.
+
+Juntas, elas ocupam vários gibibytes. Seis gibibytes é um número ilustrativo e nada generoso. Frameworks de serving codificam a mesma ideia como uma fração de utilização, retendo por padrão cerca de um décimo do dispositivo. O que sobra é o **pool**, a memória que fica para o estado de cada conversa:
 
 $$
 79.6\ \text{GiB} - 50.3\ \text{GiB} - 6\ \text{GiB} \ =\ 23.3\ \text{GiB} \ =\ 23{,}859\ \text{MiB}.
 $$
 
-Agora precifique uma sequência, e precifique-a por completo. A lição 7.2 derivou o cache em 4 KiB por token por camada que faz cache, 64 KiB por token através das 16 camadas de full attention, e essa derivação não se repete aqui. Uma conversa de 8.192 tokens, portanto, guarda
-
 <Figure id="memory-budget" />
+
+## Quanto custa de verdade uma conversa?
+
+Agora precifique uma sequência, e precifique-a por completo. A aula 7.2 derivou o cache em 4 KiB por token por camada que faz cache, 64 KiB por token através das 16 camadas de full attention, e essa derivação não se repete aqui. Uma conversa de 8.192 tokens, portanto, guarda
 
 $$
 8{,}192\ \text{tokens} \times 64\ \text{KiB} \ =\ 524{,}288\ \text{KiB} \ =\ 512\ \text{MiB}
 $$
 
-de keys e values. Mas as 48 camadas de Gated DeltaNet também não são de graça. Na referência do Transformers, cada uma mantém um estado matricial de 3 MiB em float32, totalizando 144 MiB sem o pequeno estado de convolução. Esse estado pertence à sequência, não ao modelo. Cada conversa carrega uma cópia. O custo real é 512 mais 144, ou 656 MiB, e o pool comporta
+de keys e values. Mas as 48 camadas de Gated DeltaNet também custam memória. Na referência do Transformers, cada uma mantém um estado matricial de 3 MiB em float32, totalizando 144 MiB sem o pequeno estado de convolução.
+
+Esse estado pertence à sequência, não ao modelo: cada conversa simultânea carrega sua própria cópia, do mesmo jeito que cada arquivo aberto carrega sua própria posição de leitura enquanto o conteúdo do arquivo é compartilhado. Então o custo real por sequência é 512 mais 144, ou 656 MiB, e o pool comporta
 
 $$
 \frac{23{,}859\ \text{MiB}}{656\ \text{MiB}} \ \approx\ 36\ \text{sequências concorrentes}.
 $$
 
-Trinta e seis, não quarenta e oito. As três correções são a conversão de unidades, a reserva de runtime e o estado recorrente constante.
+Trinta e seis, não quarenta e oito. Três correções fecharam a diferença:
 
-Empurre o mesmo pool ao outro extremo. Uma sequência de 262.144 tokens guarda 16.384 MiB de K/V mais 144 MiB de estado matricial, então o pool comporta uma. Em 32.768 tokens, cada sequência custa 2.048 mais 144, ou 2.192 MiB, e a placa serve dez. A concorrência é função do comprimento de contexto prometido.
+1. a conversão de unidades e a capacidade utilizável;
+2. a reserva de runtime;
+3. o estado recorrente constante que cada sequência carrega.
 
-Refaça o orçamento com pesos em FP8 e cache em FP8. Os pesos caem para cerca de 27 GB, ou 25,15 GiB, e o cache para 32 KiB por token. O pool passa a 49.613 MiB. Cada sequência de 8.192 tokens custa 256 MiB de cache mais os 144 MiB inalterados do estado da referência, 400 MiB no total, então a placa serve
+## A concorrência depende do contexto que você promete
+
+Empurre o mesmo pool ao outro extremo. Uma sequência completa de 262.144 tokens guarda 16.384 MiB de K/V (keys e values) mais 144 MiB de estado matricial, então o pool comporta uma. Em 32.768 tokens, cada sequência custa 2.048 mais 144, ou 2.192 MiB, e a placa serve dez. A concorrência é função do comprimento de contexto que você promete.
+
+## O mesmo orçamento em FP8
+
+Refaça o orçamento com pesos em FP8 e cache em FP8 (ponto flutuante de 8 bits, um byte por número em vez dos dois do bf16). Os pesos caem pela metade, para cerca de 27 GB, ou 25,15 GiB, e o cache cai pela metade, para 32 KiB por token. O pool passa a cerca de 48,45 GiB, ou 49.613 MiB. Cada sequência de 8.192 tokens agora custa 256 MiB de cache mais os 144 MiB inalterados do estado da referência, 400 MiB no total, então a placa serve
 
 $$
 \frac{49{,}613\ \text{MiB}}{400\ \text{MiB}} \ \approx\ 124\ \text{sequências concorrentes},
 $$
 
-e cinco conversas em contexto nativo completo. Isso é um ganho de aproximadamente 3,4 vezes nessa mudança combinada de precisão.
+e cinco conversas em contexto nativo completo em vez de uma. Isso é um ganho de aproximadamente 3,4 vezes na concorrência com essa mudança combinada de precisão.
 
-Omitir o estado DeltaNet prevê 46 sequências em bf16 em vez de 36, cerca de 28 por cento a mais, e 193 em FP8 em vez de 124, cerca de 56 por cento a mais. O estado é constante, então seu peso relativo cresce quando os termos variáveis encolhem; muitas cópias de 144 MiB viram uma linha relevante do orçamento.
+## Por que o estado constante pesa mais quando todo o resto encolhe
+
+Deixe o estado DeltaNet de fora e o orçamento prevê 46 sequências em bf16 em vez de 36, cerca de 28 por cento a mais. Em FP8, prevê 193 sequências em vez de 124, cerca de 56 por cento a mais. O estado é constante, então, conforme cada termo variável encolhe, a fatia do estado no orçamento cresce. Muitas cópias de 144 MiB fixos viram uma linha relevante do orçamento.
 
 :::warning
-O erro mais caro é reservar o contexto máximo para toda requisição. A alocação paginada da lição 7.8 entrega blocos sob demanda, de modo que uma conversa de 300 tokens ocupa 300 tokens de memória de KV; isso transforma o pool teórico em 36 usuários simultâneos de 8K neste orçamento calculado. Admita requisições contra ocupação medida, não contra limites declarados.
+O erro mais caro é reservar o contexto máximo para toda requisição. A alocação paginada, apresentada na [aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/), entrega blocos de cache sob demanda, de modo que uma conversa de 300 tokens ocupa 300 tokens de memória de KV. É isso que transforma o pool teórico em 36 usuários simultâneos de 8K neste orçamento calculado. Admita requisições contra a ocupação medida, não contra limites declarados.
 :::
 
 :::caveat
-Todo número aqui é uma estimativa ilustrativa de planejamento, não uma especificação de deploy. Os 144 MiB de estado matricial seguem a referência em float32 e excluem o pequeno estado de convolução curta; outro runtime pode escolher outro dtype. A reserva de seis gibibytes e o overhead do cache quantizado também dependem da stack. Derive o orçamento e verifique carregando o modelo e lendo o alocador.
+Todo número aqui é uma estimativa ilustrativa de planejamento, não uma especificação de deploy. Os 144 MiB de estado matricial seguem a referência em float32 e excluem o pequeno estado de convolução curta; outro runtime pode escolher outro dtype para o estado. A reserva de seis gibibytes e o overhead do cache quantizado também dependem da stack exata. Derive o orçamento e depois verifique carregando o modelo e lendo o alocador.
 :::
 
-Leve dois hábitos desta lição. Orce numa única família de unidades, e precifique uma sequência por completo em vez de precificar apenas o cache dela. A lição 9.4 muda a linha de capacidade mudando o silício, e a lição 9.10 transforma esses números de ocupação em custo por token.
+Leve dois hábitos desta aula. Orce numa única família de unidades, e precifique uma sequência por completo em vez de precificar apenas o cache dela. A [aula 9.4](/pt-br/lessons/9-hardware-and-infrastructure/9.4-nvidia-cuda-hopper-blackwell/) muda a linha de capacidade mudando o silício, e a [aula 9.10](/pt-br/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) transforma esses números de ocupação em custo por token.

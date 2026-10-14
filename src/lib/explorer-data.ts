@@ -39,9 +39,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Input encoding', 'pt-br': 'Codificação de entrada' },
     tagline: { en: 'Text into integers', 'pt-br': 'Texto em inteiros' },
     summary: {
-      en: 'Splits text into subword units and maps each to an integer. Every downstream cost — context length, price per call, throughput — is denominated in these units.',
+      en: 'Cuts text into pieces called tokens (whole words, parts of words or single characters) and swaps each piece for an integer id from a fixed list. Everything later is counted in tokens: how much text fits in the context, what a call costs, how fast a server runs.',
       'pt-br':
-        'Divide o texto em unidades de subpalavra e mapeia cada uma para um inteiro. Todo custo seguinte — tamanho de contexto, preço por chamada, throughput — é contado nessas unidades.',
+        'Corta o texto em pedaços chamados tokens (palavras inteiras, partes de palavras ou caracteres) e troca cada pedaço por um id inteiro de uma lista fixa. Tudo o que vem depois é contado em tokens: quanto texto cabe no contexto, quanto custa uma chamada, quão rápido um servidor responde.',
     },
     facts: {
       params: 'None (a lookup table, not learned weights)',
@@ -57,13 +57,13 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Meaning as geometry', 'pt-br': 'Significado como geometria' },
     tagline: { en: 'Where words become directions', 'pt-br': 'Onde palavras viram direções' },
     summary: {
-      en: 'A learned matrix of one vector per vocabulary entry. Similar meanings end up in similar directions, which is why arithmetic on these vectors does anything at all.',
+      en: 'A big table with one row of numbers (a vector) for each token id; looking up a row is all it does. Training adjusts the rows so that tokens with similar meanings point in similar directions, which is why doing arithmetic on them is meaningful.',
       'pt-br':
-        'Uma matriz aprendida com um vetor por entrada do vocabulário. Significados parecidos acabam em direções parecidas — é por isso que aritmética com esses vetores funciona.',
+        'Uma tabela grande com uma linha de números (um vetor) para cada id de token; o que ela faz é consultar uma linha. O treino ajusta as linhas para que tokens de significado parecido apontem em direções parecidas, e por isso fazer contas com esses vetores tem sentido.',
     },
     facts: {
       params: '~2–10% (vocab × d_model)',
-      cost: 'One gather per token',
+      cost: 'One table-row lookup per token',
       introduced: 'Bengio et al., 2003; word2vec, 2013',
       variants: 'Tied vs untied with the LM head',
     },
@@ -75,9 +75,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Order', 'pt-br': 'Ordem' },
     tagline: { en: 'Attention has no sense of sequence', 'pt-br': 'A atenção não percebe sequência' },
     summary: {
-      en: 'Unmasked self-attention without positional signals is permutation-equivariant: reordering the token vectors reorders the corresponding outputs, so the layer cannot encode where each token appeared. RoPE injects relative position by rotating queries and keys.',
+      en: 'Self-attention with no mask and no position signal cannot tell order apart: shuffle the input tokens and the outputs come back shuffled the same way, otherwise unchanged. So the model needs a separate signal for where each token sits. RoPE adds one by rotating each query and key by an angle that depends on its position.',
       'pt-br':
-        'A auto-atenção sem máscara nem sinais posicionais é equivariante a permutação: reordenar os vetores dos tokens reordena as saídas correspondentes, então a camada não consegue codificar onde cada token apareceu. O RoPE injeta posição relativa ao rotacionar queries e keys.',
+        'A self-attention sem máscara e sem sinal de posição não distingue a ordem: embaralhe os tokens de entrada e as saídas voltam embaralhadas do mesmo jeito, sem outra mudança. Por isso o modelo precisa de um sinal separado dizendo onde cada token está. O RoPE dá esse sinal girando cada query e cada key por um ângulo que depende da posição.',
     },
     facts: {
       params: 'Zero (RoPE, ALiBi) or max positions × d_model (learned)',
@@ -93,9 +93,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Stability', 'pt-br': 'Estabilidade' },
     tagline: { en: 'The reason deep stacks train at all', 'pt-br': 'A razão de pilhas profundas treinarem' },
     summary: {
-      en: 'Rescales activations so gradients neither vanish nor explode through dozens of layers. RMSNorm drops the mean-centring step and loses nothing measurable, so nearly every modern model uses it.',
+      en: 'Rescales the vector each layer passes on so its size stays in a steady range. Without it, the training signal (the gradient) shrinks to nothing or blows up as it passes back through dozens of layers. RMSNorm skips the step that subtracts the mean, loses nothing measurable, and is what nearly every modern model uses.',
       'pt-br':
-        'Reescala ativações para que os gradientes não desapareçam nem explodam ao longo de dezenas de camadas. RMSNorm descarta a centralização pela média sem perda mensurável, e por isso quase todo modelo moderno a usa.',
+        'Reescala o vetor que cada camada passa adiante para que seu tamanho fique numa faixa estável. Sem isso, o sinal de treino (o gradiente) some ou explode ao voltar por dezenas de camadas. A RMSNorm pula o passo que subtrai a média, sem perda mensurável, e é a que quase todo modelo moderno usa.',
     },
     facts: {
       params: '<0.1%',
@@ -111,9 +111,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Information routing', 'pt-br': 'Roteamento de informação' },
     tagline: { en: 'Every position reads every other', 'pt-br': 'Cada posição lê todas as outras' },
     summary: {
-      en: 'Each position emits a query, and every earlier position offers a key and a value. The softmax over query·key decides how much of each value to mix in. This is the only place tokens exchange information.',
+      en: 'Each token asks a question (its query), and every earlier token offers a label (its key) and some content (its value). Comparing the query with each key gives a score; softmax turns the scores into weights that add up to 1, and the output is the weighted mix of values. This is the only place tokens exchange information.',
       'pt-br':
-        'Cada posição emite uma query, e cada posição anterior oferece uma key e um value. O softmax sobre query·key decide quanto de cada value entra na mistura. É o único lugar onde tokens trocam informação.',
+        'Cada token faz uma pergunta (sua query), e cada token anterior oferece um rótulo (sua key) e um conteúdo (seu value). Comparar a query com cada key dá uma nota; o softmax transforma as notas em pesos que somam 1, e a saída é a mistura dos values com esses pesos. É o único lugar onde os tokens trocam informação.',
     },
     facts: {
       params: '~25–33% (four d_model × d_model projections)',
@@ -129,9 +129,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Memory of the past', 'pt-br': 'Memória do passado' },
     tagline: { en: 'Why the second token is cheap', 'pt-br': 'Por que o segundo token é barato' },
     summary: {
-      en: 'Keys and values for every past position, kept so each new token does not recompute the whole prefix. It converts quadratic work into linear — and becomes the dominant memory cost at long context.',
+      en: 'The keys and values of every earlier token, saved so each new token reuses them instead of recomputing the whole text so far. Generating one more token then costs work proportional to the text length rather than its square. The price is memory: at long context this cache is the biggest thing in it.',
       'pt-br':
-        'Keys e values de todas as posições anteriores, guardados para que cada novo token não recompute o prefixo inteiro. Converte trabalho quadrático em linear — e vira o maior custo de memória em contexto longo.',
+        'As keys e os values de todos os tokens anteriores, guardados para que cada novo token os reaproveite em vez de recalcular todo o texto até ali. Gerar mais um token passa a custar trabalho proporcional ao tamanho do texto, não ao seu quadrado. O preço é memória: em contexto longo, esse cache é o que mais ocupa espaço.',
     },
     facts: {
       params: 'None (runtime state)',
@@ -147,9 +147,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'The highway', 'pt-br': 'A via expressa' },
     tagline: { en: 'Every block reads it and writes back', 'pt-br': 'Cada bloco lê e escreve de volta' },
     summary: {
-      en: 'Not a layer but a shared bus. Each block adds its output to the running sum, so information can skip any number of layers untouched. Interpretability treats it as the model’s working memory.',
+      en: 'A running vector per token that every block reads from and adds its result to, like a shared variable each function updates with +=. Because blocks add instead of overwrite, information can pass through any number of layers untouched. Interpretability research treats it as the model’s working memory.',
       'pt-br':
-        'Não é uma camada, e sim um barramento compartilhado. Cada bloco soma sua saída ao acumulado, então a informação pode pular quantas camadas quiser intacta. A interpretabilidade o trata como a memória de trabalho do modelo.',
+        'Um vetor acumulado por token que cada bloco lê e ao qual soma seu resultado, como uma variável compartilhada que cada função atualiza com +=. Como os blocos somam em vez de sobrescrever, a informação pode atravessar quantas camadas forem intacta. A pesquisa em interpretabilidade o trata como a memória de trabalho do modelo.',
     },
     facts: {
       params: 'None (an addition)',
@@ -165,9 +165,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Knowledge storage', 'pt-br': 'Armazenamento de conhecimento' },
     tagline: { en: 'Where the facts live', 'pt-br': 'Onde os fatos moram' },
     summary: {
-      en: 'Two projections with a non-linearity between them, applied independently at every position. It holds most of the parameters, and interpretability work keeps finding retrievable facts here rather than in attention.',
+      en: 'Two matrix multiplications with a non-linear function between them, run on each token separately. It holds most of the parameters, and interpretability research keeps finding stored facts here rather than in attention.',
       'pt-br':
-        'Duas projeções com uma não-linearidade entre elas, aplicadas de forma independente em cada posição. Concentra a maior parte dos parâmetros, e trabalhos de interpretabilidade seguem encontrando fatos recuperáveis aqui, não na atenção.',
+        'Duas multiplicações de matrizes com uma função não linear entre elas, aplicadas a cada token separadamente. Concentra a maior parte dos parâmetros, e a pesquisa em interpretabilidade segue encontrando fatos guardados aqui, não na attention.',
     },
     facts: {
       params: '~60–67% (the largest single share)',
@@ -183,9 +183,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Sparse capacity', 'pt-br': 'Capacidade esparsa' },
     tagline: { en: 'Trillions of parameters, billions used', 'pt-br': 'Trilhões de parâmetros, bilhões usados' },
     summary: {
-      en: 'A tiny learned gate picks k experts out of E for each token. Total parameters grow with E while per-token compute grows only with k. FareedKhan-dev’s Kimi K3 in C illustrates CPU inference with native MXFP4 experts loaded on demand from storage; a smaller resident working set still needs disk capacity and I/O time.',
+      en: 'Mixture of experts (MoE) splits the feed-forward block into E smaller networks, the experts. A tiny learned gate picks k of them for each token, so total parameters grow with E while the work per token grows only with k. FareedKhan-dev’s Kimi K3 in C illustrates CPU inference with native MXFP4 experts loaded on demand from storage; a smaller resident working set still needs disk capacity and I/O time.',
       'pt-br':
-        'Um gate pequeno e aprendido escolhe k experts entre E para cada token. O total de parâmetros cresce com E, mas o cálculo por token cresce só com k. O Kimi K3 in C, de FareedKhan-dev, ilustra inferência em CPU com experts MXFP4 nativos carregados do armazenamento sob demanda; um conjunto de trabalho residente menor ainda exige espaço em disco e tempo de I/O.',
+        'O mixture of experts (MoE) divide o bloco feed-forward em E redes menores, os experts. Um gate pequeno e aprendido escolhe k delas para cada token, então o total de parâmetros cresce com E, mas o trabalho por token cresce só com k. O Kimi K3 in C, de FareedKhan-dev, ilustra inferência em CPU com experts MXFP4 nativos carregados do armazenamento sob demanda; um conjunto de trabalho residente menor ainda exige espaço em disco e tempo de I/O.',
     },
     facts: {
       params: 'Router <0.1%; experts can be >90% of the model',
@@ -203,13 +203,13 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Compression', 'pt-br': 'Compressão' },
     tagline: { en: 'Fewer bits per weight', 'pt-br': 'Menos bits por peso' },
     summary: {
-      en: 'Not a layer but a transformation applied across all of them: store weights in 8, 4 or fewer bits. It is the difference between a model that fits your hardware and one that does not.',
+      en: 'A change applied to every layer rather than a layer of its own: store each weight in 8, 4 or fewer bits instead of 16, accepting a small rounding error. It often decides whether a model fits on your hardware at all.',
       'pt-br':
-        'Não é uma camada, mas uma transformação aplicada a todas elas: guardar pesos em 8, 4 ou menos bits. É a diferença entre um modelo que cabe no seu hardware e um que não cabe.',
+        'Uma mudança aplicada a todas as camadas, não uma camada própria: guardar cada peso em 8, 4 ou menos bits em vez de 16, aceitando um pequeno erro de arredondamento. Muitas vezes decide se o modelo cabe ou não no seu hardware.',
     },
     facts: {
       params: 'Affects all of them',
-      cost: 'Dequantisation on the critical path',
+      cost: 'Turning weights back into full precision each time they are used',
       introduced: 'GPTQ: Frantar et al., 2022; AWQ: Lin et al., 2023',
       variants: 'int8 · int4 · MXFP4 · GGUF k-quants · QAT',
     },
@@ -221,9 +221,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Output projection', 'pt-br': 'Projeção de saída' },
     tagline: { en: 'Back to vocabulary space', 'pt-br': 'De volta ao espaço do vocabulário' },
     summary: {
-      en: 'Projects the final hidden state onto one logit per vocabulary entry. Often shares weights with the embedding table, on the argument that reading and writing a word should use the same representation.',
+      en: 'Turns the last layer’s vector into one score (a logit) for every token in the vocabulary; a higher score means a likelier next token. It often reuses the embedding table’s weights, on the argument that reading and writing a word should use the same representation.',
       'pt-br':
-        'Projeta o estado oculto final em um logit por entrada do vocabulário. Costuma compartilhar pesos com a tabela de embeddings, sob o argumento de que ler e escrever uma palavra deveriam usar a mesma representação.',
+        'Transforma o vetor da última camada em uma nota (um logit) para cada token do vocabulário; nota maior significa próximo token mais provável. Costuma reaproveitar os pesos da tabela de embeddings, sob o argumento de que ler e escrever uma palavra deveriam usar a mesma representação.',
     },
     facts: {
       params: '~2–10% (or zero if tied)',
@@ -239,9 +239,9 @@ export const COMPONENTS: readonly ExplorerComponent[] = [
     system: { en: 'Decoding', 'pt-br': 'Decodificação' },
     tagline: { en: 'The model proposes; this disposes', 'pt-br': 'O modelo propõe; ele decide' },
     summary: {
-      en: 'Turns a distribution over the vocabulary into one chosen token. Temperature, top-k, top-p and min-p all reshape that distribution — and they change output quality far more than most people expect.',
+      en: 'Picks the one token that is actually written next from the model’s probabilities over the whole vocabulary. Temperature, top-k, top-p and min-p each reshape or trim those probabilities before the pick, and they change output quality far more than most people expect.',
       'pt-br':
-        'Transforma uma distribuição sobre o vocabulário em um token escolhido. Temperature, top-k, top-p e min-p remodelam essa distribuição — e mudam a qualidade da saída muito mais do que se costuma imaginar.',
+        'Escolhe, a partir das probabilidades do modelo sobre todo o vocabulário, o token que de fato é escrito em seguida. Temperature, top-k, top-p e min-p remodelam ou cortam essas probabilidades antes da escolha, e mudam a qualidade da saída muito mais do que se costuma imaginar.',
     },
     facts: {
       params: 'None',
@@ -270,7 +270,7 @@ const PT_FACTS: Record<string, ComponentFacts> = {
   },
   embedding: {
     params: '~2–10% (vocabulário × d_model)',
-    cost: 'Uma operação gather por token',
+    cost: 'Uma consulta de linha da tabela por token',
     introduced: 'Bengio et al., 2003; word2vec, 2013',
     variants: 'Pesos compartilhados ou não com a cabeça LM',
   },
@@ -330,7 +330,7 @@ const PT_FACTS: Record<string, ComponentFacts> = {
   },
   quantization: {
     params: 'Afeta todos os parâmetros',
-    cost: 'Desquantização no caminho crítico',
+    cost: 'Converter os pesos de volta à precisão cheia a cada uso',
     introduced: 'GPTQ: Frantar et al., 2022; AWQ: Lin et al., 2023',
     variants: 'int8 · int4 · MXFP4 · k-quants GGUF · QAT',
   },

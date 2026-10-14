@@ -8,19 +8,19 @@ tier: "advanced"
 locale: "en"
 prerequisites: ["5.5-chinchilla-compute-optimality"]
 unlocks: ["5.7-data-parallelism-zero-fsdp"]
-analogy: "A delivery company can buy a large van that reaches target capacity after a short setup, or spend longer tuning a smaller electric van that makes each future route cheaper. If it will make ten deliveries, setup dominates. If it will make a billion, operating cost dominates. Inference-aware scaling adds the lifetime route count to a decision that training-only scaling treats as a one-time race."
+analogy: "A delivery company can buy a large van that reaches its target capacity after a short setup, or spend longer tuning a smaller electric van that makes every future route cheaper. If it will make ten deliveries, the setup cost dominates. If it will make a billion, the operating cost dominates. Inference-aware scaling adds the lifetime number of routes to a decision that training-only scaling treats as a one-time race."
 teachBack:
   prompt: "Explain inference-aware scaling, then analyze the serving consequences of Qwen3.8-27B’s grouped-query attention and 3:1 hybrid layout without attributing an unpublished training rationale."
-  modelAnswer: "Training compute is paid once; inference compute is paid per served token, so high lifetime demand can shift the optimum toward models that are cheaper per request. Training a smaller model for more tokens is one lever. Architecture at fixed parameter count is another: Qwen3.8-27B has 24 query heads but only 4 KV heads, and only 16 of 64 layers maintain a growing KV cache. Relative to an all-MHA, all-attention counterfactual, these facts provide factors of six and four in the cache dimensions, or 24 combined. Lesson 7.2 owns the byte derivation. The architecture and its consequences are documented; the team’s serving assumptions and design rationale are not."
+  modelAnswer: "Training compute is paid once, while inference compute is paid for every served token, so high lifetime demand can shift the optimum toward models that are cheaper per request. Training a smaller model on more tokens is one lever. Architecture at a fixed parameter count is another. Qwen3.8-27B has 24 query heads but only 4 KV heads, and only 16 of its 64 layers keep a KV cache that grows with the sequence. Compared with a counterfactual that uses full multi-head attention in every layer, these facts give factors of six and four in the cache dimensions, or 24 combined. Lesson 7.2 owns the derivation in bytes. The architecture and its consequences are documented; the team’s serving assumptions and design rationale are not."
 quiz:
   - question: "Which two published architectural facts produce the 24-fold KV-cache factor derived in lesson 7.2?"
     options: ["The model has 24 query heads and 64 total layers, so 24 + 64 = 88", "The DeltaNet state and bf16 weights happen to have equal sizes", "Four KV heads instead of 24 give a factor of 6, and 16 caching layers instead of 64 give a factor of 4; 6 × 4 = 24", "The model card documents a 24-fold serving target"]
     correctIndex: 2
-    explanation: "GQA changes the KV-head count and the hybrid layout changes the number of layers with a growing cache. Lesson 7.2 derives their byte consequences; the model card does not state a design target."
+    explanation: "GQA changes the number of KV heads, and the hybrid layout changes the number of layers whose cache grows. Lesson 7.2 derives what that means in bytes; the model card does not state a design target."
   - question: "Lesson 5.5 defined over-training relative to a Chinchilla point. Why is that not a criticism of a model trained far past it?"
     options: ["Because loss no longer decreases past that point", "Because the irreducible floor moves", "Because the token count is unpublished", "The Chinchilla optimum minimizes loss for a fixed training budget only, and says nothing about lifetime serving cost"]
     correctIndex: 3
-    explanation: "Extra tokens past the training-compute optimum purchase a permanently smaller model at a target quality; that is a different objective, not a mistake."
+    explanation: "Extra tokens past the training-compute optimum buy a model that reaches a target quality while staying permanently smaller. That is a different objective, not a mistake."
   - question: "What new variable changes the inference-aware optimum most directly?"
     options: ["Expected lifetime inference demand", "The spelling of the model name", "The number of citation entries", "The order of training files"]
     correctIndex: 0
@@ -38,10 +38,14 @@ citations:
     authors: "Joshua Ainslie et al."
     year: 2023
     url: "https://arxiv.org/abs/2305.13245"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Training-compute optimality asks how to get the lowest loss out of a fixed pretraining budget. A deployed model has a much longer life than that question imagines. Training happens once. Inference happens for every prompt and every generated token, on every replica, for as long as the checkpoint is served. If demand is large, the recurring bill dwarfs the one-time one, and the optimization target has to include both.
+Training-compute optimality asks how to get the lowest loss out of a fixed pretraining budget. A deployed model lives much longer than that question imagines. Training happens once. Inference happens for every prompt and every generated token, on every replica (each copy of the model serving traffic), for as long as the checkpoint is served. If demand is large, the recurring bill dwarfs the one-time one, and the optimization target has to include both.
+
+## Why does serving demand change the optimum?
+
+A toy example with made-up units shows the effect. Say training costs 100 units once, and serving costs 1 unit per million requests. At 10 million lifetime requests, serving adds 10 units, and training dominates the bill. At a billion requests, serving adds 1,000 units, ten times the training cost. A model that costs twice as much to train but half as much per request now saves money overall.
 
 The standard framing writes lifetime cost as
 
@@ -49,26 +53,52 @@ $$
 C_{life}=C_{train}(N,D)+R\,C_{infer}(N,L),
 $$
 
-with $R$ the expected inference volume and $L$ capturing prompt and output lengths. Sardana and collaborators modified Chinchilla-style analysis along exactly these lines, trained models at high token-to-parameter ratios to validate the behaviour, and reported that sufficiently large inference demand shifts the preferred solution toward smaller models trained on more data. Their crossover point is conditional on their costs, fits, and workload assumptions — but the direction is structural, not incidental.
+with $R$ the expected inference volume and $L$ capturing prompt and output lengths. Sardana and collaborators modified Chinchilla-style analysis along exactly these lines. They trained models at high token-to-parameter ratios to validate the behaviour, and reported that large enough inference demand shifts the preferred solution toward smaller models trained on more data. Their crossover point depends on their costs, fits, and workload assumptions, but the direction follows from the structure of the formula rather than from those details.
 
-That is the version of inference-aware scaling everyone quotes, and it treats $N$ as the only lever: pick fewer parameters, feed more tokens, accept a bigger training bill in exchange for a cheaper forward pass forever. Lesson 5.5 walked through that arithmetic. It is real, and it is half the story.
+## What can you change besides parameter count?
 
-The half that gets skipped is that $C_{infer}$ is not a function of parameter count alone. At a fixed 27 billion parameters you can build architectures whose serving costs differ by more than an order of magnitude, because a served request pays for three things: reading the weights, computing the layers, and holding the per-request state. Only the first scales cleanly with $N$. The third — the KV cache — depends entirely on decisions about heads and layer types, and it is where Qwen3.8-27B makes its position obvious.
+That is the version of inference-aware scaling everyone quotes, and it treats $N$ as the only lever: pick fewer parameters, feed more tokens, and accept a bigger training bill in exchange for a cheaper forward pass forever. [Lesson 5.5](/lessons/5-pretraining-at-scale/5.5-chinchilla-compute-optimality/) walked through that arithmetic. It is real, and it is half the story.
 
-Lesson 7.2 owns the KV-cache arithmetic for this model, so this lesson uses its result instead of re-deriving a second budget. The relevant counterfactual holds the head dimension and layer count fixed but replaces four KV heads with 24 and replaces 16 caching attention layers with 64. GQA reduces the KV-head count by a factor of six; the 3:1 hybrid layout reduces the number of growing-cache layers by a factor of four. Their structural factors multiply to 24. The exact byte totals, dtype assumptions, and DeltaNet-state accounting remain in lesson 7.2.
+The half that gets skipped is that $C_{infer}$ is not a function of parameter count alone. At a fixed 27 billion parameters you can build architectures whose serving costs differ by more than an order of magnitude, because a served request pays for three things:
+
+1. reading the weights,
+2. computing the layers,
+3. holding the per-request state.
+
+Only the first scales cleanly with $N$. The third, the KV cache (the stored keys and values of earlier tokens that attention reads at every new step), depends entirely on decisions about heads and layer types. That is where Qwen3.8-27B's published architecture makes its serving consequences measurable.
+
+## How does Qwen3.8-27B's layout shrink the cache?
+
+[Lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) owns the KV-cache arithmetic for this model, so this lesson uses its result instead of re-deriving a second budget. Two published facts matter:
+
+- **Grouped-query attention** (GQA, [lesson 7.6](/lessons/7-inference-and-efficiency/7.6-mqa-gqa-and-mla/)) lets several query heads share one key–value head. Qwen3.8-27B has 24 query heads but only 4 KV heads.
+- The **3:1 hybrid layout** ([lesson 4.16](/lessons/4-transformer/4.16-hybrid-layouts/)) makes three of every four layers Gated DeltaNet, which keeps a fixed-size state instead of a growing cache. Only 16 of the 64 layers are attention layers with a cache.
+
+The relevant counterfactual holds the head dimension and layer count fixed, but replaces the four KV heads with 24 and the 16 caching attention layers with 64. GQA reduces the KV-head count by a factor of six; the 3:1 hybrid layout reduces the number of growing-cache layers by a factor of four. Their structural factors multiply to 24. The exact byte totals, dtype (number format) assumptions, and DeltaNet-state accounting remain in lesson 7.2.
 
 :::insight
-Neither change is a lossless configuration switch on the same checkpoint. GQA can, however, be introduced by uptraining an MHA checkpoint — the cited GQA paper demonstrates this with about 5% of the original pretraining compute — which produces a changed checkpoint. Replacing attention layers with DeltaNet likewise requires training the new architecture. These are model-development interventions, unlike a runtime-only cache optimization.
+Neither change is a lossless configuration switch on the same checkpoint. GQA can, however, be introduced by uptraining (continuing to train) a checkpoint built with full multi-head attention (MHA). The cited GQA paper demonstrates this with about 5% of the original pretraining compute, and the result is a changed checkpoint. Replacing attention layers with DeltaNet likewise requires training the new architecture. These are interventions in model development, unlike a cache optimization that only changes the runtime.
 :::
 
-The same distinction applies to the rest of the design. Only 16 layers maintain a cache that grows with sequence length, and the released weights are bf16. Quantized size, usable context, throughput, and total accelerator fit depend on the exact runtime and memory budget; architecture alone does not establish a workstation target or the team’s intent.
+The same distinction applies to the rest of the design. Only 16 layers maintain a cache that grows with sequence length, and the released weights are bf16. Quantized size, usable context, throughput, and whether the model fits on a given accelerator depend on the exact runtime and memory budget. The architecture alone does not establish a workstation target or the team’s intent.
 
 :::warning
-The most common misconception here is that inference-aware scaling means "train a smaller model." Parameter count is the lever people know, and it is the coarsest one available. At fixed $N$, head layout, layer composition, context handling, and the presence of a native drafter such as multi-token prediction change serving cost by factors that dwarf the few percent of quality those choices cost. If your inference-aware analysis only varies $N$, you are optimizing one axis of a design space with at least four.
+The most common misconception here is that inference-aware scaling means "train a smaller model." Parameter count is the lever people know, and it is the coarsest one available. At fixed $N$, the head layout, the layer composition, context handling, and the presence of a native drafter such as multi-token prediction change serving cost by factors that dwarf the few percent of quality those choices cost. If your inference-aware analysis varies only $N$, you are optimizing one axis of a design space with at least four.
 :::
 
-Honesty about what is and is not known matters here as much as anywhere in this track. The architectural facts above are verifiable from the model card and config. The reasoning attributed to them is inference from the design, not a published rationale — there is no technical report for this model, and the team never stated their serving assumptions, token budget, or cost model. What you can say with confidence is that the shipped architecture reduces growing per-sequence state relative to the stated counterfactual. Interpreting that effect as a team objective is plausible but remains inference.
+## What is known, and what is only inferred?
 
-The usual caveats still bind. Forecasts of $R$ are frequently wrong in both directions, so report sensitivity across demand scenarios rather than a single point estimate. Matching validation loss does not guarantee matching latency-sensitive quality, factuality, multilingual behaviour, or post-training responsiveness. Data availability constrains the over-training lever: extra unique high-quality tokens may simply not exist, and repeating data changes the effective objective and raises memorization risk. Update cadence matters too — a checkpoint replaced next month accumulates far less lifetime inference than one served for years.
+Honesty about what is and is not known matters here as much as anywhere in this track. The architectural facts above can be verified in the model card and config. The reasoning attributed to them is inference from the design, not a published rationale. There is no technical report for this model, and the team never stated its serving assumptions, token budget, or cost model.
 
-The durable principle is to optimize the system's lifetime rather than a single run. Chinchilla asks how to spend a pretraining budget. Inference-aware scaling asks what should exist after training, given how often it will be used — and the answer is expressed in tokens, in parameters, and, most consequentially, in the shape of the layers themselves.
+What you can say with confidence is that the shipped architecture reduces the per-sequence state that grows with length, relative to the stated counterfactual. Reading that effect as a team objective is plausible but remains inference.
+
+## What limits an inference-aware analysis?
+
+The usual caveats still apply:
+
+- Forecasts of $R$ are often wrong in both directions, so report how the answer changes across demand scenarios rather than one point estimate.
+- Matching validation loss does not guarantee matching quality under latency limits, factuality, multilingual behaviour, or responsiveness to post-training.
+- Data availability constrains the over-training lever. Extra unique high-quality tokens may not exist, and repeating data changes the effective objective and raises memorization risk.
+- Update cadence matters. A checkpoint replaced next month accumulates far less lifetime inference than one served for years.
+
+The durable principle is to optimize the system's lifetime rather than a single run. Chinchilla asks how to spend a pretraining budget. Inference-aware scaling asks what should exist after training, given how often it will be used. The answer is expressed in tokens, in parameters, and, most consequentially, in the shape of the layers themselves.

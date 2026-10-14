@@ -11,9 +11,9 @@ unlocks: ["4.16-hybrid-layouts"]
 analogy: "Attention mantém um arquivo infinito: toda anotação já recebida fica guardada, e cada pergunta vasculha o arquivo inteiro. Gated DeltaNet mantém um único quadro branco de tamanho fixo. Antes de escrever uma anotação sob um título, o escriturário lê o que aquele título diz agora e apaga na proporção da firmeza com que a nova anotação é escrita — então títulos são corrigidos, não empilhados. A cada passo, um botão também desbota levemente o quadro inteiro. O quadro nunca cresce; o que muda é com quanta perícia ele é editado."
 teachBack:
   prompt: "Escreva a atualização da delta rule com gate, explique por que ela supera uma memória de fast weights puramente aditiva e dê a configuração de heads do DeltaNet no Qwen3.8-27B e a razão de ele dominar a contagem de camadas."
-  modelAnswer: "O estado é uma matriz S atualizada por token como S_t = S_{t-1}(alpha_t(I - beta_t k_t k_t^T)) + beta_t v_t k_t^T, com saída S_t q_t: o termo k k^T primeiro remove o que a key k_t recupera no momento (escalado pela força de escrita beta_t), o produto externo escreve a nova associação, e o gate alpha_t aplica um decaimento aprendido e dependente dos dados. Fast weights aditivas apenas acumulam produtos externos, então reescrever uma key soma o value antigo com o novo; a delta rule os substitui, tornando a memória corretora de erro. No Qwen3.8-27B a camada usa 16 QK heads e 48 V heads com head dimension 128, então três value heads compartilham cada addressing head, mais uma convolução causal curta de kernel 4 antes da recorrência. Ela ocupa 48 das 64 camadas porque seu estado tem tamanho fixo, independentemente do comprimento do contexto, deixando o acesso direto, endereçado por conteúdo, a posições passadas arbitrárias para as 16 camadas de attention."
+  modelAnswer: "O estado é uma matriz S, atualizada por token como S_t = S_{t-1}(alpha_t(I - beta_t k_t k_t^T)) + beta_t v_t k_t^T, com saída S_t q_t. O termo k k^T primeiro remove o que a key k_t recupera no momento, escalado pela força de escrita beta_t. O produto externo então escreve a nova associação, e o gate alpha_t aplica um decaimento aprendido e dependente dos dados. Fast weights aditivas apenas acumulam produtos externos, então reescrever uma key soma o value antigo com o novo. A delta rule os substitui, o que torna a memória corretora de erro. No Qwen3.8-27B a camada usa 16 QK heads e 48 V heads com head dimension 128, então três value heads compartilham cada addressing head. Uma convolução causal curta de kernel 4 roda antes da recorrência. O Gated DeltaNet ocupa 48 das 64 camadas porque seu estado tem tamanho fixo, independentemente do comprimento do contexto. O acesso direto, endereçado por conteúdo, a posições passadas arbitrárias fica para as 16 camadas de attention."
 quiz:
-  - question: "Na memória de fast weights aditiva da lição 3.6, escrever o value v1 e depois v2 sob a mesma key unitária k faz S k recuperar v1 + v2. O que a delta rule recupera após a segunda escrita, com força de escrita um?"
+  - question: "Na memória de fast weights aditiva da aula 3.6, escrever o value v1 e depois v2 sob a mesma key unitária k faz S k recuperar v1 + v2. O que a delta rule recupera após a segunda escrita, com força de escrita um?"
     options: ["v1 + v2, igual ao caso aditivo", "v1, porque a primeira escrita é permanente", "Zero, porque as escritas se cancelam", "Exatamente v2, porque a atualização primeiro subtrai o que k recupera no momento antes de escrever"]
     correctIndex: 3
     explanation: "O fator (I − k kᵀ) apaga a resposta atual da memória para k — aqui v1 — e o termo de produto externo escreve v2, então a associação é substituída em vez de acumulada."
@@ -34,23 +34,39 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Attention responde a toda pergunta relendo o passado inteiro: a query de cada novo token varre todas as keys armazenadas, e o depósito cresce sem limite. A lição 3.6 mostrou a alternativa — linear attention como uma rede recorrente cujo estado é uma única matriz de fast weights, escrita por produtos externos e lida por queries — e também mostrou seu defeito: uma memória à qual você só pode *somar* é uma memória que interfere consigo mesma. O Qwen3.8-27B aposta a maior parte da sua profundidade na versão consertada. Quarenta e oito das suas sessenta e quatro camadas misturam tokens não com attention, mas com **Gated DeltaNet**, e esta lição abre esse mixer.
+## Por que substituir attention na maioria das camadas?
 
-Comece pela falha, de forma concreta. Fast weights aditivas mantêm $S_t = S_{t-1} + v_t k_t^{\top}$ e respondem queries com $S_t q_t$. Guarde "a capital é Paris" sob a key $k$ e depois — o governo mudou — guarde "a capital é Brasília" sob a *mesma* key. Percorra a atualização ingênua passo a passo: após a primeira escrita, $S k = v_{\text{Paris}}$ (tome $k$ com norma unitária). Após a segunda, $S k = v_{\text{Paris}} + v_{\text{Brasília}}$. A memória agora recupera uma superposição de um fato velho e um fresco, e cada reuso posterior da key aprofunda a pilha. Nada na regra aditiva consegue algum dia *remover* informação.
+Attention responde a toda pergunta relendo o passado inteiro: a query de cada novo token varre todas as keys armazenadas, e o depósito cresce sem limite. A [aula 3.6](/pt-br/lessons/3-sequence-models/3.6-linear-attention-fast-weights/) mostrou a alternativa: linear attention como uma rede recorrente cujo estado é uma única matriz de **fast weights** (pesos rápidos), escrita por produtos externos e lida por queries. (Um produto externo $v_t k_t^{\top}$ constrói uma matriz a partir de dois vetores; a entrada $(i, j)$ é $v_i k_j$.) Ela também mostrou o defeito: uma memória à qual você só pode *somar* é uma memória que interfere consigo mesma.
 
-A **delta rule** conserta a atualização lendo antes de escrever. Primeiro pergunte à memória o que ela devolve no momento para a key que chega: $\hat v = S_{t-1}k_t$. Depois escreva apenas o *erro*, escalado por uma força de escrita dependente dos dados $\beta_t \in (0,1)$:
+O Qwen3.8-27B aposta a maior parte da sua profundidade na versão consertada. Quarenta e oito das suas sessenta e quatro camadas misturam tokens não com attention, mas com **Gated DeltaNet**, e esta aula abre esse mixer.
+
+## O defeito da memória aditiva
+
+Comece pela falha, de forma concreta. Fast weights aditivas mantêm $S_t = S_{t-1} + v_t k_t^{\top}$ e respondem queries com $S_t q_t$. Em palavras: cada token soma seu value, arquivado sob sua key, a uma única matriz compartilhada $S$, e ler com uma query devolve o que estiver arquivado naquela direção.
+
+Guarde "a capital é Paris" sob a key $k$ e depois (o governo mudou) guarde "a capital é Brasília" sob a *mesma* key. Percorra a atualização ingênua passo a passo: após a primeira escrita, $S k = v_{\text{Paris}}$ (tome $k$ com norma unitária, comprimento 1). Após a segunda, $S k = v_{\text{Paris}} + v_{\text{Brasília}}$. A memória agora recupera uma superposição de um fato velho e um fresco, e cada reuso posterior da key aprofunda a pilha. Nada na regra aditiva consegue algum dia *remover* informação.
+
+A mesma coisa com números simples: deixe cada value ser um único número, Paris = 3 e Brasília = 7. Depois das duas escritas aditivas, ler a key $k$ devolve 3 + 7 = 10, que não é nenhuma das respostas.
+
+## A delta rule: leia antes de escrever
+
+A **delta rule** (regra delta) conserta a atualização lendo antes de escrever. Primeiro pergunte à memória o que ela devolve no momento para a key que chega: $\hat v = S_{t-1}k_t$. Depois escreva apenas o *erro*, a diferença entre o value novo e essa resposta, escalado por uma força de escrita dependente dos dados $\beta_t \in (0,1)$.
+
+No exemplo de brinquedo: antes da segunda escrita a memória devolve 3, o value novo é 7, então o erro é 4. Com força de escrita total, a memória soma 4 e passa a devolver 3 + 4 = 7. Com metade da força, soma 2 e devolve 5, a meio caminho entre o velho e o novo. Em símbolos:
 
 $$
 S_t \;=\; S_{t-1} + \beta_t\,(v_t - S_{t-1}k_t)\,k_t^{\top}
 \;=\; S_{t-1}\bigl(I - \beta_t\,k_t k_t^{\top}\bigr) + \beta_t\,v_t k_t^{\top}.
 $$
 
-Refaça o exemplo da capital com $\beta = 1$: o fator $(I - k k^{\top})$ apaga exatamente o que $k$ recuperava — $v_{\text{Paris}}$ — e o produto externo escreve $v_{\text{Brasília}}$ em seu lugar. A recuperação agora devolve o fato atual, limpo. A memória se tornou *corretora de erro*: escritas são substituições ao longo da direção da key, e $\beta_t$ permite ao modelo escolher, token a token, entre deixar o slot intacto ($\beta\to 0$) e sobrescrevê-lo ($\beta\to 1$).
+Refaça o exemplo da capital com $\beta = 1$: o fator $(I - k k^{\top})$ apaga exatamente o que $k$ recuperava, $v_{\text{Paris}}$, e o produto externo escreve $v_{\text{Brasília}}$ em seu lugar. A recuperação agora devolve o fato atual, limpo. A memória se tornou *corretora de erro*: escritas são substituições ao longo da direção da key, e $\beta_t$ permite ao modelo escolher, token a token, entre deixar o slot intacto ($\beta\to 0$) e sobrescrevê-lo ($\beta\to 1$).
 
-Falta um conserto. A delta rule edita uma direção de key por passo, então conteúdo velho em direções nunca revisitadas permanece para sempre. **Gating** acrescenta esquecimento uniforme e aprendido — a forma amadurecida da ideia de gate da lição 3.3 — por meio de um decaimento por passo $\alpha_t \in (0,1)$:
+## Gating: esquecimento aprendido
+
+Falta um conserto. A delta rule edita uma direção de key por passo, então conteúdo velho em direções nunca revisitadas permanece para sempre. **Gating** acrescenta esquecimento uniforme e aprendido, a forma amadurecida da ideia de gate da [aula 3.3](/pt-br/lessons/3-sequence-models/3.3-lstm-gru-gates/), por meio de um decaimento por passo $\alpha_t \in (0,1)$ que encolhe um pouco o estado inteiro antes de cada escrita:
 
 $$
 S_t \;=\; S_{t-1}\bigl(\alpha_t\,(I - \beta_t\,k_t k_t^{\top})\bigr) + \beta_t\,v_t k_t^{\top},
@@ -59,16 +75,35 @@ $$
 
 Esta é a atualização Gated DeltaNet de Yang, Kautz e Hatamizadeh: apagamento preciso e direcionado vindo da delta rule, desbotamento global vindo do gate, ambos computados a partir do próprio token. O lado da saída lê o quadro editado com uma query, exatamente como em linear attention.
 
-Agora a instanciação do Qwen3.8-27B. Cada camada DeltaNet roda a recorrência em heads, mas com uma assimetria que inverte aquela que você conhece de attention: **16 QK heads e 48 V heads, todos com head dimension 128**. Nas camadas de attention, grouped-query attention compartilha poucos KV heads entre muitos query heads; aqui, o endereçamento é a mercadoria compartilhada — as keys e queries de cada QK head servem a *três* value heads, então a camada mantém 48 quadros de estado $128\times 128$ separados, indexados por 16 esquemas de endereçamento. Capacidade de conteúdo é abundante; maquinaria de endereçamento é economizada. Antes de tudo isso, as sequências projetadas passam por uma convolução causal depthwise curta com **kernel 4**, dando a cada atualização um vislumbre barato das últimas posições — padrões locais como bigramas de tokens não precisam consumir o estado recorrente.
+## A camada DeltaNet do Qwen3.8-27B
 
-Por que dar a esse mixer 48 das 64 camadas? Porque seu perfil de custo é a imagem espelhada do de attention. O estado por camada é um conjunto fixo de matrizes $128\times128$ — cerca de 3 MiB por camada no caminho float32 de referência, um número que não cresce, quer o contexto tenha cem tokens, quer tenha 262.144 (a lição 7.2 coloca números exatos nisso e na conta contrastante de attention). Decodificar avança o estado em tempo constante por token. E como a atualização é linear em $S$, o treino pode processar sequências em chunks paralelos em vez de estritamente passo a passo. O que o quadro de tamanho fixo *não* consegue é garantir recall exato de um token arbitrário meio milhão de passos atrás — ele é uma compressão aprendida e com perdas. Por isso o Qwen não usa DeltaNet em todo lugar: a cada quarta camada mantém-se full attention, e a divisão de trabalho entre os dois é o assunto da lição 4.16.
+Cada camada DeltaNet roda a recorrência em heads, mas com uma assimetria que inverte aquela que você conhece de attention: **16 QK heads e 48 V heads, todos com head dimension 128**.
+
+- Nas camadas de attention, grouped-query attention ([aula 4.5](/pt-br/lessons/4-transformer/4.5-multi-head-attention/)) compartilha poucos KV heads entre muitos query heads.
+- Aqui, o endereçamento é a mercadoria compartilhada. As keys e queries de cada QK head servem a *três* value heads, então a camada mantém 48 quadros de estado $128\times 128$ separados, indexados por 16 esquemas de endereçamento.
+
+Capacidade de conteúdo é abundante; maquinaria de endereçamento é economizada.
+
+Antes de tudo isso, as sequências projetadas passam por uma convolução causal depthwise curta com **kernel 4**: cada canal, separadamente, faz uma mistura ponderada aprendida da posição atual e das três anteriores. Isso dá a cada atualização um vislumbre barato das últimas posições, de modo que padrões locais como bigramas de tokens (pares de tokens vizinhos) não precisam consumir o estado recorrente.
+
+## O que o estado de tamanho fixo compra e custa
+
+Por que dar a esse mixer 48 das 64 camadas? Porque seu perfil de custo é a imagem espelhada do de attention.
+
+- **A memória fica plana.** O estado por camada é um conjunto fixo de matrizes $128\times128$: cerca de 3 MiB por camada no caminho float32 de referência, um número que não cresce, quer o contexto tenha cem tokens, quer tenha 262.144. A [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) coloca números exatos nisso e na conta contrastante de attention.
+- **O decode tem tempo constante.** Cada token novo avança o estado em tempo constante.
+- **O treino continua paralelo.** Como a atualização é linear em $S$, o treino pode processar sequências em chunks paralelos em vez de estritamente passo a passo.
+
+O que o quadro de tamanho fixo *não* consegue é garantir recall exato de um token arbitrário meio milhão de passos atrás: ele é uma compressão aprendida e com perdas. Por isso o Qwen não usa DeltaNet em todo lugar. A cada quarta camada mantém-se full attention, e a divisão de trabalho entre os dois é o assunto da [aula 4.16](/pt-br/lessons/4-transformer/4.16-hybrid-layouts/).
 
 :::warning
-O equívoco clássico: "recorrente significa que falha como as RNNs da lição 3.2 — vanishing gradients, sem treino paralelo." Gated DeltaNet é recorrente em *estado*, não em não linearidades saturantes: a atualização é linear em $S$ com coeficientes dependentes dos dados, o que permite treino paralelo em chunks, e os gates realizam esquecimento aprendido em vez de ativação saturante. Igualmente errada é a suposição inversa, de que ele seria "attention, mas comprimida" — nenhuma matriz de scores sobre o passado existe, nem implicitamente. É um mixer diferente, com um contrato diferente.
+"Recorrente" convida à comparação errada: "falha como as RNNs da [aula 3.2](/pt-br/lessons/3-sequence-models/3.2-rnns-vanishing-gradient/), com vanishing gradients e sem treino paralelo." Gated DeltaNet é recorrente em *estado*, não em não linearidades saturantes: a atualização é linear em $S$ com coeficientes dependentes dos dados, o que permite treino paralelo em chunks, e os gates realizam esquecimento aprendido em vez de ativação saturante. Igualmente errada é a suposição inversa, de que ele seria "attention, mas comprimida": nenhuma matriz de scores sobre o passado existe, nem implicitamente. É um mixer diferente, com um contrato diferente.
 :::
 
 :::note
-O Signal Observatory na página de exploração mostra um bloco clássico de attention. No Qwen3.8-27B esse bloco exato aparece uma vez a cada quatro camadas; as outras três substituem attention por Gated DeltaNet (lição 4.15).
+O Signal Observatory na página de exploração mostra um bloco clássico de attention. No Qwen3.8-27B esse bloco exato aparece uma vez a cada quatro camadas; as outras três substituem attention por Gated DeltaNet (aula 4.15).
 :::
 
-Da perspectiva do residual stream, nada desse drama é visível. A camada DeltaNet lê um estado normalizado de 5120 dimensões, roda conv, projeções, recorrência e gating de saída, e soma de volta uma atualização de 5120 dimensões — o mesmo contrato que todo mixer honra. Os tensores do checkpoint que você ainda não sabia nomear na lição 4.14 — as projeções `linear_attn`, a convolução de kernel 4, os parâmetros de decaimento — são precisamente a maquinaria de $\alpha_t$, $\beta_t$, $k_t$, $v_t$, $q_t$ que agora você consegue ler. O que resta é a pergunta arquitetural: dado um mixer com acesso direto por posição e custo crescente e outro barato mas com perdas, em que proporção você os mistura, e por que três para um? Esse é o tema da próxima lição.
+Da perspectiva do residual stream, nada desse drama é visível. A camada DeltaNet lê um estado normalizado de 5120 dimensões, roda convolução, projeções, recorrência e gating de saída, e soma de volta uma atualização de 5120 dimensões: o mesmo contrato que todo mixer honra. Os tensores do checkpoint que você ainda não sabia nomear na [aula 4.14](/pt-br/lessons/4-transformer/4.14-reading-real-weights/) (as projeções `linear_attn`, a convolução de kernel 4, os parâmetros de decaimento) são precisamente a maquinaria de $\alpha_t$, $\beta_t$, $k_t$, $v_t$, $q_t$ que agora você consegue ler.
+
+O que resta é a pergunta arquitetural. Dado um mixer com acesso direto por posição e custo crescente e outro barato mas com perdas, em que proporção você os mistura, e por que três para um? Esse é o tema da próxima aula.

@@ -11,16 +11,16 @@ unlocks: ["13.5-speculative-decoding-and-rpc-in-llama-cpp"]
 analogy: "Três equipes de entrega lidam com estradas incertas de formas diferentes. O beam search mantém várias rotas completas vivas e descarta as fracas conforme a viagem avança. O speculative decoding manda um batedor de bicicleta na frente e depois deixa o caminhão autoritativo validar várias conversões de uma vez e voltar atrás após a primeira conversão ruim. O Medusa monta vários heads de previsão de rota no próprio caminhão, propondo uma pequena árvore de conversões futuras para uma única passagem de verificação."
 teachBack:
   prompt: "Explique por que o speculative decoding ajuda um decoder limitado por banda mesmo aumentando a computação total, e o que o treinamento de MTP do Qwen3.8-27B contribui."
-  modelAnswer: "O decode em batch 1 precisa transmitir essencialmente todos os pesos do modelo por token gerado, então o recurso escasso são bytes movidos, não aritmética. Um draft propõe um bloco de k tokens de forma barata; o target model então avalia todas as k posições numa única passagem, lendo seus pesos uma vez em vez de k vezes. O total de FLOPs sobe — propostas rejeitadas são trabalho desperdiçado — mas os tokens aceitos amortizam a leitura dos pesos, cortando a latência por token. A regra de aceitação compara as probabilidades do draft e do target e, após uma rejeição, amostra um token corrigido, preservando a distribuição de saída exata do target model. O Qwen3.8-27B foi treinado com multi-token prediction ao longo de múltiplos passos, então o próprio checkpoint consegue propor tokens futuros — um drafter embutido no espírito dos heads adicionados do Medusa, sem um draft model separado para hospedar ou manter sincronizado."
+  modelAnswer: "O decode em batch 1 precisa transmitir a maior parte dos pesos do modelo por token gerado, então o recurso escasso são bytes movidos, não aritmética. Um draft propõe um bloco de k tokens de forma barata. O target model então avalia todas as k posições numa única passagem, lendo seus pesos uma vez em vez de k vezes. O total de FLOPs sobe, porque propostas rejeitadas são trabalho desperdiçado. Mas os tokens aceitos dividem uma única leitura dos pesos, o que corta a latência por token. A regra de aceitação compara as probabilidades do draft e do target e, após uma rejeição, amostra um token corrigido. Essa regra preserva a distribuição de saída exata do target model. O Qwen3.8-27B foi treinado com multi-token prediction ao longo de múltiplos passos, então o próprio checkpoint consegue propor tokens futuros. O checkpoint vira um drafter embutido no espírito dos heads adicionados do Medusa, sem um draft model separado para hospedar ou manter sincronizado."
 quiz:
   - question: "O speculative sampling exato com a regra de aceitação apropriada preserva o quê?"
     options: ["A distribuição de saída do draft model", "A distribuição de saída do target model sob as configurações escolhidas do sampler", "Greedy decoding independentemente da temperature", "A ordem de merges do tokenizer"]
     correctIndex: 1
-    explanation: "A aceitação compara probabilidades do draft e do target e amostra um token corrigido na rejeição, então a sequência amostrada se distribui como se o target — com sua temperature e truncamento da lição 7.4 — tivesse decodificado sozinho."
+    explanation: "A aceitação compara probabilidades do draft e do target e amostra um token corrigido na rejeição, então a sequência amostrada se distribui como se o target — com sua temperature e truncamento da aula 7.4 — tivesse decodificado sozinho."
   - question: "O que o treinamento de multi-token prediction do Qwen3.8-27B oferece em tempo de inferência?"
     options: ["Propostas embutidas para vários tokens futuros, atuando como drafter nativo sem um draft model separado", "Um KV cache ilimitado", "Um segundo tokenizer", "Retreinamento a cada requisição"]
     correctIndex: 0
-    explanation: "O model card afirma que ele foi treinado com MTP ao longo de múltiplos passos; serving stacks podem verificar essas propostas com o mesmo tronco, no espírito dos heads adicionados do Medusa, mas treinadas desde o início."
+    explanation: "O model card afirma que ele foi treinado com MTP ao longo de múltiplos passos; serving stacks podem verificar essas propostas com o mesmo tronco, no espírito dos heads adicionados do Medusa, sem um draft model separado."
 citations:
   - title: "Qwen3.8-27B Model Card"
     authors: "Qwen Team"
@@ -38,35 +38,67 @@ citations:
     authors: "Tianle Cai et al."
     year: 2024
     url: "https://arxiv.org/abs/2401.10774"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-A lição 7.3 deixou o decode numa posição desconfortável: em batch 1, o Qwen3.8-27B transmite cerca de 54 GB de pesos da memória para cada token que emite. A cadeia serial — o token $t+1$ não pode ser finalizado antes do token $t$ — parece forçar esse preço. Esta lição cobre os métodos que gastam trabalho paralelo extra em volta da cadeia, e eles otimizam duas coisas muito diferentes. O **beam search** compra *qualidade* de saída. O **speculative decoding** e o **Medusa** compram *velocidade*, extraindo mais de um token de cada leitura cara de pesos — e o Qwen3.8-27B chega com sua própria versão nativa do truque.
+A [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) deixou o decode numa posição desconfortável: em batch 1, o Qwen3.8-27B transmite a maior parte dos pesos da memória para cada token que emite, cerca de 54 GB pelo tamanho do checkpoint (uma aproximação de planejamento, como aquela aula explica). A cadeia é serial, já que o token $t+1$ não pode ser finalizado antes do token $t$, e isso parece impor o preço a cada token.
 
-Beam search primeiro, brevemente, porque ele é o estranho no grupo. Em vez de uma sequência parcial ele mantém $b$ candidatas, estende cada uma com próximos tokens plausíveis, pontua pela log-probabilidade cumulativa (com normalização por comprimento, senão saídas curtas vencem por padrão) e poda de volta para $b$. Ele brilha quando a verossimilhança em nível de sequência importa — transdução restrita, algumas tarefas estruturadas — e decepciona em diálogo aberto, onde os beams colapsam em texto quase duplicado e insossamente provável. A largura multiplica compute e uso de KV cache (beams compartilham prefixos por meio de block tables com copy-on-write). É um algoritmo de busca, não uma aceleração.
+Esta aula cobre métodos que gastam trabalho paralelo extra em volta dessa cadeia, e eles otimizam duas coisas muito diferentes. O **beam search** compra *qualidade* de saída. O **speculative decoding** e o **Medusa** compram *velocidade*, extraindo mais de um token de cada leitura cara de pesos. O Qwen3.8-27B chega com sua própria versão nativa desse truque de velocidade.
 
-O speculative decoding ataca a latência diretamente. Um **draft model** barato propõe um bloco de $k$ tokens futuros de forma autorregressiva; o **target model** caro então avalia todas as $k$ posições numa única passagem — o mesmo formato paralelo de um prefill curto, uma leitura de pesos amortizada sobre $k$ candidatos. Uma regra de aceitação compara a probabilidade do draft com a do target token a token: os tokens aceitos são efetivados, e na primeira rejeição o sufixo dependente é descartado e um token corrigido é amostrado de uma distribuição ajustada. Feito corretamente (Leviathan et al.), a saída se distribui *exatamente* como se o target tivesse decodificado sozinho sob o mesmo sampler — mais forte do que apenas checar concordância de argmax.
+## Beam search: várias candidatas, uma sequência melhor
 
-Quanto isso ajuda? Uma conta ilustrativa de guardanapo: com probabilidade de aceitação por token $\alpha$ e comprimento de bloco $k$, o número esperado de tokens comprometidos por passagem do target é
+O beam search vem primeiro, brevemente, porque é o estranho no grupo. Em vez de uma sequência parcial, ele mantém $b$ candidatas, chamadas beams. A cada passo, estende cada beam com próximos tokens plausíveis, pontua cada extensão pela log-probabilidade cumulativa (a soma dos logaritmos da probabilidade de cada token, que é o logaritmo da probabilidade da sequência inteira) e poda de volta para as $b$ melhores. As pontuações precisam de normalização por comprimento, senão saídas curtas vencem por padrão, porque cada token acrescentado só pode baixar o total.
+
+O beam search brilha quando a verossimilhança em nível de sequência importa: transdução restrita (transformar uma sequência em outra sob regras fixas, como na tradução) e algumas tarefas estruturadas. Ele decepciona em diálogo aberto, onde os beams colapsam em texto quase duplicado e insossamente provável. Sua largura multiplica compute e uso de KV cache; os beams compartilham prefixos comuns por meio de block tables com copy-on-write, que copiam um bloco de cache só quando um beam o altera (a [aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/) trata de block tables). É um algoritmo de busca, não uma aceleração.
+
+## Speculative decoding: chutar barato, conferir numa passagem
+
+O speculative decoding ataca a latência diretamente. Ele junta dois modelos:
+
+1. Um **draft model** barato propõe um bloco de $k$ tokens futuros, um depois do outro, como qualquer modelo faria.
+2. O **target model** caro, aquele cuja saída você quer, avalia todas as $k$ posições numa única passagem. Essa passagem tem o mesmo formato paralelo de um prefill curto, então uma leitura de pesos é amortizada sobre $k$ candidatos.
+3. Uma regra de aceitação compara a probabilidade do draft com a do target, token a token. Os tokens aceitos são efetivados. Na primeira rejeição, o sufixo que dependia dela é descartado, e um token corrigido é amostrado de uma distribuição ajustada.
+
+Feito corretamente (Leviathan et al.), a saída se distribui *exatamente* como se o target tivesse decodificado sozinho sob o mesmo sampler. Essa garantia é mais forte do que apenas checar se os dois modelos concordam no argmax, o único token do topo.
+
+## Quantos tokens por passagem?
+
+Uma conta ilustrativa de guardanapo mostra o tamanho do ganho. Ela faz uma suposição simplificadora, como o artigo de speculative decoding: cada token rascunhado é aceito de forma independente, com a mesma probabilidade. Aceitações reais são correlacionadas, então trate o resultado como uma referência aproximada. Suponha que cada token rascunhado seja aceito com probabilidade 0,8 e que o draft proponha 4 tokens por vez. Em geral, com probabilidade de aceitação por token $\alpha$ e comprimento de bloco $k$, o número esperado de tokens efetivados por passagem do target é
 
 $$
 \mathbb{E} = \frac{1-\alpha^{k+1}}{1-\alpha},
 $$
 
-contando o token bônus que o próprio target fornece. Com $\alpha = 0.8$ e $k = 4$: $0.8^{5} = 0.32768$, então $\mathbb{E} = (1 - 0.32768)/0.2 \approx 3.36$ tokens por passagem — cada leitura de 54 GB de pesos agora rende três e pouco tokens em vez de um. Os números são ilustrativos, não benchmarks do Qwen; taxas reais de aceitação dependem dos prompts, das configurações do sampler e do quanto o draft imita o target.
+contando o token bônus que o próprio target fornece. Com $\alpha = 0.8$ e $k = 4$: $0.8^{5} = 0.32768$, então $\mathbb{E} = (1 - 0.32768)/0.2 \approx 3.36$ tokens por passagem. Cada leitura de pesos, cerca de 54 GB pelo tamanho do checkpoint, agora rende três e pouco tokens em vez de um.
 
-Agora o desvio clássico: "speculative decoding economiza computação". Não economiza — ele *aumenta* o total de FLOPs. O draft roda a cada token, o target repontua cada proposta, e todo sufixo rejeitado é desperdício puro. Se o decode fosse limitado por compute, a especulação o deixaria mais lento. Ela vence porque a lição 7.3 mostrou que o decode é limitado por banda: as unidades aritméticas ficam ociosas enquanto os pesos fluem, então a matemática extra de verificação é praticamente de graça, e o recurso escasso — bytes movidos por token comprometido — cai pelo fator de aceitação. Corrigir esse equívoco diz quando recorrer à técnica: serving sensível à latência, com batch pequeno. Em batches grandes a leitura de pesos já está amortizada entre sequências, e o apelo da especulação se dissipa.
+Os números são ilustrativos, não benchmarks do Qwen. Taxas reais de aceitação dependem dos prompts, das configurações do sampler e do quanto o draft imita o target.
 
-O próprio draft é uma tensão: fraco demais e as propostas são rejeitadas; grande demais e propor custa o que verificar economiza; e um modelo separado precisa ser hospedado, agendado e mantido compatível com o target. O **Medusa** (Cai et al.) dissolve o modelo separado ao parafusar heads leves de decoding no próprio target, cada uma prevendo um token num offset futuro; os heads propõem uma pequena árvore de continuações que uma única passagem de verificação poda até um caminho aceito. Os heads precisam ser treinados contra o checkpoint base exato — mudou a base, retreine os heads.
+## Por que mais computação deixa o decode mais rápido
 
-O Qwen3.8-27B dá o passo final: o model card afirma que ele foi treinado com **multi-token prediction** ao longo de múltiplos passos. O drafter não é parafusado depois; o próprio tronco aprendeu a propor vários tokens futuros como parte do pretraining. Na inferência isso funciona como fonte nativa de draft — nenhum segundo modelo para implantar, nenhum head post-hoc para ajustar, propostas que vêm das mesmas representações que o verificador usa. Serving stacks que dão suporte a isso (o model card lista vLLM e SGLang entre seus runtimes) podem verificar propostas de MTP exatamente como fariam com as de um draft model.
+Um palpite natural é que o speculative decoding economiza computação. Ele faz o contrário: *aumenta* o total de FLOPs. O draft roda a cada token, o target repontua cada proposta, e todo sufixo rejeitado é desperdício puro. Se o decode fosse limitado por compute, a especulação o deixaria mais lento.
 
-Uma campanha pública em RTX 5090 mostra por que isso precisa ser medido atrás de um gate de correção. Nesse relatório, um stack acelerado stock com TurboQuant 4-bit KV e MTP3 subiu, mas falhou canários de saída exata, JSON, ferramentas, coding e multi-turn, então o resultado de velocidade ficou em HOLD em vez de virar vitória publicada. Depois do patch #40914, os mesmos canários congelados passaram, e o C1 pareado reportou decode real de 151,27 tok/s, TTFT de 0,920 s, E2E de 7,69 s e 830 de 834 propostas de MTP aceitas (99,52 por cento). Isso é um estudo de caso útil para esse stack, não um número universal do Qwen: a lição é correção antes da velocidade, depois estatísticas de aceitação e formato da carga ao lado do throughput.
+Ela vence porque a aula 7.3 mostrou que o decode é limitado por banda. As unidades aritméticas ficam ociosas enquanto os pesos chegam, então a matemática extra de verificação quase não custa tempo. Enquanto isso, o recurso escasso, bytes movidos por token efetivado, cai pelo fator de aceitação.
+
+Entender isso diz quando recorrer à técnica: serving sensível à latência, com batches pequenos. Em batches grandes a leitura de pesos já está amortizada entre muitas sequências, e o apelo da especulação se dissipa.
+
+## O Medusa e o drafter embutido do Qwen
+
+O draft model é um jogo de equilíbrio. Fraco demais, e suas propostas são rejeitadas. Grande demais, e propor custa o que verificar economiza. E um modelo separado precisa ser hospedado, agendado e mantido compatível com o target.
+
+O **Medusa** (Cai et al.) elimina o modelo separado ao parafusar heads leves de decoding no próprio target. Cada head prevê o token num offset futuro diferente. Juntos, os heads propõem uma pequena árvore de continuações, que uma única passagem de verificação poda até um caminho aceito. Os heads precisam ser treinados contra o checkpoint base exato: mudou a base, retreine os heads.
+
+O Qwen3.8-27B oferece uma opção parecida: o model card afirma que ele foi treinado com **multi-token prediction** (MTP, previsão de múltiplos tokens) ao longo de múltiplos passos, então o próprio checkpoint consegue propor vários tokens futuros. Na inferência, isso funciona como fonte nativa de draft, sem segundo modelo para implantar. Serving stacks que dão suporte a isso (o model card lista vLLM e SGLang entre seus runtimes) podem verificar propostas de MTP exatamente como fariam com as de um draft model.
+
+## Medindo um ganho atrás de um gate de correção
+
+Uma campanha pública em RTX 5090 mostra por que isso precisa ser medido atrás de um gate de correção. Os canários dela são prompts de teste fixos cujo comportamento correto se conhece de antemão. Nesse relatório, um stack acelerado stock com TurboQuant 4-bit KV (um KV cache guardado com 4 bits por número) e MTP3 subiu, mas falhou os canários de saída exata, JSON, ferramentas, coding e multi-turn. Por isso o resultado de velocidade ficou em HOLD em vez de virar vitória publicada.
+
+Depois do patch #40914, os mesmos canários congelados passaram. O C1 pareado então reportou decode real de 151,27 tok/s, TTFT (time to first token) de 0,920 s, E2E (tempo ponta a ponta) de 7,69 s e 830 de 834 propostas de MTP aceitas (99,52 por cento). Isso é um estudo de caso útil para esse stack, não um número universal do Qwen. O aprendizado é correção antes da velocidade, e depois estatísticas de aceitação e formato da carga reportados ao lado do throughput.
 
 :::caveat
 Qualquer alegação de aceleração precisa declarar target model, configuração de draft ou de heads, hardware, tamanho de batch e concorrência, comprimentos de prompt e de saída, configurações do sampler e estatísticas de aceitação. Uma única demo de latência sob carga baixa não prevê nada sobre vazão em produção.
 :::
 
-A contabilidade é a parte silenciosamente difícil. Candidatos em árvore compartilham um prefixo e divergem depois; máscaras de attention precisam impedir que ramos leiam uns aos outros; estados aceitos são efetivados em ordem enquanto ramos rejeitados liberam seus blocos de cache. Um bug aqui produz tokens plausíveis porém errados, então valide contra o decode base de forma distribucional. Clientes de streaming também precisam tolerar rajadas: quando quatro tokens são aceitos de uma vez, eles chegam de uma vez.
+A contabilidade é a parte difícil que ninguém vê. Candidatos em árvore compartilham um prefixo e divergem depois. Máscaras de attention precisam impedir que ramos leiam uns aos outros. Estados aceitos são efetivados em ordem, enquanto ramos rejeitados liberam seus blocos de cache. Um bug aqui produz tokens plausíveis porém errados, então compare a distribuição das saídas com a do decode base. Clientes de streaming também precisam tolerar rajadas: quando quatro tokens são aceitos de uma vez, eles chegam de uma vez.
 
-A distinção durável é o propósito. O beam search paga por múltiplas hipóteses para *escolher* uma sequência melhor. A especulação paga um proponente para expor trabalho paralelo enquanto o target permanece autoritativo sobre a distribuição. O Medusa move o proponente para dentro da arquitetura — e o treinamento de MTP do Qwen3.8-27B o move todo o caminho até o pretraining, transformando um truque de serving numa propriedade do próprio modelo.
+O que separa os três métodos é o propósito. O beam search paga por múltiplas hipóteses para *escolher* uma sequência melhor. A especulação paga um proponente para expor trabalho paralelo, enquanto o target permanece autoritativo sobre a distribuição. O Medusa move o proponente para dentro da arquitetura, e o treinamento de MTP do Qwen3.8-27B traz um proponente dentro do próprio checkpoint, transformando um truque de serving numa propriedade do próprio modelo.

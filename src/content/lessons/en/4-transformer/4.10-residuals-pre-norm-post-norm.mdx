@@ -11,7 +11,7 @@ unlocks: ["4.11-full-transformer-block"]
 analogy: "A long restoration project keeps the original photograph on a central light table. Sixty-four specialists — some retouchers, some archivists with different tools — each receive a calibrated copy, propose a bounded correction, and add it back rather than repainting from scratch. Pre-norm calibrates what enters each specialist while leaving the central table continuous. Post-norm adds the correction first and recalibrates the combined image afterward."
 teachBack:
   prompt: "Write the conceptual equations for pre-norm and post-norm, explain how RMSNorm differs from LayerNorm, and say why one continuous residual stream lets Qwen3.8-27B stack 64 layers of two different kinds."
-  modelAnswer: "Pre-norm computes x' = x + F(RMSNorm(x)); post-norm computes x' = Norm(x + F(x)). RMSNorm computes x / sqrt(mean(x²) + epsilon), applies a learned scale, and does not subtract the mean as LayerNorm does; epsilon is 1e-6 in Qwen3.8-27B. The additive identity path lets information and gradients travel through the stack without every layer reconstructing the representation, which is why 64 layers — whether their mixer is attention or Gated DeltaNet — can all read from and write to the same 5120-dimensional stream. Each sublayer only has to honor the interface: read a normalized copy, return an update of matching shape."
+  modelAnswer: "Pre-norm computes x' = x + F(RMSNorm(x)); post-norm computes x' = Norm(x + F(x)). RMSNorm computes x / sqrt(mean(x²) + epsilon) and applies a learned scale. Unlike LayerNorm, it does not subtract the mean. Epsilon is 1e-6 in Qwen3.8-27B. The additive identity path lets information and gradients travel through the stack without every layer reconstructing the representation. That is why 64 layers, whether their mixer is attention or Gated DeltaNet, can all read from and write to the same 5120-dimensional stream. Each sublayer only has to honor the interface: read a normalized copy, return an update of matching shape."
 quiz:
   - question: "Which expression describes the pre-norm pattern Qwen3.8-27B uses?"
     options: ["RMSNorm(x + F(x))", "F(x) with no residual path", "x + F(RMSNorm(x))", "softmax(RMSNorm(x)) alone"]
@@ -42,10 +42,16 @@ citations:
     authors: "Hugging Face and Qwen Team"
     year: 2026
     url: "https://github.com/huggingface/transformers/blob/e4dd56a373b51a2ed2a6330b64f9d44c51260d5c/src/transformers/models/qwen3_5/modeling_qwen3_5.py"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Here is a problem the next lesson will make vivid: Qwen3.8-27B stacks 64 layers, and they are not even all the same kind of layer — most mix tokens one way, a minority another way, and every one of them ends in the wide gated FFN you just met. How do sixty-four heterogeneous processing stages cooperate without any stage destroying what earlier stages built, and without gradients dying on the way back down? The answer is the architecture's quietest and most load-bearing decision: a single continuous **residual stream**, 5120 numbers wide per token, that no layer ever replaces — layers only add to it.
+## Why can 64 different layers share one model?
+
+Here is a problem the next lesson will make vivid. Qwen3.8-27B stacks 64 layers, and they are not even all the same kind of layer: most mix tokens one way, a minority another way, and every one of them ends in the wide gated FFN you just met in [lesson 4.9](/lessons/4-transformer/4.9-feed-forward-block/). How do sixty-four heterogeneous processing stages cooperate without any stage destroying what earlier stages built? And how do gradients (the error signals training sends backward, [lesson 2.5](/lessons/2-neural-network-fundamentals/2.5-backpropagation/)) survive the trip back down?
+
+The answer is the architecture's least visible and most important decision: a single continuous **residual stream**, 5120 numbers wide per token, that no layer ever replaces. Layers only add to it. [Lesson 2.8](/lessons/2-neural-network-fundamentals/2.8-initialization-normalization-residuals/) introduced residual connections and normalization in general; this lesson looks at how they hold a 64-layer Transformer together.
+
+## The residual stream: layers add, never replace
 
 For a transformation $F$, the core pattern is
 
@@ -53,11 +59,26 @@ $$
 x' = x + F(x).
 $$
 
-The identity term $x$ gives information a direct route through the stack. A layer can learn a small useful correction instead of rebuilding the representation from scratch. During backpropagation, gradients also get an additive route that does not multiply through every sublayer's Jacobian. This does not abolish exploding or vanishing gradients, but it makes optimizing genuinely deep stacks tractable — and 64 layers is genuinely deep.
+The identity term $x$ gives information a direct route through the stack. A layer can learn a small useful correction instead of rebuilding the representation from scratch.
 
-Each layer writes twice. After its mixing sublayer, the stream holds its previous features plus a communication update; after the FFN, it holds that result plus a nonlinear position-wise update. The residual stream is therefore not any single component's output. It is a shared workspace in which many overlapping features are superposed, and the fact that both a Gated DeltaNet layer and a full-attention layer can write to the same workspace — using the same interface, an added 5120-wide update — is exactly what lets Qwen mix layer types freely.
+The same route helps training. During backpropagation, gradients also get an additive route that does not multiply through every sublayer's Jacobian (the matrix of how each output changes with each input). This does not abolish exploding or vanishing gradients, but it makes optimizing genuinely deep stacks tractable, and 64 layers is genuinely deep.
 
-Normalization controls what each sublayer reads from that workspace. Classic LayerNorm computes a mean and variance across a token's feature dimension, subtracts, divides, and applies a learned scale and shift. Qwen3.8-27B, like most modern decoders, uses **RMSNorm**: divide the vector by $\sqrt{\operatorname{mean}(x^2)+\epsilon}$ and apply a learned scale — no mean subtraction, no shift. In Qwen the epsilon is $10^{-6}$: small enough to be invisible for healthy activations, present inside the square root so a near-zero vector never divides by zero.
+Each layer writes twice:
+
+- after its mixing sublayer, the stream holds its previous features plus a communication update;
+- after the FFN, it holds that result plus a nonlinear position-wise update.
+
+The residual stream is therefore not any single component's output. It is a shared workspace in which many overlapping features are superposed (added on top of each other in the same vector). Both a Gated DeltaNet layer and a full-attention layer can write to that workspace through the same interface, an added 5120-wide update. That shared interface is exactly what lets Qwen mix layer types freely.
+
+## RMSNorm: a calibrated copy for each reader
+
+Normalization controls what each sublayer reads from that workspace. Classic LayerNorm computes a mean and variance across a token's feature dimension, subtracts, divides, and applies a learned scale and shift.
+
+Qwen3.8-27B, like most modern decoders, uses **RMSNorm**: divide the vector by $\sqrt{\operatorname{mean}(x^2)+\epsilon}$ and apply a learned scale, with no mean subtraction and no shift. The divisor is the vector's root mean square (RMS), a typical size of its entries. Take a toy two-feature vector $[3, 4]$ and ignore epsilon and the learned scale for a moment: the mean of the squares is $12.5$, its square root is about $3.54$, and the normalized vector is about $[0.85, 1.13]$, whose own RMS is 1. Whatever the scale of what arrives, the reader receives numbers of a predictable size.
+
+In Qwen the epsilon is $10^{-6}$. It is small enough to be invisible for healthy activations, and it sits inside the square root so a near-zero vector never divides by zero.
+
+## Post-norm or pre-norm: where the normalization sits
 
 Where the normalization sits is the classic fork. The original Transformer used **post-norm**:
 
@@ -65,22 +86,26 @@ $$
 x' = \operatorname{Norm}(x+F(x)),
 $$
 
-renormalizing the combined state after every addition. Walk the naive reasoning first, because it feels right: "normalize the final sum — surely the cleanest signal comes from calibrating the result." But trace the gradient. In post-norm, the identity path itself passes through the normalization, so every backward step multiplies through a norm's Jacobian; with 64 layers, that is 128 sublayer normalizations standing between the loss and the embedding. Deep post-norm stacks historically demanded careful warmup and were prone to divergence. The correction is **pre-norm**:
+renormalizing the combined state after every addition. Walk the naive reasoning first, because it feels right: "normalize the final sum; surely the cleanest signal comes from calibrating the result."
+
+But trace the gradient. In post-norm, the identity path itself passes through the normalization, so every backward step multiplies through a norm's Jacobian. With 64 layers, that is 128 sublayer normalizations standing between the loss and the embedding. Deep post-norm stacks historically demanded careful warmup (very small learning rates for the first training steps) and were prone to divergence, where the loss blows up instead of falling. The correction is **pre-norm**:
 
 $$
 x' = x+F(\operatorname{Norm}(x)),
 $$
 
-which is what Qwen3.8-27B does. Each sublayer receives a calibrated copy, but the main path remains a bare chain of additions — the light table never gets repainted. Concretely, one Qwen layer computes $x_1 = x + \operatorname{Mixer}(\operatorname{RMSNorm}(x))$ and then $x_2 = x_1 + \operatorname{FFN}(\operatorname{RMSNorm}(x_1))$, and the model repeats that contract 64 times before a final RMSNorm prepares the state for the output head.
+which is what Qwen3.8-27B does. Each sublayer receives a calibrated copy, but the main path remains a bare chain of additions: the light table never gets repainted. Concretely, one Qwen layer computes $x_1 = x + \operatorname{Mixer}(\operatorname{RMSNorm}(x))$ and then $x_2 = x_1 + \operatorname{FFN}(\operatorname{RMSNorm}(x_1))$. The model repeats that contract 64 times before a final RMSNorm prepares the state for the output head.
 
-Pre-norm has its own dynamics. Because the stream is never rescaled on the main path, its magnitude tends to grow as updates accumulate through depth; the per-sublayer RMSNorm hides that growth from each reader, and the final norm hides it from the head. Initialization, learning-rate schedule, precision, and optimizer all interact with these choices — pre-norm is an empirically friendlier default for very deep stacks, not a theorem about accuracy.
+Pre-norm has its own dynamics. Because the stream is never rescaled on the main path, its magnitude tends to grow as updates accumulate through depth. The per-sublayer RMSNorm hides that growth from each reader, and the final norm hides it from the head. Initialization, learning-rate schedule, precision, and optimizer all interact with these choices: pre-norm is an empirically friendlier default for very deep stacks, not a theorem about accuracy.
 
 :::caveat
-"Pre-norm" is not a complete specification, and neither is "RMSNorm." A model may normalize its two sublayers differently, add sandwich or QK-norms, scale residual branches, or place extra norms around embeddings and output. The most common inspection mistake is assuming a checkpoint's norm parameters mean the same thing as in your reference implementation; read the actual block equations before assuming compatibility.
+"Pre-norm" is not a complete specification, and neither is "RMSNorm." A model may normalize its two sublayers differently, add sandwich norms (a second norm after the sublayer as well as before) or QK-norms (normalizing queries and keys before their dot product), scale residual branches, or place extra norms around embeddings and output. When inspecting a checkpoint, do not assume its norm parameters mean the same thing as in your reference implementation; read the actual block equations before assuming compatibility.
 :::
+
+## Reading and debugging the stream
 
 The phrase "residual stream" also disciplines interpretation. Because features are superposed in one vector space, a mixing layer's output may be cancelled by a later update, carried unchanged for thirty layers, or transformed downstream. Looking at one sublayer's output in isolation misses both the state already present in $x$ and the later operations that consume the sum.
 
-A practical debugging habit: record three norms per sublayer — the stream $\lVert x\rVert$, the update $\lVert F(\cdot)\rVert$, and the sum. An update that dwarfs the stream can destabilize training; one that is always negligible may be a dead branch. These are diagnostics, not thresholds; expected scale depends on depth and architecture.
+A practical debugging habit: record three norms (vector lengths) per sublayer: the stream $\lVert x\rVert$, the update $\lVert F(\cdot)\rVert$, and the sum. An update that dwarfs the stream can destabilize training; one that is always negligible may be a dead branch. These are diagnostics, not thresholds; expected scale depends on depth and architecture.
 
-The enduring picture is collaborative editing at industrial depth. Qwen3.8-27B's stream preserves the current document across 64 specialists of two different trades. RMSNorm hands each specialist a calibrated copy at a cost of one scale vector per sublayer, epsilon $10^{-6}$ guarding the division. Pre-norm placement keeps the master document continuous, which is precisely why the stack can be this deep — and this heterogeneous — without collapsing.
+The enduring picture is collaborative editing at industrial depth. Qwen3.8-27B's stream preserves the current document across 64 specialists of two different trades. RMSNorm hands each specialist a calibrated copy at a cost of one scale vector per sublayer, epsilon $10^{-6}$ guarding the division. Pre-norm placement keeps the master document continuous, which is precisely why the stack can be this deep, and this heterogeneous, without collapsing.

@@ -11,7 +11,7 @@ unlocks: ["4.2-self-attention"]
 analogy: "Suppose every sentence must be built from a box of refrigerator magnets. A box of single letters can spell anything, but a short note swallows the whole box. A box of complete words makes common notes fast and makes an unfamiliar surname impossible. A subword box is the working compromise: frequent whole words stay intact, and anything else is assembled from reusable pieces such as un, believ, and able. Qwen's box goes one level further down: at the bottom of it lie the 256 possible byte values, so nothing you can type is unspellable."
 teachBack:
   prompt: "Explain why modern models use subword tokens rather than characters or whole words, and say what the number 248,320 in Qwen3.8-27B's configuration actually counts."
-  modelAnswer: "Character tokens keep the vocabulary tiny and can spell anything, but they stretch every sentence over many more positions, and cost grows with positions. Whole-word tokens make common prose short but need an unbounded vocabulary and fail on names, inflections, typos, and new coinages. Subword tokenization keeps frequent strings whole and composes rare ones from pieces. Qwen's ByteLevel pre-tokenizer provides a byte-derived base for valid Unicode text after NFC normalization; its BPE configuration explicitly sets byte fallback to false. The tokenizer model maps 248044 ids and 33 added tokens extend the highest mapped id to 248076, so 248077 ids are mapped. The configuration's 248320 counts tensor rows, leaving 243 rows with no tokenizer mapping in the published artifacts. Those artifacts do not document how those rows were trained or how every runtime treats their logits."
+  modelAnswer: "Character tokens keep the vocabulary tiny and can spell anything. But they stretch every sentence over many more positions, and cost grows with positions. Whole-word tokens make common prose short but need an unbounded vocabulary and fail on names, inflections, typos, and new coinages. Subword tokenization keeps frequent strings whole and composes rare ones from pieces. Qwen's ByteLevel pre-tokenizer provides a byte-derived base for valid Unicode text after NFC normalization; its BPE configuration explicitly sets byte fallback to false. The tokenizer model maps 248044 ids. Another 33 added tokens extend the highest mapped id to 248076, so 248077 ids are mapped in total. The configuration's 248320 counts tensor rows, leaving 243 rows with no tokenizer mapping in the published artifacts. Those artifacts do not document how those rows were trained or how every runtime treats their logits."
 quiz:
   - question: "Qwen3.8-27B's configuration declares 248,320 vocabulary rows. What is the safest reading of that number?"
     options: ["It sizes the embedding and output matrices and may be padded above the count of tokens the tokenizer actually emits","It is the number of tokens the model can process in one request","It is the number of distinct languages the tokenizer covers","It is the number of words the model has learned"]
@@ -50,35 +50,71 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
+
+Before a model can read text, something has to cut that text into **tokens**, the units the model reads and writes, and give each one an integer id. That choice of units looks like plumbing, but it decides how long every sequence is, how big the model's tables are, and which strings the model can represent at all. This lesson works out the choice from first principles.
+
+## How many units should one word cost?
 
 Take the word *unbelievability* and ask a designer's question: how many units should the model spend on it? Three answers have all been tried in production, and their consequences are worth working out before any terminology arrives.
 
-Spell it one character at a time and it costs fifteen units. The vocabulary needed is tiny, a few hundred entries covers most Latin-script text, and no word is ever unrepresentable. But every sentence now stretches across five or six times as many positions, and as track 4 will show, the work a transformer does grows with positions rather than with characters. You have made the model cheap to store and expensive to run.
+**One character at a time.** The word costs fifteen units. The vocabulary needed is tiny: a few hundred entries cover most Latin-script text, and no word is ever unrepresentable. But every sentence now stretches across five or six times as many positions (slots in the sequence, one per token). As track 4 will show, the work a transformer does grows with positions rather than with characters. You have made the model cheap to store and expensive to run.
 
-Store it as one whole word and it costs one unit — provided somebody put it in the vocabulary. If they did not, the model receives an unknown symbol and the distinction between *unbelievability* and *incomprehensibility* is destroyed at the door. Names, inflections, domain jargon, typing errors, and words invented last Tuesday all land in the same hole. No finite word list closes over open-ended text, and enlarging it has its own price we will come to.
+**One whole word.** The word costs one unit, provided somebody put it in the vocabulary. If they did not, the model receives an "unknown" symbol, and the distinction between *unbelievability* and *incomprehensibility* is destroyed at the door. Names, inflections, domain jargon, typing errors, and words invented last Tuesday all land in the same hole. No finite word list can cover open-ended text, and enlarging the list has its own price, which we come to below.
 
-Split it as *un*, *believ*, *abil*, *ity* and it costs four units, with pieces that are reusable across thousands of other words. That is **subword tokenization**, and it is what essentially every modern model does, Qwen3.8-27B included. Frequent strings stay whole; rare ones are composed. The pieces are learned from a corpus by an algorithm, and lesson 1.3 traces one of those algorithms merge by merge.
+**Pieces of words.** Split it as *un*, *believ*, *abil*, *ity* and it costs four units, with pieces that are reusable across thousands of other words. That is **subword tokenization**, and essentially every modern model uses it, Qwen3.8-27B included. Frequent strings stay whole; rare ones are composed from pieces. An algorithm learns the pieces from a corpus (a large collection of training text), and [lesson 1.3](/lessons/1-text-to-tensors/1.3-bpe-step-by-step/) traces one of those algorithms merge by merge.
 
-Qwen's variant goes one step further down. Its tokenizer applies NFC normalization and a **ByteLevel** pre-tokenizer before BPE. The byte-derived base can spell every UTF-8 byte produced by a valid Unicode string, so unfamiliar scripts and emoji need not collapse to an unknown token. This is not a fallback path—the published BPE configuration says `byte_fallback: false` and declares no unknown token—and it does not make the public text API accept arbitrary binary. Coverage of normalized Unicode text is broad; efficiency is not, because unusual strings may expand into long chains of byte-derived pieces.
+## How can Qwen spell every string?
 
-Notice that none of these splits is a fact about language. Even *word* is ambiguous. Is *don't* one word or two? Does the punctuation attach? Chinese does not put spaces between words at all. German cheerfully welds four concepts into one compound. A tokenizer must nevertheless return a deterministic answer for every valid Unicode string, including strings its designers never imagined, so the boundaries it draws are statistical rather than linguistic. A split may look absurd to a person and still be the right engineering choice.
+Qwen's variant goes one step further down. Its tokenizer first applies NFC normalization (the Unicode rule from [lesson 1.1](/lessons/1-text-to-tensors/1.1-why-computers-cant-read/) that picks one spelling among equivalent ones). Then a **ByteLevel** pre-tokenizer turns the text into its UTF-8 bytes, and only then does BPE (byte-pair encoding, the merging algorithm of lesson 1.3) run.
 
-Now the number in the configuration file, which is where this lesson earns its place. Qwen3.8-27B declares 248,320 vocabulary rows. The obvious wrong turn is to read that as *the model knows 248,320 words*, and the more sophisticated wrong turn — the one that catches people who already know better — is to read it as *the tokenizer can emit 248,320 distinct tokens*. Neither is guaranteed by that field. What `vocab_size` governs is a tensor shape: the number of rows in the embedding matrix, and the number of columns in the output projection that produces logits.
+Because the base units are derived from bytes, they can spell every UTF-8 byte produced by a valid Unicode string. So unfamiliar scripts and emoji need not collapse to an unknown token. Two limits keep that claim honest:
 
-The tokenizer artifacts make the gap measurable. The BPE model contains 248,044 entries, and 33 added tokens occupy ids through 248,076, for 248,077 mapped ids in total. The model configuration sets $\text{vocab\_size}=248{,}320$, so the embedding and output tensors reserve 243 additional rows. The shape is divisible by 512—$248{,}320 = 512 \times 485$—which is convenient for sharding, but the published artifacts do not state why this exact size was chosen, what training signal the unmapped rows received, or how every server handles their logits. The pinned generation configuration declares no generic `suppress_tokens` list. Inspect the actual runtime before making a masking claim.
+- It is not a fallback path. Some tokenizers use "byte fallback", breaking a character into byte tokens only when it is missing from the vocabulary. Qwen's published BPE configuration says `byte_fallback: false` and declares no unknown token. Bytes are already the base layer, so there is nothing to fall back to.
+- It does not make the public text API accept arbitrary binary data.
+
+Coverage of normalized Unicode text is broad. Efficiency is not: unusual strings may expand into long chains of byte-derived pieces.
+
+## Why are token boundaries statistical, not linguistic?
+
+Notice that none of these splits is a fact about language. Even *word* is ambiguous. Is *don't* one word or two? Does the punctuation attach? Chinese does not put spaces between words at all. German cheerfully welds four concepts into one compound.
+
+A tokenizer must nevertheless return a deterministic answer for every valid Unicode string, including strings its designers never imagined. So the boundaries it draws come from statistics, not from linguistics. A split may look absurd to a person and still be the right engineering choice.
+
+## What does the 248,320 in the configuration count?
+
+Now the number in the configuration file, which is where this lesson earns its place. Qwen3.8-27B declares 248,320 vocabulary rows.
+
+There are two wrong readings. The obvious one is *the model knows 248,320 words*. The subtler one, which catches people who already know better, is *the tokenizer can emit 248,320 distinct tokens*. That field guarantees neither. What `vocab_size` governs is a tensor shape (the dimensions of an array of weights). It sets the number of rows in the embedding matrix, the table that turns each id into a vector. It also sets the number of columns in the output projection, the matrix that produces logits, the raw per-token scores from [lesson 0.1](/lessons/0-orientation-and-foundations/0.1-what-is-a-language-model/).
+
+The tokenizer artifacts make the gap measurable. The BPE model contains 248,044 entries, and 33 added tokens occupy ids through 248,076, for 248,077 mapped ids in total. The model configuration sets $\text{vocab\_size}=248{,}320$, so the embedding and output tensors reserve 243 additional rows.
+
+The shape is divisible by 512—$248{,}320 = 512 \times 485$—which is convenient for sharding, that is, splitting a matrix across several GPUs, often into equal slices. But the published artifacts do not state why this exact size was chosen, what training signal the unmapped rows received, or how every server handles their logits. The pinned generation configuration declares no generic `suppress_tokens` list. Inspect the actual runtime before making a claim about masking those rows.
 
 :::insight
-This is a small instance of a pattern that recurs through the whole course: a number in a model's configuration is usually the answer to a hardware question wearing the costume of a linguistic one. When you meet an oddly specific constant, ask what it divides by before asking what it means.
+This is a small instance of a pattern that recurs through the whole course: a number in a model's configuration is usually the answer to a hardware question dressed up as a linguistic one. When you meet an oddly specific constant, ask what it divides by before asking what it means.
 :::
 
-The vocabulary size is not free, and the cost is easy to underestimate. Every row is a vector of 5120 numbers, and in this model the input embedding and the output projection are separate matrices rather than a shared one, so each additional row costs storage twice over. Lesson 1.5 does the full accounting and the total is startling. The design tension is therefore genuine: more vocabulary entries mean shorter sequences and cheaper attention, but a larger table to store, load, and multiply against at every single decoding step. There is no universally correct answer, only a point on a curve chosen for a particular set of languages, hardware, and workloads.
+## What does a bigger vocabulary cost?
 
-Because the tokenizer is fixed when training begins, it is part of the model's contract rather than a preprocessing convenience. The embedding matrix has one row per vocabulary entry, and those rows learned their values under one specific mapping from text to ids. Swap the tokenizer afterwards and every id points at a row that learned something else. This is why you cannot mix a model's weights with another model's tokenizer, however similar the two look.
+The vocabulary size has a price, and that price is easy to underestimate. Every row is a vector of 5120 numbers. In this model the input embedding and the output projection are separate matrices rather than one shared matrix, so each additional row costs storage twice over. [Lesson 1.5](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/) does the full accounting, and the total is startling.
+
+The design tension is therefore real. More vocabulary entries mean shorter sequences and cheaper attention. They also mean a larger table to store, load, and multiply against at every single decoding step. There is no universally correct answer, only a point on a curve chosen for a particular set of languages, hardware, and workloads.
+
+The tokenizer is fixed when training begins, so it is part of the model's contract rather than a preprocessing convenience. The embedding matrix has one row per vocabulary entry, and those rows learned their values under one specific mapping from text to ids. Swap the tokenizer afterwards and every id points at a row that learned something else. That is why you cannot mix one model's weights with another model's tokenizer, however similar the two look.
 
 :::warning
-The misconception to name is that tokens carry fixed dictionary meanings, so that a strange split is a comprehension failure. Tokens are packaging, not semantics. A model can handle a word chopped into four unfamiliar fragments perfectly well if the layers above learned to reassemble it, and can mishandle a word that arrived as a single clean token. What token boundaries reliably determine is not meaning but *cost* and *length*, plus a set of second-order effects: arithmetic gets harder when digits group inconsistently, and unusual byte sequences give prompt injections somewhere to hide.
+Tokens do not carry fixed dictionary meanings, yet people often assume they do, so that a strange split must be a comprehension failure. Tokens are packaging, not semantics. A model can handle a word chopped into four unfamiliar fragments perfectly well if the layers above learned to reassemble it, and it can mishandle a word that arrived as a single clean token. What token boundaries reliably determine is *cost* and *length*, not meaning. They also have second-order effects: arithmetic gets harder when digits group inconsistently, and unusual byte sequences give prompt injections somewhere to hide.
 :::
 
-When you inspect any tokenizer, four questions settle most of what matters. Can it represent the valid text your interface accepts? How many tensor rows does it have, and how many ids do its tokenizer artifacts map? How many tokens does typical text in your languages require? And are the languages and domains you care about fragmented fairly against the ones you do not? Those questions show why tokenization is not mere preprocessing. It fixes the alphabet available to the model and sets the price of every sequence that model will ever process.
+## Four questions to ask any tokenizer
+
+When you inspect a tokenizer, four questions settle most of what matters:
+
+1. Can it represent the valid text your interface accepts?
+2. How many tensor rows does it have, and how many ids do its tokenizer artifacts map?
+3. How many tokens does typical text in your languages require?
+4. Are the languages and domains you care about split into pieces as efficiently as the ones you do not?
+
+Those questions show why tokenization is more than preprocessing. It fixes the alphabet available to the model and sets the price of every sequence that model will ever process.

@@ -8,10 +8,10 @@ tier: "advanced"
 locale: "en"
 prerequisites: ["7.1-what-actually-happens-when-you-hit-send", "4.16-hybrid-layouts"]
 unlocks: ["7.6-mqa-gqa-and-mla", "7.8-pagedattention-and-continuous-batching"]
-analogy: "A courtroom stenographer keeps an indexed transcript of everything already said. When a new question arrives, the judge consults the transcript instead of asking every witness to repeat the hearing from the beginning. The transcript grows each turn and must preserve the exact order and case identity. The KV cache is that transcript for attention: prior keys are the index entries, prior values are the stored testimony, and the new query reads them."
+analogy: "A courtroom stenographer keeps an indexed transcript of everything already said. When a new question arrives, the judge consults the transcript instead of asking every witness to repeat the hearing from the beginning. The transcript grows each turn and must keep the exact order and stay tied to its own case. The KV cache is that transcript for attention: prior keys are the index entries, prior values are the stored testimony, and the new query reads them."
 teachBack:
   prompt: "Derive the KV-cache size of one full-length Qwen3.8-27B sequence, stating explicitly which layers cache and which do not, and contrast the result with the DeltaNet state."
-  modelAnswer: "Each cached layer stores, per past token, keys and values for the 4 KV heads at head dimension 256 in bf16: 4 × 256 × 2 (K and V) × 2 bytes = 4 KiB per token per layer. Only the 16 full-attention layers cache — the other 48 Gated DeltaNet layers keep fixed-size recurrent states instead — so per token the cache is 16 × 4 KiB = 64 KiB, and at the native 262,144-token context one sequence holds 64 KiB × 262,144 = 16 GiB. In the Transformers reference path, each DeltaNet layer keeps a float32 matrix state of 3 MiB; all 48 total 144 MiB per sequence, constant in sequence length and excluding the small convolution state."
+  modelAnswer: "Each cached layer stores, per past token, keys and values for the 4 KV heads at head dimension 256 in bf16: 4 × 256 × 2 (K and V) × 2 bytes = 4 KiB per token per layer. Only the 16 full-attention layers cache. The other 48 Gated DeltaNet layers keep fixed-size recurrent states instead. So per token the cache is 16 × 4 KiB = 64 KiB. At the native 262,144-token context, one sequence holds 64 KiB × 262,144 = 16 GiB. In the Transformers reference path, each DeltaNet layer keeps a float32 matrix state of 3 MiB. All 48 together total 144 MiB per sequence, constant in sequence length and excluding the small convolution state."
 quiz:
   - question: "In Qwen3.8-27B, which layers append keys and values to the cache during decode?"
     options: ["All 64 layers", "Only the DeltaNet layers", "Only the 16 full-attention layers; the 48 Gated DeltaNet layers keep fixed-size state instead", "Only the vision tower"]
@@ -38,30 +38,32 @@ citations:
     authors: "Woosuk Kwon et al."
     year: 2023
     url: "https://arxiv.org/abs/2309.06180"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Suppose you serve Qwen3.8-27B and a user opens a conversation that grows toward the model's native 262,144-token context. The weights are a fixed cost. What is not fixed is the memory that conversation holds hostage while it is active — and to size it, you need to know exactly what the KV cache is and, for this model, which layers actually keep one.
+Suppose you serve Qwen3.8-27B and a user opens a conversation that grows toward the model's native 262,144-token context. The weights are a fixed cost. What is not fixed is the memory that conversation holds hostage while it is active. To size that memory, you need to know exactly what the KV cache is and, for this model, which layers actually keep one.
 
-A decoder-only model generates one token, appends it, and repeats. A naive implementation would rerun the entire network over the growing sequence at every step, redoing identical work on the prefix. The **KV cache** stores the attention states future tokens need, turning repeated computation into reusable memory. In one attention layer, every token produces query, key, and value projections. During causal decode only the newest position needs a new output: its query attends to cached keys and mixes cached values, while past queries are never needed again. So the cache retains past **keys and values**, and the new token computes only its own $q_t$, $k_t$, and $v_t$. For one head,
+## Why decode can reuse past work
+
+A decoder-only model (one that generates text left to right, one token at a time) produces one token, appends it to the sequence, and repeats; [lesson 7.1](/lessons/7-inference-and-efficiency/7.1-what-actually-happens-when-you-hit-send/) traced that loop. A naive implementation would rerun the entire network over the whole growing sequence at every step, redoing identical work on the prefix it already processed.
+
+The **KV cache** avoids that. It stores the attention data that future tokens will need, turning repeated computation into reusable memory. Recall from [lesson 4.2](/lessons/4-transformer/4.2-self-attention/) that in one attention layer every token produces three vectors: a **query** (what this token is looking for), a **key** (what it offers to be matched against) and a **value** (the content it passes on when matched).
+
+During causal decode, only the newest position needs a new output. Its query is compared against the keys of all earlier tokens, and the resulting weights mix their values. Past queries are never needed again, because past outputs are already computed. So the cache keeps past **keys and values**, and the new token computes only its own $q_t$, $k_t$, and $v_t$. For one head,
 
 $$
 o_t=\operatorname{softmax}\left(\frac{q_tK_{\leq t}^{\top}}{\sqrt{d_k}}\right)V_{\leq t},
 $$
 
-where the cached matrices grow as $k_t$ and $v_t$ are appended. This is a consequence of exact causal attention, not an approximation to it. Ignoring allocator overhead, the memory model is
+where $K_{\leq t}$ and $V_{\leq t}$ are the cached keys and values of every position up to $t$, and they grow by one row each step as $k_t$ and $v_t$ are appended. In words: score the new query against every stored key, turn the scores into weights with softmax (the function that turns a list of scores into positive weights that add up to 1), and take that weighted mix of the stored values. This is a consequence of exact causal attention, not an approximation to it. The output matches rerunning the whole sequence, up to floating-point rounding.
 
-<Figure id="kv-cache-derivation" />
+## Sizing the cache for Qwen3.8-27B
 
-$$
-\text{bytes}\approx 2\,L\,T\,H_{kv}\,D\,B,
-$$
+Now plug in Qwen3.8-27B, carefully, because there is an easy mistake to make here. For every past token, each layer that caches stores one key vector and one value vector per KV head. The config says 64 layers, 4 KV heads, head dimension 256 (the length of each key and value vector), and bf16, a 16-bit number format that takes 2 bytes per element.
 
-with the factor two for keys plus values, $L$ cached layers, $T$ positions, $H_{kv}$ KV heads, $D$ head dimension, and $B$ bytes per element.
+Per token per layer: $4 \times 256 \times 2 \times 2\ \text{B} = 4096\ \text{B} = 4\ \text{KiB}$ (one KiB, a kibibyte, is 1,024 bytes). Multiply by 64 layers and you get 256 KiB per token, and at full context $256\ \text{KiB} \times 262{,}144 = 64\ \text{GiB}$ for a single sequence. Next to 54 GB of bf16 weights, that would fill a 192 GB accelerator to the brim at two users and overflow it at three.
 
-Now plug in Qwen3.8-27B — carefully, because there is a classic wrong turn here. The config says 64 layers, 4 KV heads, head dimension 256, bf16. Per token per layer: $4 \times 256 \times 2 \times 2\ \text{B} = 4096\ \text{B} = 4\ \text{KiB}$. Multiply by 64 layers and you get 256 KiB per token, and at full context $256\ \text{KiB} \times 262{,}144 = 64\ \text{GiB}$ for a single sequence — which, next to 54 GB of bf16 weights, would fill a 192 GB accelerator to the brim at two users and overflow it at three. That estimate is wrong, and wrong in an instructive way: it assumes every layer is an attention layer.
-
-Lesson 4.16 showed that only 16 of the 64 layers are full attention; the other 48 are Gated DeltaNet layers, which keep a fixed-size recurrent state and cache nothing per token. The correct derivation:
+That estimate is wrong, and wrong in an instructive way: it assumes every layer is an attention layer. [Lesson 4.16](/lessons/4-transformer/4.16-hybrid-layouts/) showed that only 16 of the 64 layers are full attention; the other 48 are Gated DeltaNet layers, which keep a fixed-size recurrent state and cache nothing per token. The correct derivation:
 
 $$
 4\ \text{KV heads} \times 256 \times 2\,(K{+}V) \times 2\ \text{B} = 4\ \text{KiB per token per layer},
@@ -75,20 +77,40 @@ $$
 64\ \text{KiB} \times 262{,}144\ \text{tokens} = 16\ \text{GiB per sequence at full native context}.
 $$
 
-The wrong assumption quadrupled the answer. Sixteen gibibytes is still enormous — about a fifth of an 80 GB card for one conversation — but it is the real number, and every capacity plan in tracks 8 and 9 builds on it.
+<Figure id="kv-cache-derivation" />
 
-The 48 DeltaNet layers are the counterpoint. The reference Transformers implementation keeps the recurrent matrix state in float32: 48 value heads × 128 × 128 × 4 bytes = 3 MiB per layer, or 144 MiB across all 48, excluding a much smaller short-convolution state. That figure is **constant in sequence length**. Token one and token 262,144 cost the matrix state the same memory. Other runtimes may choose a different state dtype, so inspect the realized allocation; the architectural bargain is the flat shape, not a universal byte count.
+The wrong assumption quadrupled the answer. Sixteen gibibytes is still enormous, about a fifth of an 80 GB card for one conversation. But it is the real number, and every capacity plan in tracks 8 and 9 builds on it.
+
+The same arithmetic works for any model whose cache holds ordinary per-head keys and values, with the same dimensions and precision in every caching layer (MLA, in [lesson 7.6](/lessons/7-inference-and-efficiency/7.6-mqa-gqa-and-mla/), caches something else). Ignoring allocator overhead (the memory manager's own bookkeeping and waste), the memory model is
+
+$$
+\text{bytes}\approx 2\,L\,T\,H_{kv}\,D\,B,
+$$
+
+with the factor two for keys plus values, $L$ cached layers, $T$ positions, $H_{kv}$ KV heads, $D$ head dimension, and $B$ bytes per element. The trap above was putting all the model's layers into $L$ instead of only the layers that cache.
+
+## The DeltaNet layers: a state that never grows
+
+The 48 DeltaNet layers are the counterpoint. The reference Transformers implementation keeps each layer's recurrent matrix state in float32 (4 bytes per number): 48 value heads × 128 × 128 × 4 bytes = 3 MiB per layer, or 144 MiB across all 48, excluding a much smaller short-convolution state. That figure is **constant in sequence length**. Token one and token 262,144 cost the matrix state the same memory.
+
+Other runtimes may store that state in a different dtype (number format), so inspect the memory they actually allocate. The architectural bargain is the flat shape, not a universal byte count.
 
 :::note
-The Signal Observatory on the explore page shows one classic attention block. In Qwen3.8-27B this exact block appears once every four layers; the other three replace attention with Gated DeltaNet (lesson 4.15).
+The Signal Observatory on the explore page shows one classic attention block. In Qwen3.8-27B this exact block appears once every four layers; the other three replace attention with Gated DeltaNet ([lesson 4.15](/lessons/4-transformer/4.15-gated-deltanet/)).
 :::
 
-Even within the caching layers, the 4 KV heads are themselves a saving: the model asks 24 query heads to share 4 K/V heads (grouped-query attention), shrinking $H_{kv}$ and therefore cache size and decode bandwidth. Lesson 7.6 compares this choice against MQA and MLA numerically. Quantized cache formats shrink $B$; sliding windows shrink effective $T$ at the price of forgetting.
+## Other ways to shrink the cache
 
-Sizing is only half the engineering. Decode reads a long history to produce little new computation, so moving K/V data can dominate; kernels need friendly layouts while sequences grow unpredictably. Reserving every request's maximum 16 GiB up front would be ruinous; paged allocation hands out fixed-size blocks on demand instead (lesson 7.8). Prefix caching shares blocks between requests that begin with the exact same token sequence, such as a common system prompt — safe only under the same model, adapter, and positional treatment, and never across authorization boundaries.
+Even within the caching layers, the 4 KV heads are themselves a saving. The model asks 24 query heads to share 4 K/V heads, a design called grouped-query attention, which shrinks $H_{kv}$ and therefore cache size and decode bandwidth (how many bytes per second must move between memory and the processor). Lesson 7.6 compares this choice against MQA and MLA numerically. Two other levers act on the formula directly: quantized cache formats, which store each number in fewer bytes, shrink $B$; sliding windows, which keep only the most recent positions, shrink the effective $T$ at the price of forgetting.
+
+## Living with a growing cache
+
+Sizing is only half the engineering. Decode reads a long history to produce little new computation, so moving K/V data can take more time than the arithmetic itself. Kernels, the GPU routines that do the work, need memory layouts they can read efficiently, while sequences grow unpredictably.
+
+Reserving every request's maximum 16 GiB up front would be ruinous. Paged allocation instead hands out fixed-size blocks on demand ([lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/)). Prefix caching shares blocks between requests that begin with the exact same token sequence, such as a common system prompt. That sharing is safe only under the same model, adapter (a small fine-tuned add-on to the weights), and positional treatment, and never across authorization boundaries.
 
 :::warning
-KV state is derived from user context and can be sensitive. Clear it when ownership ends, isolate tenants, bound retention, and never treat "it is only a tensor" as a privacy exemption — 16 GiB of cached keys and values is a rich representation of what a user said.
+KV state is derived from user context and can be sensitive. Clear it when ownership ends, isolate tenants, bound retention, and never treat "it is only a tensor" as a privacy exemption: 16 GiB of cached keys and values is a rich representation of what a user said.
 :::
 
-One last correction to the intuition: the cache does not make decode constant-time in context. Prefix re-projection disappears, but each new query in the 16 attention layers still reads and attends over everything retained. The durable model is a transcript — computation already performed becomes memory, saving arithmetic at the price of growing bandwidth, capacity, lifecycle, and privacy responsibilities — kept, in this model, by only a quarter of the layers.
+One last correction to the intuition: the cache does not make decode constant-time in context. Re-projecting the prefix disappears, but each new query in the 16 attention layers still reads and attends over everything retained, so each step gets slower as the conversation grows. Think of the cache as a transcript. Computation already performed becomes memory, which saves arithmetic at the price of growing bandwidth, capacity, lifecycle, and privacy responsibilities. In this model, only a quarter of the layers keep that transcript.

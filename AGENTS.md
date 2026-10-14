@@ -456,6 +456,11 @@ whole contract against `dist/`.
 Lessons: `src/content/lessons/{en,pt-br}/<track>/<id>.mdx`. Schema in
 `src/content.config.ts` (Astro 7 path, Zod 4).
 
+**How lessons are written lives in `docs/WRITING.md`**: the reader is a junior
+developer, every new term is defined where it first appears, a worked case
+comes before the general formula, and a rewrite never changes what a lesson
+claims. Read it before writing or revising prose.
+
 Every lesson is **concept → analogy → optional lab → teach-back → quiz**. A
 lesson completes only when the teach-back is ≥80 characters and ≥15 words *and*
 the quiz is answered correctly.
@@ -553,8 +558,9 @@ that still needs a reader.
 
 pt-BR is a real translation, not machine output. Industry-standard English terms
 (*embedding*, *attention*, *fine-tuning*) stay English inside Portuguese prose.
-Course structure does not: a track is a *trilha* in pt-BR prose, as in the
-interface, and `content:parity` fails on "track" outside code spans.
+Course structure does not: a track is a *trilha* and a lesson an *aula* in
+pt-BR prose, as in the interface, and `content:parity` fails on "track" or
+"lição" outside code spans.
 
 **Numbers are localised, notation is not.** pt-BR prose groups thousands with a
 period and marks decimals with a comma (`262.144`, `1,5 MiB`); EN prose keeps the
@@ -639,9 +645,10 @@ memory budgets measured on a server are not laptop benchmarks.
 ## Docs
 
 `MEMORY.md` (curated state) + `FOR_YOU_KNOW.md` (plain-language explainer) +
-`PRODUCT.md` (product facts) + `DESIGN.md` (visual system). Read `MEMORY.md`
-when opening the repo; `DESIGN.md` before visual work and `PRODUCT.md` before
-product copy.
+`PRODUCT.md` (product facts) + `DESIGN.md` (visual system) + `docs/WRITING.md`
+(lesson voice). Read `MEMORY.md` when opening the repo; `DESIGN.md` before
+visual work, `PRODUCT.md` before product copy and `docs/WRITING.md` before
+lesson prose.
 
 ## Package management
 

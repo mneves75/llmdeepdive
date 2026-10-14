@@ -50,14 +50,29 @@ citations:
     authors: "NVIDIA Corporation"
     year: 2026
     url: "https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-A página do DGX Station da NVIDIA diz "748 GB of coherent memory". Lido depressa, parece um único pool enorme na velocidade da parte mais rápida. Conte o que a página lista. O GB300 Grace Blackwell Ultra Desktop Superchip tem uma GPU Blackwell Ultra e uma CPU Grace de 72 núcleos. O lado da GPU tem 252 GB de HBM3e a 7,1 TB/s. O lado da CPU tem 496 GB de LPDDR5X a 396 GB/s. O NVLink-C2C liga os dois a 900 GB/s. E 252 mais 496 dá 748. Dois pools, duas velocidades, um espaço de endereços.
+A página do DGX Station da NVIDIA diz "748 GB of coherent memory". Lido depressa, parece um único pool enorme na velocidade da parte mais rápida. Esta aula conta o que a página realmente lista, calcula o que cada parte significa para a velocidade de decode e mostra como você controla em que parte o seu modelo fica.
 
-Coerente é uma afirmação sobre correção. O CUDA Programming Guide descreve sistemas hardware-coherent como o Grace Hopper: uma tabela de páginas logicamente combinada para CPUs e GPUs, e coerência em granularidade de linha de cache. O guia de Unified Memory cita o DGX Station entre os sistemas hardware-coherent, e a consulta de atributo mais abaixo confirma isso na sua máquina. Qualquer processador pode ler qualquer byte e ver o valor mais recente. O guia não promete que todo byte chegue na mesma taxa. A velocidade segue o lugar físico dos bytes.
+## Dois pools atrás de um número
 
-Aplique o método da lição 9.6 a cada pool separadamente. São heurísticas de planejamento a partir de números do fabricante, com os mesmos tamanhos de artefato da lição 12.1.
+A página lista estas partes:
+
+- O GB300 Grace Blackwell Ultra Desktop Superchip, um único pacote que contém os dois processadores: uma GPU Blackwell Ultra e uma CPU Grace de 72 núcleos.
+- O lado da GPU tem 252 GB de HBM3e a 7,1 TB/s. HBM (high-bandwidth memory, memória de alta largura de banda) é DRAM empilhada logo ao lado da GPU, feita para velocidade e não para tamanho.
+- O lado da CPU tem 496 GB de LPDDR5X a 396 GB/s, o mesmo tipo de memória de baixo consumo do pool do Spark na [aula 12.1](/pt-br/lessons/12-dgx-and-cuda/12.1-dgx-spark-grace-blackwell-on-a-desk/).
+- O NVLink-C2C, o link chip a chip da NVIDIA, liga os dois a 900 GB/s.
+
+E 252 mais 496 dá 748. Dois pools, duas velocidades, um espaço de endereços.
+
+Coerente é uma afirmação sobre correção. Você já depende disso numa CPU multicore comum: dois núcleos têm cada um o seu cache, e mesmo assim os dois veem o mesmo valor de uma variável compartilhada, porque o hardware mantém as cópias consistentes. O CUDA Programming Guide descreve nos mesmos termos sistemas hardware-coherent como o Grace Hopper. CPUs e GPUs compartilham uma tabela de páginas logicamente combinada (o mapa entre os endereços que um programa usa e a memória física), e a coerência vale em granularidade de linha de cache, os pequenos blocos de tamanho fixo que os caches movem. O guia de Unified Memory cita o DGX Station entre os sistemas hardware-coherent, e a consulta de atributo mais abaixo confirma isso na sua máquina.
+
+Então qualquer processador pode ler qualquer byte e ver o valor mais recente. O guia não promete que todo byte chegue na mesma taxa. A velocidade segue o lugar físico dos bytes. A imagem do cache de CPU deixa de valer aqui. Um cache guarda uma cópia temporária dos dados enquanto o lugar de origem deles fica onde está. No Station cada byte tem um pool de origem, e a migração move a própria origem, por escolha do hardware ou do seu código.
+
+## Taxas de planejamento para cada pool
+
+Aplique o método da [aula 9.6](/pt-br/lessons/9-hardware-and-infrastructure/9.6-apple-silicon-unified-memory/) a cada pool separadamente: bandwidth dividida pelos bytes lidos por token. São heurísticas de planejamento a partir de números do fabricante, com os mesmos tamanhos de artefato da aula 12.1 (o arquivo Q4_K_M de 17,1 GB e o checkpoint bf16 de 54 GB).
 
 $$
 \frac{7100\ \text{GB/s}}{17.1\ \text{GB}} \approx 415\ \text{tok/s}, \qquad \frac{7100\ \text{GB/s}}{54\ \text{GB}} \approx 131\ \text{tok/s}.
@@ -69,7 +84,11 @@ $$
 
 A primeira linha é o Station com todos os bytes na HBM. A segunda é o Station com todos os bytes na LPDDR5X. A HBM é cerca de 26 vezes os 273 GB/s do Spark. O pool lento sozinho é cerca de 1,45 vez o único pool do Spark. No mesmo artefato de 54 GB, o pior caso do Station, 7,3 tok/s, supera os 5,1 do Spark, e o melhor caso é outro mundo.
 
+## O que acontece quando um modelo ocupa os dois pools?
+
 Agora a mistura. Ponha uma fração dos 54 GB na HBM e o resto na LPDDR5X. Suponha que as camadas sejam lidas uma após a outra, sem sobreposição, de modo que os tempos se somam. O tempo por token é a quantidade de bytes de cada pool dividida pela bandwidth desse pool.
+
+Faça um caso à mão primeiro. Com 90 por cento na HBM, 48,6 GB a 7.100 GB/s levam cerca de 6,8 ms, e os outros 5,4 GB a 396 GB/s levam cerca de 13,6 ms. Um token leva cerca de 20,5 ms, ou seja, cerca de 49 tok/s. O décimo dos bytes que está no pool lento custa o dobro do tempo dos nove décimos no pool rápido. A tabela repete a mesma soma para outras frações.
 
 | Fração dos 54 GB na HBM | Tempo por token | Taxa de planejamento |
 |---|---|---|
@@ -78,11 +97,17 @@ Agora a mistura. Ponha uma fração dos 54 GB na HBM e o resto na LPDDR5X. Supon
 | 50 por cento | 72,0 ms | 13,9 tok/s |
 | 0 por cento | 136,4 ms | 7,3 tok/s |
 
-Olhe a segunda linha. Só 10 por cento dos bytes estão no pool lento, e a taxa cai de 131 para 49 tok/s. Se um runtime faz prefetch da próxima camada enquanto a atual calcula, a soma vira um máximo. O pool lento ainda dita o ritmo quando guarda mais de 396 / (7.100 + 396), cerca de 5,3 por cento, dos bytes. Este é o desvio errado clássico: dividir por 7.100 GB/s porque a página diz 748 GB. Fazer a média das duas taxas falha do mesmo jeito. Tempos se somam. Não se tira a média de taxas.
+Olhe de novo a segunda linha. Só 10 por cento dos bytes estão no pool lento, e a taxa cai de 131 para 49 tok/s.
 
-Por que alguém poria pesos no pool lento? Porque alguns modelos não cabem em 252 GB. A fração que transborda dita o ritmo. O próprio playbook de vLLM da NVIDIA mostra o outro lado. Para o Spark, ele escolhe um modelo de 27B. Para o Station, escolhe um modelo maior de mixture-of-experts, que aproveita a memória extra. Um checkpoint de 54 GB não precisa da capacidade do Station. O que o Station vende a esse modelo é bandwidth.
+Um runtime pode fazer melhor com prefetch: ler a próxima camada enquanto a atual calcula. Aí as duas leituras se sobrepõem, e o tempo por token passa a ser o maior dos dois em vez da soma. Isso ajuda, mas o pool lento ainda dita o ritmo quando guarda mais de 396 / (7.100 + 396), cerca de 5,3 por cento, dos bytes. Nessa fração as duas leituras levam o mesmo tempo.
 
-Você controla o posicionamento com ferramentas que o Programming Guide documenta. Um sistema hardware-coherent mantém contadores de acesso e pode migrar páginas para o processador que mais as toca. Você sobrepõe isso com dicas.
+Dois atalhos dão a resposta errada aqui. Um divide por 7.100 GB/s porque a página diz 748 GB. O outro tira a média das duas taxas, (131 + 7,3) / 2, cerca de 69 tok/s, e falha do mesmo jeito. Tempos se somam. Não se tira a média de taxas.
+
+Por que alguém poria pesos no pool lento? Porque alguns modelos não cabem em 252 GB. A fração que transborda dita o ritmo. O próprio playbook de vLLM da NVIDIA mostra o outro lado. Para o Spark, ele escolhe um modelo de 27B. Para o Station, escolhe um modelo maior de mixture-of-experts (um modelo com muitas sub-redes especialistas, das quais cada token usa só algumas, [aula 4.9](/pt-br/lessons/4-transformer/4.9-feed-forward-block/)), que aproveita a memória extra. Um checkpoint de 54 GB não precisa da capacidade do Station. O que o Station vende a esse modelo é bandwidth.
+
+## Como controlar onde os bytes ficam
+
+Você controla o posicionamento com ferramentas que o Programming Guide documenta. A memória é gerida em páginas, blocos de tamanho fixo que podem ficar cada um em qualquer dos pools. Um sistema hardware-coherent mantém contadores de acesso e pode migrar páginas, movendo-as para o processador que mais as toca. Você sobrepõe isso com dicas. Na listagem, `cudaMallocManaged` aloca memória que os dois processadores podem endereçar, `cudaMemAdvise` associa uma dica de posicionamento a um intervalo, e `cudaMemPrefetchAsync` enfileira a movimentação dos bytes antes do primeiro uso, na ordem do restante do trabalho do seu stream.
 
 ```cpp
 // 1 = every allocation is unified memory; hostTables 1 = coherence in hardware.
@@ -102,16 +127,20 @@ cudaMemAdvise(cold, coldBytes, cudaMemAdviseSetAccessedBy,        gpu);  // map 
 cudaMemPrefetchAsync(hot, hotBytes, gpu, 0, stream);                     // move it now
 ```
 
-Onde a plataforma expõe a memória do dispositivo como um domínio NUMA, o guia também descreve `numa_alloc_on_node` e `mbind`. A memória fixada desse modo não migra. Veja com `numactl --hardware` quais nós a sua máquina mostra. Os runtimes expõem a mesma ideia como flags. A lição 13.1 mostra as opções de posicionamento de tensores do llama.cpp.
+Algumas plataformas expõem a memória do dispositivo como um domínio NUMA (non-uniform memory access: o sistema operacional vê cada pool de memória como um nó separado). Nelas o guia também descreve `numa_alloc_on_node` e `mbind`. A memória fixada desse modo não migra. Veja com `numactl --hardware` quais nós a sua máquina mostra. Os runtimes expõem a mesma ideia como flags. A [aula 13.1](/pt-br/lessons/13-llama-cpp-in-depth/13.1-inside-llama-cpp-ggml-graphs-backends/) mostra as opções de posicionamento de tensores do llama.cpp.
 
 :::warning
-Dicas não são garantias. O guia diz que uma preferred location "does not guarantee" a residência, e um prefetch posterior pode sobrepô-la. Não presuma que seus pesos ficaram na HBM. Meça. O Nsight Compute tem uma seção `C2CLink` que informa a utilização do NVLink-C2C, então um modelo que transmite pesos pelo link aparece como tráfego no link. A lição 12.4 trata de profiling.
+Dicas não são garantias. O guia diz que uma preferred location "does not guarantee" a residência, e um prefetch posterior pode sobrepô-la. Não presuma que seus pesos ficaram na HBM. Meça. O Nsight Compute, o profiler de kernels da NVIDIA, tem uma seção `C2CLink` que informa a utilização do NVLink-C2C, então um modelo que transmite pesos pelo link aparece como tráfego no link. A [aula 12.4](/pt-br/lessons/12-dgx-and-cuda/12.4-writing-a-fast-kernel-tiling-and-tensor-cores/) trata de profiling.
 :::
 
-A compute capability é a outra armadilha. A lista da NVIDIA põe o GB300 do DGX Station em 10.3 e o GB10 do DGX Spark em 12.1. O nome da família é o mesmo. Os alvos de build não são, e um binário compilado só para um não roda no outro. A lição 12.3 mostra como compilar para os dois. Fora da máquina, uma ConnectX-8 SuperNIC dá até 800 Gb/s, ou seja, 100 GB/s. É cerca de 1,4 por cento do número da HBM, então a rede continua muito mais lenta que a memória local (lição 9.9).
+## Compute capability e a rede
+
+A compute capability é a outra armadilha. A lista da NVIDIA põe o GB300 do DGX Station em 10.3 e o GB10 do DGX Spark em 12.1. O nome da família é o mesmo. Os alvos de build não são, e um binário compilado só para um não roda no outro. A [aula 12.3](/pt-br/lessons/12-dgx-and-cuda/12.3-the-cuda-programming-model/) mostra como compilar para os dois.
+
+Fora da máquina, uma ConnectX-8 SuperNIC, a placa de rede da NVIDIA, dá até 800 Gb/s, ou seja, 100 GB/s. É cerca de 1,4 por cento do número da HBM, então a rede continua muito mais lenta que a memória local ([aula 9.9](/pt-br/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/)).
 
 :::caveat
-Todos os números são alegações da NVIDIA, lidas na página do produto em 3 de outubro de 2026. A linha de FP4 da página traz notas de rodapé sobre esparsidade que esta lição não tenta resolver, então ela não cita nenhum número de FP4 do Station. A tabela de mistura supõe leitura sequencial sem sobreposição. Um runtime real vai cair entre a soma e o máximo.
+Todos os números são alegações da NVIDIA, lidas na página do produto em 3 de outubro de 2026. A linha de FP4 da página traz notas de rodapé sobre esparsidade que esta aula não tenta resolver, então ela não cita nenhum número de FP4 do Station. A tabela de mistura supõe leitura sequencial sem sobreposição. Um runtime real vai cair entre a soma e o máximo.
 :::
 
-A ideia durável é que a coerência dá um espaço de endereços e o posicionamento dá uma velocidade. Antes de ler a capacidade total numa folha de especificações, pergunte quais bytes vivem onde. A lição 12.3 passa ao modelo de programação que decide como um kernel os toca.
+A coerência dá um espaço de endereços, e o posicionamento dá uma velocidade. Antes de confiar na capacidade total de uma folha de especificações, pergunte quais bytes vivem onde. A aula 12.3 passa ao modelo de programação que decide como um kernel os toca.

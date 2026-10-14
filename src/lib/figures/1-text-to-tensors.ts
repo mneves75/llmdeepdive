@@ -16,7 +16,7 @@ export const TRACK_1_FIGURES = {
       en:
         'A corpus of three words: low ×5, lower ×2, lowest ×3. After every merge the counts are recomputed, because merging destroys old neighbours and creates new ones — that recount is the step people skip.',
       'pt-br':
-        'Um corpus de três palavras: low ×5, lower ×2, lowest ×3. Depois de cada merge as contagens são refeitas, porque unir destrói vizinhos antigos e cria novos — esse recount é a etapa que as pessoas pulam.',
+        'Um corpus de três palavras: low ×5, lower ×2, lowest ×3. Depois de cada merge as contagens são refeitas, porque cada merge destrói vizinhos antigos e cria novos — essa recontagem é a etapa que as pessoas pulam.',
     },
     steps: [
       {
@@ -39,7 +39,7 @@ export const TRACK_1_FIGURES = {
         label: { en: 'Merge 1', 'pt-br': 'Merge 1' },
         caption: {
           en: 'l+o becomes lo everywhere. Recount: the pair l+o no longer exists anywhere, and lo+w now wins outright at 10.',
-          'pt-br': 'l+o vira lo em todo lugar. Recount: o par l+o não existe mais em lugar nenhum, e lo+w agora vence sozinho com 10.',
+          'pt-br': 'l+o vira lo em todo lugar. Recontagem: o par l+o não existe mais em lugar nenhum, e lo+w agora vence sozinho com 10.',
         },
         body: {
           kind: 'flow',
@@ -55,7 +55,7 @@ export const TRACK_1_FIGURES = {
         label: { en: 'Merge 2', 'pt-br': 'Merge 2' },
         caption: {
           en: 'The vocabulary gains the piece low. Recount again: low+_ occurs 5 times and low+e occurs 2 + 3 = 5, a tie.',
-          'pt-br': 'O vocabulário ganha a peça low. Recount de novo: low+_ ocorre 5 vezes e low+e ocorre 2 + 3 = 5, um empate.',
+          'pt-br': 'O vocabulário ganha o pedaço low. Nova recontagem: low+_ ocorre 5 vezes e low+e ocorre 2 + 3 = 5, um empate.',
         },
         body: {
           kind: 'flow',
@@ -70,8 +70,8 @@ export const TRACK_1_FIGURES = {
       {
         label: { en: 'Merges 3 and 4', 'pt-br': 'Merges 3 e 4' },
         caption: {
-          en: 'Four merges in, the algorithm has found something that looks like a morpheme — for a purely statistical reason. It has no concept of one; that string simply kept being adjacent to itself.',
-          'pt-br': 'Após quatro merges, o algoritmo encontrou algo que parece um morfema — por uma razão puramente estatística. Ele não tem conceito de morfema; aquela sequência apenas continuou adjacente a si mesma.',
+          en: 'Four merges in, the algorithm has found something that looks like a morpheme, the smallest unit of a word that carries meaning. The reason is purely statistical: it has no concept of a morpheme, and the two halves of that string kept appearing side by side.',
+          'pt-br': 'Após quatro merges, o algoritmo encontrou algo que parece um morfema, a menor unidade de uma palavra que carrega significado. A razão é puramente estatística: ele não tem conceito de morfema, e as duas metades daquela sequência viviam aparecendo lado a lado.',
         },
         body: {
           kind: 'flow',

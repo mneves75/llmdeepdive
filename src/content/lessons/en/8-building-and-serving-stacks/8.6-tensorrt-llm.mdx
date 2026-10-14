@@ -46,25 +46,50 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Your vLLM deployment works, and you want another NVIDIA-focused stack. Current documentation changes the premise: in August 2026 TensorRT-LLM removed its serialized TensorRT-engine backend. PyTorch is now the sole execution backend, with AutoDeploy remaining available on top of it.
+Your vLLM deployment works, and you want to try another stack built specifically for NVIDIA GPUs. If you read older guides, you will expect TensorRT-LLM to compile your model into a frozen engine file first. Current documentation changes that premise: in August 2026 TensorRT-LLM removed its serialized TensorRT-engine backend. PyTorch is now the sole execution backend, with AutoDeploy remaining available on top of it.
 
-There is no separate conversion or trtllm-build step. The current command is trtllm-serve pointed directly at a Hugging Face checkpoint. This is not eager PyTorch: the runtime still supplies NVIDIA-specialized kernels, in-flight batching, paged KV, quantization, speculative decoding, and parallelism. Pin the checkpoint and runtime, configure memory and scheduling, and benchmark the real workload; do not maintain an engine matrix by frozen shape.
+## How do you serve a checkpoint today?
 
-Quantization can still release substantial serving capacity by shrinking the resident weights and, when the runtime supports a validated low-precision KV format, the cache as well. Do not infer a multiplier from bit width alone: lesson 7.2 owns the model-specific KV derivation, and lesson 9.3 owns the full accelerator budget, including runtime reserve and recurrent state. Recompute there with the exact artifact and runtime configuration, then require the correctness canary from lesson 8.1 before treating the recovered capacity as usable.
+There is no separate conversion or trtllm-build step. The current command is trtllm-serve pointed directly at a Hugging Face checkpoint.
 
-Serving is otherwise familiar. In-flight batching is TensorRT-LLM's name for the iteration-level scheduling of lesson 7.8: requests join and leave between decode steps rather than waiting for a fixed batch to drain. Paged KV, chunked prefill, and speculative decoding all have counterparts here. The server and configuration surface differ from vLLM, but the concepts transfer intact, which is why this lesson can spend its space on the parts that do not.
+That does not make it eager PyTorch ([lesson 8.1](/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/)'s slow reference). The runtime still supplies its own NVIDIA-specialized pieces:
+
+- kernels tuned for NVIDIA GPUs,
+- in-flight batching,
+- paged KV,
+- quantization,
+- speculative decoding,
+- and parallelism across GPUs.
+
+So the work is the same as for any engine. Pin the checkpoint and the runtime version, configure memory and scheduling, and benchmark the real workload. What you no longer do is build and maintain separate engine files, each compiled for a configured range of input shapes.
+
+## What quantization can and cannot buy
+
+Quantization can still release substantial serving capacity. It shrinks the resident weights, and, when the runtime supports a validated low-precision KV format, the cache as well. Do not infer a multiplier from bit width alone ("4-bit is a quarter of 16-bit, so four times the capacity"). [Lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) owns the model-specific KV derivation, and [lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns the full accelerator budget, including runtime reserve and recurrent state. Recompute there with the exact artifact and runtime configuration. Then require the correctness canary from lesson 8.1 (the token-by-token comparison against eager PyTorch) before treating the recovered capacity as usable.
+
+## What carries over from vLLM
+
+Serving is otherwise familiar. In-flight batching is TensorRT-LLM's name for the iteration-level scheduling of [lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/): requests join and leave between decode steps rather than waiting for a fixed batch to drain. Paged KV, chunked prefill (splitting a long prompt's processing into pieces so it does not stall other requests) and speculative decoding all have counterparts here. The server and configuration surface differ from vLLM, but the concepts transfer intact. That is why this lesson can spend its space on the parts that do not.
 
 :::warning
-A batch-1 benchmark with short prompts and outputs says nothing about 32K prompts, multimodality, or production concurrency. Replay the real input and output distributions, arrival pattern, and decoding parameters. Compare correct responses inside the SLO, not an isolated peak.
+A batch-1 benchmark with short prompts and outputs says nothing about 32K prompts, multimodality, or production concurrency. Replay the real input and output distributions, arrival pattern, and decoding parameters. Compare correct responses inside the SLO (the service-level objective, your latency target), not an isolated peak.
 :::
 
-The operational bill is now a compatibility and configuration matrix, not a serialized-engine matrix. A runtime update can change kernels, memory use, or operator coverage; a new precision can change quality; a new traffic profile can need different scheduling. Pin versions, preserve correctness canaries, record realized KV capacity, and revalidate after every material change.
+## What you still have to validate
+
+The operational bill is now a compatibility and configuration matrix, not a serialized-engine matrix. Three kinds of change can each break a working deployment:
+
+- A runtime update can change kernels, memory use, or operator coverage (which model operations the runtime implements).
+- A new precision can change quality.
+- A new traffic profile can need different scheduling.
+
+Pin versions, preserve correctness canaries, record realized KV capacity, and revalidate after every material change.
 
 :::caveat
-Architecture support decides everything above, and for this model it must be verified per version rather than assumed. Qwen3.8-27B's 48 Gated DeltaNet layers need explicit implementation: kernels for the delta-rule update and the short convolution, and a runtime that manages a per-sequence recurrent state alongside the paged KV of the 16 attention layers. Compiled stacks typically gain support for a new architecture later than eager and Python-engine stacks do, because a plugin or kernel must be written rather than a module. Before planning any migration, confirm the exact release builds and runs this model, then run the differential test from lesson 8.1 against eager PyTorch. A server that starts cleanly and mishandles the recurrent state will be fast, confident, and wrong.
+Architecture support decides everything above, and for this model it must be verified per version rather than assumed. Qwen3.8-27B's 48 Gated DeltaNet layers need explicit implementation: kernels for the delta-rule update and the short convolution, and a runtime that manages a per-sequence recurrent state alongside the paged KV of the 16 attention layers. Before planning any migration, confirm the exact release builds and runs this model, then run the differential test from lesson 8.1 against eager PyTorch. A server that starts cleanly and mishandles the recurrent state will be fast, confident, and wrong.
 :::
 
-Current TensorRT-LLM provides an NVIDIA-specialized runtime without a separate AOT engine. The price is NVIDIA ecosystem dependence and validation per version, precision, model, and workload. The right choice passes the same canaries and delivers more goodput inside the SLO.
+Current TensorRT-LLM provides an NVIDIA-specialized runtime without a separate AOT (ahead-of-time compiled) engine. The price is dependence on the NVIDIA ecosystem, and validation per version, precision, model, and workload. The right choice passes the same canaries and delivers more goodput (requests completed within your latency target) inside the SLO.

@@ -5,6 +5,77 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-10-14
+
+Every lesson, in both languages, was reviewed for a reader who can program
+but has never studied machine learning, and rewritten where that reader
+would get lost. What a lesson claims did not change; how it explains did.
+
+### Changed
+
+- **All 125 lessons in English and Portuguese were revised** against a new
+  standard, [`docs/WRITING.md`](docs/WRITING.md): define each new term where
+  it first appears, show a small worked case before the general formula, one
+  claim per sentence, and headings that name the question each part answers.
+  Every lesson has a recorded verdict and the obstacle it removed
+  (`docs/specs/feynman-rewrite/ledger/`): 69 clarified, 56 restructured.
+- Lessons now have headings (125 of 125, up from 16), which also fill the
+  "In this lesson" step list, and the first mention of another lesson links
+  to it (1,252 links, up from none).
+- English sentences average 18.1 words (from 20.0) and the longest paragraph
+  in a lesson averages 115 words (from 147); pt-BR 19.7 (from 22.1) and 128
+  (from 163). Lessons grew by about a fifth, mostly definitions and worked
+  examples. These are measurements of the text, not of learning: no reader
+  was tested.
+- Teach-back model answers, the explanation a learner compares their own
+  with, average 16.6 words per sentence in English (from 26.2) and 18.6 in
+  Portuguese, with every number and condition kept.
+- Track summaries and the explorer's component summaries say what each part
+  does in plain words.
+- Portuguese prose calls a lesson an *aula*, as the interface always did,
+  instead of *lição*.
+
+### Fixed
+
+Each track had an adversarial fact pass on a second model that compared
+every changed lesson with the previous release. Besides overstatements the
+rewrite introduced and the pass caught, it found errors that were already
+published; all are listed with their sources in
+`docs/specs/feynman-rewrite/fact-fixes.md`. Among them:
+
+- Qwen3.8-27B's model card dates the Qwen3.8 family announcement (August
+  2026), not the 27B checkpoint's release; five lessons said otherwise.
+- 5.11's batch-doubling story contradicted its own numbers (doubling halfway
+  gives p = 0.75, not 0.5), and the run does reach the first half of the
+  cosine decay.
+- 5.7 divided the whole model into 16 units of 1.7 billion parameters;
+  9.7 divided a 16 GB artifact where the course's is 17.1 GB (5.7×, not
+  5.3×).
+- Causal attention includes the token itself (4.1, 5.1); beam search returns
+  the best candidate it found, not the global optimum (3.4); the card says
+  only that the model was trained with multi-token prediction (7.5).
+- Thirteen quiz items had a question, answer or distractor that was wrong or not
+  uniquely right (2.4, 2.9, 3.3, 5.7, 5.9, 5.10, 6.8, 6.10, 7.13, 8.1, 8.4,
+  8.10, 9.5); no answer position moved.
+- 9.10 no longer calls itself the end of the course; tracks 10–13 follow it.
+- 5.9 cited a PyTorch blog URL that returns 404; it now cites the live one.
+- Lesson lists sized their column from their widest item, so a long formula
+  inside a list item pushed the page sideways on a 320px screen (4.2's new
+  worked example by 92px; 7.7 by 1px in Firefox). Prose lists now use
+  `minmax(0, 1fr)`, the single-column rule AGENTS.md already states.
+- Two high-severity advisories published after 0.11.1, both build-time
+  only: sharp 0.35.5 and source-map-js 1.2.2. Every social card rebuilds
+  byte-identical.
+
+### Added
+
+- `docs/WRITING.md`: how lessons are written and reviewed, referenced from
+  AGENTS.md, README and CONTRIBUTING.
+- `content:parity` fails pt-BR prose that says *lição* (Sutton's essay keeps
+  its name, *a lição amarga*), treats "aula 1.5" as a lesson reference rather
+  than a decimal, and now also checks quiz questions, which a YAML list item
+  had kept out of both the vocabulary and the decimal checks.
+
 ## [0.11.1] — 2026-10-05
 
 ### Fixed

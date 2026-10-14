@@ -1,0 +1,12 @@
+# Ledger: track 3, sequence models
+
+Both locales revised together; pt-BR prose and frontmatter now say "aula" for a lesson. Every first mention of another lesson is a link.
+
+| Lesson | Verdict | Main obstacle a junior hit | What changed |
+| --- | --- | --- | --- |
+| 3.1-modelling-sequences | restructure | "State" never defined and the recurrence formula came before any example; key/value record, bf16, KV cache, batch, padding, mask, teacher forcing, autoregressive undefined | Defined state via a parentheses-counter toy (fixed state) before the formula; symbols of the formula said in words; key and value defined; copy-task count as a list; terms glossed; six headings |
+| 3.2-rnns-vanishing-gradient | clarify | Formula symbols, Jacobian, backpropagation through time, saturation and norm undefined; clipping and mitigations in 150-word paragraphs | RNN described in words before the formula and each symbol named; Jacobian, gradient, saturated unit, norm, orthogonal init glossed; numbers as two bullets; mitigations as a list; six headings |
+| 3.3-lstm-gru-gates | restructure | Cell update formula before any numbers; gate, sigmoid, affine map, ⊙, half-life, bias, checkpoint undefined | Added a one-coordinate cell update with toy numbers (2 → 2.3) before the formula; gate, sigmoid, ⊙, half-life defined; LSTM/GRU spelled out; two repairs as a list; five headings |
+| 3.4-seq2seq-encoder-decoder-bottleneck | restructure | One sentence packed inputs, labels and the one-position shift; cross-entropy, beam search, sampling, residual stream, patches undefined | Added a worked shift example ("I see you"); terms glossed; the two failures and the wrong turns split into headed sections; six headings |
+| 3.5-bahdanau-attention | restructure | Softmax and context formulas came before the worked example; energy and softmax not explained | Worked three-position example moved before the general softmax and context formulas (same math, reordered in both locales); energy and softmax explained; axis bug split into three paragraphs; six headings |
+| 3.6-linear-attention-fast-weights | restructure | O(n), feature map, associativity, transpose undefined; additive interference and the delta rule stated only abstractly | Defined each; added a toy key/value case showing the additive read returning the average (4) and the delta rule correcting to 5 (β=1) or 4 (β=0.5); typo "layer.s" fixed; five headings |

@@ -8,9 +8,9 @@ const parser = unified().use(remarkParse).use(remarkMdx).use(remarkMath)
 const DOTTED_NUMBER = /(?<![\p{L}\p{N}_])(\d+(?:\.\d+)+)(?![\p{L}\p{N}_])/gu
 const THOUSANDS = /^\d{1,3}(?:\.\d{3})+$/u
 const REFERENCE_OR_VERSION = /(?:seção|capítulo|trilha|versão|version|release|apache|cuda|python|node|astro|pnpm|vllm|sglang)\s*$/iu
-const COURSE_REFERENCE = /liç(?:ão|ões)[^\n;:]*$/iu
+const COURSE_REFERENCE = /(?<!\p{L})(?:liç(?:ão|ões)|aulas?)[^\n;:]*$/iu
 const PARAMETER_NOTATION = /(?:temperature|top_p|top_k|gpu_memory_utilization|epsilon|alpha|beta)\s*$/iu
-const FRONTMATTER_PROSE = /^\s*(?:title|summary|analogy|prompt|modelAnswer|question|options|explanation):\s*(.*)$/u
+const FRONTMATTER_PROSE = /^\s*(?:-\s+)?(?:title|summary|analogy|prompt|modelAnswer|question|options|explanation):\s*(.*)$/u
 
 /**
  * Math must remain byte-identical between locales except for prose inside
@@ -107,13 +107,22 @@ function dottedNumberFailures(lesson, math) {
  * not prose, so `--track` stays legal.
  */
 const ENGLISH_TRACK = /\btracks?\b/iu
+/**
+ * Likewise a lesson is an "aula" in the interface (step list, navigation,
+ * search, "Começar pela aula 0.1"); prose saying "lição" named the same thing
+ * two ways on one page. `\b` is ASCII-only, so the boundary is spelled out.
+ * "A lição amarga" is the Portuguese name of Sutton's essay, not a lesson.
+ */
+const PT_FORBIDDEN_LESSON_WORD = /(?<![\p{L}\p{N}])liç(?:ão|ões)(?![\p{L}\p{N}])(?!\s+amarga)/iu
 
 function courseVocabularyFailures(lesson) {
-  return [...new Set(
-    proseSegments(lesson)
-      .filter((segment) => ENGLISH_TRACK.test(segment))
-      .map((segment) => `pt-br prose says "track" where the course says "trilha": "${segment.trim().slice(0, 120)}"`),
-  )]
+  const failures = []
+  for (const segment of proseSegments(lesson)) {
+    const quoted = segment.trim().slice(0, 120)
+    if (ENGLISH_TRACK.test(segment)) failures.push(`pt-br prose says "track" where the course says "trilha": "${quoted}"`)
+    if (PT_FORBIDDEN_LESSON_WORD.test(segment)) failures.push(`pt-br prose says "lição" where the course says "aula": "${quoted}"`)
+  }
+  return [...new Set(failures)]
 }
 
 /**

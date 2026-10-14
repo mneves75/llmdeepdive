@@ -11,7 +11,7 @@ unlocks: []
 analogy: "A conference has many journalists asking specialized questions. Standard multi-head attention gives every journalist a private translator and private transcript. MQA makes all journalists share one translator and transcript. GQA assigns one translator to each small desk of journalists. MLA stores a compact multilingual shorthand and reconstructs the information each desk needs. Sharing saves transcript space, but the communication design must preserve enough distinctions for good reporting."
 teachBack:
   prompt: "Using Qwen3.8-27B's numbers, quantify what GQA saves versus same-geometry MHA and MQA, and explain why MLA is not just another point on the same axis."
-  modelAnswer: "Cache size scales with KV heads. Lesson 7.2 derived 4 KiB per token per cached layer for Qwen's 4 KV heads at dimension 256 in bf16. A same-geometry MHA with 24 KV heads would store 24 × 256 × 2 × 2 B = 24 KiB per token per layer — six times more, which at full context would be 96 GiB per sequence instead of 16 GiB. MQA with one KV head would store 1 KiB per token per layer, a further 4× shrink to about 4 GiB, but forces all 24 query heads through one K/V view. MLA leaves this axis entirely: it caches a learned low-dimensional latent per token and reconstructs keys and values through projections, with special handling of RoPE components, so its cache size depends on the latent dimension and its algebra differs from any group count."
+  modelAnswer: "Cache size scales with KV heads. Lesson 7.2 derived 4 KiB per token per cached layer for Qwen's 4 KV heads at dimension 256 in bf16. A same-geometry MHA with 24 KV heads would store 24 × 256 × 2 × 2 B = 24 KiB per token per layer. That is six times more: at full context, 96 GiB per sequence instead of 16 GiB. MQA with one KV head would store 1 KiB per token per layer, a further 4× shrink to about 4 GiB. But MQA forces all 24 query heads through one K/V view. MLA leaves this axis entirely. It caches a learned low-dimensional latent per token and reconstructs keys and values through projections, with special handling of RoPE components. So its cache size depends on the latent dimension, and its algebra differs from any group count."
 quiz:
   - question: "Per token, Qwen3.8-27B's KV cache across its 16 caching layers totals how much (lesson 7.2's number)?"
     options: ["256 KiB", "4 GiB", "64 KiB", "24 B"]
@@ -34,14 +34,18 @@ citations:
     authors: "DeepSeek-AI"
     year: 2024
     url: "https://arxiv.org/abs/2405.04434"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Open Qwen3.8-27B's config and an asymmetry jumps out: 24 query heads, but only 4 key/value heads. Why would a design team give a layer six times more questions than answers? Because during serving, queries are computed fresh each step and cost only weights — but every key and value must be *stored for every past token*. KV heads are the expensive ones, and this lesson is about the family of designs that economize on them: MQA, GQA, and MLA.
+Open Qwen3.8-27B's config and an asymmetry jumps out: 24 query heads, but only 4 key/value heads. Why would a design team give a layer six times more questions than answers? Because of what each one costs during serving. A query is computed fresh at each step and is then thrown away, so it costs only weights. Every key and value, though, must be *stored for every past token* in the KV cache of [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/). KV heads are the expensive ones, and this lesson is about the family of designs that economize on them: MQA, GQA, and MLA.
 
-Set up the accounting. With $H_q$ query heads and $H_{kv}$ KV heads, cache size per token per layer is proportional to $H_{kv}$ (times head dimension, times two for K and V, times bytes per element). Classic multi-head attention sets $H_{kv} = H_q$: every query head owns a private key/value view.
+## What a KV head costs
 
-Here is the wrong turn to stage deliberately, because you will see it in the wild. Someone reads "24 heads, head dimension 256, bf16" and computes Qwen's cache as $24 \times 256 \times 2 \times 2\ \text{B} = 24\ \text{KiB}$ per token per layer. That is the *MHA* number — it ignores grouped-query attention, and it overestimates by exactly the factor the designers engineered away. The real figure, derived once in lesson 7.2 and only referenced here, uses the 4 KV heads: 4 KiB per token per caching layer, 64 KiB per token across the 16 full-attention layers, 16 GiB per sequence at the native 262,144-token context. Run the hypothetical MHA variant through the same pipeline and the comparison is stark:
+Set up the accounting. In standard multi-head attention, a layer runs several heads side by side, each with its own query, key and value projections. With $H_q$ query heads and $H_{kv}$ KV heads, cache size per token per layer is proportional to $H_{kv}$ (times head dimension, times two for K and V, times bytes per element). Classic multi-head attention (MHA) sets $H_{kv} = H_q$: every query head owns a private key/value view.
+
+Here is a mistake worth staging deliberately, because you will see it in the wild. Someone reads "24 heads, head dimension 256, bf16" and computes Qwen's cache as $24 \times 256 \times 2 \times 2\ \text{B} = 24\ \text{KiB}$ per token per layer. That is the *MHA* number. It ignores grouped-query attention, and it overestimates by exactly the factor the designers engineered away.
+
+The real figure, derived once in lesson 7.2 and only referenced here, uses the 4 KV heads: 4 KiB per token per caching layer, 64 KiB per token across the 16 full-attention layers, 16 GiB per sequence at the native 262,144-token context. Run the hypothetical MHA variant through the same pipeline and the comparison is stark:
 
 $$
 \underbrace{24 \times 256 \times 2 \times 2\ \text{B}}_{\text{same-geometry MHA}} = 24\ \text{KiB}
@@ -49,26 +53,48 @@ $$
 \underbrace{4 \times 256 \times 2 \times 2\ \text{B}}_{\text{Qwen's GQA}} = 4\ \text{KiB per token per layer},
 $$
 
-a **6× shrink** — per token that is 384 KiB versus 64 KiB, and at full context a hypothetical 96 GiB per sequence versus the actual 16 GiB. The MHA variant could not hold even a single full-length sequence next to the 54 GB of bf16 weights on an 80 GB accelerator; the GQA design can. The same factor governs decode bandwidth, since the cache must be *read* each step by every caching layer.
+a **6× shrink**. Per token that is 384 KiB versus 64 KiB, and at full context a hypothetical 96 GiB per sequence versus the actual 16 GiB. The MHA variant could not hold even a single full-length sequence next to the 54 GB of bf16 weights on an 80 GB accelerator; the GQA design can. The same factor governs decode bandwidth, since every caching layer must *read* the cache at each step.
 
-**Multi-query attention** (MQA) pushes sharing to the limit: $H_{kv} = 1$. For Qwen's geometry that would mean $1 \times 256 \times 2 \times 2\ \text{B} = 1\ \text{KiB}$ per token per layer — 16 KiB per token, about 4 GiB at full context, a 24× shrink from MHA. The price is representational: all 24 query heads must read from one shared key/value subspace. Query heads can still ask different questions, but they all consult the same index and the same payload, and whether quality survives depends on model, scale, and training recipe — it cannot be read off the architecture diagram.
+## MQA: one shared key/value head
 
-**Grouped-query attention** (GQA) is the interpolation, and Qwen3.8-27B's choice sits squarely on it: 24 query heads in 4 groups of 6, each group sharing one K/V head. Groups preserve some diversity of key/value subspaces while dividing cache and bandwidth by six. The GQA paper (Ainslie et al.) showed the design can also be *converted into*: pool an MHA checkpoint's K/V heads group-wise, then continue training briefly. The mapping is structural — kernels must know which query heads read which K/V head, and checkpoints encode the projection shapes (recall from lesson 4.2 that Qwen's K and V projections output 1024 dimensions, 4 heads × 256, against 12288 for Q — 6144 of queries interleaved per head with 6144 of gate).
+**Multi-query attention** (MQA) pushes sharing to the limit: $H_{kv} = 1$. For Qwen's geometry that would mean $1 \times 256 \times 2 \times 2\ \text{B} = 1\ \text{KiB}$ per token per layer. That is 16 KiB per token, about 4 GiB at full context, a 24× shrink from MHA.
 
-**Multi-head latent attention** (MLA), introduced with DeepSeek-V2, leaves the $H_{kv}$ axis entirely. Instead of caching per-head keys and values, it caches a learned low-dimensional *latent* vector per token and reconstructs attention components through projections, with decoupled handling of the RoPE positional part. Its cache size is set by the latent dimension, not a head count, and its algebra differs — the quality-versus-size point it reaches is not on the MHA-GQA-MQA line at all.
+The price is in what the model can represent. All 24 query heads must read from one shared key/value subspace, a single way of describing every past token. Query heads can still ask different questions, but they all consult the same index and the same payload. Whether quality survives depends on the model, the scale, and the training recipe; it cannot be read off the architecture diagram.
+
+## GQA: sharing within groups
+
+**Grouped-query attention** (GQA) sits between those two extremes, and Qwen3.8-27B's choice is squarely on it: 24 query heads in 4 groups of 6, each group sharing one K/V head. The groups keep some variety of key/value subspaces while dividing cache and bandwidth by six.
+
+The GQA paper (Ainslie et al.) showed the design can also be *converted into*. Pool an MHA checkpoint's K/V heads group by group, then continue training briefly. The mapping is structural, so two pieces of software must agree on it:
+
+- kernels, the GPU routines that compute attention, must know which query heads read which K/V head;
+- checkpoints encode the projection shapes. Recall from [lesson 4.2](/lessons/4-transformer/4.2-self-attention/) that Qwen's K and V projections output 1024 dimensions, 4 heads × 256, against 12288 for Q: 6144 of queries interleaved per head with 6144 of gate (an extra learned signal that scales each head's output).
+
+## MLA: caching a compressed summary
+
+**Multi-head latent attention** (MLA), introduced with DeepSeek-V2, leaves the $H_{kv}$ axis entirely. Instead of caching per-head keys and values, it caches a learned low-dimensional *latent* vector per token, a compact summary from which keys and values can be rebuilt. Attention components are then reconstructed through projections, with decoupled handling of the RoPE positional part (RoPE, from [lesson 4.7](/lessons/4-transformer/4.7-rope/), encodes position by rotating query and key vectors). Its cache size is set by the latent dimension, not a head count. Its algebra differs too, so the quality-versus-size point it reaches is not on the MHA-GQA-MQA line at all.
 
 :::caveat
-Two things this comparison is not. MLA is not "GQA with more compression" — its cache contents and reconstruction math are different, and summarizing it as a group count misdescribes the design. And a config file is not an optimization interface: editing the KV-head count without an actual weight conversion and adaptation procedure does not produce a smaller model, it produces a broken one.
+Two things this comparison is not. MLA is not "GQA with more compression": its cache contents and reconstruction math are different, and summarizing it as a group count misdescribes the design. And a config file is not an optimization interface. Editing the KV-head count without an actual weight conversion and adaptation procedure does not produce a smaller model; it produces a broken one.
 :::
 
 :::note
-The Signal Observatory on the explore page shows one classic attention block. In Qwen3.8-27B this exact block appears once every four layers; the other three replace attention with Gated DeltaNet (lesson 4.15).
+The Signal Observatory on the explore page shows one classic attention block. In Qwen3.8-27B this exact block appears once every four layers; the other three replace attention with Gated DeltaNet ([lesson 4.15](/lessons/4-transformer/4.15-gated-deltanet/)).
 :::
 
 :::insight
 These designs move information from per-token memory into shared structure or computation. They do not make information free; they choose where capacity lives and what must be reconstructed on demand.
 :::
 
-Deployment is the final filter. A smaller cache pays off only when kernels, quantization, and parallel layouts implement the exact variant efficiently; falling back to generic attention paths can erase the gain. Compare candidates on cache bytes per token, decode bandwidth, throughput at realistic concurrency, and quality on long contexts — a small-cache design often wins at the *system* level by admitting more concurrent sequences, a gain single-request benchmarks never see.
+## Choosing between them in practice
 
-The spectrum, with our specimen placed on it: MHA gives every query head a private K/V view (24 KiB per token per layer, in Qwen's geometry). GQA shares within groups — Qwen3.8-27B's 24-over-4 buys a 6× shrink and is one half of its memory story, alongside the hybrid layout that limits caching to 16 layers at all. MQA shares one view globally (1 KiB, 24×). MLA re-encodes the problem into a latent cache. Each trades repeated state for a stronger structural constraint — and Qwen's designers, notably, took two of these savings at once.
+Deployment is the final filter. A smaller cache pays off only when kernels, quantization, and parallel layouts implement the exact variant efficiently; falling back to generic attention code can erase the gain. Compare candidates on cache bytes per token, decode bandwidth, throughput at realistic concurrency, and quality on long contexts. A small-cache design often wins at the *system* level by admitting more concurrent sequences, a gain that single-request benchmarks never see.
+
+Here is the spectrum, with our specimen placed on it:
+
+- **MHA** gives every query head a private K/V view (24 KiB per token per layer, in Qwen's geometry).
+- **GQA** shares within groups. Qwen3.8-27B's 24-over-4 buys a 6× shrink and is one half of its memory story; the other half is the hybrid layout that limits caching to 16 layers in the first place.
+- **MQA** shares one view globally (1 KiB, 24×).
+- **MLA** re-encodes the problem into a latent cache.
+
+Each trades repeated state for a stronger structural constraint, and Qwen's designers, notably, took two of these savings at once.

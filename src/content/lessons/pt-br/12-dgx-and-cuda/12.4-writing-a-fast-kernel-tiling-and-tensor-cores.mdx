@@ -20,11 +20,11 @@ quiz:
   - question: "Por que os Tensor Cores não aceleram o decode em batch 1 do Qwen3.8-27B?"
     options: ["Os Tensor Cores não leem bf16", "O decode é um produto matriz-vetor: cada peso é usado uma vez, então o trabalho é limitado por bandwidth, e um único vetor preenche só uma pequena parte de um tile de matriz", "Os Tensor Cores rodam só durante o prefill, por projeto de hardware", "Os Tensor Cores precisam de entradas FP32"]
     correctIndex: 1
-    explanation: "A lição 9.1 pôs o decode perto de uma operação por byte de peso. Os Tensor Cores acrescentam vazão aritmética, de que este kernel não carece."
+    explanation: "A aula 9.1 pôs o decode perto de uma operação por byte de peso. Os Tensor Cores acrescentam vazão aritmética, de que este kernel não carece."
   - question: "Um relatório do Nsight Compute para um kernel de produto matriz-vetor do decode mostra vazão de memória alta e vazão de compute baixa. Qual é a leitura certa?"
     options: ["O kernel está mal escrito, então mova a aritmética para os Tensor Cores", "O kernel está perto do seu teto de bandwidth, e só menos bytes ou mais trabalho por byte podem ajudar", "A GPU ficou ociosa durante o lançamento", "O profiler não consegue medir batch 1"]
     correctIndex: 1
-    explanation: "A lição 9.2 mostrou que um kernel a 0,3 por cento do pico de FLOPs pode estar exatamente no seu roofline. O conserto é a intensidade, não o escalonamento de instruções."
+    explanation: "A aula 9.2 mostrou que um kernel a 0,3 por cento do pico de FLOPs pode estar exatamente no seu roofline. O conserto é a intensidade, não o escalonamento de instruções."
 citations:
   - title: "CUDA Programming Guide: Writing SIMT Kernels (v13.4.2)"
     authors: "NVIDIA Corporation"
@@ -58,10 +58,14 @@ citations:
     authors: "NVIDIA Corporation"
     year: 2025
     url: "https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-A multiplicação de matrizes ingênua da lição 12.3 está correta e é desperdiçadora. Cada thread lê da memória global uma linha inteira de `A` e uma coluna inteira de `B`, e threads vizinhas buscam os mesmos números de novo. O conserto é o truque mais antigo do manual do roofline da lição 9.2: aumentar a arithmetic intensity reutilizando bytes que você já moveu.
+A multiplicação de matrizes ingênua da [aula 12.3](/pt-br/lessons/12-dgx-and-cuda/12.3-the-cuda-programming-model/) está correta e é desperdiçadora. Cada thread lê da memória global uma linha inteira de `A` e uma coluna inteira de `B`, e threads vizinhas buscam os mesmos números de novo. O conserto é o truque mais antigo do manual do roofline da [aula 9.2](/pt-br/lessons/9-hardware-and-infrastructure/9.2-the-roofline-model/): aumentar a arithmetic intensity, as operações feitas por byte movido da memória, reutilizando bytes que você já moveu.
+
+## Tiling: carregar uma vez, usar muitas
+
+Você já conhece a ideia de I/O de arquivos. Ler um arquivo com uma chamada de sistema por byte é lento, então você lê um pedaço para um buffer e trabalha a partir do buffer. Um tile é esse buffer. É um pequeno pedaço quadrado de uma matriz, guardado na memória compartilhada, a memória rápida do chip que todas as threads de um bloco compartilham (aula 12.3). Diferente do seu buffer de arquivo, este pertence a um bloco inteiro de threads, então elas precisam enchê-lo e terminar de usá-lo juntas.
 
 Um bloco coopera. Ele carrega um tile quadrado de `A` e um de `B` para a memória compartilhada, sincroniza, deixa cada thread multiplicar a partir dessa memória rápida, sincroniza de novo e desliza para o tile seguinte.
 
@@ -87,17 +91,29 @@ __global__ void matmulTiled(const float* A, const float* B, float* C, int M, int
 // launch: dim3 block(TILE, TILE); dim3 grid((N + TILE - 1) / TILE, (M + TILE - 1) / TILE);
 ```
 
-Dois detalhes sustentam a correção. Primeiro, toda thread do bloco que não saiu precisa alcançar o mesmo `__syncthreads()`, então uma barreira nunca fica dentro de um desvio que só algumas threads seguem. Os elementos fora do intervalo são carregados como zero em vez de pulados porque o tile é compartilhado: uma thread cuja saída fica fora da matriz ainda preenche sua posição, que as vizinhas leem, então ela permanece no laço em vez de retornar cedo. Segundo, a barreira depois da multiplicação impede que uma thread rápida reabasteça os tiles enquanto uma lenta ainda os lê.
+## Duas barreiras mantêm a correção
 
-Agora o ganho. Cada elemento de um tile é carregado uma vez da memória global e usado por 16 threads. O tráfego global cai pela largura do tile, então a intensidade de 0,25 FLOP/B sobe pelo mesmo fator:
+`__syncthreads()` é uma barreira: nenhuma thread do bloco passa dela até que todas as threads do bloco a tenham alcançado. Dois detalhes sustentam a correção.
+
+Primeiro, toda thread do bloco que não saiu precisa alcançar o mesmo `__syncthreads()`, então uma barreira nunca fica dentro de um desvio que só algumas threads seguem. Os elementos fora do intervalo são carregados como zero em vez de pulados porque o tile é compartilhado. Uma thread cuja saída fica fora da matriz ainda preenche sua posição, que as vizinhas leem, então ela permanece no laço em vez de retornar cedo.
+
+Segundo, a barreira depois da multiplicação impede que uma thread rápida reabasteça os tiles enquanto uma lenta ainda os lê.
+
+## Quanto o tiling ganha?
+
+Conte a reutilização. Com um tile de 2 por 2, cada valor carregado na memória compartilhada é lido por 2 threads. Cada elemento de um tile de 16 por 16 é carregado uma vez da memória global e usado por 16 threads. O tráfego global cai pela largura do tile, então a intensidade de 0,25 FLOP/B sobe pelo mesmo fator:
 
 $$
 I_{\text{tiled}} = 16\times 0.25\ \text{FLOP/B} = 4\ \text{FLOP/B}, \qquad 273\ \text{GB/s}\times 4\ \text{FLOP/B} \approx 1.1\ \text{TFLOP/s}.
 $$
 
-O segundo número usa a bandwidth do fabricante para o Spark. É o teto de bandwidth nessa intensidade, um número de planejamento, não uma medição. Um tile maior reutiliza mais, mas exige mais memória compartilhada. As tabelas do Programming Guide dão 100 KiB por SM na compute capability 12.x e até 228 KiB na 10.3. Um tamanho de tile ajustado no Station pode não caber no Spark. Alocações de memória compartilhada acima de 48 KiB por bloco também exigem alocação dinâmica e uma ativação explícita (opt-in).
+O segundo número usa a bandwidth do fabricante para o Spark. É o teto de bandwidth nessa intensidade, um número de planejamento, não uma medição.
 
-Agora os Tensor Cores. Eles multiplicam um pequeno tile por instrução de warp. As warp matrix functions os expõem em C++, e toda thread do warp precisa participar.
+Um tile maior reutiliza mais, mas exige mais memória compartilhada. As tabelas do Programming Guide dão 100 KiB por SM na compute capability 12.x e até 228 KiB na 10.3. Um tamanho de tile ajustado no Station pode não caber no Spark. Alocações de memória compartilhada acima de 48 KiB por bloco também exigem alocação dinâmica e uma ativação explícita (opt-in).
+
+## Tensor Cores: um tile inteiro por instrução
+
+Tensor Cores são unidades da GPU feitas para multiplicar matrizes: uma instrução de warp multiplica um pequeno tile inteiro. As warp matrix functions (WMMA, warp matrix multiply-accumulate) os expõem em C++, e toda thread do warp precisa participar. Um `fragment` é um tile espalhado pelos registradores das 32 threads do warp, e `half` é o tipo de ponto flutuante de 16 bits, o FP16.
 
 ```cpp
 #include <cuda_fp16.h>
@@ -120,12 +136,20 @@ __global__ void matmulWmma(const half* A, const half* B, float* C, int M, int N,
 // launch: matmulWmma<<<dim3(N / 16, M / 16), 32>>>(A, B, C, M, N, K);  M, N, K multiples of 16
 ```
 
-Este kernel está correto, mas não é rápido. Ele não tem staging em memória compartilhada e usa um warp por bloco. O código rápido com Tensor Cores empilha as mesmas duas ideias: um tile de bloco passado pela memória compartilhada, um tile de warp e então a instrução. É exatamente o loop nest do "Efficient GEMM in CUDA" do CUTLASS, então na prática você chama o CUTLASS ou o cuBLAS. O Programming Guide diz para usar os Tensor Cores por meio de cuDNN, cuBLAS, cuFFT ou CUTLASS. A tabela das warp matrix functions lista FP16, BF16, TF32, FP64, INT8 e tipos inteiros de sub-byte (preview), e nenhum float FP4. As instruções FP4 da Blackwell são específicas de arquitetura (o llama.cpp as compila com um alvo `121a`), e a NVIDIA recomenda fortemente acessá-las pelas bibliotecas. A versão das bibliotecas importa. As notas de versão do CUDA 13.4 Update 1 listam, no cuBLAS 13.2, GEMM em NVFP4 e MXFP8 até 3 vezes mais rápido no DGX Spark para certas dimensões grandes de matriz. É uma alegação do fabricante sobre uma versão de biblioteca.
+Este kernel está correto, mas não é rápido. Ele não tem staging em memória compartilhada e usa um warp por bloco. O código rápido com Tensor Cores empilha as mesmas duas ideias: um tile de bloco passado pela memória compartilhada, um tile de warp e então a instrução. É exatamente o loop nest do "Efficient GEMM in CUDA" do CUTLASS (GEMM, general matrix multiply, é o nome padrão dessa operação). Então, na prática, você chama o CUTLASS ou o cuBLAS, a biblioteca de álgebra linear da NVIDIA. O Programming Guide diz para usar os Tensor Cores por meio de cuDNN, cuBLAS, cuFFT ou CUTLASS.
 
-Por que nenhum desses truques acelera o decode em batch 1? O decode é um produto matriz-vetor, um GEMV. Cada peso é lido uma vez e usado numa multiplicação com soma, que são 2 FLOP. Em bf16, isso dá cerca de 1 FLOP por byte (lição 9.1). Com os 4,5 bits por valor do NVFP4, contando as escalas de bloco, são $2 / (4.5/8) \approx 3.6$ FLOP por byte, ainda muito abaixo de qualquer ridge point. Um único vetor também preenche uma coluna de um tile de 16 de largura, no máximo 1/16 do trabalho. Por isso os kernels de decode leem os pesos em fluxo com cargas largas, acumulam em registradores e reduzem entre as threads do warp. Eles miram uma fração da bandwidth da DRAM, não os FLOPs. Batching e prefill dão aos Tensor Cores um tile cheio.
+Os formatos numéricos também importam. A tabela das warp matrix functions lista FP16, BF16, TF32, FP64, INT8 e tipos inteiros de sub-byte (preview), e nenhum float FP4. As instruções FP4 da Blackwell são específicas de arquitetura (o llama.cpp as compila com um alvo `121a`), e a NVIDIA recomenda fortemente acessá-las pelas bibliotecas. A versão das bibliotecas importa também. As notas de versão do CUDA 13.4 Update 1 listam, no cuBLAS 13.2, GEMM em NVFP4 e MXFP8 até 3 vezes mais rápido no DGX Spark para certas dimensões grandes de matriz. É uma alegação do fabricante sobre uma versão de biblioteca.
+
+## Por que o decode não ganha nada disso
+
+Por que nenhum desses truques acelera o decode em batch 1? O decode é um produto matriz-vetor, um GEMV: uma matriz de pesos vezes um único vetor. Cada peso é lido uma vez e usado numa multiplicação com soma, que são 2 FLOP. Em bf16, isso dá cerca de 1 FLOP por byte ([aula 9.1](/pt-br/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/)). O NVFP4 é o formato de 4 bits da NVIDIA ([aula 12.5](/pt-br/lessons/12-dgx-and-cuda/12.5-the-cuda-stack-for-llms/)), e com os seus 4,5 bits por valor, contando as escalas de bloco, são $2 / (4.5/8) \approx 3.6$ FLOP por byte. Isso ainda fica muito abaixo de qualquer ridge point, a intensidade em que um kernel deixa de ser limitado pela bandwidth.
+
+Um único vetor também preenche uma coluna de um tile de 16 de largura, no máximo 1/16 do trabalho. Por isso os kernels de decode leem os pesos em fluxo com cargas largas, acumulam somas parciais em registradores e depois somam as somas parciais das 32 threads em cada valor de saída (uma redução no warp). Eles miram uma fração da bandwidth da DRAM, não os FLOPs. Batching e prefill dão aos Tensor Cores um tile cheio.
+
+## Como ler um profile
 
 :::warning
-Faça profiling antes de otimizar. Um kernel de decode a 0,3 por cento do pico de FLOPs pode estar a 90 por cento do seu teto de bandwidth, e uma reescrita então não compra nada. Leia primeiro a seção Speed Of Light, depois as seções de roofline: o Nsight Compute tem gráficos de roofline hierárquicos para kernels com Tensor Cores, e manda habilitar o que corresponde ao seu caminho de dados.
+Faça profiling antes de otimizar. Um kernel de decode a 0,3 por cento do pico de FLOPs pode estar a 90 por cento do seu teto de bandwidth, e uma reescrita então não compra nada. Leia primeiro a seção Speed Of Light, o resumo que compara a vazão de computação e de memória do kernel com os picos do hardware. Depois leia as seções de roofline: o Nsight Compute tem gráficos de roofline hierárquicos para kernels com Tensor Cores, e manda habilitar o que corresponde ao seu caminho de dados.
 :::
 
 ```bash
@@ -133,10 +157,10 @@ nvcc -O3 -arch=sm_121 -lineinfo matmul.cu -o matmul
 ncu --set full -k regex:matmul -c 1 -o matmul-report ./matmul
 ```
 
-O filtro `-k regex:` escolhe kernels pelo nome, `-c 1` faz profiling só da primeira correspondência e `--set full` coleta todas as seções. Abra `matmul-report.ncu-rep` na interface do Nsight Compute. A linha de comando não imprime nada quando `-o` está definido e `--page` não, então acrescente `--page details` para ler os números no terminal.
+O `ncu` é o profiler de linha de comando do Nsight Compute. O filtro `-k regex:` escolhe kernels pelo nome, `-c 1` faz profiling só da primeira correspondência e `--set full` coleta todas as seções. Abra `matmul-report.ncu-rep` na interface do Nsight Compute. A linha de comando não imprime nada quando `-o` está definido e `--page` não, então acrescente `--page details` para ler os números no terminal.
 
 :::caveat
 As listagens seguem o Programming Guide, e a lógica de índices delas foi conferida contra uma multiplicação de matrizes de referência num modelo em CPU. Os autores não as executaram numa GPU. Compile-as para o seu alvo, rode o `compute-sanitizer` e compare com o cuBLAS antes de confiar num tempo.
 :::
 
-A ideia durável é que todo kernel rápido move menos bytes por operação útil, e todo profile pergunta sob qual teto você está. A lição 12.5 dá um passo atrás, dos kernels isolados para a stack que os entrega: drivers, toolkits, bibliotecas e os servidores que os chamam.
+Todo kernel rápido move menos bytes por operação útil, e todo profile pergunta sob qual teto você está. A aula 12.5 dá um passo atrás, dos kernels isolados para a stack que os entrega: drivers, toolkits, bibliotecas e os servidores que os chamam.

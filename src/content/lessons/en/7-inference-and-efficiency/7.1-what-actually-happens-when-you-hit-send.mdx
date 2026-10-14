@@ -8,19 +8,19 @@ tier: "advanced"
 locale: "en"
 prerequisites: ["4.2-self-attention"]
 unlocks: ["7.2-the-kv-cache", "7.3-prefill-vs-decode-two-different-machines"]
-analogy: "A restaurant order is not transported directly from the table into a finished meal. A host admits the party, a server normalizes the order, the kitchen scheduler groups dishes that share equipment, cooks prepare an initial batch, then plate later courses one at a time. Runners stream dishes to the table while canceled orders release ingredients and counter space. An inference server performs the same choreography with requests, tokens, GPU batches, and cache blocks."
+analogy: "A restaurant order is not transported directly from the table into a finished meal. A host admits the party, a server writes the order in the kitchen's standard form, the kitchen scheduler groups dishes that share equipment, cooks prepare an initial batch, then plate later courses one at a time. Runners stream dishes to the table while canceled orders release ingredients and counter space. An inference server performs the same choreography with requests, tokens, GPU batches, and cache blocks."
 teachBack:
   prompt: "Trace one request to Qwen3.8-27B from HTTP arrival through the first streamed token, naming what prefill produces and why decode is a loop rather than a single pass."
-  modelAnswer: "The gateway authenticates and validates, the chat template serializes roles including thinking tags, and the tokenizer maps text into ids from the 248,320-entry vocabulary. The scheduler admits the request against a KV-cache budget. Prefill runs all prompt positions in parallel through the 64 layers: the 16 full-attention layers write keys and values while the 48 Gated DeltaNet layers fold the prompt into fixed-size states. The final position yields logits over 248,320 tokens; the sampler picks one; then decode repeats one forward pass per output token, reusing cached state, until a stop condition, while the server detokenizes and streams incrementally."
+  modelAnswer: "The gateway authenticates and validates the request. The chat template serializes the roles, including thinking tags, and the tokenizer maps the text into ids from the 248,320-entry vocabulary. The scheduler admits the request against a KV-cache budget. Prefill runs all prompt positions in parallel through the 64 layers. The 16 full-attention layers write keys and values, while the 48 Gated DeltaNet layers fold the prompt into fixed-size states. The final position yields logits over 248,320 tokens, and the sampler picks one. Decode then repeats one forward pass per output token, reusing cached state, until a stop condition. Meanwhile the server detokenizes and streams the text incrementally."
 quiz:
   - question: "Why can prefill process every prompt position in a single parallel pass?"
     options: ["The prompt contains no attention", "Causal self-attention lets each position compute its output from already-known earlier positions simultaneously", "The model skips its layers during prefill", "Prompt tokens require no projections"]
     correctIndex: 1
     explanation: "All prompt tokens are known up front, so each position's causal attention over its prefix can be computed at once — the property of self-attention from lesson 4.2."
-  - question: "Without speculative decoding or MTP, a 500-token reply requires about how many target-model decode passes?"
+  - question: "Without speculative decoding or MTP (multi-token prediction), a 500-token reply requires about how many target-model decode passes?"
     options: ["Exactly one", "One per layer, so 64", "About 500 — one per generated token", "None; prefill emits the whole reply"]
     correctIndex: 2
-    explanation: "Baseline autoregressive decoding finalizes one token per target pass. Speculative and multi-token methods can amortize one target pass across several accepted tokens."
+    explanation: "Baseline autoregressive decoding finalizes one token per target pass. Speculative and multi-token methods can spread the cost of one target pass across several accepted tokens."
 citations:
   - title: "Qwen3.8-27B Model Card"
     authors: "Qwen Team"
@@ -34,22 +34,50 @@ citations:
     authors: "Cloudflare"
     year: 2026
     url: "https://developers.cloudflare.com/workers-ai/"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Type a question for Qwen3.8-27B, hit send, and about a second later words begin streaming back. Between those two moments a specific, inspectable pipeline runs — and because this course fixes one specimen model, we can trace it concretely. The same weights run in two typical homes: a local vLLM process serving Qwen/Qwen3.8-27B on your own GPU, or Cloudflare Workers AI hosting it as @cf/qwen/qwen3.8-27b. The operator changes; the lifecycle does not.
+Type a question for Qwen3.8-27B, hit send, and about a second later words begin streaming back. This lesson follows that one request through the server, step by step, so that the later lessons on speed and memory have a map to hang on. Because this course fixes one specimen model, the path can be traced concretely.
 
-First, the edge. A gateway authenticates the caller, checks quota, validates the request schema, and assigns a request ID. Limits on bytes, images, tools, and maximum generation are enforced before any expensive work. Rate limiting belongs here, not inside a prompt, and user text is untrusted data from the first byte.
+The same weights run in two typical homes: a local vLLM process (vLLM is a widely used open-source serving program) serving Qwen/Qwen3.8-27B on your own GPU, or Cloudflare Workers AI hosting it as @cf/qwen/qwen3.8-27b. The operator changes; the lifecycle does not.
 
-Next, prompt construction. The application combines system instructions, history, and your new message using the checkpoint's chat template. Qwen3.8-27B's template includes the role boundaries and thinking-mode markup learned during post-training; a request can switch reasoning off by passing enable_thinking set to false. Two templates that render identically to a human can produce different token sequences and different behavior, so the template is part of the model contract, not decoration.
+## From your text to a list of token ids
 
-The tokenizer then maps the assembled text into integer ids drawn from a 248,320-entry vocabulary (padded for parallelism; lesson 1.2 covers why). The model never sees characters. Character count is not token count, so input limits must be checked again after tokenization.
+The request first reaches the edge, the service's front door. A **gateway** authenticates the caller, checks their quota, validates that the request has the expected shape (its schema), and assigns a request ID. Limits on bytes, images, tools, and maximum generation length are enforced here, before any expensive work starts. Rate limiting belongs at this door, not inside a prompt. From the first byte, user text is untrusted data.
 
-The request now enters the scheduler. Weights occupy roughly fixed memory, but every admitted sequence also claims growing attention-cache space — lesson 7.2 derives exactly how much per token for this model — so a request that fits alone may not fit beside current work. Modern servers build continuous batches, merging requests at different generation positions instead of waiting for a fixed batch to drain.
+Next comes prompt construction. The model was trained on conversations written in one exact format, its **chat template**: special markers that say where the system instructions, the user's turns and the assistant's turns begin and end. The application fills that template with the system instructions, the conversation history, and your new message, using the template that ships with the checkpoint (the published set of weights). Qwen3.8-27B's template also includes the role boundaries and thinking-mode markup learned during post-training, the tags that wrap its step-by-step reasoning. A request can switch reasoning off by passing enable_thinking set to false.
 
-Then the model finally runs. During prefill, all prompt positions flow through the 64 layers in parallel. In Qwen3.8-27B those layers are not uniform: the 16 full-attention layers project and store keys and values for every prompt position, while the 48 Gated DeltaNet layers fold the prompt into fixed-size recurrent states (lesson 4.16 covers this hybrid layout). The final prompt position produces logits — one score for each of the 248,320 vocabulary entries.
+Two templates that look identical to a human can still produce different token sequences, and so different behavior. Treat the template as part of the model's contract, not as decoration.
 
-Here is the classic wrong turn: assuming that this one big pass produces the whole answer, so response time should be roughly one forward pass. It is not. Under ordinary autoregressive decoding, the sampler selects one token from the logits, appends it, and runs the model again; temperature 1.0, top-p 0.95, and top-k 20 are three of the model card's recommended thinking-mode settings. A 500-token answer therefore means roughly 500 target-model decode passes in this baseline. Speculative decoding or the checkpoint's MTP module can verify several proposals in one target pass, as lesson 7.5 explains, so one pass per emitted token is not a universal runtime invariant.
+The tokenizer then maps the assembled text into integer ids drawn from a 248,320-entry vocabulary (padded for parallelism; [lesson 1.2](/lessons/1-text-to-tensors/1.2-tokenization-i/) covers why). From here on the model never sees characters, only ids. Character count is not token count, so input limits must be checked again after tokenization.
+
+## Waiting for room on the GPU
+
+The request now enters the **scheduler**, the part of the server that decides which requests run on the GPU together. Memory drives most of that decision. The weights occupy roughly fixed memory. Every admitted sequence also claims attention-cache space that grows with each token it holds: this is the KV cache, and [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) derives exactly how much it costs per token for this model. So a request that would fit alone may not fit beside the work already running.
+
+A GPU stays busy by running many requests as one batch. Modern servers build **continuous batches**: instead of waiting for a fixed batch of requests to finish together, they merge requests that are at different generation positions, and new requests join as finished ones leave. [Lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/) shows how that works.
+
+## Prefill: the whole prompt in one parallel pass
+
+Then the model finally runs. In the first phase, **prefill**, all prompt positions flow through the 64 layers in parallel. That is possible because every prompt token is already known, and causal self-attention ([lesson 4.2](/lessons/4-transformer/4.2-self-attention/)) lets each position compute its output from the earlier positions at the same time as all the others.
+
+In Qwen3.8-27B those layers are not uniform. The 16 full-attention layers project and store keys and values for every prompt position: the per-token data that later tokens will look up. The 48 Gated DeltaNet layers instead fold the prompt into fixed-size recurrent states, a running summary whose size does not grow with the prompt ([lesson 4.16](/lessons/4-transformer/4.16-hybrid-layouts/) covers this hybrid layout). At the end, the final prompt position produces **logits**: one raw score for each of the 248,320 vocabulary entries, where a higher score marks a more likely next token.
+
+## Decode: one token per pass
+
+Here many newcomers go wrong. They assume this one big pass produces the whole answer, so response time should be roughly one forward pass. It is not. The logits from prefill only score the *next* token.
+
+Ordinary autoregressive decoding, where the model emits one token at a time and feeds each one back as input, runs a loop:
+
+1. The **sampler** selects one token from the logits.
+2. The server appends that token to the sequence.
+3. The model runs again for the new position, reusing the cached state of all earlier positions, and produces fresh logits.
+
+The sampler is steered by settings such as temperature (how much randomness to allow) and top-p and top-k (which candidates may be picked at all); [lesson 7.4](/lessons/7-inference-and-efficiency/7.4-sampling/) explains each one. Temperature 1.0, top-p 0.95, and top-k 20 are three of the model card's recommended thinking-mode settings.
+
+A 500-token answer therefore means roughly 500 target-model decode passes in this baseline, where the *target model* is the model whose output you actually want. Two techniques change that count. Speculative decoding lets a cheaper helper propose several tokens; the checkpoint's MTP (multi-token prediction) module proposes them from inside the model. Either way, the target can verify several proposals in one pass, as [lesson 7.5](/lessons/7-inference-and-efficiency/7.5-beam-search-speculative-decoding-and-medusa/) explains, so one pass per emitted token is not a universal runtime invariant.
+
+## Why output tokens cost more
 
 The decode loop is also where money is counted. On Workers AI, Qwen3.8-27B costs, as of Aug 2026, USD 0.45 per million input tokens and USD 3.20 per million output tokens. An illustrative request with a 300-token prompt and a 500-token reply costs
 
@@ -57,18 +85,20 @@ $$
 300 \times \frac{0.45}{10^{6}} + 500 \times \frac{3.20}{10^{6}} = 0.000135 + 0.0016 \approx 0.0017\ \text{USD},
 $$
 
-about a fifth of a cent — with output tokens contributing more than ten times the input cost. Pricing asymmetry mirrors the work asymmetry you just traced: each output token is a full pass through the model.
+about a fifth of a cent. The output tokens contribute more than ten times the input cost. That price asymmetry mirrors the work asymmetry you just traced: each output token is a full pass through the model.
 
-Streaming happens in parallel with the loop. The server detokenizes incrementally, and token boundaries do not align with characters or valid UTF-8 chunks, so buffering must follow the tokenizer's decoder. Stop sequences, tool-call parsers, and structured-output constraints may delay or suppress bytes. A slow client must not pin unbounded server memory.
+## Streaming the answer, and stopping early
+
+Streaming happens in parallel with the loop. The server **detokenizes** incrementally, turning ids back into text as they are produced. Token boundaries do not line up with characters, or even with complete UTF-8 byte sequences, so a token can end halfway through a character. The server must therefore buffer bytes the way the tokenizer's decoder says before sending them. Stop sequences, tool-call parsers, and structured-output constraints may also delay or suppress bytes. And a slow client must not pin unbounded server memory.
 
 :::insight
-"Model latency" is several metrics. Queue time reveals capacity pressure; time to first token measures the path through admission, tokenization, and prefill; inter-token latency describes the decode cadence; end-to-end time adds output length and the network.
+"Model latency" is several metrics. Queue time, the wait before the request is admitted, reveals capacity pressure. Time to first token measures the path through admission, tokenization, and prefill. Inter-token latency, the gap between later tokens, describes the decode cadence. End-to-end time adds output length and the network.
 :::
 
-Cancellation travels the other direction. If you stop generation or the connection drops, decode should halt promptly, queued work should disappear, and cache blocks should return to the allocator with the actual token counts recorded for billing. Cleanup leaks become capacity incidents under load.
+Cancellation travels the other direction. If you stop generation or the connection drops, decode should halt promptly, queued work should disappear, and cache blocks should return to the allocator, with the actual token counts recorded for billing. Under load, memory that cleanup fails to return turns into lost capacity, and then into an incident.
 
 :::warning
-User text is untrusted input everywhere in this pipeline. It must never acquire authority over credentials, tenants, or tools merely by passing through the template — a prompt is data being processed, not instructions to the serving infrastructure.
+User text is untrusted input everywhere in this pipeline. It must never acquire authority over credentials, tenants, or tools merely by passing through the template. A prompt is data being processed, not instructions to the serving infrastructure.
 :::
 
-The durable mental model is a pipeline with a loop inside it. Tokenize once, prefill once, then decode one token per pass until done, detokenizing as you go. The next two lessons zoom into the two halves of that loop: the memory that decode reuses (7.2) and why prefill and decode behave like two different machines (7.3).
+Picture the whole thing as a pipeline with a loop inside it. Tokenize once, prefill once, then decode one token per pass until done, detokenizing as you go. The next two lessons zoom into the two halves of that loop: lesson 7.2 covers the memory that decode reuses, and [lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) shows why prefill and decode behave like two different machines.

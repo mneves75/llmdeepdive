@@ -11,7 +11,7 @@ unlocks: ["11.3-mlx-lm-in-practice"]
 analogy: "A restaurant kitchen takes orders on tickets and cooks nothing until the pass calls for a plate. A good chef batches the tickets, merges steps that share a pan, and sends the oven work and the cold-station work to different cooks. A bad habit is to taste after every spoonful, which stops the whole line. Evaluation, compile and streams are those three choices: when to call for a plate, which steps to merge, and which cook gets which job."
 teachBack:
   prompt: "Explain what mx.eval, mx.async_eval, mx.compile and a stream each control, give the two measurement mistakes that lazy evaluation causes, and name the four memory limits."
-  modelAnswer: "MLX records operations in a graph. mx.eval runs it and blocks. mx.async_eval starts it and returns, so the next graph can be built while the GPU works, which is how mlx-lm overlaps token steps. mx.compile traces a function once, fuses its operations and caches the result per shape and type, so a new shape or dtype traces again. A stream says which device queue runs an operation, and MLX adds the dependencies between streams. Lazy evaluation causes two measurement mistakes: a timer stopped before eval measures graph building, and a peak-memory read before eval sees memory that has not been allocated. The four limits are the system wired limit behind iogpu.wired_limit_mb, MLX's own wired limit, the memory limit, which defaults to the smaller of 1.5 times the recommended working set and 95 percent of installed memory, and the cache limit."
+  modelAnswer: "MLX records operations in a graph and runs nothing until asked. mx.eval runs the graph and waits. mx.async_eval starts it and returns at once, so the next graph can be built while the GPU works; that is how mlx-lm overlaps token steps. mx.compile traces a function once, fuses its operations and caches the result per shape and type, so a new shape or dtype traces again. A stream is the device queue that runs an operation, and MLX adds the dependencies between streams itself. Lazy evaluation causes two measurement mistakes. A timer stopped before eval measures graph building, and a peak-memory read before eval sees memory that has not been allocated yet. The four limits are: the system wired limit behind iogpu.wired_limit_mb; MLX's own wired limit; the memory limit, which defaults to the smaller of 1.5 times the recommended working set and 95 percent of installed memory; and the cache limit."
 quiz:
   - question: "A compiled function runs a Python counter in its body. The counter reads 1 after two calls with the same input shape and 2 after a call with a new shape. What does that show?"
     options: ["The function was traced once and traced again for the new shape, so the counter measures traces", "The second call ran on the CPU", "Compilation was disabled for the second call", "The counter is a side effect that MLX forbids and it raised an error"]
@@ -62,20 +62,22 @@ citations:
     authors: "Apple Machine Learning Research and contributors"
     year: 2026
     url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/models/gated_delta.py"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-Lesson 8.9 introduced two ideas: MLX is lazy, and its arrays live in unified memory. This lesson turns them into controls. Every MLX job has four questions: when does the graph run, how is it fused, which queue runs it, and how much memory may it take. The answers explain most of the odd timings and out-of-memory surprises you will meet on a Mac Studio.
+[Lesson 8.9](/lessons/8-building-and-serving-stacks/8.9-mlx/) introduced two ideas. MLX is **lazy**: a line such as `y = a @ a` does not multiply anything yet; it only records the operation in a **graph**, a list of operations and the arrays each one depends on. And MLX arrays live in unified memory, one pool that the CPU and GPU share. This lesson turns those ideas into controls. Every MLX job raises four questions: when does the graph run, how is it fused, which queue runs it, and how much memory may it take. The answers explain most of the odd timings and out-of-memory surprises you will meet on a Mac Studio.
 
 ## When the graph runs
 
-Operations record nodes. `mx.eval(x)` runs the graph that `x` needs and waits. `mx.async_eval(x)` starts it and returns. Its docstring calls it experimental, but mlx-lm depends on it. In `generate_step`, the loop builds the graph for the next token from the sampled token that has not been computed yet, calls `async_eval` on it, and only then calls `.item()` on the previous token. The CPU prepares step n+1 while the GPU runs step n. Without laziness there would be nothing to overlap.
+Each operation adds a node to the graph, and nothing is computed until you ask. `mx.eval(x)` runs the part of the graph that `x` needs and waits for it to finish. `mx.async_eval(x)` starts the same work and returns at once, while the GPU keeps going. Its docstring calls it experimental, but mlx-lm depends on it.
 
-The docs name the implicit triggers: printing an array, converting it to NumPy, `.item()`, saving it, and using a scalar array in Python control flow. They also give a sizing rule: from a few tens to many thousands of operations per evaluation is fine. Evaluating after every operation pays a fixed cost each time. The natural place to evaluate is once per step of the outer loop.
+Here is how mlx-lm uses it to keep the GPU busy. In `generate_step`, the loop builds the graph for the next token from the sampled token, which is itself still an uncomputed node. It calls `async_eval` on that graph, and only then calls `.item()` to read the previous token's value. So the CPU prepares step n+1 while the GPU runs step n. Without laziness there would be nothing to overlap.
+
+Some actions force evaluation without an explicit call. The docs name these implicit triggers: printing an array, converting it to NumPy, `.item()`, saving it, and using a scalar array in Python control flow (an `if` or a `while`). They also give a sizing rule: from a few tens to many thousands of operations per evaluation is fine. Evaluating after every operation pays a fixed cost each time. The natural place to evaluate is once per step of the outer loop.
 
 ## How the graph is fused
 
-`mx.compile` traces a function once with placeholder inputs, merges common work, fuses element-wise chains into fewer kernels, and caches the result. The docs list what forces a new compile: a changed shape, rank, dtype or input count. A probe counter makes this visible, because Python runs the body only while tracing. Run it:
+A **kernel** is a small program that runs on the GPU, and launching each one costs time. `mx.compile` cuts that cost. It **traces** a function once: it runs your Python code with placeholder inputs and records which operations it performs. It then merges common work, fuses chains of element-wise steps (steps that treat each number on its own) into fewer kernels, and caches the result. The docs list what forces a new compile: a changed shape (the size of each dimension), rank (the number of dimensions), dtype (the number type, such as float32 or float16) or input count. A probe counter makes this visible, because Python runs the body only while tracing. Run it:
 
 ```python
 import math
@@ -106,15 +108,17 @@ mx.eval(flex(mx.random.uniform(shape=(2, 3, 5))))
 print("shapeless, new rank:", traces)
 ```
 
-On MLX 0.32.3 this prints 1, 2, 3, then 1 and 2. A new shape and a new dtype each trace again. With `shapeless=True`, three shapes of one rank traced once, and a new rank traced again; that is what this build did, so check it on yours. Compiled functions must be pure. Printing inside one crashes, because the arrays are placeholders, and state you want to carry must go through the `inputs` and `outputs` arguments. mlx-lm's samplers use exactly that, compiling with `inputs=mx.random.state, outputs=mx.random.state` so the random key advances.
+On MLX 0.32.3 this prints 1, 2, 3, then 1 and 2. A new shape and a new dtype each trace again. With `shapeless=True`, three shapes of one rank traced once, and a new rank traced again. That is what this build did, so check it on yours.
+
+Compiled functions must be **pure**: their result may depend only on their inputs, and they may not change anything outside themselves. Printing inside one crashes, because during tracing the arrays are placeholders with no values. State you want to carry from call to call must go through the `inputs` and `outputs` arguments. mlx-lm's samplers use exactly that, compiling with `inputs=mx.random.state, outputs=mx.random.state` so the random key advances.
 
 ## Which queue runs it
 
-Every operation accepts `stream=`, which may be a stream or a device. The default is the default stream of the default device. Arrays are not moved, because they live in unified memory. When an operation on one stream needs the output of another, MLX inserts the dependency itself. `mx.synchronize()` waits for a stream, and `with mx.stream(s):` sets it for a block.
+A **stream** is a queue of work for one device, the CPU or the GPU. Every operation accepts `stream=`, which may be a stream or a device. The default is the default stream of the default device. Arrays are not moved between devices, because they live in unified memory. When an operation on one stream needs the output of another, MLX inserts the dependency itself. `mx.synchronize()` waits for a stream, and `with mx.stream(s):` sets it for a block.
 
 ## Hand-written kernels
 
-`mx.fast` holds fused operations, among others `rms_norm`, `layer_norm`, `rope`, `scaled_dot_product_attention` and the kernel builders. When no fused operation fits, `mx.fast.metal_kernel` takes only the kernel body and builds the signature from your input and output names:
+Some operations are common enough that MLX ships them already fused. `mx.fast` holds them, among others `rms_norm`, `layer_norm`, `rope`, `scaled_dot_product_attention` and the kernel builders. When no fused operation fits, you can write your own kernel in Metal, Apple's language for GPU programs. `mx.fast.metal_kernel` takes only the kernel body and builds the signature from your input and output names:
 
 ```python
 import mlx.core as mx
@@ -142,7 +146,7 @@ a = mx.random.normal(shape=(4, 16)).astype(mx.float16)
 print("matches mx.exp:", mx.allclose(exp_elementwise(a), mx.exp(a)).item())
 ```
 
-Build the kernel once; each build creates a Metal library. The course model uses this for real. In mlx-lm 0.32.0, `gated_delta.py` runs the Gated DeltaNet recurrence as a Metal kernel on the GPU and falls back to plain operations when the device is not the GPU or the key dimension is not a multiple of 32. Compare the two paths:
+Build the kernel once; each build creates a Metal library. The course model uses this for real. Its Gated DeltaNet layers ([lesson 4.15](/lessons/4-transformer/4.15-gated-deltanet/)) update a fixed-size state once per token, a step called the recurrence. In mlx-lm 0.32.0, `gated_delta.py` runs that recurrence as a Metal kernel on the GPU. It falls back to plain operations when the device is not the GPU or the key dimension is not a multiple of 32. Compare the two paths:
 
 ```python
 import mlx.core as mx
@@ -164,22 +168,24 @@ print("state:", s_gpu.dtype, s_gpu.shape)
 print("max output gap:", mx.abs(y_gpu - y_ref).max().item())
 ```
 
-The outputs agree to within about $10^{-8}$, and the initial state is float32 with shape batch, value heads, value dimension, key dimension. Lesson 8.9 left the runtime's state dtype open. For the initial state, this source answers it: float32, the dtype lesson 7.2 assumed for its reference figure.
+The outputs agree to within about $10^{-8}$, and the initial state is float32 with shape batch, value heads, value dimension, key dimension. Lesson 8.9 left the runtime's state dtype open. For the initial state, this source answers it: float32, the dtype [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) assumed for its reference figure.
 
 ## How much memory it may take
+
+Four separate limits decide how much memory an MLX job may take. The first two are about **wired** memory, which is locked in RAM so macOS cannot move it out to disk ([lesson 11.1](/lessons/11-mac-studio-ultra-and-mlx/11.1-mac-studio-ultra-as-an-inference-machine/)). The other two are MLX's own budgets: one for the arrays a graph evaluation creates, one for the freed buffers MLX keeps for reuse. The "recommended working set" in the table is the most memory macOS recommends the GPU use at once.
 
 | Control | What it does |
 |---|---|
 | `iogpu.wired_limit_mb` (system) | The cap macOS puts on wired GPU memory. `mx.device_info()["max_recommended_working_set_size"]` reports it. |
 | `mx.set_wired_limit(bytes)` | Keeps that much memory resident. Default 0, useful on macOS 15 or later, and an error above the system limit. |
-| `mx.set_memory_limit(bytes)` | A guideline for graph evaluation. Default is the smaller of 1.5 times the recommended working set and 95 percent of installed memory (60.8 GiB on a 64 GB Mac, where 1.5 times would be 77.8). The docstring says only 1.5 times. Past it, with no RAM left, allocation raises an exception. |
+| `mx.set_memory_limit(bytes)` | A guideline for graph evaluation. Default is the smaller of 1.5 times the recommended working set and 95 percent of installed memory (60.8 GiB on a Mac with 64 GiB installed, where 1.5 times would be 77.8, so the 95 percent bound is the smaller one). The docstring says only 1.5 times. Past it, with no RAM left, allocation raises an exception. |
 | `mx.set_cache_limit(bytes)`, `mx.clear_cache()` | Bound and empty the pool of freed buffers MLX keeps for reuse. The cache limit starts equal to the memory limit. |
 
 Read usage with `get_active_memory` (excludes the cache), `get_cache_memory`, and `get_peak_memory` with `reset_peak_memory`.
 
-## The classic wrong turn
+## Why a stopwatch around one line reads almost nothing
 
-The wrong turn is to measure without evaluating. Both of these lie:
+Laziness also breaks naive measurement. If you read a timer or the peak memory before evaluation, you measure the recording of the graph, not the work. Both readings below are wrong:
 
 ```python
 import time
@@ -200,7 +206,7 @@ print("build ms:", round(build_ms, 2), "total ms:", round(total_ms, 2))
 print("peak MB before eval:", peak_before // 10**6, "after:", mx.get_peak_memory() // 10**6)
 ```
 
-The first time is graph building, and the first peak is zero because the product has not been allocated. Evaluate, warm up, then read.
+The first time is graph building, and the first peak is zero because the product has not been allocated. The fix has three steps: evaluate, warm up with a run you throw away, then read.
 
 :::warning
 Do not change the wired limit while an `async_eval` may be running. The mlx-lm source says so, and its `wired_limit` context manager synchronizes the stream before it restores the old value.
@@ -210,4 +216,4 @@ Do not change the wired limit while an `async_eval` may be running. The mlx-lm s
 Facts here are for MLX 0.32.3 and mlx-lm 0.32.0. The docs mark `async_eval` experimental and describe the advanced environment variables as subject to change. The shapeless result was observed on this build, not promised by the docs.
 :::
 
-The durable idea is that an MLX program is a graph you steer. Lesson 11.3 uses these rules inside mlx-lm to convert, tune and cache real models.
+An MLX program is a graph you steer: you choose when it runs, what is fused, where it runs and how much memory it may take. [Lesson 11.3](/lessons/11-mac-studio-ultra-and-mlx/11.3-mlx-lm-in-practice/) uses these rules inside mlx-lm to convert, tune and cache real models.

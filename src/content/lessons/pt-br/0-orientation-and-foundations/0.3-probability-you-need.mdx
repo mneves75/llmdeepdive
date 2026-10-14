@@ -34,40 +34,70 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-25"
+updated: "2026-10-14"
 ---
 
 Comece por uma situação concreta, antes de qualquer vocabulário. Você rodou o Qwen3.8-27B sobre um prompt e a camada final lhe entregou 248.320 números brutos, um por linha do tensor de saída. Eles não são probabilidades: alguns são negativos, alguns são grandes, e certamente não somam nada conveniente. Agora alguém precisa transformar essa pilha numa distribuição de verdade, e depois alguém precisa escolher um token a partir dela. Quase toda a probabilidade de que você precisa neste curso é a maquinaria desses dois passos.
 
-Comece pelo que é uma distribuição. Uma probabilidade é um número entre zero e um que expressa incerteza *sob um modelo*. Para possibilidades mutuamente exclusivas, as probabilidades somam um. Depois de qualquer mascaramento do runtime, o softmax produz uma **distribuição categórica**: valores não negativos que somam um sobre os candidatos que o decoder pode selecionar. O vetor de saída bruto do Qwen tem comprimento 248.320, enquanto os artefatos do tokenizer mapeiam 248.077 ids. Repare no que isso torna explícito. A distribuição *é* a resposta do modelo. Escolher um token a partir dela é uma decisão separada, tomada por código que você configura, não pela rede.
+## O que é uma distribuição de probabilidade aqui?
 
-Probabilidade é sempre condicionada a alguma coisa. Escrevemos $P(A)$ para a probabilidade de $A$, e $P(A \mid B)$ para a probabilidade de $A$ dado que $B$ vale. Modelagem de linguagem é condicional do começo ao fim: $P(x_t \mid x_1,\ldots,x_{t-1})$. O token *Mercúrio* é uma continuação excelente de *o planeta mais próximo do Sol é* e péssima depois de *o metal líquido é*. Condicionar é o jogo inteiro, e a história da lição 0.2 é a história de quanto de $x_1,\ldots,x_{t-1}$ um modelo podia se dar ao luxo de olhar.
+Uma probabilidade é um número entre zero e um que expressa incerteza *sob um modelo*. Quando as possibilidades não podem acontecer juntas e, somadas, cobrem todos os casos, como "o próximo token é *Paris*", "o próximo token é *Roma*" e assim por diante, por todos os tokens que o modelo poderia escolher, suas probabilidades somam um. Se *Paris* recebe 0,4 e *Roma* 0,3, os 0,3 restantes ficam divididos entre todos os outros tokens.
 
-A regra da cadeia monta a probabilidade de uma sequência a partir dessas condicionais:
+O runtime pode primeiro remover algumas linhas que nunca vai selecionar, um passo chamado **mascaramento**. Depois disso, o softmax produz uma **distribuição categórica**: um valor não negativo por candidato que o decoder pode selecionar, somando um. O vetor de saída bruto do Qwen tem comprimento 248.320, enquanto os artefatos do tokenizer mapeiam 248.077 ids.
+
+Repare no que isso torna explícito. A distribuição *é* a resposta do modelo. Escolher um token a partir dela é uma decisão separada, tomada por código que você configura, não pela rede.
+
+## Tudo depende do contexto
+
+Probabilidade é sempre condicionada a alguma coisa. Escrevemos $P(A)$ para a probabilidade de $A$, e $P(A \mid B)$ para a probabilidade de $A$ dado que $B$ vale. Modelagem de linguagem é condicional do começo ao fim: $P(x_t \mid x_1,\ldots,x_{t-1})$ é a probabilidade do token na posição $t$ dados todos os tokens antes dele. O token *Mercúrio* é uma continuação excelente de *o planeta mais próximo do Sol é* e péssima depois de *o metal líquido é*. Condicionar é o jogo inteiro, e a história da [aula 0.2](/pt-br/lessons/0-orientation-and-foundations/0.2-history-ngram-to-gpt/) é a história de quanto de $x_1,\ldots,x_{t-1}$ um modelo podia se dar ao luxo de olhar.
+
+Comece com dois tokens. Suponha que um modelo dê a *o* probabilidade 0,5 como primeiro token, e a *gato* probabilidade 0,2 depois de *o*. Então o par *o gato* tem probabilidade 0,5 × 0,2 = 0,1. A **regra da cadeia** é essa mesma multiplicação levada ao longo de uma sequência inteira:
 
 $$
 P(x_1,\ldots,x_T)=\prod_{t=1}^{T}P(x_t\mid x_1,\ldots,x_{t-1}).
 $$
 
-Essa identidade é a razão pela qual prever repetidamente o próximo token define uma probabilidade para uma passagem inteira. Ela também explica um problema prático imediato: multiplique algumas centenas de números menores que um e o resultado sofre underflow para zero em ponto flutuante. Por isso as implementações trabalham com logaritmos. Como $\log(ab) = \log a + \log b$, o produto vira soma. O log de uma probabilidade é no máximo zero, mais próximo de zero para eventos mais prováveis, tendendo a menos infinito para os impossíveis. O treinamento minimiza a **negative log-likelihood**, que inverte o sinal para que previsões melhores deem um número menor, e fazer a média por token torna comparáveis sequências de comprimentos diferentes.
+Em palavras: a probabilidade da passagem inteira é a probabilidade do primeiro token, vezes a probabilidade do segundo dado o primeiro, e assim até o fim. Essa identidade é a razão pela qual prever repetidamente o próximo token define uma probabilidade para uma passagem inteira.
 
-Agora a ponte dos scores brutos até essa distribuição. Dados logits $z_i$, o softmax computa
+## Por que as implementações trabalham com logaritmos
+
+A regra da cadeia cria um problema prático imediato. Multiplique algumas centenas de números menores que um e o resultado sofre **underflow**: fica pequeno demais para o ponto flutuante guardar, e é arredondado para zero. Por isso as implementações trabalham com logaritmos. O logaritmo natural de um número responde "a que potência devo elevar e (cerca de 2,718) para obter esse número?", então o log de 0,1 é cerca de −2,3. Como $\log(ab) = \log a + \log b$, o produto vira soma.
+
+O log de uma probabilidade é no máximo zero. Fica mais próximo de zero para eventos mais prováveis e tende a menos infinito para os impossíveis. O treinamento minimiza a **negative log-likelihood** (log-verossimilhança negativa), que inverte o sinal para que previsões melhores deem um número menor. Fazer a média dela por token torna comparáveis sequências de comprimentos diferentes.
+
+## Dos scores brutos às probabilidades: o softmax
+
+Agora a ponte dos scores brutos até essa distribuição. Faça primeiro um caso pequeno, usando três logits e ignorando os outros 248.317 por legibilidade. Tome $z = (4.0, 2.0, 1.0)$.
+
+1. Exponencie cada um: $54.60$, $7.39$ e $2.72$. Todo valor agora é positivo.
+2. Some: o total é $64.71$.
+3. Divida cada um pelo total: as probabilidades são cerca de $0.844$, $0.114$ e $0.042$. Agora elas somam um.
+
+Esse procedimento é o softmax. Escrito em geral, dados logits $z_i$, o softmax computa
 
 $$
 p_i=\frac{e^{z_i}}{\sum_j e^{z_j}}.
 $$
 
-Exponenciar torna todo valor positivo; dividir pelo total faz com que somem um. Uma propriedade vale memorizar: somar a mesma constante a todos os logits deixa as probabilidades inalteradas, porque a constante sai como fator do numerador e do denominador. O softmax só se importa com *diferenças* entre logits.
+Uma propriedade vale memorizar: somar a mesma constante a todos os logits deixa as probabilidades inalteradas, porque a constante sai como fator do numerador e do denominador. O softmax só se importa com *diferenças* entre logits.
 
-Faça o exemplo da temperatura numericamente, usando três logits e ignorando os outros 248.317 por legibilidade. Tome $z = (4.0, 2.0, 1.0)$. Exponenciando dá $54.60$, $7.39$ e $2.72$, somando $64.71$, então as probabilidades são cerca de $0.844$, $0.114$ e $0.042$. Isso é temperatura 1,0, o preset que o Qwen3.8-27B usa no modo de raciocínio. Agora aplique temperatura $T = 0.7$, o preset do modo instruct do modelo. A temperatura divide os logits antes do softmax: $z/T = (5.714, 2.857, 1.429)$. Exponenciando dá aproximadamente $303.1$, $17.4$ e $4.17$, somando $324.7$, então as probabilidades passam a ser cerca de $0.934$, $0.054$ e $0.013$. O líder ganhou nove pontos de probabilidade e a cauda perdeu quase tudo o que tinha. Nada no modelo mudou; só a nitidez da leitura.
+## O que as temperaturas 1,0 e 0,7 realmente fazem
 
-Existe aqui um erro clássico no qual vale a pena entrar de propósito. Suponha que você tivesse dividido as *probabilidades* por 0,7 e renormalizado. Você obteria $0.844/0.7 = 1.206$, $0.163$ e $0.060$, somando $1.429$; dividindo tudo por esse total volta-se a $0.844$, $0.114$, $0.042$. Exatamente a distribuição original. Escalar toda probabilidade por uma constante e renormalizar é uma operação nula, porque a constante se cancela do mesmo jeito que uma constante somada se cancela para logits. A temperatura só faz algo porque atua *antes* da exponencial, onde uma mudança multiplicativa no expoente vira uma mudança não linear no resultado. Se o seu sampler aplica a temperatura no lado errado do softmax, o parâmetro vai parecer não fazer nada, e esse é um bug real que gente de verdade coloca em produção.
+A distribuição que você acabou de calcular é a de temperatura 1,0, o preset que o Qwen3.8-27B usa no modo de raciocínio. Agora aplique temperatura $T = 0.7$, o preset do modo instruct do modelo. A temperatura divide os logits antes do softmax: $z/T = (5.714, 2.857, 1.429)$. Exponenciando dá aproximadamente $303.1$, $17.4$ e $4.17$, somando $324.7$, então as probabilidades passam a ser cerca de $0.934$, $0.054$ e $0.013$. O líder ganhou nove pontos de probabilidade e a cauda perdeu quase tudo o que tinha. Nada no modelo mudou; só a nitidez da leitura.
+
+Existe aqui um erro clássico, e ajuda entrar nele de propósito. Suponha que você tivesse dividido as *probabilidades* por 0,7 e renormalizado. Você obteria $0.844/0.7 = 1.206$, $0.163$ e $0.060$, somando $1.429$; dividindo tudo por esse total volta-se a $0.844$, $0.114$, $0.042$. Exatamente a distribuição original.
+
+Escalar toda probabilidade por uma constante e renormalizar não muda nada, porque a constante se cancela, do mesmo jeito que uma constante somada se cancela para logits. A temperatura só faz algo porque atua *antes* da exponencial, onde uma mudança multiplicativa no expoente vira uma mudança não linear no resultado. Se o seu sampler aplica a temperatura no lado errado do softmax, o parâmetro vai parecer não fazer nada, e esse é um bug real que gente de verdade coloca em produção.
 
 :::insight
-Os dois presets oficiais do Qwen3.8-27B são temperatura 1,0 com top-p 0,95 e top-k 20 para o modo de raciocínio, e temperatura 0,7 com top-p 0,80 e top-k 20 para o modo instruct. O padrão vale ser notado cedo: o modo que deveria explorar uma cadeia longa de raciocínio roda mais *quente*, não mais frio, porque uma cadeia de raciocínio que colapsa sobre sua única continuação mais provável para de explorar. A lição 7.4 desenvolve isso direito.
+Os dois presets oficiais do Qwen3.8-27B são temperatura 1,0 com top-p 0,95 e top-k 20 para o modo de raciocínio, e temperatura 0,7 com top-p 0,80 e top-k 20 para o modo instruct. O top-k mantém só os k tokens de maior probabilidade antes do sampling; o top-p mantém o menor conjunto de tokens do topo cujas probabilidades somam pelo menos p. Repare cedo no padrão: o modo que deveria explorar uma cadeia longa de raciocínio roda mais *quente*, não mais frio. Uma cadeia de raciocínio que colapsa sobre sua única continuação mais provável para de explorar. A [aula 7.4](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/) desenvolve isso direito.
 :::
 
-Duas regras evitam a maior parte dos erros de raciocínio probabilístico. Primeira: $P(A \mid B)$ não é $P(B \mid A)$; um sintoma pode ser comum entre pacientes com uma doença rara enquanto a doença continua rara entre pessoas com o sintoma. Segunda: esperança não é resultado; o valor esperado $E[X] = \sum_x p(x) x$ de um dado honesto é 3,5, e nenhuma face mostra 3,5. A loss esperada, quantidade que o treinamento minimiza, é uma média sobre exemplos com a qual nenhum exemplo isolado precisa se parecer.
+## Duas regras que evitam a maior parte dos erros
+
+Primeira: $P(A \mid B)$ não é $P(B \mid A)$. Um sintoma pode ser comum entre pacientes com uma doença rara enquanto a doença continua rara entre pessoas com o sintoma.
+
+Segunda: esperança não é resultado. O **valor esperado** é a média dos resultados ponderada pelas probabilidades, $E[X] = \sum_x p(x) x$. Para um dado honesto ele é 3,5, e nenhuma face mostra 3,5. A loss esperada, quantidade que o treinamento minimiza, é uma média sobre exemplos com a qual nenhum exemplo isolado precisa se parecer.
 
 :::warning
 O equívoco mais comum sobre temperatura é achar que temperatura baixa deixa o modelo mais verdadeiro e temperatura alta o deixa mais criativo. A temperatura manipula o formato de uma distribuição com a qual o modelo já se comprometeu; ela não introduz nenhuma evidência nova. Colocar temperatura em zero torna o modelo determinístico e faz com que ele repita com confiança o que colocou em primeiro lugar, inclusive um erro confiante. Calibração, a questão separada de se as coisas às quais se atribui 70 por cento de probabilidade acontecem em cerca de 70 por cento das vezes, não melhora girando um botão.

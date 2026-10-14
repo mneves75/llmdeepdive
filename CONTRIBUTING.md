@@ -13,6 +13,14 @@ If you translate a lesson: keep industry-standard English terms (*embedding*,
 field is actually spoken in Brazil. Translate the explanation, not the jargon.
 Correct accents and diacritics are required.
 
+## Writing and rewriting lessons
+
+Read [`docs/WRITING.md`](docs/WRITING.md) first. Lessons are written for a
+junior developer: define each new term where it first appears, show a small
+worked case before the general formula, and never change what a lesson
+claims while making it clearer. In Portuguese, a lesson is an *aula* and a
+track a *trilha*; `pnpm content:parity` fails "lição" and "track" in prose.
+
 ## Content corrections
 
 If a claim is wrong, open an issue with the primary source. Citations matter

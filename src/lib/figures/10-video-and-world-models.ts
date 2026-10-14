@@ -147,9 +147,9 @@ export const TRACK_10_FIGURES = {
     title: { en: 'One JEPA training step', 'pt-br': 'Um passo de treino de uma JEPA' },
     caption: {
       en:
-        'The loss lives between two sets of vectors, never on pixels. Gradients reach the context encoder and the predictor only; the target encoder is a slowly moving average of the context encoder and receives no gradient at all.',
+        'The loss compares two sets of vectors, never pixels. Gradients reach the context encoder and the predictor only; the target encoder is a slowly moving average of the context encoder and receives no gradient at all.',
       'pt-br':
-        'A loss fica entre dois conjuntos de vetores, nunca sobre pixels. Os gradientes chegam só ao context encoder e ao predictor; o target encoder é uma média móvel lenta do context encoder e não recebe gradiente nenhum.',
+        'A loss compara dois conjuntos de vetores, nunca pixels. Os gradientes chegam só ao context encoder e ao predictor; o target encoder é uma média móvel lenta do context encoder e não recebe gradiente nenhum.',
     },
     body: {
       kind: 'flow',
@@ -193,9 +193,9 @@ export const TRACK_10_FIGURES = {
     title: { en: 'Planning without drawing a single frame', 'pt-br': 'Planejar sem desenhar um único frame' },
     caption: {
       en:
-        'Model-predictive control in representation space. The cross-entropy method proposes action sequences, the action-conditioned predictor imagines where each one leads, and the energy is the L1 distance from that imagined state to the encoded goal image. Only the first action runs before the loop replans.',
+        'Model-predictive control in representation space: plan, take one action, then plan again. The cross-entropy method, a sampling search, proposes action sequences, the action-conditioned predictor imagines where each one leads, and the energy is the L1 distance from that imagined state to the encoded goal image. Only the first action runs before the loop replans.',
       'pt-br':
-        'Controle preditivo por modelo no espaço de representações. O método de entropia cruzada propõe sequências de ações, o predictor condicionado a ação imagina aonde cada uma leva, e a energia é a distância L1 entre esse estado imaginado e a imagem-alvo codificada. Só a primeira ação é executada antes de o laço replanejar.',
+        'Controle preditivo por modelo no espaço de representações: planeja, executa uma ação e planeja de novo. O método de entropia cruzada, uma busca por sorteio, propõe sequências de ações, o predictor condicionado a ação imagina aonde cada uma leva, e a energia é a distância L1 entre esse estado imaginado e a imagem-alvo codificada. Só a primeira ação é executada antes de o laço replanejar.',
     },
     body: {
       kind: 'flow',
@@ -207,7 +207,7 @@ export const TRACK_10_FIGURES = {
         },
         {
           label: { en: 'Sample candidate action sequences', 'pt-br': 'Sorteia sequências de ações candidatas' },
-          detail: { en: 'cross-entropy method', 'pt-br': 'método de entropia cruzada' },
+          detail: { en: 'cross-entropy method, a sampling search', 'pt-br': 'método de entropia cruzada, uma busca por sorteio' },
           pigment: 'muted',
         },
         {
@@ -222,7 +222,7 @@ export const TRACK_10_FIGURES = {
         },
         {
           label: { en: 'Execute the first action, replan', 'pt-br': 'Executa a primeira ação e replaneja' },
-          detail: { en: 'receding horizon', 'pt-br': 'horizonte deslizante' },
+          detail: { en: 'receding horizon: replan every step', 'pt-br': 'horizonte deslizante: replaneja a cada passo' },
           pigment: 'success',
         },
       ],
@@ -239,9 +239,9 @@ export const TRACK_10_FIGURES = {
     title: { en: 'How V-JEPA 2.1 bought dense features', 'pt-br': 'Como o V-JEPA 2.1 conquistou features densas' },
     caption: {
       en:
-        'Linear-probe segmentation (ADE20K) and attentive-probe action recognition (SSv2), one ingredient at a time, from the paper\'s Table 1. The first five rows are a ViT-L. Supervising the visible tokens lifts segmentation by more than eleven points and drops SSv2 by ten; deep self-supervision restores it.',
+        'Linear-probe segmentation (ADE20K) and attentive-probe action recognition (SSv2), one ingredient at a time, from the paper\'s Table 1; higher is better for both. The first five rows are a ViT-L. Supervising the visible tokens lifts segmentation by more than eleven points and drops SSv2 by ten; deep self-supervision restores it.',
       'pt-br':
-        'Segmentação com linear probe (ADE20K) e reconhecimento de ações com attentive probe (SSv2), um ingrediente por vez, segundo a Tabela 1 do artigo. As cinco primeiras linhas são um ViT-L. Supervisionar os tokens visíveis eleva a segmentação em mais de onze pontos e derruba o SSv2 em dez; a autossupervisão profunda o recupera.',
+        'Segmentação com linear probe (ADE20K) e reconhecimento de ações com attentive probe (SSv2), um ingrediente por vez, segundo a Tabela 1 do artigo; nas duas, maior é melhor. As cinco primeiras linhas são um ViT-L. Supervisionar os tokens visíveis eleva a segmentação em mais de onze pontos e derruba o SSv2 em dez; a autossupervisão profunda o recupera.',
     },
     body: {
       kind: 'flow',
