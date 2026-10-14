@@ -51,6 +51,7 @@ own owning lesson.
 | 9.5 + quiz option | "an all-reduce per layer" | Two all-reduces per layer, throughout | Lesson 9.9; lesson 9.5's own 128-per-token count |
 | 9.7 | 16 GB / 3 GB ≈ 5.3× | 17.1 GB / 3 GB ≈ 5.7× | Lesson 8.7's pinned artifact size |
 | 9.8, 9.10 | 9.10 called the end of the course | End of this track | AGENTS.md: the corpus is tracks 0–13 |
+| 9.2 figure `roofline` caption | Left of the ridge "only more arithmetic per byte helps" | More arithmetic per byte or more bandwidth helps | Williams, Waterman and Patterson 2009, *Roofline* (CACM 52(4)): the slanted roof is peak bandwidth times arithmetic intensity, so raising bandwidth raises it |
 | 9.4 | 178.8 GiB presented as usable memory | An illustrative available-capacity assumption | 192e9 / 2³⁰ converts units; it does not measure a device |
 | 11.2 | 60.8 GiB "on a 64 GB Mac" | On a Mac with 64 GiB installed | MLX v0.32.3 allocator works in bytes |
 | 13.5 | 17.1 GB read "from local memory" per token | Read across all machines together, each its own share | llama.cpp b11380 RPC README, layer distribution |
