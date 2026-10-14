@@ -96,4 +96,5 @@ Portuguese gloss at first use. Course structure uses the interface's words:
 *trilha* and *aula*, never *track* or *lição* (`content:parity` fails both;
 Sutton's essay keeps its Portuguese name, *a lição amarga*).
 Numbers follow AGENTS.md: `262.144`, `1,5 MiB` in prose; notation is never
-localised.
+localised, so a formula keeps `4.0` and `8{,}192` in both languages while
+the sentence around it says `4,0` and `8.192`.

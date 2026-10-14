@@ -26,6 +26,9 @@ own owning lesson.
 | 3.4 | Beam search chooses "the most probable overall" | Returns the highest-scoring complete candidate it found | Sutskever et al. 2014, §3.2 (decoder is approximate) |
 | 4.1 | Causal attention: a token sees "only earlier tokens" | Itself and the tokens before it | Vaswani et al. 2017, §3.2.3; lesson 4.4's diagonal |
 | 4.5 | "lawyer," eight tokens back | Eight words in between | Counting the example sentence |
+| 4.11 (EN) | Attention looks at any earlier position "with exact, content-addressed precision" | How precisely it retrieves depends on the scores, the projections and learned behaviour (as pt-BR already said) | Lesson 4.2: the output is a softmax-weighted blend of values, not an exact lookup |
+| 4.15 (EN) | Attention is the mixer that is "exact but expensive" | Direct per-position access whose cost grows with context (as pt-BR already said) | Same as 4.11 |
+| 6.10 body | Volume "averages their mistakes out" | Averaging reduces random noise; shared bias remains (matching the corrected quiz) | Mean of errors with mean b is still b |
 | 5.1 | A causal model sees "only the tokens before it" | Up to and including its position | The lesson's own formula, conditioned on x≤i |
 | 5.7 | 16 super-blocks of "about 1.7 billion parameters", "perfectly balanced" | 16 decoder units of identical composition; embeddings, head and vision tower wrapped separately | (27 − 2.54) / 16 ≈ 1.53 B, using the lesson's own embedding and head sizes |
 | 5.7 quiz (EN) | Distractor "About 16 GB, four-bit weights" | "About 17 GB, the pinned Q4_K_M text artifact", as pt-BR already said | Lesson 8.7: 17,106,773,984 bytes |
