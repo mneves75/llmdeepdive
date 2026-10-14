@@ -13,7 +13,7 @@ teachBack:
   prompt: "Trace uma imagem através da vision tower do Qwen3.8-27B até a sequência do decoder, e explique como as três seções do MRoPE posicionam elementos visuais e textuais."
   modelAnswer: "Uma Conv3d embeda volumes de 2×16×16 pixels na largura 1152 da vision tower. Vinte e sete camadas de encoder com 16 attention heads e FFN de largura 4304 contextualizam esses estados de patch. O PatchMerger então agrupa cada vizinhança espacial 2×2, concatena quatro estados de 1152 dimensões em 4608 features e projeta o grupo para 5120, a largura da sequência do decoder. Numa grade simples de imagem estática 224×224, antes de resize ou padding específico do processor, 14×14 dá 196 estados pré-merge e 7×7 dá 49 elementos visuais pós-merge. Eles são vetores contínuos, não entradas de vocabulário. O MRoPE do decoder divide 32 pares rotativos em seções temporal, de altura e de largura de 11, 11 e 10."
 quiz:
-  - question: "Na lição 1.5, o vetor de um token de texto é uma linha da tabela de embeddings. De onde vem um elemento visual de sequência com 5120 dimensões?"
+  - question: "Na aula 1.5, o vetor de um token de texto é uma linha da tabela de embeddings. De onde vem um elemento visual de sequência com 5120 dimensões?"
     options: ["De uma seção especial de imagens na tabela de vocabulário", "Ele é computado dos pixels: embedding 3D de patches e 27 camadas visuais produzem estados de largura 1152, depois cada grupo espacial 2×2 é fundido e projetado para a largura 5120", "Da linha do token de texto mais próximo", "Do lm_head, rodado ao contrário"]
     correctIndex: 1
     explanation: "Entradas visuais contornam o vocabulário por completo: seus vetores são produzidos pela vision tower e pelo projetor, então o espaço de imagens possíveis é contínuo, e não um inventário finito de tokens."
@@ -38,23 +38,59 @@ citations:
     authors: "Alexey Dosovitskiy et al."
     year: 2020
     url: "https://arxiv.org/abs/2010.11929"
-updated: "2026-09-25"
+updated: "2026-10-14"
 ---
 
-O decoder que você montou nesta trilha consome exatamente uma coisa: uma sequência de vetores de 5120 dimensões. Texto tem uma rota óbvia de entrada — tokenize, consulte linhas da tabela de embeddings, pronto. Mas o Qwen3.8-27B também aceita imagens e vídeo, e uma fotografia não tem tokens: ela é uma grade de intensidades de pixels sem vocabulário, sem unidades discretas, sem tabela de consulta. O problema concreto da multimodalidade é, portanto, um problema de adaptador: fabricar, a partir de pixels crus, vetores que possam estar na mesma sequência que embeddings de palavras e ser processados pelas mesmas 64 camadas. O componente que faz isso é o **vision encoder**, e no Qwen3.8-27B ele é um Transformer próprio de 27 camadas.
+## Como uma imagem vira vetores?
 
-A rota de entrada começa com um **embedding 3D de patches**, não com um mapa linear independente por ladrilho de uma imagem estática. Uma Conv3d usa kernel de **2 frames × 16 × 16 pixels** e emite estados na largura **1152** da tower. Numa grade simples de imagem estática 224×224, antes de qualquer resize ou padding específico do processor, a grade espacial é 14×14: 196 estados de patch pré-merge. Vídeo também avança em patches temporais de dois frames. Esses estados são os elementos da sequência da tower, análogos a tokens de texto apenas no papel de entradas para processamento contextual.
+O decoder que você montou nesta trilha consome exatamente uma coisa: uma sequência de vetores de 5120 dimensões. Texto tem uma rota óbvia de entrada: tokenize, consulte linhas da tabela de embeddings ([aula 1.5](/pt-br/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/)), pronto. Mas o Qwen3.8-27B também aceita imagens e vídeo, e uma fotografia não tem tokens. Ela é uma grade de intensidades de pixels sem vocabulário, sem unidades discretas, sem tabela de consulta.
 
-Esses embeddings crus de patch são quase inúteis sozinhos — um ladrilho de pixels azuis pode ser céu, mar ou a porta de um carro. Significado vem do contexto, e a tower o fornece do jeito que você já esperaria: **27 camadas Transformer**, cada uma com **16 attention heads** e uma FFN de largura intermediária **4304**, em que cada patch dá attention a todos os outros patches. Nenhuma causal mask se aplica — uma imagem não tem "futuro" a esconder, então a tower roda em estilo encoder, bidirecionalmente, exatamente a conectividade que a lição 4.12 atribuiu a modelos que veem toda a entrada de uma vez. Vinte e sete rodadas de comunicar-e-depois-computar mais tarde, o vetor de cada patch codifica não só seus próprios pixels, mas seu papel na cena.
+O problema concreto da multimodalidade é, portanto, um problema de adaptador: fabricar, a partir de pixels crus, vetores que possam estar na mesma sequência que embeddings de palavras e ser processados pelas mesmas 64 camadas. O componente que faz isso é o **vision encoder** (codificador visual, também chamado de vision tower), e no Qwen3.8-27B ele é um Transformer próprio de 27 camadas.
 
-Resta um descompasso, e o modelo o resolve com um **PatchMerger**, não com uma projeção aplicada independentemente a cada patch. O merger agrupa cada vizinhança espacial 2×2 depois da tower, concatena quatro estados de 1152 dimensões em $4 \times 1152 = 4608$ features e então projeta o grupo para **5120 dimensões**. No caso simples 224×224 acima, a grade 14×14 pré-merge vira 7×7, ou **49 elementos visuais de sequência**. Essa contagem é uma derivação de shape para aquela grade sem padding; o processor real pode redimensionar ou preencher uma entrada antes de patching. Os vetores contínuos resultantes entram na sequência do decoder ao lado dos embeddings de texto e são processados pelas mesmas 64 camadas do decoder.
+## Cortando pixels em patches
 
-É aqui que um modelo mental errado se insinua naturalmente, então faça a checagem de forma explícita. A história tentadora: "o vision encoder converte a imagem em tokens — ele legenda a foto internamente, e o decoder lê essas palavras." Se isso fosse verdade, cada vetor de patch precisaria coincidir com uma linha da tabela de embeddings de 248.320 entradas, e as saídas expressáveis pela tower estariam limitadas ao vocabulário. Confira contra o mecanismo: o projetor emite pontos arbitrários no espaço contínuo de 5120 dimensões, sem consulta alguma, sem encaixe na linha mais próxima, sem discretização. Um vetor de patch quase nunca coincide com a linha de alguma palavra. A imagem não é traduzida para linguagem antes de ser compreendida; ela entra no mesmo espaço geométrico que a lição 1.5 apresentou — onde significado é posição, não grafia — por uma porta diferente.
+A rota de entrada começa com um **embedding 3D de patches**, não com um mapa linear independente por ladrilho de uma imagem estática. Um **patch** é um pequeno bloco de pixels tratado como uma unidade. Uma Conv3d (uma convolução cujo kernel abrange tempo, altura e largura ao mesmo tempo) usa kernel de **2 frames × 16 × 16 pixels** e emite estados na largura **1152** da tower.
+
+Pegue uma grade simples de imagem estática 224×224, antes de qualquer resize ou padding específico do processor (o processor é a etapa de pré-processamento que prepara as imagens cruas; padding acrescenta pixels de preenchimento para chegar a um tamanho utilizável). Como 224 ÷ 16 = 14, a grade espacial é 14×14: 196 estados de patch pré-merge. Vídeo também avança em patches temporais de dois frames. Esses estados são os elementos da sequência da tower, análogos a tokens de texto apenas no papel de entradas para processamento contextual.
+
+## Dando contexto aos patches: a tower de 27 camadas
+
+Esses embeddings crus de patch são quase inúteis sozinhos: um ladrilho de pixels azuis pode ser céu, mar ou a porta de um carro. Significado vem do contexto, e a tower o fornece do jeito que você já esperaria: **27 camadas Transformer**, cada uma com **16 attention heads** e uma FFN de largura intermediária **4304**, em que cada patch dá attention a todos os outros patches.
+
+Nenhuma causal mask se aplica, porque uma imagem não tem "futuro" a esconder. A tower roda em estilo encoder, bidirecionalmente, exatamente a conectividade que a [aula 4.12](/pt-br/lessons/4-transformer/4.12-transformer-families/) atribuiu a modelos que veem toda a entrada de uma vez. Vinte e sete rodadas de comunicar-e-depois-computar mais tarde, o vetor de cada patch codifica não só seus próprios pixels, mas seu papel na cena.
+
+## Fundindo patches até a largura do decoder
+
+Resta um descompasso: a tower trabalha na largura 1152, e o decoder precisa de 5120. O modelo o resolve com um **PatchMerger**, não com uma projeção aplicada independentemente a cada patch.
+
+1. Depois da tower, o merger agrupa cada vizinhança espacial 2×2 de patches.
+2. Ele concatena os quatro estados de 1152 dimensões em $4 \times 1152 = 4608$ features.
+3. Ele projeta o grupo para **5120 dimensões**.
+
+No caso simples 224×224 acima, a grade 14×14 pré-merge vira 7×7, ou **49 elementos visuais de sequência**. Essa contagem é uma derivação de shape para aquela grade sem padding; o processor real pode redimensionar ou preencher uma entrada antes de patching. Os vetores contínuos resultantes entram na sequência do decoder ao lado dos embeddings de texto e são processados pelas mesmas 64 camadas do decoder.
+
+## Imagens não são traduzidas em tokens
+
+É aqui que um modelo mental errado se insinua naturalmente, então faça a checagem de forma explícita. A história tentadora: "o vision encoder converte a imagem em tokens; ele legenda a foto internamente, e o decoder lê essas palavras."
+
+Se isso fosse verdade, cada vetor de patch precisaria coincidir com uma linha da tabela de embeddings de 248.320 entradas, e as saídas expressáveis pela tower estariam limitadas ao vocabulário. Confira contra o mecanismo: o projetor emite pontos arbitrários no espaço contínuo de 5120 dimensões, sem consulta alguma, sem encaixe na linha mais próxima, sem discretização. Um vetor de patch quase nunca coincide com a linha de alguma palavra. A imagem não é traduzida para linguagem antes de ser compreendida. Ela entra no mesmo espaço geométrico que a aula 1.5 apresentou, onde significado é posição, não grafia, por uma porta diferente.
 
 :::caveat
-"Tokens de imagem" é uma expressão conveniente e uma ontologia enganosa. Tokens de texto vêm de um inventário finito e possuem linhas da tabela de embeddings; elementos visuais de sequência são vetores contínuos computados na hora a partir dos pixels, correspondendo a entrada nenhuma do vocabulário. Confundir os dois leva a erros reais — como esperar que o conteúdo da imagem seja alcançável por IDs de token, ou contar o vocabulário como se ele limitasse o que o modelo consegue perceber.
+"Tokens de imagem" é uma expressão conveniente e uma imagem enganosa do que existe. Tokens de texto vêm de um inventário finito e possuem linhas da tabela de embeddings; elementos visuais de sequência são vetores contínuos computados na hora a partir dos pixels, correspondendo a entrada nenhuma do vocabulário. Confundir os dois leva a erros reais, como esperar que o conteúdo da imagem seja alcançável por IDs de token, ou contar o vocabulário como se ele limitasse o que o modelo consegue perceber.
 :::
 
-Resta uma questão: posição. Posições de texto são unidimensionais — o token 7 vem depois do token 6 — e a lição 4.7 mostrou como o RoPE rotaciona pares query–key para codificar essa ordem. Mas a posição de um patch é inerentemente espacial (linha 3, coluna 11), e um patch de vídeo acrescenta tempo (frame 40). O Qwen3.8-27B responde com **MRoPE**, multimodal rotary position embedding: os pares de frequências rotativas do decoder são particionados em três seções intercaladas de **11, 11 e 10 pares**, dedicadas respectivamente às coordenadas **temporal, de altura e de largura**. Cada elemento de sequência carrega uma posição de três partes. Para um patch de imagem, as seções de altura e largura expressam as coordenadas do patch na grade enquanto o índice temporal fica parado; para vídeo, a seção temporal avança frame a frame, deixando attention medir "dois frames atrás" tão naturalmente quanto "três tokens atrás"; para texto puro, os três índices avançam juntos, e o MRoPE degenera com elegância no RoPE 1D comum que as lições só de texto assumiram. Posição, assim como significado, se revela extensível: não abandonada pela multimodalidade, mas dotada de mais eixos.
+## Onde cada patch fica: MRoPE
 
-Dê um passo atrás e a arquitetura se completa. A vision tower faz parte do total de ~27B parâmetros, um encoder especialista conectado a um decoder híbrido por um merger espacial e uma projeção. Seus patches viajam no mesmo residual stream, são recuperados pelas mesmas camadas de attention e obedecem ao mesmo contrato de bloco da lição 4.11 — chegue com largura 5120 ou não chegue. Entendê-la não exigiu nada de novo: dividir em patches é tokenização à tesoura, a tower é a família de encoders que você já classificou, o PatchMerger combina vizinhos espaciais e os projeta para a largura do decoder, e o MRoPE é o RoPE com três contadores em vez de um. Multimodalidade, neste modelo, não é um segundo cérebro. É uma segunda porta para o mesmo cérebro.
+Resta uma questão: posição. Posições de texto são unidimensionais (o token 7 vem depois do token 6), e a [aula 4.7](/pt-br/lessons/4-transformer/4.7-rope/) mostrou como o RoPE rotaciona pares query–key para codificar essa ordem. Mas a posição de um patch é inerentemente espacial (linha 3, coluna 11), e um patch de vídeo acrescenta tempo (frame 40).
+
+O Qwen3.8-27B responde com **MRoPE**, multimodal rotary position embedding (RoPE multimodal). Os pares de frequências rotativas do decoder são particionados em três seções intercaladas de **11, 11 e 10 pares**, dedicadas respectivamente às coordenadas **temporal, de altura e de largura**. Cada elemento de sequência carrega uma posição de três partes:
+
+- **um patch de imagem:** as seções de altura e largura expressam as coordenadas do patch na grade enquanto o índice temporal fica parado;
+- **vídeo:** a seção temporal avança frame a frame, deixando attention medir "dois frames atrás" tão naturalmente quanto "três tokens atrás";
+- **texto puro:** os três índices avançam juntos, e o MRoPE se reduz ao RoPE 1D comum que as aulas só de texto assumiram.
+
+Posição, assim como significado, se revela extensível: não abandonada pela multimodalidade, mas dotada de mais eixos.
+
+Dê um passo atrás e a arquitetura se completa. A vision tower faz parte do total de ~27B parâmetros, um encoder especialista conectado a um decoder híbrido por um merger espacial e uma projeção. Seus patches viajam no mesmo residual stream, são recuperados pelas mesmas camadas de attention e obedecem ao mesmo contrato de bloco da [aula 4.11](/pt-br/lessons/4-transformer/4.11-full-transformer-block/): chegue com largura 5120 ou não chegue.
+
+Entendê-la não exigiu nada de novo. Dividir em patches é tokenização à tesoura, a tower é a família de encoders que você já classificou, o PatchMerger combina vizinhos espaciais e os projeta para a largura do decoder, e o MRoPE é o RoPE com três contadores em vez de um. Multimodalidade, neste modelo, não é um segundo cérebro. É uma segunda porta para o mesmo cérebro.

@@ -8,10 +8,10 @@ tier: "frontier"
 locale: "en"
 prerequisites: ["8.9-mlx", "9.1-memory-bandwidth-vs-flops"]
 unlocks: ["9.10-cost-per-token", "11.1-mac-studio-ultra-as-an-inference-machine", "12.1-dgx-spark-grace-blackwell-on-a-desk"]
-analogy: "A restaurant with a separate storeroom sends a runner to fetch every crate, and the corridor between storeroom and kitchen sets the pace no matter how fast the chefs work. A restaurant built with the pantry inside the kitchen has no corridor at all — the cooks simply reach. Unified memory is the second building: the model's weights are not copied to the accelerator, they are already where the accelerator reads. But the pantry still has shelves of finite depth, and each cook can still only carry so much per trip, which is why capacity and reach speed remain two separate questions."
+analogy: "A restaurant with a separate storeroom sends a runner to fetch every crate, and the corridor between storeroom and kitchen sets the pace no matter how fast the chefs work. A restaurant built with the pantry inside the kitchen has no corridor at all: the cooks reach for what they need. Unified memory is the second building: the model's weights are not copied to the accelerator, they are already where the accelerator reads. But the pantry still has shelves of finite depth, and each cook can still only carry so much per trip, which is why capacity and reach speed remain two separate questions."
 teachBack:
   prompt: "Explain what unified memory removes, then use the pinned artifact size and vendor bandwidth to compute a planning heuristic for single-stream decode, and explain why exact active bytes are still required for a hard roofline."
-  modelAnswer: "On a discrete GPU, usable accelerator capacity is device VRAM behind PCIe; Apple silicon exposes one physical pool to CPU and GPU. The pinned Q4_K_M text artifact is 17.1 GB (15.93 GiB), so it can reside in a 64 GB unified pool. Dividing the M3 Ultra's vendor figure of 800 GB/s by 17.1 GB gives about 46.8 tok/s, but this is only an artifact-size heuristic: the file includes metadata and tensors not necessarily read every text-decode step, while cache, state, kernels, thermal behaviour, and unattained bandwidth add cost. A hard roofline requires actual active bytes per token."
+  modelAnswer: "On a discrete GPU, usable accelerator capacity is device VRAM behind PCIe. Apple silicon instead exposes one physical pool to CPU and GPU. The pinned Q4_K_M text artifact is 17.1 GB (15.93 GiB), so it can reside in a 64 GB unified pool. Dividing the M3 Ultra's vendor figure of 800 GB/s by 17.1 GB gives about 46.8 tok/s. That figure is only an artifact-size heuristic. The file includes metadata and tensors not necessarily read every text-decode step, while cache, state, kernels, thermal behaviour, and bandwidth the chip does not actually reach add cost. A hard roofline requires actual active bytes per token."
 quiz:
   - question: "Applying lesson 9.1's roofline reasoning, what does a large unified-memory capacity by itself guarantee about generation speed?"
     options: ["Speed scales linearly with installed RAM","It guarantees the model runs at least as fast as on a discrete GPU of the same capacity","It removes the per-token weight read entirely","Nothing — capacity decides whether the model loads, bandwidth divided by bytes-read-per-token decides the speed ceiling"]
@@ -38,37 +38,64 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-Lesson 7.12 left a loose end. It sized a 4-bit Qwen3.8-27B build at roughly 17.1 GB and observed that unified-memory machines "punch above their apparent class" — but did not say why, or how far. That is this lesson, and the answer splits cleanly into two questions that beginners routinely fuse into one: can the model load, and how fast will it run.
+[Lesson 7.12](/lessons/7-inference-and-efficiency/7.12-running-models-locally/) left a loose end. It sized a 4-bit Qwen3.8-27B build at roughly 17.1 GB and observed that unified-memory machines "punch above their apparent class", but did not say why, or how far. This lesson answers that. The answer splits into two questions that beginners routinely merge into one: can the model load, and how fast will it run?
 
-The loading question is architectural. On a conventional workstation the model file is read into host RAM, then copied across a PCIe boundary into the discrete GPU's own VRAM, and it is that VRAM — not the machine's memory — that must hold the resident weights. A machine with 128 GB of RAM and a 24 GB card is, for this purpose, a 24 GB machine. Apple silicon removes the boundary: the CPU, the GPU and the neural engine address one physical pool, and a tensor produced by one is visible to the others without a copy. Apple documents this as the unified memory architecture underlying Metal, and MLX is built directly on the property — arrays live in shared memory, and an operation is dispatched to a device rather than a buffer being shipped to one. So a 17.1 GB artifact on a machine with 64 GB of unified memory is simply resident. Nothing is staged, nothing is duplicated, and the KV cache from lesson 7.2 draws on the same pool rather than competing for a smaller private one.
+## Can the model load? The boundary unified memory removes
 
-The speed question is the roofline of lesson 9.1, unchanged. Batch-one decode is memory-bound: producing one token streams the active language-model tensors, so a hard roofline is bandwidth divided by actual active bytes per token. Apple reported more than 800 GB/s of memory bandwidth for the M3 Ultra in 2025; lesson 11.1 redoes this division for the 1.2 TB/s M5 Ultra that replaced it in 2026. Take that vendor figure and the pinned artifact size as a planning proxy:
+The loading question is about architecture. A conventional workstation has a **discrete GPU**: a separate card with its own memory, called **VRAM**, connected to the rest of the machine through **PCIe** (the standard expansion bus). The model file is first read into host RAM, the machine's main memory, then copied across PCIe into the card's VRAM. The weights the GPU uses must sit in that VRAM, not in the machine's memory. So a machine with 128 GB of RAM and a 24 GB card is, for this purpose, a 24 GB machine.
+
+Apple silicon removes the boundary. The CPU, the GPU and the Neural Engine (Apple's on-chip machine-learning accelerator) all address one physical pool, and a tensor produced by one is visible to the others without a copy. Think of two threads in one process sharing a variable, rather than two processes passing a message: nothing is serialised or sent.
+
+Apple documents this as the unified memory architecture underlying Metal, its GPU programming interface. MLX, Apple's array framework from [lesson 8.9](/lessons/8-building-and-serving-stacks/8.9-mlx/), is built directly on the property: arrays live in shared memory, and an operation is sent to a device instead of a buffer being shipped to one.
+
+So a 17.1 GB artifact on a machine with 64 GB of unified memory is resident as soon as it loads. Nothing is staged and nothing is duplicated. The KV cache from [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/), the stored keys and values of past tokens, draws on the same pool rather than competing for a smaller private one.
+
+## How fast will it run?
+
+The speed question is the roofline of [lesson 9.1](/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/), unchanged. Batch-one decode (one token at a time, for one conversation) is limited by memory: producing one token streams the active language-model tensors. A hard roofline is therefore bandwidth divided by the actual active bytes per token.
+
+Apple reported more than 800 GB/s of memory bandwidth for the M3 Ultra in 2025. [Lesson 11.1](/lessons/11-mac-studio-ultra-and-mlx/11.1-mac-studio-ultra-as-an-inference-machine/) redoes this division for the 1.2 TB/s M5 Ultra that replaced it in 2026. Take the M3 Ultra vendor figure and the pinned artifact size (the specific 4-bit file the course fixes) as a planning proxy:
 
 $$
 \frac{800\ \text{GB/s}}{17.1\ \text{GB artifact}} \approx 46.8\ \text{tokens per second}.
 $$
 
-About 47 tokens per second as an artifact-size heuristic. It assumes every file byte is active weight traffic and perfect bandwidth use, yet the GGUF also contains metadata and mixed tensors while cache, state, kernels, and thermals add other traffic. Because those effects move in opposite directions, this quotient is not a hard upper bound; profile active bytes and measured throughput.
+That is about 47 tokens per second as an artifact-size heuristic, and errors push it both ways:
 
-Here is the classic wrong turn, and it is a purchase-sized mistake. A buyer reads that an M3 Ultra machine can be configured with 256 GB of unified memory, notes that lesson 7.12 put bf16 weights at 54 GB, and concludes: excellent, I will skip quantization entirely and run the model at full precision on my desk. The capacity claim is correct — 54 GB fits in 256 GB with room for a long context. The speed conclusion does not follow, but the checkpoint-size quotient is only a planning comparison:
+- It assumes every byte of the file is active weight traffic, yet the GGUF file also contains metadata and mixed tensors not necessarily read each step. That makes the true active bytes smaller.
+- It assumes perfect bandwidth use, while cache, state, kernels, and thermal limits add other traffic and losses.
+
+Because those effects move in opposite directions, the quotient is not a hard upper bound. Profile active bytes and measured throughput.
+
+## Fitting bf16 is not the same as running it fast
+
+The usual wrong turn here is a purchase-sized mistake. A buyer reads that an M3 Ultra machine can be configured with 256 GB of unified memory. They note that lesson 7.12 put the bf16 weights at 54 GB, and conclude: excellent, I will skip quantization entirely and run the model at full precision on my desk.
+
+The capacity claim is correct: 54 GB fits in 256 GB with room for a long context. The speed conclusion does not follow. The checkpoint-size quotient, which is only a planning comparison, shows why:
 
 $$
 \frac{800\ \text{GB/s}}{54\ \text{GB per token}} \approx 14.8\ \text{tokens per second}.
 $$
 
-About 14.8 tok/s as a checkpoint-size heuristic. Capacity bought the ability to load bf16; it did not establish speed. Quantization can reduce active bytes, but the gain depends on the actual runtime representation rather than scaling mechanically with file size.
+About 14.8 tok/s as a checkpoint-size heuristic. Capacity bought the ability to load bf16; it did not establish speed. Quantization (storing weights in fewer bits) can reduce active bytes, but the gain depends on the actual runtime representation rather than scaling mechanically with file size.
 
 :::warning
-The most common misconception about unified memory is that a large pool substitutes for bandwidth. It does not. Capacity and bandwidth are independent specifications, and two machines with identical installed memory can differ by nearly an order of magnitude in bandwidth across a vendor's product line — entry-class parts sit far below the Ultra-class figure used above. Before buying for local inference, read the bandwidth number on the vendor page, not the memory number in the marketing headline, and redo the division yourself.
+The most frequent misconception about unified memory is that a large pool substitutes for bandwidth. It does not. Capacity and bandwidth are independent specifications. Two machines with identical installed memory can differ by nearly an order of magnitude in bandwidth across a vendor's product line, and entry-class parts sit far below the Ultra-class figure used above. Before buying for local inference, read the bandwidth number on the vendor page, not the memory number in the marketing headline, and redo the division yourself.
 :::
 
-Two second-order effects deserve naming. First, the cache is not free of the same pool: at lesson 7.2's 64 KiB per token, a 32,768-token conversation adds 2 GiB of resident KV state, and every byte of it is also read during decode, so long contexts erode the ceiling as well as the capacity. Second, the roughly 144 MiB of reference float32 Gated DeltaNet recurrent state is constant in sequence length, which makes the hybrid architecture unusually well-suited to a fixed-size memory budget — the cache still grows linearly with context — 8,000 tokens to 32,000 still quadruples it — but it grows from a base four times smaller than a same-size pure-attention model's, because only 16 of the 64 layers cache at all, and the recurrent state beside it never grows.
+## What the cache and the recurrent state add
+
+Two second-order effects deserve naming.
+
+First, the cache draws on the same pool. At lesson 7.2's 64 KiB per token, a 32,768-token conversation adds 2 GiB of resident KV state. Every byte of it is also read during decode, so long contexts lower the speed ceiling as well as using capacity.
+
+Second, the roughly 144 MiB of reference float32 Gated DeltaNet recurrent state is constant in sequence length. That makes the hybrid architecture unusually well suited to a fixed-size memory budget. The cache still grows linearly with context: going from 8,000 tokens to 32,000 still quadruples it. But it grows from a base four times smaller than a same-size pure-attention model's, because only 16 of the 64 layers cache at all, and the recurrent state beside it never grows.
 
 :::caveat
 Every hardware figure in this lesson is vendor-reported, not measured here. The 46.8 and 14.8 tok/s quotients are artifact/checkpoint-size planning heuristics; they are not hard roofline bounds. Record runtime, quantization, context, active-byte counters, and thermal state before quoting throughput.
 :::
 
-The durable point is that Apple silicon did not repeal the bandwidth wall of lesson 9.1; it removed a different wall. The PCIe staging boundary that makes discrete-GPU capacity a hard cliff is gone, so the question "does it fit" gets a generous answer on consumer hardware. The question "how fast" is answered by exactly the same division as every other chip in this track, and lesson 9.10 will turn both answers into a monthly bill.
+The point to keep is that Apple silicon did not repeal the bandwidth wall of lesson 9.1; it removed a different wall. The PCIe staging boundary, which makes discrete-GPU capacity a hard cliff, is gone, so the question "does it fit?" gets a generous answer on consumer hardware. The question "how fast?" is answered by exactly the same division as every other chip in this track, and [lesson 9.10](/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) turns both answers into a monthly bill.

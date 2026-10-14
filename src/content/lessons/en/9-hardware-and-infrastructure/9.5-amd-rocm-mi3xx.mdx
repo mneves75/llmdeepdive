@@ -11,16 +11,16 @@ unlocks: ["9.9-interconnects-and-clusters"]
 analogy: "Two contractors quote the same job. One owns the specialist tooling everybody trains on, but his van is small, so long timber travels in two vans and half the crew spends the day passing pieces between them. The other has a van long enough for the whole run, and the timber never gets cut and rejoined — but his tools are a younger brand, and for an unusual profile you have to phone ahead and check the bit exists. Capacity removes a whole class of coordination work. Ecosystem maturity decides whether the unusual profile is supported this week."
 teachBack:
   prompt: "Work out what a 192 GB MI300X-class accelerator holds for Qwen3.8-27B, explain why that capacity does not by itself improve single-user latency, and state the honest software caveat."
-  modelAnswer: "The MI300X runtime reports about 192 GiB of HBM. The bf16 weights cost 50.3 GiB and a runtime reserve about 8 GiB, leaving roughly 133.7 GiB (136,909 MiB), which is around 208 concurrent 8,192-token sequences at 656 MiB each or about eight sequences at the full 262,144-token context at 16,528 MiB each. That removes sharding from the design for workloads an 80 GB part could not host without it. Capacity alone does not establish per-token latency; active-byte traffic, bandwidth, and runtime overhead do: at a vendor-reported 5.3 TB/s the 54 GB full-checkpoint traffic approximation per decode step gives a checkpoint-size quotient near 10.2 milliseconds, or about 98 tokens per second as a planning heuristic, and tensor parallelism across two 80 GB parts would actually beat that by halving the weight bytes each device reads, at the cost of an all-reduce every layer. The software caveat is that ROCm support must be verified per stack version rather than assumed: kernel coverage, quantization format support, and fused kernels for the Gated DeltaNet layers of a model released in Aug 2026 may lag the CUDA path."
+  modelAnswer: "The MI300X runtime reports about 192 GiB of HBM. The bf16 weights cost 50.3 GiB and a runtime reserve about 8 GiB, leaving roughly 133.7 GiB (136,909 MiB). That pool holds around 208 concurrent 8,192-token sequences at 656 MiB each. Alternatively, it holds about eight sequences at the full 262,144-token context, at 16,528 MiB each. That capacity removes sharding from the design for workloads an 80 GB part could not host without it. Capacity alone does not establish per-token latency. Active-byte traffic, bandwidth, and runtime overhead do. At a vendor-reported 5.3 TB/s, approximate the traffic per decode step by the 54 GB full checkpoint. The checkpoint-size quotient is then near 10.2 milliseconds, or about 98 tokens per second as a planning heuristic. Tensor parallelism across two 80 GB parts would actually beat that, because it halves the weight bytes each device reads. The cost is two all-reduces per layer in the standard layout. The software caveat is that ROCm support must be verified per stack version rather than assumed. The model comes from the Qwen3.8 family, which the Qwen team announced in Aug 2026. For this model, kernel coverage, quantization format support, and fused kernels for the Gated DeltaNet layers may lag the CUDA path."
 quiz:
   - question: "One 192 GB accelerator holds Qwen3.8-27B plus about eight full-context sequences without sharding. What does that buy?"
     options: ["Lower time to first token","A higher arithmetic ceiling for prefill","Concurrency and simpler deployment; per-token latency still depends on active-byte traffic, bandwidth, and runtime overhead","Both higher concurrency and proportionally faster single-stream decoding"]
     correctIndex: 2
     explanation: "Capacity and bandwidth are the two independent axes of lesson 9.4; a larger pool admits more users while per-token latency still depends on active bytes per second and runtime overhead."
   - question: "A team wants the fastest possible single-user chat and considers one 192 GB part at a vendor-reported 5.3 TB/s against two 80 GB parts at 3.35 TB/s each in tensor parallel. Which reasoning is correct?"
-    options: ["The single part is always faster, because sharding adds latency","They are identical, because total bandwidth is what matters","Neither can exceed 60 tokens per second","The pair can be faster, because each device reads only about 27 GB per step, roughly 8 milliseconds, though an all-reduce per layer eats into the gain"]
+    options: ["The single part is always faster, because sharding adds latency","They are identical, because total bandwidth is what matters","Neither can exceed 60 tokens per second","The pair can be faster, because each device reads only about 27 GB per step, roughly 8 milliseconds, though two all-reduces per layer eat into the gain"]
     correctIndex: 3
-    explanation: "Tensor parallelism splits the mandatory weight read across devices, so it is a latency tool as well as a capacity tool; lesson 9.9 prices the collective communication it introduces."
+    explanation: "Tensor parallelism splits the mandatory weight read across devices, so it is a latency tool as well as a capacity tool. The price is communication at every layer (two all-reduces per layer in the standard layout), which lesson 9.9 prices."
 citations:
   - title: "AMD ROCm Documentation"
     authors: "Advanced Micro Devices"
@@ -38,45 +38,75 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Lesson 9.3 ended with an uncomfortable result: on an 80 GB accelerator, Qwen3.8-27B at its full 262,144-token native context fits exactly once. One conversation, one card, no second user. Serving even a handful of long-context sessions on that hardware means splitting the model across devices, which means an all-reduce in every one of the 64 layers and an interconnect budget nobody planned for. AMD's Instinct line answers that specific problem with a specific number, and it is worth working through honestly, including what it does not solve.
+[Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) ended with an uncomfortable result. On an 80 GB accelerator, Qwen3.8-27B at its full 262,144-token native context fits exactly once: one conversation, one card, no second user. Serving even a handful of long-context sessions on that hardware means splitting the model across devices. That brings an **all-reduce** (a step where every device sends its partial result and every device receives the combined sum) twice in every one of the 64 layers, plus an interconnect budget nobody planned for. AMD's Instinct line answers that specific problem with a specific number. This lesson works through it, including what it does not solve.
 
-The MI300X-class part carries a vendor-reported 192 GB of HBM3 at a vendor-reported peak near 5.3 TB/s, built on a chiplet design with several hundred compute units, as of Aug 2026 and subject to the usual caution that SKUs within a family differ. Programming it goes through ROCm rather than CUDA, with HIP as the kernel-level dialect, and the major serving stacks maintain AMD build paths documented alongside their CUDA ones.
+## What the MI300X class offers
 
-Run the capacity line first, using the method of lesson 9.3 unchanged. The MI300X runtime reports about 192 GiB. The bf16 weights are the same fixed 50.3 GiB they are everywhere, and a runtime reserve of about 8 GiB covers context, activations, and fragmentation, leaving
+The MI300X-class part carries a vendor-reported 192 GB of HBM3 (stacked high-bandwidth memory) at a vendor-reported peak near 5.3 TB/s. It is built from **chiplets**, several smaller dies packaged together, with several hundred compute units, AMD's counterpart of NVIDIA's streaming multiprocessors. These figures are as of Aug 2026, and SKUs (product variants) within a family differ.
+
+Programming it goes through **ROCm**, AMD's software platform, rather than CUDA. Kernels are written in **HIP**, a C++ dialect close to CUDA's. The major serving stacks maintain AMD build paths, documented alongside their CUDA ones.
+
+## How much fits on one device?
+
+Run the capacity line first, using the method of lesson 9.3 unchanged. The MI300X runtime reports about 192 GiB. The bf16 weights are the same fixed 50.3 GiB they are everywhere. A runtime reserve of about 8 GiB covers the driver context, activations, and fragmentation, leaving
 
 $$
 192\ \text{GiB} - 50.3\ \text{GiB} - 8\ \text{GiB} \ =\ 133.7\ \text{GiB} \approx\ 136{,}909\ \text{MiB}.
 $$
 
-At the full native context each sequence costs 16 GiB of keys and values plus the constant 144 MiB of reference float32 Gated DeltaNet state, 16,528 MiB in total, so one device holds
+At the full native context, each sequence costs 16 GiB of keys and values plus the constant 144 MiB of reference float32 Gated DeltaNet state, 16,528 MiB in total. So one device holds
 
 $$
 \frac{136{,}909\ \text{MiB}}{16{,}528\ \text{MiB}} \approx 8\ \text{full-context sequences},
 $$
 
-against exactly one on the 80 GB part. At an 8,192-token window, 656 MiB per sequence, the same pool serves about 208 concurrent conversations against about 36. That is the entire pitch, and it is a strong one: a workload that required tensor parallelism, a topology decision, a collective-communication library, and a debugging story now runs as a single process on a single device. Operational simplicity is a real engineering asset and it rarely appears on a spec sheet.
+against exactly one on the 80 GB part. At an 8,192-token window, 656 MiB per sequence, the same pool serves about 208 concurrent conversations against about 36.
 
-Now the wrong turn, which is almost universal. Capacity gets read as speed, and someone concludes that because the whole model fits comfortably, users will see faster responses. Apply the checkpoint-size heuristic from lesson 9.1 instead. Batch-1 text decode streams the active language-model tensors, while the full checkpoint quotient gives an order-of-magnitude comparison:
+That is the entire pitch, and it is a strong one. A workload that needed **tensor parallelism** (splitting every weight matrix across devices), a topology decision, a collective-communication library, and a debugging story now runs as a single process on a single device. Operational simplicity is a real engineering asset, and it rarely appears on a spec sheet.
+
+## Does capacity make each user faster?
+
+The almost universal wrong turn is to read capacity as speed: the whole model fits comfortably, so users will see faster responses. Apply the checkpoint-size heuristic from [lesson 9.1](/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/) instead. Batch-1 text decode streams the active language-model tensors, and the full-checkpoint quotient gives an order-of-magnitude comparison:
 
 $$
 t_{\text{checkpoint estimate}} \approx\ \frac{54\times10^{9}\ \text{B}}{5.3\times10^{12}\ \text{B/s}} \approx\ 10.2\ \text{ms} \quad\Longrightarrow\quad \approx 98\ \text{tokens per second},
 $$
 
-a checkpoint-size heuristic from a vendor bandwidth claim, not a measurement or hard bound. Better than the roughly 62 of an 80 GB Hopper part, worse than the roughly 148 of a 192 GB-class Blackwell part. Capacity and bandwidth are independent purchases, as lesson 9.4 insisted, and this part buys a great deal of the first.
+which is a checkpoint-size heuristic from a vendor bandwidth claim, not a measurement or a hard bound. It is better than the roughly 62 of an 80 GB Hopper part and worse than the roughly 148 of a 192 GB-class Blackwell part. Capacity and bandwidth are independent purchases, as [lesson 9.4](/lessons/9-hardware-and-infrastructure/9.4-nvidia-cuda-hopper-blackwell/) insisted, and this part buys a great deal of the first.
 
-The correction goes further, and it inverts the usual framing of sharding. Splitting Qwen3.8-27B across two 80 GB parts in tensor parallel means each device holds and therefore reads only about 27 GB of weights per decode step, a checkpoint-size quotient near 8.1 milliseconds at 3.35 TB/s, or about 124 tokens per second as a heuristic before collectives — lesson 9.9 charges the per-token all-reduces this ignores and lands nearer 107. Sharding is not merely a way to fit a model that does not fit; it is a way to buy aggregate bandwidth for a single stream. What it costs is an all-reduce over the 5,120-dimensional residual stream after every attention and feed-forward block, twice per layer across 64 layers, which lesson 9.9 prices properly and which erodes the theoretical gain. So the honest summary is that a single large-memory device wins on concurrency, deployment simplicity, and cost per served token, while a tightly interconnected pair can win on the latency a single impatient user perceives. Which of those your product sells decides the purchase.
+## Sharding buys bandwidth as well as room
+
+The correction goes further, and it turns the usual view of **sharding** (splitting a model across devices) around. Split Qwen3.8-27B across two 80 GB parts in tensor parallel, and each device holds, and therefore reads, only about 27 GB of weights per decode step. At 3.35 TB/s that is a checkpoint-size quotient near 8.1 milliseconds, or about 124 tokens per second as a heuristic before the communication steps. [Lesson 9.9](/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) charges the per-token all-reduces this ignores and lands nearer 107.
+
+So sharding is more than a way to fit a model that does not fit. It is also a way to buy combined bandwidth for a single stream. The price is an all-reduce over the 5,120-dimensional residual stream (the vector each token carries from layer to layer) after every attention and feed-forward block: twice per layer, across 64 layers. Lesson 9.9 prices that properly, and it eats into the theoretical gain.
+
+The fair summary has two sides:
+
+- A single large-memory device wins on concurrency, deployment simplicity, and cost per served token.
+- A tightly interconnected pair can win on the latency a single impatient user perceives.
+
+Which of those your product sells decides the purchase.
 
 :::warning
-The reflex to treat accelerators as interchangeable once the arithmetic matches is the expensive mistake here. Support for a model architecture is a property of a specific stack version, not of a vendor. Qwen3.8-27B was released in Aug 2026 with 48 Gated DeltaNet layers whose fused kernels are newer than most of the ecosystem, and quantization formats, attention kernels, graph capture, and compiler backends all reach non-CUDA targets on their own schedules. Before committing, verify against the exact ROCm release, the exact serving-framework release, and the exact quantization recipe you intend to ship, that the model loads, that the hybrid layers use fused rather than fallback kernels, and that output quality matches the reference. Treat any claim of support that is not attached to a version number as unverified.
+The expensive mistake here is the reflex to treat accelerators as interchangeable once the arithmetic matches. Support for a model architecture is a property of a specific stack version, not of a vendor. Qwen3.8-27B belongs to the Qwen3.8 family the Qwen team announced in Aug 2026, and its 48 Gated DeltaNet layers rely on fused kernels (several operations combined into one GPU function) that are newer than most of the ecosystem. Quantization formats, attention kernels, graph capture, and compiler backends all reach non-CUDA targets on their own schedules. Before committing, verify three things against the exact ROCm release, the exact serving-framework release, and the exact quantization recipe you intend to ship: that the model loads, that the hybrid layers use fused rather than fallback kernels (slower generic versions), and that output quality matches the reference. Treat any claim of support that is not attached to a version number as unverified.
 :::
 
-Practically, that verification is cheap and should happen before the commercial conversation: build the serving stack from its documented AMD installation path, load the model at bf16 first because it exercises the fewest optional kernels, confirm the reported free memory matches the budget above, then re-test with the quantization you actually plan to run. Failures at this stage are usually silent performance regressions rather than crashes, a fallback kernel quietly replacing a fused one, so compare achieved decode rate with the checkpoint heuristic above as one diagnostic; a gap alone does not prove a missing kernel.
+## Checking support before the purchase
+
+That verification is cheap and should happen before the commercial conversation:
+
+1. Build the serving stack from its documented AMD installation path.
+2. Load the model at bf16 first, because that exercises the fewest optional kernels.
+3. Confirm the reported free memory matches the budget above.
+4. Re-test with the quantization you actually plan to run.
+
+Failures at this stage are usually performance regressions with no error message, not crashes: a fallback kernel runs where a fused one should. So compare the achieved decode rate with the checkpoint heuristic above as one diagnostic. A gap alone does not prove a missing kernel.
 
 :::caveat
 Every hardware figure here is vendor-reported as of Aug 2026 and describes a family rather than a part. Capacity, bandwidth, and compute-unit counts differ across MI3xx SKUs and across the platforms that host them, and cloud instance types may expose partitioned devices. Re-derive the budget with the numbers reported by the runtime on the instance you rent, and treat the tokens-per-second quotients in this lesson as order-of-magnitude heuristics, not hard bounds.
 :::
 
-The transferable idea is that the second vendor is not a cheaper copy of the first; it competes on a different axis. Read any accelerator by its capacity line and its bandwidth line, then ask what the software ecosystem will actually run on it this quarter. Lesson 9.9 takes up the case this lesson kept deferring, what it costs when one device is genuinely not enough.
+The idea to carry forward is that the second vendor is not a cheaper copy of the first; it competes on a different axis. Read any accelerator by its capacity line and its bandwidth line, then ask what the software ecosystem will actually run on it this quarter. Lesson 9.9 takes up the case this lesson kept deferring: what it costs when one device is genuinely not enough.

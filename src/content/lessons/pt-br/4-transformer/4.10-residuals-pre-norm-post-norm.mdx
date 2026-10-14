@@ -11,7 +11,7 @@ unlocks: ["4.11-full-transformer-block"]
 analogy: "Um longo projeto de restauração mantém a fotografia original numa mesa de luz central. Sessenta e quatro especialistas — alguns retocadores, alguns arquivistas com ferramentas diferentes — recebem cada um uma cópia calibrada, propõem uma correção limitada e a somam de volta em vez de repintar do zero. Pre-norm calibra o que entra em cada especialista deixando a mesa central contínua. Post-norm soma a correção primeiro e recalibra a imagem combinada depois."
 teachBack:
   prompt: "Escreva as equações conceituais de pre-norm e post-norm, explique como o RMSNorm difere do LayerNorm e diga por que um único residual stream contínuo permite ao Qwen3.8-27B empilhar 64 camadas de dois tipos diferentes."
-  modelAnswer: "Pre-norm calcula x' = x + F(RMSNorm(x)); post-norm calcula x' = Norm(x + F(x)). O RMSNorm calcula x / sqrt(mean(x²) + epsilon), aplica uma escala aprendida e não subtrai a média como o LayerNorm; o epsilon é 1e-6 no Qwen3.8-27B. O caminho identidade aditivo permite que informação e gradientes viajem pela pilha sem que cada camada reconstrua a representação, e é por isso que 64 camadas — com mixer de attention ou Gated DeltaNet — conseguem todas ler e escrever no mesmo stream de 5120 dimensões. Cada subcamada só precisa honrar a interface: ler uma cópia normalizada e devolver uma atualização de shape compatível."
+  modelAnswer: "Pre-norm calcula x' = x + F(RMSNorm(x)); post-norm calcula x' = Norm(x + F(x)). O RMSNorm calcula x / sqrt(mean(x²) + epsilon) e aplica uma escala aprendida. Diferente do LayerNorm, ele não subtrai a média. O epsilon é 1e-6 no Qwen3.8-27B. O caminho identidade aditivo permite que informação e gradientes viajem pela pilha sem que cada camada reconstrua a representação. É por isso que 64 camadas, com mixer de attention ou Gated DeltaNet, conseguem todas ler e escrever no mesmo stream de 5120 dimensões. Cada subcamada só precisa honrar a interface: ler uma cópia normalizada e devolver uma atualização de shape compatível."
 quiz:
   - question: "Qual expressão descreve o padrão pre-norm que o Qwen3.8-27B usa?"
     options: ["RMSNorm(x + F(x))", "F(x) sem caminho residual", "x + F(RMSNorm(x))", "softmax(RMSNorm(x)) sozinho"]
@@ -21,7 +21,7 @@ quiz:
     options: ["Normaliza ao longo da dimensão de batch", "Exige um termo de bias em cada posição", "Substitui inteiramente a conexão residual", "Divide por sqrt(mean(x²) + epsilon) com uma escala aprendida, sem subtrair a média das features"]
     correctIndex: 3
     explanation: "O RMSNorm pula a subtração da média e reescala por sqrt(mean(x²) + epsilon), uma operação mais barata que funciona bem em pilhas decoder grandes."
-  - question: "Na FFN gated da lição anterior, qual tensor a soma residual recebe?"
+  - question: "Na FFN gated da aula anterior, qual tensor a soma residual recebe?"
     options: ["A saída da projeção down, de volta à largura 5120, somada ao stream que entrou na subcamada", "As ativações gated de largura 17.408 diretamente", "Apenas os valores do gate SiLU", "A entrada normalizada, descartada após o uso"]
     correctIndex: 0
     explanation: "A FFN precisa projetar de 17.408 de volta para 5120 para que sua atualização case com o shape do residual stream; a soma então a sobrepõe ao estado existente."
@@ -42,10 +42,16 @@ citations:
     authors: "Hugging Face and Qwen Team"
     year: 2026
     url: "https://github.com/huggingface/transformers/blob/e4dd56a373b51a2ed2a6330b64f9d44c51260d5c/src/transformers/models/qwen3_5/modeling_qwen3_5.py"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Eis um problema que a próxima lição vai tornar vívido: o Qwen3.8-27B empilha 64 camadas, e elas nem sequer são todas do mesmo tipo — a maioria mistura tokens de um jeito, uma minoria de outro, e todas terminam na FFN gated e larga que você acabou de conhecer. Como sessenta e quatro estágios heterogêneos de processamento cooperam sem que nenhum destrua o que os anteriores construíram, e sem que os gradientes morram no caminho de volta? A resposta é a decisão mais silenciosa e mais estrutural da arquitetura: um único **residual stream** contínuo, de 5120 números por token, que nenhuma camada jamais substitui — as camadas apenas somam a ele.
+## Como 64 camadas diferentes dividem um único modelo?
+
+Eis um problema que a próxima aula vai tornar vívido. O Qwen3.8-27B empilha 64 camadas, e elas nem sequer são todas do mesmo tipo: a maioria mistura tokens de um jeito, uma minoria de outro, e todas terminam na FFN gated e larga que você acabou de conhecer na [aula 4.9](/pt-br/lessons/4-transformer/4.9-feed-forward-block/). Como sessenta e quatro estágios heterogêneos de processamento cooperam sem que nenhum destrua o que os anteriores construíram? E como os gradientes (os sinais de erro que o treinamento manda para trás, [aula 2.5](/pt-br/lessons/2-neural-network-fundamentals/2.5-backpropagation/)) sobrevivem à viagem de volta?
+
+A resposta é a decisão menos visível e mais importante da arquitetura: um único **residual stream** (fluxo residual) contínuo, de 5120 números por token, que nenhuma camada jamais substitui. As camadas apenas somam a ele. A [aula 2.8](/pt-br/lessons/2-neural-network-fundamentals/2.8-initialization-normalization-residuals/) apresentou conexões residuais e normalização em geral; esta aula mostra como elas mantêm de pé um Transformer de 64 camadas.
+
+## O residual stream: as camadas somam, nunca substituem
 
 Para uma transformação $F$, o padrão central é
 
@@ -53,11 +59,26 @@ $$
 x' = x + F(x).
 $$
 
-O termo identidade $x$ dá à informação uma rota direta pela pilha. Uma camada pode aprender uma pequena correção útil em vez de reconstruir a representação do zero. Durante a backpropagation, os gradientes também ganham uma rota aditiva que não multiplica pelo jacobiano de cada subcamada. Isso não abole gradientes explodindo ou desaparecendo, mas torna tratável otimizar pilhas genuinamente profundas — e 64 camadas é genuinamente profundo.
+O termo identidade $x$ dá à informação uma rota direta pela pilha. Uma camada pode aprender uma pequena correção útil em vez de reconstruir a representação do zero.
 
-Cada camada escreve duas vezes. Depois da sua subcamada de mistura, o stream guarda suas features anteriores mais uma atualização de comunicação; depois da FFN, guarda esse resultado mais uma atualização não linear por posição. O residual stream, portanto, não é a saída de nenhum componente isolado. É um espaço de trabalho compartilhado no qual muitas features sobrepostas coexistem, e o fato de que tanto uma camada Gated DeltaNet quanto uma camada de full attention podem escrever nesse mesmo espaço — usando a mesma interface, uma atualização somada de largura 5120 — é exatamente o que permite ao Qwen misturar tipos de camada livremente.
+A mesma rota ajuda o treinamento. Durante a backpropagation, os gradientes também ganham uma rota aditiva que não multiplica pelo jacobiano de cada subcamada (a matriz de como cada saída muda com cada entrada). Isso não abole gradientes explodindo ou desaparecendo, mas torna tratável otimizar pilhas genuinamente profundas, e 64 camadas é genuinamente profundo.
 
-A normalização controla o que cada subcamada lê desse espaço de trabalho. O LayerNorm clássico calcula média e variância ao longo da dimensão de features de um token, subtrai, divide e aplica uma escala e um deslocamento aprendidos. O Qwen3.8-27B, como a maioria dos decoders modernos, usa **RMSNorm**: divide o vetor por $\sqrt{\operatorname{mean}(x^2)+\epsilon}$ e aplica uma escala aprendida — sem subtração de média, sem deslocamento. No Qwen o epsilon é $10^{-6}$: pequeno o bastante para ser invisível em ativações saudáveis, presente dentro da raiz quadrada para que um vetor quase nulo nunca divida por zero.
+Cada camada escreve duas vezes:
+
+- depois da sua subcamada de mistura, o stream guarda suas features anteriores mais uma atualização de comunicação;
+- depois da FFN, guarda esse resultado mais uma atualização não linear por posição.
+
+O residual stream, portanto, não é a saída de nenhum componente isolado. É um espaço de trabalho compartilhado no qual muitas features ficam sobrepostas (somadas umas por cima das outras no mesmo vetor). Tanto uma camada Gated DeltaNet quanto uma camada de full attention podem escrever nesse espaço pela mesma interface, uma atualização somada de largura 5120. Essa interface compartilhada é exatamente o que permite ao Qwen misturar tipos de camada livremente.
+
+## RMSNorm: uma cópia calibrada para cada leitor
+
+A normalização controla o que cada subcamada lê desse espaço de trabalho. O LayerNorm clássico calcula média e variância ao longo da dimensão de features de um token, subtrai, divide e aplica uma escala e um deslocamento aprendidos.
+
+O Qwen3.8-27B, como a maioria dos decoders modernos, usa **RMSNorm**: divide o vetor por $\sqrt{\operatorname{mean}(x^2)+\epsilon}$ e aplica uma escala aprendida, sem subtração de média e sem deslocamento. O divisor é a raiz do valor quadrático médio (RMS, *root mean square*) do vetor, um tamanho típico das suas entradas. Pegue um vetor de brinquedo com duas features, $[3, 4]$, e ignore por um momento o epsilon e a escala aprendida: a média dos quadrados é $12.5$, sua raiz quadrada é cerca de $3.54$, e o vetor normalizado fica em cerca de $[0.85, 1.13]$, cujo próprio RMS é 1. Qualquer que seja a escala do que chega, o leitor recebe números de tamanho previsível.
+
+No Qwen o epsilon é $10^{-6}$. Ele é pequeno o bastante para ser invisível em ativações saudáveis, e fica dentro da raiz quadrada para que um vetor quase nulo nunca divida por zero.
+
+## Post-norm ou pre-norm: onde fica a normalização
 
 Onde a normalização fica é a bifurcação clássica. O Transformer original usava **post-norm**:
 
@@ -65,22 +86,26 @@ $$
 x' = \operatorname{Norm}(x+F(x)),
 $$
 
-renormalizando o estado combinado depois de cada soma. Percorra primeiro o raciocínio ingênuo, porque ele soa correto: "normalize a soma final — certamente o sinal mais limpo vem de calibrar o resultado." Mas siga o gradiente. Em post-norm, o próprio caminho identidade passa pela normalização, então cada passo para trás multiplica pelo jacobiano de uma norm; com 64 camadas, são 128 normalizações de subcamada entre a loss e o embedding. Pilhas post-norm profundas historicamente exigiam warmup cuidadoso e eram propensas a divergir. A correção é **pre-norm**:
+renormalizando o estado combinado depois de cada soma. Percorra primeiro o raciocínio ingênuo, porque ele soa correto: "normalize a soma final; certamente o sinal mais limpo vem de calibrar o resultado."
+
+Mas siga o gradiente. Em post-norm, o próprio caminho identidade passa pela normalização, então cada passo para trás multiplica pelo jacobiano de uma norm. Com 64 camadas, são 128 normalizações de subcamada entre a loss e o embedding. Pilhas post-norm profundas historicamente exigiam warmup cuidadoso (learning rates bem pequenas nos primeiros passos de treino) e eram propensas a divergir, quando a loss explode em vez de cair. A correção é **pre-norm**:
 
 $$
 x' = x+F(\operatorname{Norm}(x)),
 $$
 
-que é o que o Qwen3.8-27B faz. Cada subcamada recebe uma cópia calibrada, mas o caminho principal permanece uma cadeia nua de somas — a mesa de luz nunca é repintada. Concretamente, uma camada do Qwen calcula $x_1 = x + \operatorname{Mixer}(\operatorname{RMSNorm}(x))$ e depois $x_2 = x_1 + \operatorname{FFN}(\operatorname{RMSNorm}(x_1))$, e o modelo repete esse contrato 64 vezes antes de um RMSNorm final preparar o estado para o output head.
+que é o que o Qwen3.8-27B faz. Cada subcamada recebe uma cópia calibrada, mas o caminho principal permanece uma cadeia nua de somas: a mesa de luz nunca é repintada. Concretamente, uma camada do Qwen calcula $x_1 = x + \operatorname{Mixer}(\operatorname{RMSNorm}(x))$ e depois $x_2 = x_1 + \operatorname{FFN}(\operatorname{RMSNorm}(x_1))$. O modelo repete esse contrato 64 vezes antes de um RMSNorm final preparar o estado para o output head.
 
-Pre-norm tem sua própria dinâmica. Como o stream nunca é reescalado no caminho principal, sua magnitude tende a crescer conforme as atualizações se acumulam ao longo da profundidade; o RMSNorm por subcamada esconde esse crescimento de cada leitor, e a norm final o esconde do head. Inicialização, schedule de learning rate, precisão e otimizador interagem todos com essas escolhas — pre-norm é um default empiricamente mais amigável para pilhas muito profundas, não um teorema sobre acurácia.
+Pre-norm tem sua própria dinâmica. Como o stream nunca é reescalado no caminho principal, sua magnitude tende a crescer conforme as atualizações se acumulam ao longo da profundidade. O RMSNorm por subcamada esconde esse crescimento de cada leitor, e a norm final o esconde do head. Inicialização, schedule de learning rate, precisão e otimizador interagem todos com essas escolhas: pre-norm é um default empiricamente mais amigável para pilhas muito profundas, não um teorema sobre acurácia.
 
 :::caveat
-"Pre-norm" não é uma especificação completa, e "RMSNorm" também não. Um modelo pode normalizar suas duas subcamadas de formas diferentes, adicionar sandwich norms ou QK-norms, escalar ramos residuais ou colocar norms extras em torno dos embeddings e da saída. O erro de inspeção mais comum é supor que os parâmetros de norm de um checkpoint significam a mesma coisa que na sua implementação de referência; leia as equações reais do bloco antes de assumir compatibilidade.
+"Pre-norm" não é uma especificação completa, e "RMSNorm" também não. Um modelo pode normalizar suas duas subcamadas de formas diferentes, adicionar sandwich norms (uma segunda norm depois da subcamada, além da que vem antes) ou QK-norms (normalizar queries e keys antes do produto escalar), escalar ramos residuais ou colocar norms extras em torno dos embeddings e da saída. Ao inspecionar um checkpoint, não suponha que os parâmetros de norm dele significam a mesma coisa que na sua implementação de referência; leia as equações reais do bloco antes de assumir compatibilidade.
 :::
+
+## Lendo e depurando o stream
 
 A expressão "residual stream" também disciplina a interpretação. Como as features ficam sobrepostas em um único espaço vetorial, a saída de uma camada de mistura pode ser cancelada por uma atualização posterior, carregada sem alteração por trinta camadas ou transformada mais adiante. Olhar a saída de uma subcamada isoladamente perde tanto o estado já presente em $x$ quanto as operações posteriores que consomem a soma.
 
-Um hábito prático de depuração: registre três normas por subcamada — a do stream $\lVert x\rVert$, a da atualização $\lVert F(\cdot)\rVert$ e a da soma. Uma atualização que ofusca o stream pode desestabilizar o treino; uma que é sempre desprezível pode ser um ramo morto. São diagnósticos, não limiares; a escala esperada depende da profundidade e da arquitetura.
+Um hábito prático de depuração: registre três normas (comprimentos de vetor) por subcamada: a do stream $\lVert x\rVert$, a da atualização $\lVert F(\cdot)\rVert$ e a da soma. Uma atualização que ofusca o stream pode desestabilizar o treino; uma que é sempre desprezível pode ser um ramo morto. São diagnósticos, não limiares; a escala esperada depende da profundidade e da arquitetura.
 
-A imagem duradoura é edição colaborativa em profundidade industrial. O stream do Qwen3.8-27B preserva o documento atual através de 64 especialistas de dois ofícios diferentes. O RMSNorm entrega a cada especialista uma cópia calibrada ao custo de um vetor de escala por subcamada, com epsilon $10^{-6}$ guardando a divisão. A colocação pre-norm mantém o documento mestre contínuo, é precisamente por isso que a pilha pode ser tão profunda — e tão heterogênea — sem colapsar.
+A imagem duradoura é edição colaborativa em profundidade industrial. O stream do Qwen3.8-27B preserva o documento atual através de 64 especialistas de dois ofícios diferentes. O RMSNorm entrega a cada especialista uma cópia calibrada ao custo de um vetor de escala por subcamada, com epsilon $10^{-6}$ guardando a divisão. A colocação pre-norm mantém o documento mestre contínuo, e é precisamente por isso que a pilha pode ser tão profunda, e tão heterogênea, sem colapsar.

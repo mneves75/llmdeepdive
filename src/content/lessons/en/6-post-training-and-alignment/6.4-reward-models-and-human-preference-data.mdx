@@ -8,15 +8,15 @@ tier: "advanced"
 locale: "en"
 prerequisites: ["6.2-supervised-fine-tuning-and-instruction-data"]
 unlocks: ["6.5-rlhf-with-ppo", "6.6-dpo-skipping-the-reward-model", "6.7-orpo-kto-simpo-and-the-alignment-zoo", "6.8-grpo-and-rl-on-verifiable-rewards"]
-analogy: "Two apprentices plate the same dish, and a judge must choose the better plate using a written rubric: safe temperature, correct order, clean presentation, and no missing ingredient. A reward model is an assistant judge trained from many such comparisons. It can score new plates quickly, but it may learn shortcuts — such as favouring taller garnishes — if the examples or rubric accidentally correlate height with quality."
+analogy: "Two apprentices plate the same dish, and a judge must choose the better plate using a written rubric: safe temperature, correct order, clean presentation, and no missing ingredient. A reward model is an assistant judge trained from many such comparisons. It can score new plates quickly, but it may learn shortcuts, such as favouring taller garnishes, if the examples or rubric accidentally correlate height with quality."
 teachBack:
   prompt: "Explain how a reward model learns from a chosen and rejected response, show why only the difference of scores matters, and say why the scalar is not ground-truth human value."
-  modelAnswer: "For one prompt the reward model scores both responses and is trained so the chosen score exceeds the rejected one, usually under a pairwise logistic loss. Because the loss depends only on the difference, adding the same constant to both scores changes nothing: the model learns a ranking, not a calibrated quality unit. The scalar predicts judgments collected under one rubric, one annotator population, one candidate-sampling policy, and one prompt distribution. It can latch onto correlated surface features, inherit genuine annotator disagreement, and fail outside its training distribution, so optimizing it hard can reward artifacts rather than quality."
+  modelAnswer: "For one prompt the reward model scores both responses and is trained so the chosen score exceeds the rejected one, usually under a pairwise logistic loss. Because the loss depends only on the difference, adding the same constant to both scores changes nothing: the model learns a ranking, not a calibrated unit of quality. The scalar predicts judgments collected under one rubric, one annotator population, one candidate-sampling policy, and one prompt distribution. It can latch onto correlated surface features, inherit genuine annotator disagreement, and fail outside its training distribution. So optimizing it hard can reward artifacts rather than quality."
 quiz:
   - question: "What information does a preference pair directly provide?"
     options: ["A relative judgment between two responses for a prompt", "The unique perfect numerical reward", "A proof that every annotator agrees", "The model's next tokenizer version"]
     correctIndex: 0
-    explanation: "Pairwise data says which candidate was preferred under the collection procedure; it does not reveal an absolute universal utility."
+    explanation: "Pairwise data says which candidate was preferred under the collection procedure. It does not reveal an absolute, universal measure of value."
   - question: "Lesson 6.2 warned that SFT teaches the defects present in its demonstrations. What is the analogous failure when preference data is collected badly?"
     options: ["The reward model refuses to converge", "The reward model learns the collection procedure's confounders, and the policy then optimizes those confounders", "The preference pairs stop tokenizing", "The policy loses its chat template"]
     correctIndex: 1
@@ -34,35 +34,64 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-You have two answers to the same question. One is 90 words, correct, and slightly blunt. The other is 320 words, correct, opens with a summary, closes with three caveats, and buries one small hedge that is not quite true. Which should the model learn to produce? There is no token-level target you can write down that captures the answer, because both responses are fluent, both are on topic, and the difference lives in a judgment nobody encoded in the training text. Supervised fine-tuning cannot help here: it can only say "imitate this one", which silently declares every wording difference in the other one to be an error.
+## Why imitation cannot choose between two good answers
 
-**Preference data** captures the comparative judgment directly. A record contains a prompt $x$, a chosen response $y^{+}$, and a rejected response $y^{-}$. Candidates are shown without identifying clues such as model names, and presentation order is randomized. The rubric may cover correctness, relevance, clarity, safety, citation fidelity, and instruction following. Reviewers need an escape hatch — ties, invalid tasks, insufficient expertise — because forcing a preference converts honest uncertainty into confident false supervision.
+You have two answers to the same question. One is 90 words, correct, and slightly blunt. The other is 320 words, correct, opens with a summary, closes with three caveats, and buries one small hedge that is not quite true. Which should the model learn to produce?
 
-A **reward model** maps a prompt and a response to a scalar $r_\phi(x,y)$, and is trained with a pairwise logistic objective:
+No token-level target you can write down captures the answer. Both responses are fluent and both are on topic; the difference lives in a judgment nobody encoded in the training text. Supervised fine-tuning ([lesson 6.2](/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/)) cannot help here. It can only say "imitate this one", which implicitly declares every wording difference in the other one to be an error.
+
+## What a preference record contains
+
+**Preference data** captures the comparative judgment directly. A record contains a prompt $x$, a chosen response $y^{+}$, and a rejected response $y^{-}$. Collection follows a few rules:
+
+- Candidates are shown without identifying clues such as model names, and presentation order is randomized.
+- The rubric (the written scoring guide) may cover correctness, relevance, clarity, safety, citation fidelity, and instruction following.
+- Reviewers need an escape hatch: ties, invalid tasks, insufficient expertise. Forcing a preference converts honest uncertainty into confident false supervision.
+
+## How a reward model learns from a pair
+
+A **reward model** is a network that reads a prompt and a response and outputs one number, the score $r_\phi(x,y)$, where $\phi$ stands for its weights. Training looks only at the gap between the two scores of a pair, the **margin**: chosen score minus rejected score. A sigmoid $\sigma$, a function that squashes any number into the range 0 to 1, turns the margin into the probability the model gives to "the chosen answer is better". The loss is the negative log of that probability, so it is small when the margin is large and positive.
+
+Work one example through the arithmetic, because the shape of this loss explains most of what the score can and cannot mean. Suppose the model scores the chosen response at 1.2 and the rejected one at 0.4. The margin is 0.8, and $\sigma(0.8)\approx 0.69$, so the loss is $-\log(0.69)\approx 0.37$. Now add five to both scores: chosen 6.2, rejected 5.4. The margin is still 0.8, so the loss is still 0.37. The optimizer does not care about the absolute level at all.
+
+Push the margin to zero and the loss becomes $\log 2 \approx 0.69$. Invert the ordering to a margin of $-0.8$ and it rises to about 1.17. Every gradient this objective produces is a gradient about ordering. In symbols, this pairwise logistic objective is
 
 $$
 \mathcal{L}_{RM}=-\log \sigma\big(r_\phi(x,y^{+})-r_\phi(x,y^{-})\big).
 $$
 
-Work one example through the arithmetic, because the shape of this loss explains most of what the scalar can and cannot mean. Suppose the model scores the chosen response at 1.2 and the rejected one at 0.4. The margin is 0.8, and $\sigma(0.8)\approx 0.69$, so the loss is $-\log(0.69)\approx 0.37$. Now add five to both scores — chosen 6.2, rejected 5.4. The margin is still 0.8, so the loss is still 0.37. The optimizer is entirely indifferent to the absolute level. Push the margin to zero and the loss becomes $\log 2 \approx 0.69$; invert the ordering to a margin of $-0.8$ and it rises to about 1.17. Every gradient this objective produces is a gradient about ordering.
+## Why a reward score is not a quality threshold
 
-Which leads straight to the classic wrong turn. A team ships the reward model as a quality gate: responses scoring above 3.0 pass, below 3.0 get regenerated. It works for a week, then a retrained reward model shifts every score up by two and the gate passes everything. The threshold was never meaningful — the loss above proves that no such threshold exists in the learned quantity. The correct use is comparative: score several candidates for the same prompt and take the best, or calibrate a decision rule against held-out human judgments and re-calibrate every time the model is retrained.
+That leads straight to the classic wrong turn. A team ships the reward model as a quality gate: responses scoring above 3.0 pass, and those below 3.0 get regenerated. It works for a week. Then a retrained reward model shifts every score up by two, and the gate passes everything.
 
-Data collection determines what the proxy means. Annotators disagree because a prompt is ambiguous, the rubric is incomplete, or values genuinely differ. Agreement statistics help, but a majority vote does not turn a contested preference into an objective fact. Expert domains need qualified reviewers; multilingual data needs native competence; safety judgments need escalation paths and protections for annotators exposed to harmful material.
+The threshold was never meaningful. The arithmetic above shows that the learned quantity has no fixed zero, so no such threshold exists in it. The correct use is comparative. Score several candidates for the same prompt and take the best. Or calibrate a decision rule against held-out human judgments, and re-calibrate every time the model is retrained.
 
-Candidate generation matters as much as labelling. If every comparison pits an excellent answer against nonsense, the reward model learns easy signals and cannot separate two plausible responses. **On-policy** or periodically refreshed data samples candidates from the policy you are actually improving, exposing the boundary it currently finds confusing. Hard negatives, adversarial cases, and length-balanced pairs reduce shortcut learning.
+## How collection decides what the score means
 
-Length is the canonical confounder. In one dataset detailed answers genuinely are better, so the model learns "longer is better" and then rewards padding everywhere else. Formatting, disclaimers, citation-shaped strings, and confident tone become the same kind of shortcut. Slice evaluations should test whether scores still track the rubric once these surface properties are controlled.
+Data collection determines what this proxy (a stand-in measured instead of the real goal) means. Annotators disagree because a prompt is ambiguous, the rubric is incomplete, or values genuinely differ. Agreement statistics help, but a majority vote does not turn a contested preference into an objective fact. Expert domains need qualified reviewers. Multilingual data needs native competence. Safety judgments need escalation paths and protections for annotators exposed to harmful material.
 
-When a policy optimizes against the reward model, it searches for high-scoring outputs and therefore walks straight into regions the reward model never saw during training. Errors that were rare become attractive. This is Goodhart's law in operational form: a measure that becomes a target stops being a good measure. Regularization, conservative updates, refreshed comparisons, and independent evaluation limit the damage without abolishing it.
+Candidate generation matters as much as labelling. If every comparison pits an excellent answer against nonsense, the reward model learns easy signals and cannot separate two plausible responses. The model being trained is called the **policy**, the reinforcement-learning word for "the thing that chooses actions", here tokens. **On-policy** data, or data refreshed periodically, samples candidates from the policy you are actually improving. It exposes the boundary that policy currently finds confusing. Hard negatives (rejected answers that look good), adversarial cases, and length-balanced pairs reduce shortcut learning.
+
+Length is the canonical confounder: a surface property that happens to correlate with the label. In one dataset detailed answers genuinely are better, so the model learns "longer is better" and then rewards padding everywhere else. Formatting, disclaimers, citation-shaped strings, and confident tone become the same kind of shortcut. Evaluations on slices of the data should test whether scores still track the rubric once these surface properties are controlled.
+
+## What happens when a policy optimizes the score
+
+When a policy optimizes against the reward model, it searches for high-scoring outputs. It therefore walks straight into regions the reward model never saw during training, where errors that were rare become attractive. This is Goodhart's law in operational form: a measure that becomes a target stops being a good measure. Regularization, conservative updates, refreshed comparisons, and independent evaluation limit the damage without abolishing it.
 
 :::caveat
-A reward score is not "human preference" stored in a number. It is a model's estimate of judgments produced by one specific pipeline. Record the rubric version, annotator population, candidate policy, prompt source, and date alongside the dataset — without them, a score six months later is uninterpretable.
+A reward score is not "human preference" stored in a number. It is a model's estimate of judgments produced by one specific pipeline. Record the rubric version, annotator population, candidate policy, prompt source, and date alongside the dataset. Without them, a score six months later is uninterpretable.
 :::
 
-Where does this leave the course's specimen? Qwen3.8-27B ships as a single post-trained checkpoint with no technical report, so nothing can be said about whether or how a reward model featured in its production, and this course will not speculate. What is documented is the other kind of evidence: the model card reports outcome scores such as SWE-bench Pro 61.7 and GPQA Diamond 89.2, both vendor-reported and awaiting independent reproduction. Those numbers come from checkers, not from judges — and that distinction is exactly the fork in the road ahead. When an outcome can be verified programmatically, lesson 6.8 shows you can skip the learned judge entirely. When it cannot, a reward model is one way to turn human judgments into a reusable scalar signal; direct preference methods such as DPO instead optimize the pairs themselves without fitting a separate reward model. Both approaches still inherit the data-quality limits in this lesson.
+Where does this leave the course's model? Qwen3.8-27B ships as a single post-trained checkpoint with no technical report. Nothing can be said about whether or how a reward model featured in its production, and this course will not speculate. What is documented is the other kind of evidence. The model card reports outcome scores such as SWE-bench Pro 61.7 and GPQA Diamond 89.2, both vendor-reported and awaiting independent reproduction. Those numbers come from checkers, not from judges, and that distinction is the fork in the road ahead:
 
-Calibration questions remain even for a well-built judge. Held-out pairwise accuracy is necessary and nowhere near sufficient. Examine ties, subgroup disagreement, adversarial sensitivity, score distributions, and whether higher scores correlate with task success measured independently. A reward model can rank familiar pairs beautifully and still steer optimization somewhere useless. The durable picture is a learned judge trained from relative examples: its usefulness comes from scaling a costly human signal, and its danger comes from the same compression, because a nuanced conditional judgment has been flattened into one number, and every optimization step downstream has forgotten what that number left out.
+- When an outcome can be verified by a program, [lesson 6.8](/lessons/6-post-training-and-alignment/6.8-grpo-and-rl-on-verifiable-rewards/) shows you can skip the learned judge entirely.
+- When it cannot, a reward model is one way to turn human judgments into a reusable score. Direct preference methods such as DPO ([lesson 6.6](/lessons/6-post-training-and-alignment/6.6-dpo-skipping-the-reward-model/)) instead optimize the pairs themselves without fitting a separate reward model.
+
+Both approaches still inherit the data-quality limits in this lesson.
+
+Calibration questions remain even for a well-built judge. Accuracy on held-out pairs is necessary and nowhere near sufficient. Examine ties, disagreement between subgroups, sensitivity to adversarial inputs, score distributions, and whether higher scores correlate with task success measured independently. A reward model can rank familiar pairs beautifully and still steer optimization somewhere useless.
+
+The durable picture is a learned judge trained from relative examples. Its usefulness comes from scaling a costly human signal. Its danger comes from the same compression: a nuanced, conditional judgment has been flattened into one number, and every optimization step downstream has forgotten what that number left out.

@@ -11,7 +11,7 @@ unlocks: ["4.14-reading-real-weights", "5.1-pretraining-objectives"]
 analogy: "Build a tabletop printing press before touring an industrial newspaper plant. The tabletop version has tiny trays of type, two attention stations, a feed-forward press, and a hand-cranked optimizer. It will not print a great newspaper, but every gear moves for the same reason as its industrial counterpart — and once you have cranked it yourself, the plant's differences stand out as deliberate engineering rather than mystery."
 teachBack:
   prompt: "Trace one training batch through the minimal GPT from integer token IDs to cross-entropy loss, then name three ways Qwen3.8-27B departs from this uniform baseline beyond sheer size."
-  modelAnswer: "Integer IDs index token and position embeddings, producing B×T×C states. Each identical block applies normalized causal multi-head attention and a feed-forward update through residual connections; a final norm and vocabulary projection produce B×T×V logits, and flattened logits against shifted targets give next-token cross-entropy. Generation reuses the same forward pass, sampling from the last position. Qwen3.8-27B departs by using RMSNorm instead of LayerNorm, rotary positions instead of a learned position table, a SiLU-gated FFN instead of an ungated GELU one, grouped-query attention with non-square projections, and — most structurally — by replacing attention with Gated DeltaNet in 48 of its 64 layers, so the stack is not uniform at all."
+  modelAnswer: "Integer IDs index token and position embeddings, producing B×T×C states. Each identical block applies normalized causal multi-head attention and a feed-forward update through residual connections. A final norm and vocabulary projection produce B×T×V logits. Flattened logits against shifted targets give next-token cross-entropy. Generation reuses the same forward pass, sampling from the last position. Qwen3.8-27B departs by using RMSNorm instead of LayerNorm, rotary positions instead of a learned position table, a SiLU-gated FFN instead of an ungated GELU one, and grouped-query attention with non-square projections. Most structurally, it replaces attention with Gated DeltaNet in 48 of its 64 layers, so the stack is not uniform at all."
 quiz:
   - question: "Why is the triangular mask registered as a buffer?"
     options: ["It becomes an optimizer parameter", "It follows the module across devices but is not trainable", "It stores generated text", "It replaces position embeddings"]
@@ -38,12 +38,25 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-The fastest way to make the Transformer concrete is to implement one. The program below is deliberately small but complete: it creates a character tokenizer, samples training batches, implements causal multi-head self-attention, stacks residual blocks, minimizes next-token cross-entropy, and generates text. It uses PyTorch for tensors and automatic differentiation, but no high-level Transformer module.
+## What you are about to build
 
-Call what it builds the **uniform baseline**: every layer is the same block, every block's mixer is the same attention, positions come from one learned table, and the norm is classic LayerNorm. This is the pedagogical skeleton the whole track has assembled — and it is exactly the frame you need to appreciate a shipped instance like Qwen3.8-27B, which departs from uniformity on purpose at almost every joint. First build the baseline; the departures come at the end.
+The fastest way to make the Transformer concrete is to implement one. The program below is deliberately small but complete. It:
+
+- creates a character tokenizer (every character is one token);
+- samples training batches;
+- implements causal multi-head self-attention;
+- stacks residual blocks;
+- minimizes next-token cross-entropy (the loss of [lesson 2.4](/lessons/2-neural-network-fundamentals/2.4-loss-functions-cross-entropy/));
+- generates text.
+
+It uses PyTorch for tensors and automatic differentiation (PyTorch computes the gradients for you, [lesson 0.7](/lessons/0-orientation-and-foundations/0.7-python-numpy-pytorch/)), but no high-level Transformer module.
+
+Call what it builds the **uniform baseline**: every layer is the same block, every block's mixer is the same attention, positions come from one learned table, and the norm is classic LayerNorm. This is the teaching skeleton the whole track has assembled. It is also exactly the frame you need to appreciate a shipped instance like Qwen3.8-27B, which departs from uniformity on purpose at almost every joint. First build the baseline; the departures come at the end.
+
+## The program
 
 Save the block as `minimal_gpt.py`, install PyTorch with the command documented for your platform at `pytorch.org`, and run `python minimal_gpt.py`. It trains on CPU in a short educational run. The tiny repeated corpus and small network are chosen for inspectability, not language quality. The program prints measured losses; their exact values can vary by PyTorch version and hardware.
 
@@ -206,12 +219,37 @@ generated = model.generate(seed, new_tokens=160)[0].tolist()
 print("".join(itos[index] for index in generated))
 ```
 
-Read it by following shapes. `indices` is $B\times T$. Token and position lookup produce $B\times T\times C$. Each head projects $C$ features to $H=C/h$, forms a $T\times T$ score matrix per batch item, applies the lower-triangular mask, and mixes values. Concatenating $h$ heads restores $C$. The FFN expands to $4C$ and returns to $C$. Every residual addition therefore has matching shape. The target is the input shifted by one position; cross-entropy compares vocabulary logits at each position with the actual next character; AdamW updates the parameters while the causal buffer stays fixed. Generation uses the same forward pass without targets, sampling from the final position's logits and cropping to the context limit.
+## Reading the program by its shapes
 
-One incidental detail is worth flagging: `language_head` is a separate matrix from `token_embedding` — this toy does not tie its output head to its embedding table. Neither does Qwen3.8-27B, at vastly greater expense; hold that thought for the ladder below and for lesson 4.14, where the two untied matrices appear in the checkpoint as separate tensors.
+Read it by following shapes. Four letters do the bookkeeping: $B$ is the batch size (sequences per step), $T$ the number of tokens per sequence, $C$ the model width (`n_embed`, 64 here), and $h$ the number of heads.
+
+- `indices` is $B\times T$. Token and position lookup produce $B\times T\times C$.
+- Each head projects $C$ features to $H=C/h$, forms a $T\times T$ score matrix per batch item, applies the lower-triangular mask, and mixes values.
+- Concatenating $h$ heads restores $C$.
+- The FFN expands to $4C$ and returns to $C$.
+
+Every residual addition therefore has matching shape.
+
+Training compares predictions with the truth. The target is the input shifted by one position. Cross-entropy compares vocabulary logits (raw scores, one per character) at each position with the actual next character. AdamW, the optimizer of [lesson 2.7](/lessons/2-neural-network-fundamentals/2.7-optimizers/), updates the parameters, while the causal mask, registered as a **buffer** (a tensor saved and moved with the model but never trained), stays fixed. Generation uses the same forward pass without targets, sampling from the final position's logits and cropping to the context limit.
+
+One incidental detail is worth flagging: `language_head` is a separate matrix from `token_embedding`. This toy does not tie its output head to its embedding table (tying would reuse one matrix for both). Neither does Qwen3.8-27B, at vastly greater expense. Hold that thought for the ladder below and for [lesson 4.14](/lessons/4-transformer/4.14-reading-real-weights/), where the two untied matrices appear in the checkpoint as separate tensors.
+
+## What a production model changes
 
 :::caveat
-The classic misconception at this point is that a production model is "this program with bigger matrices." Size is the smallest difference. Qwen3.8-27B swaps LayerNorm for RMSNorm, the learned position table for rotary embeddings, the ungated GELU FFN for a SiLU-gated one, full multi-head attention for grouped-query attention with non-square projections — and, structurally, it abandons uniformity itself, replacing attention with Gated DeltaNet in 48 of 64 layers. Scaling a baseline and shipping an instance are different engineering acts.
+It is tempting to think a production model is "this program with bigger matrices." Size is the smallest difference. Qwen3.8-27B swaps LayerNorm for RMSNorm, the learned position table for rotary embeddings, the ungated GELU FFN for a SiLU-gated one, and full multi-head attention for grouped-query attention with non-square projections. And, structurally, it abandons uniformity itself, replacing attention with Gated DeltaNet in 48 of 64 layers. Scaling a baseline and shipping an instance are different engineering acts.
 :::
 
-Now climb the parameter ladder from this table to the plant floor, and let each rung be a number you can check. The toy: a character vocabulary of a few dozen entries, width 64, two layers, an ungated $4\times$ FFN — well under a million parameters, small enough that the printed loss moves within seconds. First rung, width: Qwen3.8-27B's residual stream is 5120 wide, eighty times the toy's 64, and parameter cost in the dense blocks grows roughly with the *square* of width. Second rung, depth: 64 layers against the toy's two. Third rung, vocabulary: 248,320 rows against a few dozen, so the embedding table alone reaches about 1.271 billion parameters — and because the head is untied, the output matrix is another ~1.271 billion, roughly 2.54 billion before any block does any work. Fourth rung, the blocks: each layer's gated FFN holds about 267 million parameters, and 64 of them total roughly 17 billion — the single largest line item, as lesson 4.9 established. The remainder of the ~27 billion budget covers the mixing layers — sixteen attention blocks with their 12288- and 1024-wide projections, forty-eight DeltaNet blocks — plus the vision tower that lets the model read images (lesson 4.17). Every rung is the same arithmetic you just ran on `Config`: rows times columns, summed over named modules. The plant is bigger than the tabletop press by a factor of hundreds of thousands, but it is inventoried with the multiplication you can now do by hand.
+## Climbing the parameter ladder to 27 billion
+
+Now climb the parameter ladder from this table to the plant floor, and let each rung be a number you can check.
+
+- **The toy.** A character vocabulary of a few dozen entries, width 64, two layers, an ungated $4\times$ FFN: well under a million parameters, small enough that the printed loss moves within seconds.
+- **First rung, width.** Qwen3.8-27B's residual stream is 5120 wide, eighty times the toy's 64, and parameter cost in the dense blocks grows roughly with the *square* of width.
+- **Second rung, depth.** 64 layers against the toy's two.
+- **Third rung, vocabulary.** 248,320 rows against a few dozen, so the embedding table alone reaches about 1.271 billion parameters. Because the head is untied, the output matrix is another ~1.271 billion: roughly 2.54 billion before any block does any work.
+- **Fourth rung, the blocks.** Each layer's gated FFN holds about 267 million parameters, and 64 of them total roughly 17 billion, the single largest line item, as [lesson 4.9](/lessons/4-transformer/4.9-feed-forward-block/) established.
+
+The remainder of the ~27 billion budget covers the mixing layers (sixteen attention blocks with their 12288- and 1024-wide projections, forty-eight DeltaNet blocks) plus the vision tower that lets the model read images ([lesson 4.17](/lessons/4-transformer/4.17-multimodal-vision-encoder/)).
+
+Every rung is the same arithmetic you just ran on `Config`: rows times columns, summed over named modules. The plant is bigger than the tabletop press by a factor of hundreds of thousands, but it is inventoried with the multiplication you can now do by hand.

@@ -38,20 +38,42 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Everything built so far in this track has a blind spot, and it is easy to state concretely. Feed the attention stack the token vectors for "dog bites person" and then feed it the same three vectors reordered as "person bites dog." Attention compares vectors by *content*: every query–key dot product between the same pair of vectors is identical in both cases, so the outputs are the same vectors, merely reordered the same way the inputs were. This **permutation equivariance** means the model literally cannot tell who bit whom. (The causal mask from lesson 4.4 restricts *which* pairs interact, which breaks the symmetry only partially — it says who is earlier, not how far apart or where.) Language needs order; attention alone does not see it.
+## Why can't attention tell "dog bites person" from "person bites dog"?
 
-Try the obvious first fix: append the position as one extra number, so token at position 7 gets a feature with value 7. It fails twice. The single scalar must survive projections designed for thousands of content features, so it is easily drowned out; and its magnitude grows without bound — position 100,000 has a feature 100,000 times larger than position 1, wrecking the carefully scaled statistics from lesson 4.3. The correction the 2017 paper chose: give position a *full-width vector* with bounded entries and structure at many scales, and add it to the token embedding before the first layer:
+Everything built so far in this track has a blind spot, and it is easy to state concretely. Feed the attention stack the token vectors for "dog bites person" and then feed it the same three vectors reordered as "person bites dog." Attention compares vectors by *content*: every query–key dot product between the same pair of vectors is identical in both cases. So the outputs are the same vectors, merely reordered the same way the inputs were.
+
+This property is called **permutation equivariance**: shuffle the inputs and you get the same outputs, shuffled the same way. It means the model has no way to tell who bit whom. The causal mask from [lesson 4.4](/lessons/4-transformer/4.4-causal-masking/) restricts *which* pairs interact, which breaks the symmetry only partially: it says who is earlier, not how far apart or where. Language needs order; attention alone does not see it.
+
+## Why not just append the position number?
+
+Try the obvious first fix: append the position as one extra number, so the token at position 7 gets a feature with value 7. It fails for two reasons:
+
+- **It gets drowned out.** The single scalar must survive projections designed for thousands of content features.
+- **It grows without bound.** Position 100,000 has a feature 100,000 times larger than position 1, wrecking the carefully scaled statistics from [lesson 4.3](/lessons/4-transformer/4.3-scaled-dot-product-attention/).
+
+The correction the 2017 paper chose: give position a *full-width vector* with bounded entries and structure at many scales, and add it to the token embedding before the first layer:
 
 $$
 x_t = e_{token_t}+p_t.
 $$
 
-Since both vectors have width $d_{model}$, position and content share the residual stream, and every projection in every head (lesson 4.5) can use combinations of both.
+Here $e_{token_t}$ is the embedding of the token at position $t$, $p_t$ is the position vector, and both have width $d_{model}$, the model's hidden size. Because they are added, position and content share the residual stream (the per-token vector every layer reads and writes), and every projection in every head ([lesson 4.5](/lessons/4-transformer/4.5-multi-head-attention/)) can use combinations of both.
 
-The **sinusoidal** scheme defines that vector by formula, pairing dimensions at geometrically spaced frequencies:
+## Sinusoidal encoding: clocks at many speeds
+
+The **sinusoidal** scheme builds $p_t$ from a formula rather than learning it. Picture the vector's dimensions grouped in pairs. Each pair is a clock hand: one entry is the sine and the other the cosine of the position times that pair's frequency. The first pair turns fast; each later pair turns more slowly, by a constant factor.
+
+A tiny worked example with $d_{model}=4$ makes it tangible. Write $PE(pos, k)$ for entry $k$ of the vector at position $pos$.
+
+- For position $pos = 1$, dimension pair $i=0$ uses frequency $1/10000^{0} = 1$, giving $PE(1,0)=\sin(1)\approx 0.84$ and $PE(1,1)=\cos(1)\approx 0.54$.
+- Pair $i=1$ uses frequency $1/10000^{2/4} = 1/100$, giving $PE(1,2)=\sin(0.01)\approx 0.01$ and $PE(1,3)=\cos(0.01)\approx 1.00$.
+
+The fast pair has already swung noticeably at position 1; the slow pair has barely moved and will take hundreds of positions to change appreciably. Position 2 doubles each angle ($\sin(2)\approx 0.91$, $\sin(0.02)\approx 0.02$), and so on. Every position gets a distinct multi-speed clock reading, with all entries bounded in $[-1,1]$. Nearby positions have similar stamps; distant ones differ in the slow dimensions.
+
+In general, the paper pairs dimensions at geometrically spaced frequencies:
 
 $$
 PE(pos,2i)=\sin\left(pos/10000^{2i/d_{model}}\right),
@@ -61,18 +83,25 @@ $$
 PE(pos,2i+1)=\cos\left(pos/10000^{2i/d_{model}}\right).
 $$
 
-A tiny worked example with $d_{model}=4$ makes it tangible. For position $pos = 1$: dimension pair $i=0$ uses frequency $1/10000^{0} = 1$, giving $PE(1,0)=\sin(1)\approx 0.84$ and $PE(1,1)=\cos(1)\approx 0.54$. Pair $i=1$ uses frequency $1/10000^{2/4} = 1/100$, giving $PE(1,2)=\sin(0.01)\approx 0.01$ and $PE(1,3)=\cos(0.01)\approx 1.00$. The fast pair has already swung noticeably at position 1; the slow pair has barely moved and will take hundreds of positions to change appreciably. Position 2 doubles each angle ($\sin(2)\approx 0.91$, $\sin(0.02)\approx 0.02$), and so on: every position gets a distinct multi-speed clock reading with all entries bounded in $[-1,1]$. Nearby positions have similar stamps; distant ones differ in the slow dimensions. Relative offsets are linearly recoverable from sine–cosine pairs, a property that quietly foreshadows the next lesson.
+Even dimensions $2i$ hold sines, odd dimensions $2i+1$ hold cosines, and the frequency $1/10000^{2i/d_{model}}$ shrinks as $i$ grows. One more property is worth knowing: relative offsets are linearly recoverable from sine–cosine pairs. Moving forward by a fixed number of positions turns every clock hand by a fixed angle, and a fixed matrix multiplication can express that turn. The next lesson builds on exactly this property.
 
-A **learned absolute position embedding** replaces the formula with a trainable table: one row per supported position, looked up exactly like a token embedding. BERT and the GPT lineage used this successfully — optimization discovers whatever positional geometry helps the training distribution, rather than accepting a predetermined one.
+## Learned position tables
 
-The tradeoff is not "principled versus learned." A learned table has a declared maximum length and simply has no row beyond it; extending means resizing and interpolating rows that were never trained. The sinusoidal formula produces a value for *any* integer position — but a defined value is not a useful one.
+A **learned absolute position embedding** replaces the formula with a trainable table: one row per supported position, looked up exactly like a token embedding. BERT and the GPT lineage used this successfully. Optimization discovers whatever positional geometry helps the training distribution, rather than accepting a predetermined one.
+
+The tradeoff is not "principled versus learned." A learned table has a declared maximum length and has no row beyond it; extending means resizing and interpolating (filling in estimated values between) rows that were never trained. The sinusoidal formula produces a value for *any* integer position, but a defined value is not a useful one.
 
 :::caveat
-The classic misconception: "the sinusoidal formula extends to any length, so the model handles long inputs." Being mathematically defined outside the training range says nothing about whether the rest of the trained network behaves sensibly there. Extrapolation is a property of the complete trained system — encodings, attention patterns, data — never of the encoding formula alone. The same caution will apply, in different form, to every positional scheme in this track.
+"The sinusoidal formula extends to any length, so the model handles long inputs" is the classic overreach. Being mathematically defined outside the training range says nothing about whether the rest of the trained network behaves sensibly there. Extrapolation is a property of the complete trained system (encodings, attention patterns, data), never of the encoding formula alone. The same caution will apply, in different form, to every positional scheme in this track.
 :::
 
-Two operational details bite in practice. Addition does not force the network to keep content and position separable — they are entangled in one vector from layer one, and every head's Q, K, *and* V inherit the mixture. And position *indices* are a contract: left-padding, packed documents, and boundary resets all change which integer a token receives, so a mismatch between training-time and inference-time numbering degrades output even when every shape is valid.
+Two operational details bite in practice:
 
-A useful way to compare schemes is to ask where position *enters*. Absolute schemes — both flavors in this lesson — stamp it on the input, tying information to an index ("this is token 37") rather than to a distance ("this token is three back"), and leaving the network to infer offsets from two absolute stamps. Relative schemes move position into the attention computation itself, where offsets live naturally.
+- **Addition entangles content and position.** Nothing forces the network to keep them separable. They are mixed in one vector from layer one, and every head's Q, K, *and* V inherit the mixture.
+- **Position indices are a contract.** Left-padding (filler tokens placed before a short sequence), packed documents, and boundary resets all change which integer a token receives. A mismatch between training-time and inference-time numbering degrades output even when every shape is valid.
 
-That is exactly the road the field took, and our course model is the evidence: **Qwen3.8-27B uses neither of this lesson's schemes.** No sinusoidal stamp is added to its embeddings and no learned absolute position table exists in its weights; position enters through rotations applied to queries and keys inside its attention layers — RoPE, with a twist of partial application and multimodal sections. That mechanism is the next lesson. Treat sinusoidal and learned tables as the historical baseline that defined the problem — breaking permutation symmetry with a bounded, multi-scale signal — whose best-known solution now lives somewhere else in the block.
+## Where position enters, and what Qwen3.8-27B does
+
+A useful way to compare schemes is to ask where position *enters*. Absolute schemes, both flavors in this lesson, stamp it on the input. They tie information to an index ("this is token 37") rather than to a distance ("this token is three back"), and leave the network to infer offsets from two absolute stamps. Relative schemes move position into the attention computation itself, where offsets live naturally.
+
+That is exactly the road the field took, and our course model is the evidence: **Qwen3.8-27B uses neither of this lesson's schemes.** No sinusoidal stamp is added to its embeddings and no learned absolute position table exists in its weights. Position enters through rotations applied to queries and keys inside its attention layers: RoPE, with a twist of partial application and multimodal sections. That mechanism is [lesson 4.7](/lessons/4-transformer/4.7-rope/). Treat sinusoidal and learned tables as the historical baseline that defined the problem (breaking permutation symmetry with a bounded, multi-scale signal), whose best-known solution now lives somewhere else in the block.

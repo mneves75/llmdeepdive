@@ -58,10 +58,14 @@ citations:
     authors: "NVIDIA Corporation"
     year: 2025
     url: "https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-The naive matrix multiply of lesson 12.3 is correct and wasteful. Every thread streams a full row of `A` and a full column of `B` from global memory, and neighbouring threads fetch the same numbers again. The fix is the oldest trick in the roofline playbook of lesson 9.2: raise the arithmetic intensity by reusing bytes you already moved.
+The naive matrix multiply of [lesson 12.3](/lessons/12-dgx-and-cuda/12.3-the-cuda-programming-model/) is correct and wasteful. Every thread streams a full row of `A` and a full column of `B` from global memory, and neighbouring threads fetch the same numbers again. The fix is the oldest trick in the roofline playbook of [lesson 9.2](/lessons/9-hardware-and-infrastructure/9.2-the-roofline-model/): raise the arithmetic intensity, the operations done per byte moved from memory, by reusing bytes you already moved.
+
+## Tiling: load once, use many times
+
+You already know the idea from file I/O. Reading a file one byte per system call is slow, so you read a chunk into a buffer and work from the buffer. A tile is that buffer. It is a small square piece of a matrix, held in shared memory, the fast on-chip memory that all threads of a block share (lesson 12.3). Unlike your file buffer, this one belongs to a whole block of threads, so they must fill it and finish with it together.
 
 A block cooperates. It loads one square tile of `A` and one of `B` into shared memory, synchronizes, lets every thread multiply out of that fast memory, synchronizes again, and slides to the next tile.
 
@@ -87,17 +91,29 @@ __global__ void matmulTiled(const float* A, const float* B, float* C, int M, int
 // launch: dim3 block(TILE, TILE); dim3 grid((N + TILE - 1) / TILE, (M + TILE - 1) / TILE);
 ```
 
-Two details carry the correctness. First, every thread of the block that has not exited must reach the same `__syncthreads()`, so a barrier never sits inside a branch that only some threads take. Out-of-range elements are loaded as zero instead of skipped because the tile is shared: a thread whose own output lies outside the matrix still fills its slot, which its neighbours read, so it stays in the loop rather than returning early. Second, the barrier after the multiply stops a fast thread from refilling the tiles while a slow one still reads them.
+## Two barriers keep it correct
 
-Now the gain. Each element in a tile is loaded once from global memory and used by 16 threads. Global traffic falls by the tile width, so the intensity of 0.25 FLOP/B rises by the same factor:
+`__syncthreads()` is a barrier: no thread of the block continues past it until every thread of the block has reached it. Two details carry the correctness.
+
+First, every thread of the block that has not exited must reach the same `__syncthreads()`, so a barrier never sits inside a branch that only some threads take. Out-of-range elements are loaded as zero instead of skipped because the tile is shared. A thread whose own output lies outside the matrix still fills its slot, which its neighbours read, so it stays in the loop rather than returning early.
+
+Second, the barrier after the multiply stops a fast thread from refilling the tiles while a slow one still reads them.
+
+## How much does tiling gain?
+
+Count the reuse. With a 2 by 2 tile, each value loaded into shared memory is read by 2 threads. Each element in a 16 by 16 tile is loaded once from global memory and used by 16 threads. Global traffic falls by the tile width, so the intensity of 0.25 FLOP/B rises by the same factor:
 
 $$
 I_{\text{tiled}} = 16\times 0.25\ \text{FLOP/B} = 4\ \text{FLOP/B}, \qquad 273\ \text{GB/s}\times 4\ \text{FLOP/B} \approx 1.1\ \text{TFLOP/s}.
 $$
 
-The second figure uses the Spark's vendor bandwidth. It is the bandwidth roof at that intensity, a planning number and not a measurement. A bigger tile reuses more, but it needs more shared memory. The Programming Guide's tables give 100 KiB per SM on compute capability 12.x, and up to 228 KiB on 10.3. A tile size tuned on the Station may not fit the Spark. Shared-memory allocations above 48 KiB per block also need dynamic allocation and an explicit opt-in.
+The second figure uses the Spark's vendor bandwidth. It is the bandwidth roof at that intensity, a planning number and not a measurement.
 
-Now the Tensor Cores. They multiply a small tile per warp instruction. The warp matrix functions expose them in C++, and every thread in the warp must take part.
+A bigger tile reuses more, but it needs more shared memory. The Programming Guide's tables give 100 KiB per SM on compute capability 12.x, and up to 228 KiB on 10.3. A tile size tuned on the Station may not fit the Spark. Shared-memory allocations above 48 KiB per block also need dynamic allocation and an explicit opt-in.
+
+## Tensor Cores: a whole tile per instruction
+
+Tensor Cores are GPU units built for matrix multiplication: one warp instruction multiplies a whole small tile. The warp matrix functions (WMMA, warp matrix multiply-accumulate) expose them in C++, and every thread in the warp must take part. A `fragment` is one tile spread across the registers of the warp's 32 threads, and `half` is the 16-bit floating-point type, FP16.
 
 ```cpp
 #include <cuda_fp16.h>
@@ -120,12 +136,20 @@ __global__ void matmulWmma(const half* A, const half* B, float* C, int M, int N,
 // launch: matmulWmma<<<dim3(N / 16, M / 16), 32>>>(A, B, C, M, N, K);  M, N, K multiples of 16
 ```
 
-This kernel is correct but not fast. It has no shared-memory staging and one warp per block. Fast Tensor Core code stacks the same two ideas: a block tile staged through shared memory, a warp tile, then the instruction. That is exactly the loop nest of CUTLASS's "Efficient GEMM in CUDA", so in practice you call CUTLASS or cuBLAS. The Programming Guide says to use Tensor Cores through cuDNN, cuBLAS, cuFFT or CUTLASS. The warp matrix table lists FP16, BF16, TF32, FP64, INT8 and sub-byte integer types (preview), and no FP4 float. Blackwell's FP4 instructions are architecture-specific (llama.cpp builds them with a `121a` target), and NVIDIA strongly recommends reaching them through the libraries. Library versions matter. The CUDA 13.4 Update 1 release notes list, under cuBLAS 13.2, up to 3 times faster NVFP4 and MXFP8 GEMM on the DGX Spark for selected large shapes. That is a vendor claim about one library release.
+This kernel is correct but not fast. It has no shared-memory staging and one warp per block. Fast Tensor Core code stacks the same two ideas: a block tile staged through shared memory, a warp tile, then the instruction. That is exactly the loop nest of CUTLASS's "Efficient GEMM in CUDA" (GEMM, general matrix multiply, is the standard name for this operation). So in practice you call CUTLASS or cuBLAS, NVIDIA's linear-algebra library. The Programming Guide says to use Tensor Cores through cuDNN, cuBLAS, cuFFT or CUTLASS.
 
-Why do none of these tricks speed up batch-1 decode? Decode is a matrix-vector product, a GEMV. Each weight is read once and used for one multiply-add, which is 2 FLOP. In bf16 that is about 1 FLOP per byte (lesson 9.1). At NVFP4's 4.5 bits per value, counting the block scales, it is $2 / (4.5/8) \approx 3.6$ FLOP per byte, still far below any ridge point. A single vector also fills one column of a 16-wide tile, at most 1/16 of the work. So decode kernels stream weights with wide loads, accumulate in registers and reduce across the warp. They aim at a share of DRAM bandwidth, not at FLOPs. Batching and prefill give Tensor Cores a full tile.
+The number formats matter too. The warp matrix table lists FP16, BF16, TF32, FP64, INT8 and sub-byte integer types (preview), and no FP4 float. Blackwell's FP4 instructions are architecture-specific (llama.cpp builds them with a `121a` target), and NVIDIA strongly recommends reaching them through the libraries. Library versions matter as well. The CUDA 13.4 Update 1 release notes list, under cuBLAS 13.2, up to 3 times faster NVFP4 and MXFP8 GEMM on the DGX Spark for selected large shapes. That is a vendor claim about one library release.
+
+## Why decode gets none of this
+
+Why do none of these tricks speed up batch-1 decode? Decode is a matrix-vector product, a GEMV: one weight matrix times one vector. Each weight is read once and used for one multiply-add, which is 2 FLOP. In bf16 that is about 1 FLOP per byte ([lesson 9.1](/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/)). NVFP4 is NVIDIA's 4-bit format ([lesson 12.5](/lessons/12-dgx-and-cuda/12.5-the-cuda-stack-for-llms/)), and at its 4.5 bits per value, counting the block scales, it is $2 / (4.5/8) \approx 3.6$ FLOP per byte. That is still far below any ridge point, the intensity where a kernel stops being limited by bandwidth.
+
+A single vector also fills one column of a 16-wide tile, at most 1/16 of the work. So decode kernels stream weights with wide loads, accumulate partial sums in registers, then add the 32 threads' partial sums together into each output value (a warp reduction). They aim at a share of DRAM bandwidth, not at FLOPs. Batching and prefill give Tensor Cores a full tile.
+
+## Reading a profile
 
 :::warning
-Profile before you tune. A decode kernel at 0.3 percent of peak FLOPs may be at 90 percent of its bandwidth roof, and a rewrite then buys nothing. Read the Speed Of Light section first, then the roofline sections: Nsight Compute has hierarchical roofline charts for Tensor Core kernels, and says to enable the one that matches your data path.
+Profile before you tune. A decode kernel at 0.3 percent of peak FLOPs may be at 90 percent of its bandwidth roof, and a rewrite then buys nothing. Read the Speed Of Light section first, the summary that compares the kernel's compute and memory throughput with the hardware's peaks. Then read the roofline sections: Nsight Compute has hierarchical roofline charts for Tensor Core kernels, and says to enable the one that matches your data path.
 :::
 
 ```bash
@@ -133,10 +157,10 @@ nvcc -O3 -arch=sm_121 -lineinfo matmul.cu -o matmul
 ncu --set full -k regex:matmul -c 1 -o matmul-report ./matmul
 ```
 
-The `-k regex:` filter picks kernels by name, `-c 1` profiles only the first match, and `--set full` collects every section. Open `matmul-report.ncu-rep` in the Nsight Compute interface. The command line prints nothing when `-o` is set and `--page` is not, so add `--page details` to read the numbers in the terminal.
+`ncu` is Nsight Compute's command-line profiler. The `-k regex:` filter picks kernels by name, `-c 1` profiles only the first match, and `--set full` collects every section. Open `matmul-report.ncu-rep` in the Nsight Compute interface. The command line prints nothing when `-o` is set and `--page` is not, so add `--page details` to read the numbers in the terminal.
 
 :::caveat
 The listings follow the Programming Guide, and their index logic was checked against a reference matrix multiply in a CPU model. The authors have not run them on a GPU. Compile them for your target, run `compute-sanitizer`, and compare against cuBLAS before you trust a timing.
 :::
 
-The durable idea is that every fast kernel moves fewer bytes per useful operation, and every profile asks which roof you are under. Lesson 12.5 steps back from single kernels to the stack that ships them: drivers, toolkits, libraries and the servers that call them.
+Every fast kernel moves fewer bytes per useful operation, and every profile asks which roof you are under. Lesson 12.5 steps back from single kernels to the stack that ships them: drivers, toolkits, libraries and the servers that call them.

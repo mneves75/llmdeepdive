@@ -8,15 +8,15 @@ tier: "advanced"
 locale: "pt-br"
 prerequisites: ["7.1-what-actually-happens-when-you-hit-send", "4.16-hybrid-layouts"]
 unlocks: ["7.6-mqa-gqa-and-mla", "7.8-pagedattention-and-continuous-batching"]
-analogy: "Um estenógrafo de tribunal mantém uma transcrição indexada de tudo o que já foi dito. Quando chega uma pergunta nova, o juiz consulta a transcrição em vez de pedir que cada testemunha repita a audiência desde o começo. A transcrição cresce a cada rodada e precisa preservar a ordem exata e a identidade do processo. O KV cache é essa transcrição para a attention: as keys anteriores são as entradas do índice, os values anteriores são o depoimento guardado, e a nova query os lê."
+analogy: "Um estenógrafo de tribunal mantém uma transcrição indexada de tudo o que já foi dito. Quando chega uma pergunta nova, o juiz consulta a transcrição em vez de pedir que cada testemunha repita a audiência desde o começo. A transcrição cresce a cada rodada e precisa manter a ordem exata e continuar ligada ao próprio processo. O KV cache é essa transcrição para a attention: as keys anteriores são as entradas do índice, os values anteriores são o depoimento guardado, e a nova query os lê."
 teachBack:
   prompt: "Derive o tamanho do KV cache de uma sequência de comprimento total do Qwen3.8-27B, dizendo explicitamente quais camadas fazem cache e quais não fazem, e contraste o resultado com o estado do DeltaNet."
-  modelAnswer: "Cada camada com cache armazena, por token passado, keys e values para as 4 KV heads com head dimension 256 em bf16: 4 × 256 × 2 (K e V) × 2 bytes = 4 KiB por token por camada. Só as 16 camadas de full attention fazem cache — as outras 48 camadas de Gated DeltaNet mantêm estados recorrentes de tamanho fixo — então, por token, o cache é 16 × 4 KiB = 64 KiB, e no contexto nativo de 262.144 tokens uma sequência guarda 64 KiB × 262.144 = 16 GiB. Na implementação de referência do Transformers, cada camada de DeltaNet mantém um estado matricial em float32 de 3 MiB; as 48 somam 144 MiB por sequência, constantes no comprimento e sem contar o pequeno estado de convolução."
+  modelAnswer: "Cada camada com cache armazena, por token passado, keys e values para as 4 KV heads com head dimension 256 em bf16: 4 × 256 × 2 (K e V) × 2 bytes = 4 KiB por token por camada. Só as 16 camadas de full attention fazem cache. As outras 48 camadas de Gated DeltaNet mantêm estados recorrentes de tamanho fixo. Então, por token, o cache é 16 × 4 KiB = 64 KiB. No contexto nativo de 262.144 tokens, uma sequência guarda 64 KiB × 262.144 = 16 GiB. Na implementação de referência do Transformers, cada camada de DeltaNet mantém um estado matricial em float32 de 3 MiB. As 48 somam 144 MiB por sequência, constantes no comprimento e sem contar o pequeno estado de convolução."
 quiz:
   - question: "No Qwen3.8-27B, quais camadas anexam keys e values ao cache durante o decode?"
     options: ["Todas as 64 camadas", "Apenas as camadas de DeltaNet", "Apenas as 16 camadas de full attention; as 48 camadas de Gated DeltaNet mantêm estado de tamanho fixo no lugar", "Apenas a torre de visão"]
     correctIndex: 2
-    explanation: "O layout híbrido da lição 4.16 coloca uma camada de full attention a cada quatro; só essas camadas têm K/V por token para guardar."
+    explanation: "O layout híbrido da aula 4.16 coloca uma camada de full attention a cada quatro; só essas camadas têm K/V por token para guardar."
   - question: "Aproximadamente quanta memória de KV cache ocupa uma sequência em bf16 no contexto nativo completo de 262.144 tokens do Qwen3.8-27B?"
     options: ["64 GiB", "144 MiB", "54 GB", "16 GiB"]
     correctIndex: 3
@@ -38,30 +38,32 @@ citations:
     authors: "Woosuk Kwon et al."
     year: 2023
     url: "https://arxiv.org/abs/2309.06180"
-updated: "2026-09-25"
+updated: "2026-10-14"
 ---
 
-Suponha que você sirva o Qwen3.8-27B e um usuário abra uma conversa que cresce em direção ao contexto nativo de 262.144 tokens do modelo. Os pesos são um custo fixo. O que não é fixo é a memória que essa conversa mantém refém enquanto está ativa — e, para dimensioná-la, você precisa saber exatamente o que é o KV cache e, para este modelo, quais camadas de fato mantêm um.
+Suponha que você sirva o Qwen3.8-27B e um usuário abra uma conversa que cresce em direção ao contexto nativo de 262.144 tokens do modelo. Os pesos são um custo fixo. O que não é fixo é a memória que essa conversa mantém refém enquanto está ativa. Para dimensionar essa memória, você precisa saber exatamente o que é o KV cache e, neste modelo, quais camadas de fato mantêm um.
 
-Um modelo decoder-only gera um token, anexa e repete. Uma implementação ingênua rodaria a rede inteira de novo sobre a sequência crescente a cada passo, refazendo trabalho idêntico sobre o prefixo. O **KV cache** armazena os estados de attention de que os tokens futuros precisam, transformando computação repetida em memória reutilizável. Numa camada de attention, cada token produz projeções de query, key e value. Durante o decode causal, apenas a posição mais nova precisa de uma saída nova: sua query dá attention às keys em cache e mistura os values em cache, enquanto as queries passadas nunca mais são necessárias. Então o cache retém **keys e values** passados, e o token novo computa apenas seus próprios $q_t$, $k_t$ e $v_t$. Para um head,
+## Por que o decode pode reaproveitar trabalho passado
+
+Um modelo decoder-only (que gera texto da esquerda para a direita, um token por vez) produz um token, anexa-o à sequência e repete; a [aula 7.1](/pt-br/lessons/7-inference-and-efficiency/7.1-what-actually-happens-when-you-hit-send/) acompanhou esse loop. Uma implementação ingênua rodaria a rede inteira de novo sobre toda a sequência crescente a cada passo, refazendo trabalho idêntico sobre o prefixo que já processou.
+
+O **KV cache** evita isso. Ele armazena os dados de attention de que os tokens futuros vão precisar, transformando computação repetida em memória reutilizável. Lembre da [aula 4.2](/pt-br/lessons/4-transformer/4.2-self-attention/): numa camada de attention, cada token produz três vetores, uma **query** (o que esse token procura), uma **key** (o que ele oferece para ser comparado) e um **value** (o conteúdo que ele repassa quando é escolhido).
+
+Durante o decode causal, apenas a posição mais nova precisa de uma saída nova. Sua query é comparada com as keys de todos os tokens anteriores, e os pesos resultantes misturam os values deles. As queries passadas nunca mais são necessárias, porque as saídas passadas já foram calculadas. Então o cache guarda **keys e values** passados, e o token novo calcula apenas seus próprios $q_t$, $k_t$ e $v_t$. Para um head,
 
 $$
 o_t=\operatorname{softmax}\left(\frac{q_tK_{\leq t}^{\top}}{\sqrt{d_k}}\right)V_{\leq t},
 $$
 
-onde as matrizes em cache crescem à medida que $k_t$ e $v_t$ são anexados. Isso é uma consequência da attention causal exata, não uma aproximação dela. Ignorando overhead do allocator, o modelo de memória é
+onde $K_{\leq t}$ e $V_{\leq t}$ são as keys e os values em cache de todas as posições até $t$, e ganham uma linha a cada passo à medida que $k_t$ e $v_t$ são anexados. Em palavras: compare a query nova com cada key guardada, transforme as pontuações em pesos com softmax (a função que transforma uma lista de pontuações em pesos positivos que somam 1) e tire essa mistura ponderada dos values guardados. Isso é uma consequência da attention causal exata, não uma aproximação dela. A saída coincide com a de rodar a sequência inteira de novo, salvo arredondamento de ponto flutuante.
 
-<Figure id="kv-cache-derivation" />
+## Dimensionando o cache do Qwen3.8-27B
 
-$$
-\text{bytes}\approx 2\,L\,T\,H_{kv}\,D\,B,
-$$
+Agora substitua os números do Qwen3.8-27B, com cuidado, porque é fácil errar aqui. Para cada token passado, cada camada que faz cache guarda um vetor de key e um vetor de value por KV head. A config diz 64 camadas, 4 KV heads, head dimension 256 (o comprimento de cada vetor de key e de value) e bf16, um formato numérico de 16 bits que ocupa 2 bytes por elemento.
 
-com o fator dois para keys mais values, $L$ camadas com cache, $T$ posições, $H_{kv}$ KV heads, $D$ head dimension e $B$ bytes por elemento.
+Por token por camada: $4 \times 256 \times 2 \times 2\ \text{B} = 4096\ \text{B} = 4\ \text{KiB}$ (um KiB, ou kibibyte, são 1.024 bytes). Multiplique por 64 camadas e você obtém 256 KiB por token, e em contexto completo $256\ \text{KiB} \times 262{,}144 = 64\ \text{GiB}$ para uma única sequência. Ao lado de 54 GB de pesos em bf16, isso encheria até a borda um acelerador de 192 GB com dois usuários e o estouraria com três.
 
-Agora substitua os números do Qwen3.8-27B — com cuidado, porque existe um desvio clássico aqui. A config diz 64 camadas, 4 KV heads, head dimension 256, bf16. Por token por camada: $4 \times 256 \times 2 \times 2\ \text{B} = 4096\ \text{B} = 4\ \text{KiB}$. Multiplique por 64 camadas e você obtém 256 KiB por token, e em contexto completo $256\ \text{KiB} \times 262{,}144 = 64\ \text{GiB}$ para uma única sequência — o que, ao lado de 54 GB de pesos em bf16, encheria até a borda um acelerador de 192 GB com dois usuários e o estouraria com três. Essa estimativa está errada, e errada de um jeito instrutivo: ela supõe que toda camada é uma camada de attention.
-
-A lição 4.16 mostrou que apenas 16 das 64 camadas são full attention; as outras 48 são camadas de Gated DeltaNet, que mantêm um estado recorrente de tamanho fixo e não fazem cache de nada por token. A derivação correta:
+Essa estimativa está errada, e errada de um jeito instrutivo: ela supõe que toda camada é uma camada de attention. A [aula 4.16](/pt-br/lessons/4-transformer/4.16-hybrid-layouts/) mostrou que apenas 16 das 64 camadas são full attention; as outras 48 são camadas de Gated DeltaNet, que mantêm um estado recorrente de tamanho fixo e não fazem cache de nada por token. A derivação correta:
 
 $$
 4\ \text{KV heads} \times 256 \times 2\,(K{+}V) \times 2\ \text{B} = 4\ \text{KiB por token por camada},
@@ -75,20 +77,40 @@ $$
 64\ \text{KiB} \times 262{,}144\ \text{tokens} = 16\ \text{GiB por sequência no contexto nativo completo}.
 $$
 
-A suposição errada quadruplicou a resposta. Dezesseis gibibytes ainda é enorme — cerca de um quinto de uma placa de 80 GB para uma conversa — mas é o número real, e todo plano de capacidade das trilhas 8 e 9 se apoia nele.
+<Figure id="kv-cache-derivation" />
 
-As 48 camadas de DeltaNet são o contraponto. A implementação de referência do Transformers mantém o estado matricial recorrente em float32: 48 value heads × 128 × 128 × 4 bytes = 3 MiB por camada, ou 144 MiB nas 48, sem contar um estado de convolução curta muito menor. Esse valor é **constante no comprimento da sequência**. O token um e o token 262.144 custam a mesma memória matricial. Outros runtimes podem escolher outro dtype para o estado, então confira a alocação realizada; a barganha arquitetural é o formato fixo, não um número universal de bytes.
+A suposição errada quadruplicou a resposta. Dezesseis gibibytes ainda é enorme, cerca de um quinto de uma placa de 80 GB para uma conversa. Mas é o número real, e todo plano de capacidade das trilhas 8 e 9 se apoia nele.
+
+A mesma conta vale para qualquer modelo cujo cache guarda keys e values comuns por head, com as mesmas dimensões e a mesma precisão em toda camada com cache (o MLA, da [aula 7.6](/pt-br/lessons/7-inference-and-efficiency/7.6-mqa-gqa-and-mla/), guarda outra coisa). Ignorando o overhead do allocator (a contabilidade e o desperdício do próprio gerenciador de memória), o modelo de memória é
+
+$$
+\text{bytes}\approx 2\,L\,T\,H_{kv}\,D\,B,
+$$
+
+com o fator dois para keys mais values, $L$ camadas com cache, $T$ posições, $H_{kv}$ KV heads, $D$ head dimension e $B$ bytes por elemento. A armadilha acima foi colocar todas as camadas do modelo em $L$, em vez de só as camadas que fazem cache.
+
+## As camadas de DeltaNet: um estado que nunca cresce
+
+As 48 camadas de DeltaNet são o contraponto. A implementação de referência do Transformers mantém o estado matricial recorrente de cada camada em float32 (4 bytes por número): 48 value heads × 128 × 128 × 4 bytes = 3 MiB por camada, ou 144 MiB nas 48, sem contar um estado de convolução curta muito menor. Esse valor é **constante no comprimento da sequência**. O token um e o token 262.144 custam a mesma memória matricial.
+
+Outros runtimes podem guardar esse estado em outro dtype (formato numérico), então confira a memória que eles de fato alocam. A barganha arquitetural é o formato fixo, não um número universal de bytes.
 
 :::note
-O Signal Observatory na página de exploração mostra um bloco clássico de attention. No Qwen3.8-27B esse bloco exato aparece uma vez a cada quatro camadas; as outras três substituem attention por Gated DeltaNet (lição 4.15).
+O Signal Observatory na página de exploração mostra um bloco clássico de attention. No Qwen3.8-27B esse bloco exato aparece uma vez a cada quatro camadas; as outras três substituem attention por Gated DeltaNet ([aula 4.15](/pt-br/lessons/4-transformer/4.15-gated-deltanet/)).
 :::
 
-Mesmo dentro das camadas com cache, as 4 KV heads já são uma economia: o modelo pede que 24 query heads compartilhem 4 K/V heads (grouped-query attention), encolhendo $H_{kv}$ e, portanto, o tamanho do cache e a banda do decode. A lição 7.6 compara essa escolha com MQA e MLA numericamente. Formatos de cache quantizados encolhem $B$; sliding windows encolhem o $T$ efetivo ao preço do esquecimento.
+## Outras formas de encolher o cache
 
-Dimensionar é só metade da engenharia. O decode lê um histórico longo para produzir pouca computação nova, então mover dados de K/V pode dominar; os kernels precisam de layouts amigáveis enquanto as sequências crescem de forma imprevisível. Reservar antecipadamente os 16 GiB máximos de cada requisição seria ruinoso; a alocação paginada distribui blocos de tamanho fixo sob demanda no lugar disso (lição 7.8). O prefix caching compartilha blocos entre requisições que começam com exatamente a mesma sequência de tokens, como um system prompt comum — seguro somente sob o mesmo modelo, adapter e tratamento posicional, e nunca através de fronteiras de autorização.
+Mesmo dentro das camadas com cache, as 4 KV heads já são uma economia. O modelo pede que 24 query heads compartilhem 4 K/V heads, um desenho chamado grouped-query attention, que encolhe $H_{kv}$ e, portanto, o tamanho do cache e a banda do decode (quantos bytes por segundo precisam circular entre a memória e o processador). A aula 7.6 compara essa escolha com MQA e MLA numericamente. Duas outras alavancas agem direto na fórmula: formatos de cache quantizados, que guardam cada número em menos bytes, encolhem $B$; sliding windows (janelas deslizantes), que mantêm só as posições mais recentes, encolhem o $T$ efetivo ao preço do esquecimento.
+
+## Convivendo com um cache que cresce
+
+Dimensionar é só metade da engenharia. O decode lê um histórico longo para produzir pouca computação nova, então mover dados de K/V pode levar mais tempo que a própria aritmética. Os kernels, as rotinas de GPU que fazem o trabalho, precisam de layouts de memória que consigam ler com eficiência, enquanto as sequências crescem de forma imprevisível.
+
+Reservar antecipadamente os 16 GiB máximos de cada requisição seria ruinoso. A alocação paginada, em vez disso, distribui blocos de tamanho fixo sob demanda ([aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/)). O prefix caching compartilha blocos entre requisições que começam com exatamente a mesma sequência de tokens, como um system prompt comum. Esse compartilhamento é seguro somente sob o mesmo modelo, o mesmo adapter (um pequeno complemento ajustado por fine-tuning sobre os pesos) e o mesmo tratamento posicional, e nunca através de fronteiras de autorização.
 
 :::warning
-O estado de KV é derivado do contexto do usuário e pode ser sensível. Limpe-o quando a posse termina, isole tenants, limite retenção e nunca trate "é só um tensor" como isenção de privacidade — 16 GiB de keys e values em cache são uma representação rica do que o usuário disse.
+O estado de KV é derivado do contexto do usuário e pode ser sensível. Limpe-o quando a posse termina, isole tenants, limite a retenção e nunca trate "é só um tensor" como isenção de privacidade: 16 GiB de keys e values em cache são uma representação rica do que o usuário disse.
 :::
 
-Uma última correção à intuição: o cache não torna o decode de tempo constante em contexto. A reprojeção do prefixo desaparece, mas cada nova query nas 16 camadas de attention ainda lê e dá attention a tudo o que foi retido. O modelo durável é uma transcrição — computação já realizada vira memória, poupando aritmética ao preço de responsabilidades crescentes de banda, capacidade, ciclo de vida e privacidade — mantida, neste modelo, por apenas um quarto das camadas.
+Uma última correção à intuição: o cache não torna o decode de tempo constante em relação ao contexto. A reprojeção do prefixo desaparece, mas cada nova query nas 16 camadas de attention ainda lê e dá attention a tudo o que foi retido, então cada passo fica mais lento à medida que a conversa cresce. Pense no cache como uma transcrição. Computação já realizada vira memória, o que poupa aritmética ao preço de responsabilidades crescentes de banda, capacidade, ciclo de vida e privacidade. Neste modelo, só um quarto das camadas mantém essa transcrição.

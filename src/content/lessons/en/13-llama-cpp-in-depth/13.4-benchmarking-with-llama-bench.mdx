@@ -8,15 +8,15 @@ tier: "frontier"
 locale: "en"
 prerequisites: ["13.3-llama-server-in-production", "7.3-prefill-vs-decode-two-different-machines", "9.1-memory-bandwidth-vs-flops"]
 unlocks: ["13.5-speculative-decoding-and-rpc-in-llama-cpp"]
-analogy: "Two cars are compared by lap time, but one lap was driven on a dry track, one in rain, one with a full tank and one with a driver in the back. The numbers are real and the comparison is empty. A fair race fixes the track, the load, the tyres and the number of laps, and reports the spread. llama-bench is the stopwatch. The fixing is your job."
+analogy: "Two cars are compared by lap time. But one lap was driven on a dry track, one in rain, one with a full tank and one with a passenger in the back. The numbers are real and the comparison is empty. A fair race fixes the track, the load, the tyres and the number of laps, and reports the spread. llama-bench is the stopwatch. Fixing the conditions is your job."
 teachBack:
   prompt: "Explain what pp512 and tg128 measure, why they respond differently to a machine's compute and bandwidth, and list the conditions you would hold fixed to compare a Mac Studio with a DGX Spark."
-  modelAnswer: "pp512 times the processing of a 512-token prompt in batches. It is prefill: many tokens share each weight read, so it is limited mostly by compute. tg128 times the generation of 128 tokens one at a time. That is decode: each token reads the weights again, so memory bandwidth limits it. A machine with more compute but less bandwidth can win the first and lose the second, and the maintainers' own gpt-oss-120b files show that: the DGX Spark prefills about 1.5 times faster than the Mac Studio M2 Ultra and decodes about 1.5 times slower. To compare two machines, hold fixed the exact GGUF bytes, the model, the build or at least the commit family, flags such as ngl, ub and fa set explicitly, the context depth, and the number of repetitions and warm-up. Report the standard deviation, pp and tg separately, and the build commit. Never mix a number measured on one model with another model, and treat user-submitted discussion tables as hypotheses."
+  modelAnswer: "pp512 times the processing of a 512-token prompt in batches. That is prefill: many tokens share each read of the weights, so compute is mostly the limit. tg128 times the generation of 128 tokens, one at a time. That is decode: each token reads the weights again, so memory bandwidth is the limit. A machine with more compute but less bandwidth can win the first test and lose the second. The maintainers' own gpt-oss-120b files show exactly that: the DGX Spark prefills about 1.5 times faster than the Mac Studio M2 Ultra and decodes about 1.5 times slower. To compare two machines, hold fixed the exact GGUF bytes, the model, the build or at least the commit family, flags such as ngl, ub and fa set explicitly, the context depth, and the number of repetitions and warm-up. Report the standard deviation, pp and tg separately, and the build commit. Never apply a number measured on one model to another model, and treat user-submitted discussion tables as hypotheses."
 quiz:
   - question: "llama-bench -p 512 -n 128 prints pp512 and tg128. Which description is right?"
     options: ["Both measure the same work; the second is just a longer run", "pp512 is prompt processing in batches, limited mostly by compute; tg128 is one-token-at-a-time generation, limited mostly by memory bandwidth", "pp512 measures disk loading and tg128 measures the network", "pp512 includes tokenization and tg128 includes sampling, so they cannot be compared"]
     correctIndex: 1
-    explanation: "The README says the measurements do not include tokenization or sampling. The first test shares each weight read across many tokens, and the second repeats the read per token. That is the split of lessons 7.3 and 9.1."
+    explanation: "The README says the measurements do not include tokenization or sampling. The first test shares each weight read across many tokens, and the second repeats the read for every token. That is the split of lessons 7.3 and 9.1."
   - question: "On this Mac, llama-bench -ngl 0,99 printed a markdown table with no ngl column. Why, and what is the fix?"
     options: ["The code hides n_gpu_layers when the backend label contains CPU or BLAS, and on this Mac the label contains BLAS (MTL,BLAS at b11380, BLAS,MTL at 11146); use -o json or -o csv", "The flag -ngl does nothing in llama-bench", "The Metal backend ignores layer counts", "The table drops any column whose values are equal"]
     correctIndex: 0
@@ -54,46 +54,76 @@ citations:
     authors: "Apple Newsroom"
     year: 2026
     url: "https://www.apple.com/newsroom/2026/08/apple-introduces-new-mac-studio-with-m5-max-and-m5-ultra/"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-A benchmark is a measurement with a protocol. `llama-bench` supplies a good stopwatch and a bad temptation, which is to paste one number into a table. This lesson reads the tool at tag `b11380`, then uses it to ask when a Mac Ultra and a DGX Spark can be compared fairly. Every command was run on an Apple M5 Pro with Qwen3-1.7B Q8_0 as a stand-in. No throughput from that run is published. It only showed that the flags work.
+A benchmark is a measurement with a protocol: fixed conditions, repeated runs and a reported spread. `llama-bench` supplies a good stopwatch and a bad temptation, which is to paste one number into a table. This lesson reads the tool at tag `b11380`, then uses it to ask when a Mac Ultra and a DGX Spark can be compared fairly.
 
-## Two tests, two machines
+Every command was run on an Apple M5 Pro with Qwen3-1.7B Q8_0 as a stand-in. No throughput from that run is published. It only showed that the flags work.
+
+## What pp and tg measure
 
 ```
 llama-bench -m MODEL.gguf -p 512 -n 128 -r 3 -fa 0,1
 llama-bench -m MODEL.gguf -p 512 -n 0 -d 0,2048 -pg 256,64 -r 2 -ngl 99 -o json
 ```
 
-`-p 512` is **pp512**: process a 512-token prompt in batches. It is prefill, so each weight read serves many tokens and compute dominates. `-n 128` is **tg128**: generate 128 tokens one by one. It is decode, so each token reads the weights again and memory bandwidth dominates (lessons 7.3 and 9.1). `-pg 256,64` runs a prompt then a generation, and `-d 2048` fills the KV cache with 2,048 tokens first, so you measure decode at depth rather than on an empty cache. The README adds that the measurements "do not include the times for tokenization and for sampling".
+The two default tests time the two phases of generation from [lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/). Both report tokens per second (t/s).
 
-Every parameter takes comma-separated lists and runs the full grid. `-fa` defaults to `auto` at b11380, which the JSON reports as `-1`, so set `-fa 0` or `-fa 1` when you compare machines.
+- `-p 512` is **pp512**: process a 512-token prompt in batches. This is prefill. Each read of the weights serves many tokens, so compute dominates.
+- `-n 128` is **tg128**: generate 128 tokens one by one. This is decode. Each token reads the weights again, so memory bandwidth dominates ([lesson 9.1](/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/)).
 
-## Reading the spread
+Two more flags shape the test. `-pg 256,64` runs a prompt then a generation. `-d 2048` fills the KV cache with 2,048 tokens first, so you measure decode at depth rather than on an empty cache. The README adds that the measurements "do not include the times for tokenization and for sampling".
 
-`-r` repeats each test (default 5) and the table prints the mean and standard deviation. `-o json` also keeps every sample in `samples_ts`, plus `build_commit` and `build_number`, so a result carries its own provenance. The JSON from this run said commit `eec18f5` and number 1, because the binary was built from a shallow clone of the tag. Use `--delay` between tests and `--prio` if the machine is shared. A laptop ten minutes into a session is a different machine, as lesson 7.13 warned.
+Every parameter takes comma-separated lists and runs the full grid of combinations. `-fa` (flash attention) defaults to `auto` at b11380, which the JSON reports as `-1`. Set `-fa 0` or `-fa 1` when you compare machines, so both use the same flash-attention setting.
 
-On a Mac there is a trap. In the Homebrew build 11146, `-ngl 0,99` printed a table with **no `ngl` column**, so the two pairs of rows look identical. The code in `llama-bench.cpp` adds `n_gpu_layers` only when the backend label does not contain `CPU` or `BLAS`, and on this Mac the label contains `BLAS` (`MTL,BLAS` at b11380, `BLAS,MTL` at 11146). Use `-o json` or `-o csv`, which always carry the field.
+## Reading the spread, and a Mac trap
 
-## A closer pair, and a looser one
+`-r` repeats each test (default 5), and the table prints the mean and the standard deviation, a measure of how much the repeats differ. `-o json` also keeps every sample in `samples_ts`, plus `build_commit` and `build_number`, so a result carries its own provenance. The JSON from this run said commit `eec18f5` and number 1, because the binary was built from a shallow clone of the tag (a clone without the history that numbers the build).
 
-The llama.cpp repository keeps two files of its maintainers' runs. Both use `llama-bench` on **gpt-oss-120b MXFP4** (59.02 GiB), with `n_ubatch` 2048 and flash attention on. One is a Mac Studio M2 Ultra at build 7948. The other is a DGX Spark (GB10) at build 7941 with `ngl` 99. These are gpt-oss numbers, not Qwen numbers. The Mac file does not name the chip, so M2 Ultra comes from its directory. The Spark ran with mmap off and direct I/O on, the Mac with defaults, which should not change steady-state t/s.
+Use `--delay` between tests, and `--prio` if the machine is shared. A laptop ten minutes into a session is a different machine, as [lesson 7.13](/lessons/7-inference-and-efficiency/7.13-choosing-and-judging-a-community-quant/) warned.
+
+On a Mac there is a trap. In Homebrew's build 11146, `-ngl 0,99` printed a table with **no `ngl` column**, so the two pairs of rows look identical. The code in `llama-bench.cpp` adds `n_gpu_layers` only when the backend label does not contain `CPU` or `BLAS`. On this Mac the label contains `BLAS` (`MTL,BLAS` at b11380, `BLAS,MTL` at 11146), because Apple's Accelerate library is registered as a BLAS backend, a library of linear-algebra routines. Use `-o json` or `-o csv`, which always carry the field.
+
+## A fair Mac versus Spark pair
+
+The llama.cpp repository keeps two files of its maintainers' runs. Both use `llama-bench` on **gpt-oss-120b MXFP4** (59.02 GiB), with `n_ubatch` 2048 and flash attention on. One is a Mac Studio M2 Ultra at build 7948. The other is a DGX Spark (GB10) at build 7941 with `ngl` 99. These are gpt-oss numbers, not Qwen numbers.
+
+Two details limit the match. The Mac file does not name the chip, so "M2 Ultra" comes from its directory name. The Spark ran with mmap off and direct I/O on, and the Mac with defaults; that should not change the steady-state t/s, the rate once loading is over.
 
 | gpt-oss-120b MXFP4 | pp2048 (t/s) | tg32 (t/s) |
 |---|---|---|
 | Mac Studio M2 Ultra | 1648.69 ± 1.80 | 85.60 ± 0.52 |
 | DGX Spark | 2443.91 ± 7.47 | 58.72 ± 0.20 |
 
-The Spark prefills about 1.48 times faster and decodes about 1.46 times slower. That is the prefill and decode split from lesson 7.3, measured by someone else. The bandwidths are 800 GB/s for the M2 Ultra (Apple, 2023) and 273 GB/s for the Spark (lesson 12.1), a ratio of 2.9. The decode gap is only 1.46, so the bandwidth quotient overstates it. The model is the same on both machines, so both read the same bytes per token. The gap shrinks when the two chips reach different fractions of their peak, or when costs that do not scale with bandwidth take a larger share of each token's time. The 7B example below shows the first effect. A bandwidth quotient is a planning heuristic (lesson 9.6), not a prediction.
+The Spark prefills about 1.48 times faster and decodes about 1.46 times slower. That is the prefill and decode split from lesson 7.3, measured by someone else.
 
-This is an M2 Ultra, not an M5 Ultra. Lesson 11.1 owns the M5 Ultra figures. For an M5 Ultra, the only llama.cpp numbers found are in discussion 4167, and they are weaker evidence. As read on 2026-10-03, a user comment (commit `c1d0e7a00`, macOS 27.0.1, 80 GPU cores, 256 GB) gives `llama 7B Q4_0`, 3.53 GiB: pp512 4944.66, tg128 179.10. Discussion 15013 has a Spark row from a maintainer (commit `5acd455`) for `llama 7B Q4_0` (the thread intro says Llama 2 7B), 3.56 GiB: pp512 3062.31 without flash attention and 3661.37 with it, tg128 57.21 and 56.74.
+Can bandwidth alone predict the decode gap? The bandwidths are 800 GB/s for the M2 Ultra (Apple, 2023) and 273 GB/s for the Spark ([lesson 12.1](/lessons/12-dgx-and-cuda/12.1-dgx-spark-grace-blackwell-on-a-desk/)), a ratio of 2.9. The measured decode gap is only 1.46, so the bandwidth quotient overstates it. The model is the same on both machines, so both read the same bytes per token. Possible explanations for the smaller gap include:
 
-Those are different submitters, commits and file sizes. The thread intros name the model LLaMA 7B and Llama 2 7B, while the rows carry the same label, and the flash-attention mode of the Mac row is not stated. Treat the pair as a hypothesis. It still teaches one thing. Multiply decode rate by file size to get an *implied* bandwidth: 179.10 x 3.53 GiB is about 679 GB/s, 57 % of Apple's 1.2 TB/s. And 57.21 x 3.56 GiB is about 219 GB/s, 80 % of 273 GB/s. A small model does not saturate the bigger chip, so the 3.1 times decode ratio is not a bandwidth ratio. Both figures are derived here from the threads' own numbers.
+- the two chips reach different fractions of their peak bandwidth;
+- costs that do not scale with bandwidth take a larger share of each token's time.
 
-## The classic wrong turn
+The 7B example below illustrates the first possibility. A bandwidth quotient is a planning heuristic ([lesson 9.6](/lessons/9-hardware-and-infrastructure/9.6-apple-silicon-unified-memory/)), not a prediction.
 
-Quoting one "tokens per second" figure, or quoting a 7B number as if it described the 27B model. A rate belongs to one model, one file and one machine. Report pp and tg separately, with the model, file size, build, flags and spread.
+## A looser pair: M5 Ultra against Spark on 7B
+
+The pair above is an M2 Ultra, not an M5 Ultra. [Lesson 11.1](/lessons/11-mac-studio-ultra-and-mlx/11.1-mac-studio-ultra-as-an-inference-machine/) owns the M5 Ultra figures. For an M5 Ultra, the only llama.cpp numbers found are in discussion 4167, and they are weaker evidence. As read on 2026-10-03:
+
+- **Mac.** A user comment (commit `c1d0e7a00`, macOS 27.0.1, 80 GPU cores, 256 GB) gives `llama 7B Q4_0`, 3.53 GiB: pp512 4944.66, tg128 179.10.
+- **Spark.** Discussion 15013 has a row from a maintainer (commit `5acd455`) for `llama 7B Q4_0` (the thread intro says Llama 2 7B), 3.56 GiB: pp512 3062.31 without flash attention and 3661.37 with it, tg128 57.21 and 56.74.
+
+Those rows differ in submitter, commit and file size. The thread intros name the model LLaMA 7B and Llama 2 7B while the rows carry the same label, and the flash-attention mode of the Mac row is not stated. Treat the pair as a hypothesis.
+
+It still teaches one thing. For a dense model like this 7B, each decoded token reads roughly the whole file, so decode rate times file size gives an *implied* bandwidth. With made-up numbers: a 2 GB file decoded at 50 t/s implies about 100 GB/s. Now the real rows:
+
+- Mac: 179.10 x 3.53 GiB is about 679 GB/s, 57 % of Apple's 1.2 TB/s.
+- Spark: 57.21 x 3.56 GiB is about 219 GB/s, 80 % of 273 GB/s.
+
+A small model does not saturate the bigger chip, so the 3.1 times decode ratio is not a bandwidth ratio. Both figures are derived here from the threads' own numbers.
+
+## Why one tokens-per-second figure misleads
+
+The usual mistake is quoting one "tokens per second" figure, or quoting a 7B number as if it described the 27B model. A rate belongs to one model, one file and one machine. Report pp and tg separately, with the model, file size, build, flags and spread.
 
 :::warning
 `llama-bench` is not `llama-server`. It has no HTTP layer, no tokenizer time, no sampling and no concurrent users, so it cannot predict latency under load. Use it to compare configurations, then measure the server with its own `/metrics`.
@@ -103,4 +133,4 @@ Quoting one "tokens per second" figure, or quoting a 7B number as if it describe
 Discussion tables are user-submitted and cannot be pinned to a tag. They were read once, on 2026-10-03. Rows can change, and nobody audits them. The repository's `benches/` files are pinned at b11380, but they hold only the maintainers' machines.
 :::
 
-The durable idea: a fair comparison fixes the file, the build, the flags and the depth, and reports pp, tg and spread separately. Next, lesson 13.5 asks what speculative decoding and a second machine do to those two numbers.
+So a fair comparison fixes the file, the build, the flags and the depth, and reports pp, tg and spread separately. Next, [lesson 13.5](/lessons/13-llama-cpp-in-depth/13.5-speculative-decoding-and-rpc-in-llama-cpp/) asks what speculative decoding and a second machine do to those two numbers.

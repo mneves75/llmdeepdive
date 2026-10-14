@@ -34,40 +34,70 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
 Here is a concrete situation before any vocabulary. You have run Qwen3.8-27B on a prompt and the final layer has handed you 248,320 raw numbers, one per output-tensor row. They are not probabilities: some are negative, some are large, and they certainly do not sum to anything convenient. Somebody now has to turn that pile into an actual distribution, and then somebody has to choose a token from it. Almost all of the probability you need for this course is the machinery for those two steps.
 
-Start with what a distribution is. A probability is a number between zero and one expressing uncertainty *under a model*. For mutually exclusive possibilities the probabilities add to one. After any runtime masking, softmax produces a **categorical distribution**: non-negative values summing to one over the candidates the decoder may select. Qwen's raw output vector has length 248,320, while its tokenizer artifacts map 248,077 ids. Notice what this makes explicit. The distribution *is* the model's answer. Picking a token from it is a separate decision made by code you configure, not by the network.
+## What is a probability distribution here?
 
-Probability is always conditioned on something. We write $P(A)$ for the probability of $A$, and $P(A \mid B)$ for the probability of $A$ given that $B$ holds. Language modelling is conditional through and through: $P(x_t \mid x_1,\ldots,x_{t-1})$. The token *Mercury* is a fine continuation of *the closest planet to the Sun is* and a poor one after *the liquid metal is*. Conditioning is the whole game, and the history in lesson 0.2 is the history of how much of $x_1,\ldots,x_{t-1}$ a model could afford to look at.
+A probability is a number between zero and one expressing uncertainty *under a model*. When the possibilities cannot happen together and between them cover every case, such as "the next token is *Paris*", "the next token is *Rome*" and so on through every token the model could pick, their probabilities add to one. If *Paris* gets 0.4 and *Rome* 0.3, the remaining 0.3 is shared by all the other tokens.
 
-The chain rule assembles a sequence probability from those conditionals:
+The runtime may first remove some rows it will never select, a step called **masking**. After that, softmax produces a **categorical distribution**: one non-negative value per candidate the decoder may select, summing to one. Qwen's raw output vector has length 248,320, while its tokenizer artifacts map 248,077 ids.
+
+Notice what this makes explicit. The distribution *is* the model's answer. Picking a token from it is a separate decision made by code you configure, not by the network.
+
+## Everything depends on the context
+
+Probability is always conditioned on something. We write $P(A)$ for the probability of $A$, and $P(A \mid B)$ for the probability of $A$ given that $B$ holds. Language modelling is conditional through and through: $P(x_t \mid x_1,\ldots,x_{t-1})$ is the probability of the token at position $t$ given all the tokens before it. The token *Mercury* is a fine continuation of *the closest planet to the Sun is* and a poor one after *the liquid metal is*. Conditioning is the whole game, and the history in [lesson 0.2](/lessons/0-orientation-and-foundations/0.2-history-ngram-to-gpt/) is the history of how much of $x_1,\ldots,x_{t-1}$ a model could afford to look at.
+
+Start with two tokens. Suppose a model gives *the* a probability of 0.5 as the first token, and *cat* a probability of 0.2 once *the* is there. Then the pair *the cat* has probability 0.5 × 0.2 = 0.1. The **chain rule** is that same multiplication carried along a whole sequence:
 
 $$
 P(x_1,\ldots,x_T)=\prod_{t=1}^{T}P(x_t\mid x_1,\ldots,x_{t-1}).
 $$
 
-This identity is why repeated next-token prediction defines a probability for a whole passage. It also explains an immediate practical problem: multiply a few hundred numbers below one and the result underflows to zero in floating point. So implementations work in logarithms. Because $\log(ab) = \log a + \log b$, the product becomes a sum. The log of a probability is at most zero, closer to zero for likelier events, tending to minus infinity for impossible ones. Training minimizes **negative log-likelihood**, which flips the sign so that better predictions give a smaller number, and averaging over tokens makes sequences of different length comparable.
+In words: the probability of the whole passage is the probability of the first token, times the probability of the second given the first, and so on to the end. This identity is why repeated next-token prediction defines a probability for a whole passage.
 
-Now the bridge from raw scores to that distribution. Given logits $z_i$, softmax computes
+## Why implementations work in logarithms
+
+The chain rule creates an immediate practical problem. Multiply a few hundred numbers below one and the result **underflows**: it becomes too small for floating point to store, and rounds to zero. So implementations work in logarithms. The natural logarithm of a number answers "what power of e (about 2.718) gives this number?", so the log of 0.1 is about −2.3. Because $\log(ab) = \log a + \log b$, the product becomes a sum.
+
+The log of a probability is at most zero. It is closer to zero for likelier events and tends to minus infinity for impossible ones. Training minimizes **negative log-likelihood**, which flips the sign so that better predictions give a smaller number. Averaging it over tokens makes sequences of different length comparable.
+
+## From raw scores to probabilities: softmax
+
+Now the bridge from raw scores to that distribution. Work a small case first, using three logits and ignoring the other 248,317 for legibility. Take $z = (4.0, 2.0, 1.0)$.
+
+1. Exponentiate each one: $54.60$, $7.39$, and $2.72$. Every value is now positive.
+2. Add them: the total is $64.71$.
+3. Divide each by the total: the probabilities are about $0.844$, $0.114$, and $0.042$. They now sum to one.
+
+That procedure is softmax. Written generally, given logits $z_i$, softmax computes
 
 $$
 p_i=\frac{e^{z_i}}{\sum_j e^{z_j}}.
 $$
 
-Exponentiating makes every value positive; dividing by the total makes them sum to one. One property is worth memorizing: adding the same constant to every logit leaves the probabilities unchanged, because the constant factors out of numerator and denominator. Softmax cares only about *differences* between logits.
+One property is worth memorizing: adding the same constant to every logit leaves the probabilities unchanged, because the constant factors out of numerator and denominator. Softmax cares only about *differences* between logits.
 
-Work the temperature example numerically, using three logits and ignoring the other 248,317 for legibility. Take $z = (4.0, 2.0, 1.0)$. Exponentiating gives $54.60$, $7.39$, and $2.72$, summing to $64.71$, so the probabilities are about $0.844$, $0.114$, and $0.042$. That is temperature 1.0, the preset Qwen3.8-27B uses in its thinking mode. Now apply temperature $T = 0.7$, the model's instruct-mode preset. Temperature divides the logits before softmax: $z/T = (5.714, 2.857, 1.429)$. Exponentiating gives roughly $303.1$, $17.4$, and $4.17$, summing to $324.7$, so the probabilities become about $0.934$, $0.054$, and $0.013$. The leader gained nine points of probability and the tail lost most of what it had. Nothing about the model changed; only the sharpness of the reading.
+## What temperature 1.0 and 0.7 actually do
 
-There is a classic wrong turn here that is worth walking into deliberately. Suppose you had instead divided the *probabilities* by 0.7 and renormalized. You would get $0.844/0.7 = 1.206$, $0.163$, and $0.060$, summing to $1.429$; dividing through by that total returns $0.844$, $0.114$, $0.042$. Exactly the original distribution. Scaling every probability by a constant and renormalizing is a no-op, because the constant cancels in the same way an added constant cancels for logits. Temperature only does anything because it acts *before* the exponential, where a multiplicative change to the exponent becomes a nonlinear change to the result. If your sampler applies temperature to the wrong side of the softmax, the parameter will appear to do nothing at all, and this is a real bug people ship.
+The distribution you just computed is temperature 1.0, the preset Qwen3.8-27B uses in its thinking mode. Now apply temperature $T = 0.7$, the model's instruct-mode preset. Temperature divides the logits before softmax: $z/T = (5.714, 2.857, 1.429)$. Exponentiating gives roughly $303.1$, $17.4$, and $4.17$, summing to $324.7$, so the probabilities become about $0.934$, $0.054$, and $0.013$. The leader gained nine points of probability and the tail lost most of what it had. Nothing about the model changed; only the sharpness of the reading.
+
+There is a classic wrong turn here, and it helps to walk into it deliberately. Suppose you had instead divided the *probabilities* by 0.7 and renormalized. You would get $0.844/0.7 = 1.206$, $0.163$, and $0.060$, summing to $1.429$; dividing through by that total returns $0.844$, $0.114$, $0.042$. Exactly the original distribution.
+
+Scaling every probability by a constant and renormalizing changes nothing, because the constant cancels, the same way an added constant cancels for logits. Temperature only does anything because it acts *before* the exponential, where a multiplicative change to the exponent becomes a nonlinear change to the result. If your sampler applies temperature on the wrong side of the softmax, the parameter will appear to do nothing at all, and this is a real bug people ship.
 
 :::insight
-The two official presets for Qwen3.8-27B are temperature 1.0 with top-p 0.95 and top-k 20 for thinking mode, and temperature 0.7 with top-p 0.80 and top-k 20 for instruct mode. The pattern is worth noticing early: the mode that is supposed to explore a long chain of reasoning runs *hotter*, not colder, because a reasoning chain that collapses onto its single most probable continuation stops exploring. Lesson 7.4 develops this properly.
+The two official presets for Qwen3.8-27B are temperature 1.0 with top-p 0.95 and top-k 20 for thinking mode, and temperature 0.7 with top-p 0.80 and top-k 20 for instruct mode. Top-k keeps only the k highest-probability tokens before sampling; top-p keeps the smallest set of top tokens whose probabilities add up to at least p. Notice the pattern early: the mode that is supposed to explore a long chain of reasoning runs *hotter*, not colder. A reasoning chain that collapses onto its single most probable continuation stops exploring. [Lesson 7.4](/lessons/7-inference-and-efficiency/7.4-sampling/) develops this properly.
 :::
 
-Two rules prevent most probabilistic reasoning errors. First, $P(A \mid B)$ is not $P(B \mid A)$; a symptom can be common among patients with a rare disease while the disease stays rare among people with the symptom. Second, expectation is not an outcome: the expected value $E[X] = \sum_x p(x) x$ of a fair die is 3.5, and no face shows 3.5. Expected loss, the quantity training minimizes, is an average over examples that no single example need resemble.
+## Two rules that prevent most mistakes
+
+First, $P(A \mid B)$ is not $P(B \mid A)$. A symptom can be common among patients with a rare disease while the disease stays rare among people with the symptom.
+
+Second, an expectation is not an outcome. The **expected value** is the probability-weighted average of the outcomes, $E[X] = \sum_x p(x) x$. For a fair die it is 3.5, and no face shows 3.5. Expected loss, the quantity training minimizes, is an average over examples that no single example need resemble.
 
 :::warning
 The most common misconception about temperature is that low temperature makes a model more truthful and high temperature makes it more creative. Temperature manipulates the shape of a distribution the model already committed to; it introduces no new evidence. Setting temperature to zero makes the model deterministic and confidently repeat whatever it ranked first, including a confident error. Calibration, the separate question of whether things assigned 70 percent probability happen about 70 percent of the time, is not improved by turning a dial.

@@ -3,7 +3,7 @@ id: "8.8-ollama-and-local-runners"
 track: "8-building-and-serving-stacks"
 order: 8
 title: "Ollama and local runners"
-summary: "Ollama and similar runners are a convenience layer over llama.cpp: a model library, the Modelfile, and a local HTTP API. The lesson shows how to pin Qwen3.8-27B's instruct preset so a runner's defaults stop silently overriding the model card."
+summary: "Ollama and similar runners are a convenience layer over llama.cpp: a model library, the Modelfile, and a local HTTP API. The lesson shows how to pin Qwen3.8-27B's instruct preset so a runner's defaults stop overriding the model card without telling you."
 tier: "advanced"
 locale: "en"
 prerequisites: ["8.7-llama-cpp-and-gguf"]
@@ -11,7 +11,7 @@ unlocks: ["8.12-choosing-your-stack"]
 analogy: "A rental car comes pre-configured by someone you never met: mirrors, seat, climate, radio presets, and a fuel tank filled to whatever level the last driver left. It drives away perfectly well, which is exactly the danger — you can complete the whole trip without noticing that the seat is wrong for you. A local runner ships defaults the same way, and the defaults that matter most are the ones you never see because the car started anyway."
 teachBack:
   prompt: "Describe what a local runner adds on top of llama.cpp, then show how to pin Qwen3.8-27B's official instruct sampling preset and a usable context window, explaining what goes wrong if you do not."
-  modelAnswer: "A runner such as Ollama wraps the llama.cpp engine with three things the engine deliberately lacks: a registry so a model is fetched by name rather than by URL, a Modelfile that binds a GGUF to a chat template, a system prompt and sampling parameters, and a long-lived local HTTP server that loads and unloads models on demand behind an OpenAI-compatible API. Its defaults are its own, not the model card's. Qwen3.8-27B's published instruct preset also specifies min_p 0, presence penalty 1.5, and repetition penalty 1.0 alongside temperature 0.7, top_p 0.80, and top_k 20; if the registry entry ships different values you get behaviour the vendor never evaluated. The fix is a Modelfile with FROM the base tag and PARAMETER lines for temperature, top_p, top_k, min_p, repeat_penalty, presence_penalty and num_ctx, built into a named local model with ollama create. The context window matters just as much: Ollama currently defaults by VRAM tier: 4K below 24 GiB, 32K from 24 to 48 GiB, and 256K at 48 GiB or more against this model's 262,144 native context, so a long prompt is silently truncated from the front — and raising num_ctx costs 64 KiB of KV cache per token from lesson 7.2, so the window is a memory decision, not a preference."
+  modelAnswer: "A runner such as Ollama wraps the llama.cpp engine with three things the engine deliberately lacks. The first is a registry, so a model is fetched by name rather than by URL. The second is a Modelfile that binds a GGUF to a chat template, a system prompt and sampling parameters. The third is a long-lived local HTTP server that loads and unloads models on demand behind an OpenAI-compatible API. The runner's defaults are its own, not the model card's. Qwen3.8-27B's published instruct preset specifies temperature 0.7, top_p 0.80 and top_k 20, and also min_p 0, presence penalty 1.5, and repetition penalty 1.0. If the registry entry ships different values, you get behaviour the vendor never evaluated. The fix is a Modelfile with FROM the base tag and PARAMETER lines for temperature, top_p, top_k, min_p, repeat_penalty, presence_penalty and num_ctx. You build it into a named local model with ollama create. The context window matters just as much. Ollama currently sets the default by VRAM tier: 4K below 24 GiB, 32K from 24 to 48 GiB, and 256K at 48 GiB or more. Those defaults sit below this model's 262,144-token native context, so a long prompt is truncated from the front without any warning. Raising num_ctx costs 64 KiB of KV cache per token (lesson 7.2), so the window is a memory decision, not a preference."
 quiz:
   - question: "On a sub-24 GiB deployment, where Ollama currently defaults to a 4K context, you paste a 40,000-token document. The reply ignores the beginning. What is the most likely cause?"
     options: ["The Gated DeltaNet layers forget early tokens by construction","GGUF cannot store prompts longer than 32,768 tokens","The effective num_ctx is 4K, so the prompt was truncated from the front before the model saw it","The model card's 262,144 context only applies to the bf16 checkpoint"]
@@ -38,16 +38,33 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-Two people run the same pinned 17.1 GB Qwen3.8-27B Q4_K_M GGUF on the same laptop, ask the same question, and get answers with visibly different temperament — one crisp and literal, the other discursive and prone to inventing detail. Neither edited a config file. The difference is that one of them is running the engine from lesson 8.7 directly with explicit flags, and the other is running it through a convenience layer that supplied sampling parameters on their behalf. This lesson is about that layer: what it genuinely gives you, and the single configuration habit that keeps it from quietly changing your model.
+Two people run the same pinned 17.1 GB Qwen3.8-27B Q4_K_M GGUF on the same laptop and ask the same question. Their answers have visibly different temperaments: one is crisp and literal, the other discursive and prone to inventing detail. Neither edited a config file. The difference is that one of them runs the engine from [lesson 8.7](/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/) directly, with explicit flags. The other runs it through a convenience layer that supplied sampling parameters on their behalf. This lesson is about that layer: what it genuinely gives you, and the one configuration habit that keeps it from changing your model behind your back.
 
-A local runner such as Ollama is not an inference engine. It is a distribution, configuration, and lifecycle layer wrapped around one — in this case the llama.cpp and ggml stack. It contributes three things the engine deliberately does not. First, a **registry**: models are addressed by name and tag rather than by a URL to a specific file, so pulling a model is one command and the runner resolves which quantization variant to fetch for your hardware. Second, a **Modelfile**, a small declarative recipe that binds a GGUF to a chat template, a system prompt, stop sequences, and sampling parameters, and can be built into a new named model that inherits from another. Third, a **local server**: a long-lived process on the loopback interface exposing a chat API, including OpenAI-compatible routes, that loads a model on first request, keeps it resident for a keep-alive interval, and evicts it to make room for another. That last piece is why a runner feels different from the engine — you stop thinking about processes and start thinking about model names.
+## What a runner adds on top of llama.cpp
 
-The cost of that convenience is that defaults now exist where previously there were only your flags, and defaults you did not choose are the ones that bite. Qwen3.8-27B publishes two sampling presets on its model card. Thinking mode, the default behaviour, expects temperature 1.0, top_p 0.95, top_k 20. Instruct mode — the non-thinking path — expects temperature 0.7, top_p 0.80, top_k 20. These are not stylistic suggestions; they are the settings under which the vendor's reported behaviour was produced. A registry entry ships whatever its packager put in the Modelfile, and there is no mechanism guaranteeing that matches the card. If you deploy an assistant on top of unexamined defaults, you are evaluating a configuration nobody documented.
+A local runner such as Ollama is not an inference engine. It is a distribution, configuration and lifecycle layer wrapped around one, in this case the llama.cpp and ggml stack. It contributes three things the engine deliberately does not have:
 
-So pin it. Write a Modelfile that inherits from the pulled tag and states every parameter you care about, then build a named local model and use only that name from your application.
+- A **registry.** Models are addressed by name and tag rather than by a URL to a specific file. Pulling a model is one command, and the runner resolves which quantization variant to fetch for your hardware.
+- A **Modelfile.** This small declarative recipe binds a GGUF to a chat template, a system prompt, stop sequences and sampling parameters. It can be built into a new named model that inherits from another.
+- A **local server.** A long-lived process on the loopback interface (a network address only programs on the same machine can reach) exposes a chat API, including OpenAI-compatible routes. It loads a model on the first request, keeps it resident for a keep-alive interval, and evicts it to make room for another.
+
+That last piece is why a runner feels different from the engine: you stop thinking about processes and start thinking about model names.
+
+## Whose defaults are you running?
+
+The cost of that convenience is that defaults now exist where previously there were only your flags, and defaults you did not choose are the ones that cause trouble. Qwen3.8-27B publishes two sampling presets on its model card (the knobs of [lesson 7.4](/lessons/7-inference-and-efficiency/7.4-sampling/)):
+
+- Thinking mode, the default behaviour, expects temperature 1.0, top_p 0.95, top_k 20.
+- Instruct mode, the non-thinking path, expects temperature 0.7, top_p 0.80, top_k 20.
+
+These are not stylistic suggestions. They are the settings under which the vendor's reported behaviour was produced. A registry entry ships whatever its packager put in the Modelfile, and nothing guarantees that matches the card. If you deploy an assistant on top of unexamined defaults, you are evaluating a configuration nobody documented.
+
+## Pinning the preset in a Modelfile
+
+So pin it. Write a Modelfile that inherits from the pulled tag and states every parameter you care about. Then build a named local model and use only that name from your application.
 
 ```
 FROM qwen3.8:27b
@@ -62,16 +79,26 @@ PARAMETER num_ctx 16384
 
 Build it with `ollama create qwen3.8-27b-instruct -f Modelfile` and point your client at `qwen3.8-27b-instruct`. The sampling configuration is now a versioned artifact in your repository rather than a property of whichever machine happens to be serving.
 
-Walk through what each line buys. Alongside temperature, top_p and top_k, Ollama exposes min_p, repeat_penalty and presence_penalty. Pin all six sampling options as shown and verify the effective request and backend, so the configuration follows the card's instruct preset — and if you want thinking mode instead, you build a second named model with 1.0 and 0.95, rather than toggling values by hand and forgetting. The `num_ctx` line is the one people omit, and it is the most consequential. Ollama currently defaults to 4K below 24 GiB VRAM, 32K from 24 to 48 GiB, and 256K at 48 GiB or more, against this model's 262,144-token native context. That default is not laziness: the window is a memory promise, because context length times 64 KiB per token from lesson 7.2 is KV cache the runner must reserve. At 16,384 tokens the cache is 1 GiB. On the lesson's 24 GiB-class machine that is a deliberate cap below the current 32K default, chosen to leave headroom beside the pinned 17.1 GB Q4_K_M artifact. At 262,144 tokens it is 16 GiB, which is not. Choose the window your workload actually uses and pay for exactly that.
+Walk through what each line buys. Alongside temperature, top_p and top_k, Ollama exposes min_p, repeat_penalty and presence_penalty. Pin all six sampling options as shown, and verify the effective request and backend, so the configuration follows the card's instruct preset. If you want thinking mode instead, build a second named model with 1.0 and 0.95 rather than toggling values by hand and forgetting.
+
+## How large should the context window be?
+
+The `num_ctx` line is the one people omit, and it has the largest consequences. Ollama currently defaults to 4K below 24 GiB VRAM, 32K from 24 to 48 GiB, and 256K at 48 GiB or more, against this model's 262,144-token native context.
+
+That default is not laziness. The window is a memory promise: context length times 64 KiB per token from [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) is KV cache the runner must reserve. At 16,384 tokens the cache is 1 GiB. On the lesson's 24 GiB-class machine that is a deliberate cap below the current 32K default, chosen to leave headroom beside the pinned 17.1 GB Q4_K_M artifact. At 262,144 tokens it is 16 GiB, which is not. Choose the window your workload actually uses, and pay for exactly that.
 
 :::warning
-The most common misconception about local runners is that a truncated prompt announces itself. It does not. When your input exceeds the configured window the runner drops the overflow — typically the oldest content — and generates a perfectly fluent answer from what remains. There is no error, no warning in the response, and nothing in the output that reads as damage. A model that "ignores the instructions at the top of my document" is almost never a reasoning failure; it is a context window nobody set.
+A truncated prompt does not announce itself. When your input exceeds the configured window, the runner drops the overflow (typically the oldest content) and generates a perfectly fluent answer from what remains. There is no error, no warning in the response, and nothing in the output that reads as damage. A model that "ignores the instructions at the top of my document" is almost never a reasoning failure; it is a context window nobody set.
 :::
 
-Two smaller traps follow from the layering. Per-request options sent through the API override Modelfile parameters for that request, which is useful and also means a stray client-side default can undo your careful pinning — audit what your SDK sends when you pass nothing. And this model ships a thinking mode whose behaviour is controlled by the chat template and a per-request toggle rather than by sampling alone; the model card's own switch is `enable_thinking`, and the runner exposes its own equivalent flag, so check the current documentation for the name rather than assuming that lowering the temperature disabled reasoning. It did not. It only made the reasoning less varied.
+## Two more traps from the layering
+
+First, per-request options sent through the API override Modelfile parameters for that request. That is useful, and it also means a stray client-side default can undo your careful pinning. Audit what your SDK sends when you pass nothing.
+
+Second, this model ships a thinking mode controlled by the chat template and a per-request toggle, not by sampling alone. The model card's own switch is `enable_thinking`, and the runner exposes its own equivalent flag, so check the current documentation for its name. Do not assume that lowering the temperature disabled reasoning. It did not. It only made the reasoning less varied.
 
 :::caveat
-Convenience layers move faster than the engines beneath them, and support for a new architecture appears in the engine first. If a hybrid model like this one loads under a runner, the runner's bundled engine build already implements Gated DeltaNet — but a runner version that predates that support will fail on the same GGUF that works under a current llama.cpp binary. When a pull fails inexplicably, upgrade the runner before blaming the file.
+Convenience layers move faster than the engines beneath them, and support for a new architecture appears in the engine first. If a hybrid model like this one loads under a runner, the runner's bundled engine build already implements Gated DeltaNet. But a runner version that predates that support will fail on the same GGUF that works under a current llama.cpp binary. When a pull fails inexplicably, upgrade the runner before blaming the file.
 :::
 
-The durable habit is small: treat the runner as packaging, never as policy. It decides where the file lives and how the server behaves; you decide the sampling preset, the context window, and the system prompt, and you write those decisions down in a Modelfile that ships with your code. Lesson 8.12 puts this stack beside the server-class ones and asks when the convenience is worth its ceiling.
+The habit to keep is small: treat the runner as packaging, never as policy. It decides where the file lives and how the server behaves. You decide the sampling preset, the context window and the system prompt, and you write those decisions down in a Modelfile that ships with your code. [Lesson 8.12](/lessons/8-building-and-serving-stacks/8.12-choosing-your-stack/) puts this stack beside the server-class ones and asks when the convenience is worth its ceiling.

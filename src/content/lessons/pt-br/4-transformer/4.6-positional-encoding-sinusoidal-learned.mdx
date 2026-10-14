@@ -17,7 +17,7 @@ quiz:
     options: ["Ela sempre lê apenas o token anterior", "Ela não tem parâmetros aprendidos", "Ela não distingue permutações sem um sinal posicional", "Ela não consegue processar batches"]
     correctIndex: 2
     explanation: "Attention aplicada a um conjunto não ordenado de vetores de token é equivariante a permutações; a informação de posição quebra essa simetria."
-  - question: "Se vetores de posição são somados aos embeddings, quais tensores de attention acabam carregando informação de posição (lição 4.5)?"
+  - question: "Se vetores de posição são somados aos embeddings, quais tensores de attention acabam carregando informação de posição (aula 4.5)?"
     options: ["Apenas o causal mask", "Apenas a projeção de saída", "Nenhum; a soma é removida antes da attention", "Queries, keys e values, já que todas as projeções de head leem o mesmo residual stream"]
     correctIndex: 3
     explanation: "As projeções de Q, K e V de cada head leem o residual stream onde o vetor de posição foi somado, então a posição vaza para os três — uma das razões pelas quais esquemas posteriores optaram por rotacionar apenas queries e keys."
@@ -38,20 +38,42 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-25"
+updated: "2026-10-14"
 ---
 
-Tudo o que foi construído nesta trilha até aqui tem um ponto cego, e ele é fácil de enunciar concretamente. Alimente a pilha de attention com os vetores de token de "cachorro morde pessoa" e depois com os mesmos três vetores reordenados como "pessoa morde cachorro". Attention compara vetores por *conteúdo*: cada produto escalar query–key entre o mesmo par de vetores é idêntico nos dois casos, então as saídas são os mesmos vetores, apenas reordenados do mesmo jeito que as entradas foram. Essa **equivariância a permutações** significa que o modelo literalmente não consegue dizer quem mordeu quem. (O causal mask da lição 4.4 restringe *quais* pares interagem, o que quebra a simetria só parcialmente — ele diz quem vem antes, não a que distância nem onde.) A linguagem precisa de ordem; attention sozinha não a enxerga.
+## Por que attention não distingue "cachorro morde pessoa" de "pessoa morde cachorro"?
 
-Tente a primeira correção óbvia: anexar a posição como um número extra, de modo que o token na posição 7 receba uma feature de valor 7. Ela falha duas vezes. O escalar solitário precisa sobreviver a projeções desenhadas para milhares de features de conteúdo, então é facilmente abafado; e sua magnitude cresce sem limite — a posição 100.000 tem uma feature 100.000 vezes maior que a da posição 1, arruinando as estatísticas cuidadosamente escaladas da lição 4.3. A correção que o artigo de 2017 escolheu: dar à posição um *vetor de largura completa* com entradas limitadas e estrutura em muitas escalas, e somá-lo ao embedding do token antes da primeira camada:
+Tudo o que foi construído nesta trilha até aqui tem um ponto cego, e ele é fácil de enunciar concretamente. Alimente a pilha de attention com os vetores de token de "cachorro morde pessoa" e depois com os mesmos três vetores reordenados como "pessoa morde cachorro". Attention compara vetores por *conteúdo*: cada produto escalar query–key entre o mesmo par de vetores é idêntico nos dois casos. Então as saídas são os mesmos vetores, apenas reordenados do mesmo jeito que as entradas foram.
+
+Essa propriedade se chama **equivariância a permutações**: embaralhe as entradas e você recebe as mesmas saídas, embaralhadas do mesmo jeito. Ela significa que o modelo não tem como dizer quem mordeu quem. O causal mask da [aula 4.4](/pt-br/lessons/4-transformer/4.4-causal-masking/) restringe *quais* pares interagem, o que quebra a simetria só parcialmente: ele diz quem vem antes, não a que distância nem onde. A linguagem precisa de ordem; attention sozinha não a enxerga.
+
+## Por que não basta anexar o número da posição?
+
+Tente a primeira correção óbvia: anexar a posição como um número extra, de modo que o token na posição 7 receba uma feature de valor 7. Ela falha por dois motivos:
+
+- **Ela é abafada.** O escalar solitário precisa sobreviver a projeções desenhadas para milhares de features de conteúdo.
+- **Ela cresce sem limite.** A posição 100.000 tem uma feature 100.000 vezes maior que a da posição 1, arruinando as estatísticas cuidadosamente escaladas da [aula 4.3](/pt-br/lessons/4-transformer/4.3-scaled-dot-product-attention/).
+
+A correção que o artigo de 2017 escolheu: dar à posição um *vetor de largura completa* com entradas limitadas e estrutura em muitas escalas, e somá-lo ao embedding do token antes da primeira camada:
 
 $$
 x_t = e_{token_t}+p_t.
 $$
 
-Como ambos os vetores têm largura $d_{model}$, posição e conteúdo compartilham o residual stream, e toda projeção de todo head (lição 4.5) pode usar combinações dos dois.
+Aqui $e_{token_t}$ é o embedding do token na posição $t$, $p_t$ é o vetor de posição, e ambos têm largura $d_{model}$, o hidden size do modelo. Como eles são somados, posição e conteúdo compartilham o residual stream (o vetor por token que toda camada lê e escreve), e toda projeção de todo head ([aula 4.5](/pt-br/lessons/4-transformer/4.5-multi-head-attention/)) pode usar combinações dos dois.
 
-O esquema **senoidal** define esse vetor por fórmula, pareando dimensões em frequências espaçadas geometricamente:
+## Encoding senoidal: relógios em muitas velocidades
+
+O esquema **senoidal** constrói $p_t$ a partir de uma fórmula, em vez de aprendê-lo. Imagine as dimensões do vetor agrupadas em pares. Cada par é um ponteiro de relógio: uma entrada é o seno e a outra o cosseno da posição vezes a frequência daquele par. O primeiro par gira rápido; cada par seguinte gira mais devagar, por um fator constante.
+
+Um pequeno exemplo trabalhado com $d_{model}=4$ torna isso tangível. Escreva $PE(pos, k)$ para a entrada $k$ do vetor na posição $pos$.
+
+- Para a posição $pos = 1$, o par de dimensões $i=0$ usa frequência $1/10000^{0} = 1$, dando $PE(1,0)=\sin(1)\approx 0.84$ e $PE(1,1)=\cos(1)\approx 0.54$.
+- O par $i=1$ usa frequência $1/10000^{2/4} = 1/100$, dando $PE(1,2)=\sin(0.01)\approx 0.01$ e $PE(1,3)=\cos(0.01)\approx 1.00$.
+
+O par rápido já oscilou de forma perceptível na posição 1; o par lento mal se moveu e vai levar centenas de posições para mudar de modo apreciável. A posição 2 dobra cada ângulo ($\sin(2)\approx 0.91$, $\sin(0.02)\approx 0.02$), e assim por diante. Cada posição recebe uma leitura distinta de relógio multivelocidade, com todas as entradas limitadas a $[-1,1]$. Posições próximas têm carimbos parecidos; posições distantes diferem nas dimensões lentas.
+
+Em geral, o artigo pareia as dimensões em frequências espaçadas geometricamente:
 
 $$
 PE(pos,2i)=\sin\left(pos/10000^{2i/d_{model}}\right),
@@ -61,18 +83,25 @@ $$
 PE(pos,2i+1)=\cos\left(pos/10000^{2i/d_{model}}\right).
 $$
 
-Um pequeno exemplo trabalhado com $d_{model}=4$ torna isso tangível. Para a posição $pos = 1$: o par de dimensões $i=0$ usa frequência $1/10000^{0} = 1$, dando $PE(1,0)=\sin(1)\approx 0.84$ e $PE(1,1)=\cos(1)\approx 0.54$. O par $i=1$ usa frequência $1/10000^{2/4} = 1/100$, dando $PE(1,2)=\sin(0.01)\approx 0.01$ e $PE(1,3)=\cos(0.01)\approx 1.00$. O par rápido já oscilou de forma perceptível na posição 1; o par lento mal se moveu e vai levar centenas de posições para mudar de modo apreciável. A posição 2 dobra cada ângulo ($\sin(2)\approx 0.91$, $\sin(0.02)\approx 0.02$), e assim por diante: cada posição recebe uma leitura distinta de relógio multivelocidade, com todas as entradas limitadas a $[-1,1]$. Posições próximas têm carimbos parecidos; posições distantes diferem nas dimensões lentas. Deslocamentos relativos são linearmente recuperáveis a partir dos pares seno–cosseno, uma propriedade que discretamente antecipa a próxima lição.
+As dimensões pares $2i$ guardam senos, as ímpares $2i+1$ guardam cossenos, e a frequência $1/10000^{2i/d_{model}}$ diminui conforme $i$ cresce. Mais uma propriedade vale conhecer: deslocamentos relativos são linearmente recuperáveis a partir dos pares seno–cosseno. Avançar um número fixo de posições gira cada ponteiro por um ângulo fixo, e uma multiplicação por uma matriz fixa consegue expressar esse giro. A próxima aula se apoia exatamente nessa propriedade.
 
-Um **embedding de posição absoluta aprendido** substitui a fórmula por uma tabela treinável: uma linha por posição suportada, consultada exatamente como um embedding de token. O BERT e a linhagem GPT usaram isso com sucesso — a otimização descobre qualquer geometria posicional que ajude a distribuição de treino, em vez de aceitar uma predeterminada.
+## Tabelas de posição aprendidas
 
-O tradeoff não é "princípios versus aprendizado". Uma tabela aprendida tem um comprimento máximo declarado e simplesmente não tem linha além dele; estender significa redimensionar e interpolar linhas que nunca foram treinadas. A fórmula senoidal produz um valor para *qualquer* posição inteira — mas um valor definido não é um valor útil.
+Um **embedding de posição absoluta aprendido** substitui a fórmula por uma tabela treinável: uma linha por posição suportada, consultada exatamente como um embedding de token. O BERT e a linhagem GPT usaram isso com sucesso. A otimização descobre qualquer geometria posicional que ajude a distribuição de treino, em vez de aceitar uma predeterminada.
+
+O tradeoff não é "princípios versus aprendizado". Uma tabela aprendida tem um comprimento máximo declarado e não tem linha além dele; estender significa redimensionar e interpolar (preencher com valores estimados entre) linhas que nunca foram treinadas. A fórmula senoidal produz um valor para *qualquer* posição inteira, mas um valor definido não é um valor útil.
 
 :::caveat
-O equívoco clássico: "a fórmula senoidal se estende a qualquer comprimento, então o modelo lida com entradas longas". Estar matematicamente definida fora da faixa de treino não diz nada sobre o restante da rede treinada se comportar de forma sensata lá. Extrapolação é uma propriedade do sistema treinado completo — encodings, padrões de attention, dados —, nunca da fórmula de encoding sozinha. A mesma cautela valerá, em outra forma, para todo esquema posicional desta trilha.
+"A fórmula senoidal se estende a qualquer comprimento, então o modelo lida com entradas longas" é o exagero clássico. Estar matematicamente definida fora da faixa de treino não diz nada sobre o restante da rede treinada se comportar de forma sensata lá. Extrapolação é uma propriedade do sistema treinado completo (encodings, padrões de attention, dados), nunca da fórmula de encoding sozinha. A mesma cautela valerá, em outra forma, para todo esquema posicional desta trilha.
 :::
 
-Dois detalhes operacionais pesam na prática. A soma não obriga a rede a manter conteúdo e posição separáveis — eles ficam emaranhados num único vetor desde a primeira camada, e os Q, K *e* V de cada head herdam a mistura. E os *índices* de posição são um contrato: padding à esquerda, documentos empacotados e reinícios de fronteira mudam qual inteiro cada token recebe, então um descasamento entre a numeração de treino e a de inferência degrada a saída mesmo quando todos os shapes são válidos.
+Dois detalhes operacionais pesam na prática:
 
-Uma forma útil de comparar esquemas é perguntar onde a posição *entra*. Esquemas absolutos — os dois sabores desta lição — a carimbam na entrada, atrelando a informação a um índice ("este é o token 37") em vez de a uma distância ("este token está três atrás"), e deixando a rede inferir os deslocamentos a partir de dois carimbos absolutos. Esquemas relativos movem a posição para dentro do próprio cálculo de attention, onde deslocamentos vivem naturalmente.
+- **A soma emaranha conteúdo e posição.** Nada obriga a rede a mantê-los separáveis. Eles ficam misturados num único vetor desde a primeira camada, e os Q, K *e* V de cada head herdam a mistura.
+- **Os índices de posição são um contrato.** Padding à esquerda (tokens de preenchimento colocados antes de uma sequência curta), documentos empacotados e reinícios de fronteira mudam qual inteiro cada token recebe. Um descasamento entre a numeração de treino e a de inferência degrada a saída mesmo quando todos os shapes são válidos.
 
-Foi exatamente esse o caminho que a área tomou, e o modelo deste curso é a evidência: **o Qwen3.8-27B não usa nenhum dos esquemas desta lição.** Nenhum carimbo senoidal é somado aos seus embeddings e nenhuma tabela de posição absoluta aprendida existe nos seus pesos; a posição entra por rotações aplicadas a queries e keys dentro das suas camadas de attention — RoPE, com o toque extra de aplicação parcial e seções multimodais. Esse mecanismo é a próxima lição. Trate as tabelas senoidais e aprendidas como a baseline histórica que definiu o problema — quebrar a simetria de permutação com um sinal limitado e multiescala — cuja solução mais conhecida hoje mora em outro ponto do bloco.
+## Onde a posição entra, e o que o Qwen3.8-27B faz
+
+Uma forma útil de comparar esquemas é perguntar onde a posição *entra*. Esquemas absolutos, os dois sabores desta aula, a carimbam na entrada. Eles atrelam a informação a um índice ("este é o token 37") em vez de a uma distância ("este token está três atrás"), e deixam a rede inferir os deslocamentos a partir de dois carimbos absolutos. Esquemas relativos movem a posição para dentro do próprio cálculo de attention, onde deslocamentos vivem naturalmente.
+
+Foi exatamente esse o caminho que a área tomou, e o modelo deste curso é a evidência: **o Qwen3.8-27B não usa nenhum dos esquemas desta aula.** Nenhum carimbo senoidal é somado aos seus embeddings e nenhuma tabela de posição absoluta aprendida existe nos seus pesos. A posição entra por rotações aplicadas a queries e keys dentro das suas camadas de attention: RoPE, com o toque extra de aplicação parcial e seções multimodais. Esse mecanismo é a [aula 4.7](/pt-br/lessons/4-transformer/4.7-rope/). Trate as tabelas senoidais e aprendidas como a baseline histórica que definiu o problema (quebrar a simetria de permutação com um sinal limitado e multiescala), cuja solução mais conhecida hoje mora em outro ponto do bloco.

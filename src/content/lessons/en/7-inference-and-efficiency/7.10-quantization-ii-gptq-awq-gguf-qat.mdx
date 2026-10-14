@@ -8,10 +8,10 @@ tier: "advanced"
 locale: "en"
 prerequisites: ["7.9-quantization-i-int8-int4-the-basics"]
 unlocks: ["7.11-serving-stacks-vllm-sglang-tensorrt-llm", "7.12-running-models-locally"]
-analogy: "Preparing paintings for a traveling exhibit has three separate jobs. A conservator chooses how to reduce color detail while protecting important regions; a shipping crate labels and packages every canvas; the destination museum needs racks and lighting that fit that crate. GPTQ, AWQ, and QAT are conservation strategies, GGUF is a packaging format with metadata and tensor encodings, and the runtime is the museum. Calling all three simply four-bit hides the interfaces that decide success."
+analogy: "Preparing paintings for a traveling exhibit has three separate jobs. A conservator chooses how to reduce color detail while protecting important regions; a shipping crate labels and packages every canvas; the destination museum needs racks and lighting that fit that crate. GPTQ, AWQ, and QAT are conservation strategies, GGUF is a packaging format with metadata and tensor encodings, and the runtime is the museum. Calling all three just \"four-bit\" hides the interfaces that decide success."
 teachBack:
   prompt: "Distinguish GPTQ, AWQ, GGUF, and QAT by role, explain why the pinned Q4_K_M GGUF of Qwen3.8-27B is 17.1 GB rather than the 13.5 GB pure-code floor, and say why converting between lossy formats cannot restore quality."
-  modelAnswer: "GPTQ is post-training weight quantization that uses approximate second-order information to control reconstruction error; AWQ uses activation observations to protect salient weight channels; QAT simulates quantization during training so weights adapt; GGUF is a container format used by llama.cpp-family runtimes that can hold tensors in many quantized types — it names packaging, not an algorithm. Pure 4-bit codes for 27 billion parameters would be a 13.5 GB floor, while the pinned Q4_K_M text-model artifact is exactly 17,106,773,984 bytes: 17.1 GB or 15.93 GiB. Group metadata and tensors kept at higher precision account for the gap, but dividing by the marketed 27B is not an exact bpw measurement because that rounded count includes the vision tower while the file is the text model. Requantizing an already-quantized artifact starts from rounded, clipped values, so the discarded precision cannot be recovered."
+  modelAnswer: "GPTQ is post-training weight quantization that uses approximate second-order information to control reconstruction error. AWQ uses activation observations to protect salient weight channels. QAT simulates quantization during training so the weights adapt. GGUF is a container format used by llama.cpp-family runtimes, and it can hold tensors in many quantized types. The name GGUF describes packaging, not an algorithm. Pure 4-bit codes for 27 billion parameters would be a 13.5 GB floor. The pinned Q4_K_M text-model artifact is exactly 17,106,773,984 bytes: 17.1 GB or 15.93 GiB. Group metadata and tensors kept at higher precision account for the gap. But dividing by the marketed 27B does not give an exact bits-per-weight (bpw) figure, because that rounded count includes the vision tower while the file is the text model. Requantizing an already-quantized artifact starts from rounded, clipped values, so the discarded precision cannot be recovered."
 quiz:
   - question: "Which item is primarily a container format rather than a quantization-training algorithm?"
     options: ["GPTQ", "AWQ", "GGUF", "QAT"]
@@ -42,33 +42,59 @@ citations:
     authors: "Unsloth"
     year: 2026
     url: "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/blob/430473d9d0e975450ce1f445642b6527cb4faea1/Qwen3.8-27B-Q4_K_M.gguf"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Search a model hub for quantized builds of Qwen3.8-27B and you meet a wall of suffixes. Community quantizations of this model circulate across the llama.cpp/GGUF, Ollama, LM Studio, and MLX ecosystems — maintained by those communities rather than by the model's authors. The names on those artifacts mix three different layers: an **algorithm** that chooses approximate values, a **format** that stores tensors and metadata, and a **runtime** whose kernels consume the result. GPTQ, AWQ, GGUF, and QAT each live at a different layer, and choosing well begins by separating their jobs.
+Search a model hub for quantized builds of Qwen3.8-27B and you meet a wall of suffixes. Community quantizations of this model circulate across the llama.cpp/GGUF, Ollama, LM Studio, and MLX ecosystems, maintained by those communities rather than by the model's authors. The names on those artifacts mix three different layers:
 
-**GPTQ** is a post-training weight-quantization method. Starting from the trained bf16 checkpoint and calibration inputs, it quantizes weights column by column while using approximate second-order information to compensate reconstruction error across the layer — later weights adjust to absorb damage done by earlier rounding, preserving layer outputs far better than independent nearest-value rounding. Implementations expose bit width, group size, and ordering choices.
+- an **algorithm** that chooses the approximate values;
+- a **format** that stores the tensors and metadata in a file;
+- a **runtime** whose kernels (GPU or CPU routines) consume the result.
 
-**AWQ**, activation-aware weight quantization, observes activations on calibration data to find the small fraction of weight channels that matter most to observed outputs, then protects them via scaling before low-bit conversion. The activation data informs how weights are treated; the shipped artifact is still weight-only low-bit. Both GPTQ and AWQ are **post-training quantization** (PTQ): no retraining, so quality depends heavily on calibration coverage — a set of short English prompts may not preserve behavior on code, other languages, or Qwen's very long contexts.
+GPTQ, AWQ, GGUF, and QAT each live at a different layer, and choosing well begins by separating their jobs. [Lesson 7.9](/lessons/7-inference-and-efficiency/7.9-quantization-i-int8-int4-the-basics/) covered the basic mechanics of scales, rounding, and groups; this lesson is about the methods built on top of them.
 
-A third member of the same family is the one you will actually see named on the Hub. An **importance matrix** — `imatrix` — is produced by running calibration data through the model and accumulating, per tensor column, the sum of squared activations passing through it; the quantizer then weights its error by that statistic, spending scarce precision on the columns the corpus exercised hardest. It measures activations rather than per-weight sensitivity, and it is a measurement rather than a format, so it can be applied underneath several of them. Lesson 7.13 works through the artifacts it produces and the distinction it is most often confused with.
+## Choosing the values after training: GPTQ, AWQ and imatrix
 
-**QAT**, quantization-aware training, moves the effort earlier: fake-quantization ops round and clip inside the training forward pass while higher-precision master weights receive approximate gradients, so the optimizer steers values away from fragile rounding boundaries. It costs training compute and needs a recipe matched to the deployment format, but can recover quality where one-shot PTQ struggles at aggressive bit widths.
+**GPTQ** is a post-training weight-quantization method. It starts from the trained bf16 checkpoint and a set of calibration inputs, sample prompts run through the model to see how it behaves. It then quantizes the weights column by column. Along the way it uses approximate second-order information, an estimate of how errors in different weights interact, to compensate reconstruction error: the gap between the layer's outputs before and after quantization. Later weights adjust to absorb damage done by earlier rounding. That preserves layer outputs far better than rounding each weight independently to its nearest value. Implementations expose bit width, group size, and ordering choices.
 
-**GGUF** is not an algorithm at all. It is the container ecosystem of llama.cpp-family runtimes: one file carrying model metadata, tokenizer information, and tensors in any of a ladder of quantized types from 8-bit down past 4-bit. Saying a GGUF of Qwen3.8-27B says nothing about quality until you name the tensor type, the tool that produced it, and the source checkpoint.
+**AWQ**, activation-aware weight quantization, observes activations on calibration data. It looks for the small fraction of weight channels that matter most to the observed outputs, then protects them via scaling before the low-bit conversion. The activation data informs how weights are treated; the shipped artifact is still weight-only and low-bit.
 
-The file sizes themselves teach the layering. Pure 4-bit codes for a rounded 27 billion parameters would occupy $27\text{e}9 \times 4 / 8 = 13.5$ GB. At the pinned community revision, the Q4_K_M **text-model** file is exactly 17,106,773,984 bytes: 17.1 GB, or 15.93 GiB. Group metadata and tensors retained at higher precision account for the gap. Do not reverse that file size through the marketed 27B count and call the result exact bpw: the marketed count is rounded and includes the vision tower, while the GGUF is the text model; the multimodal projector is a separate roughly 0.93 GB file.
+Both GPTQ and AWQ are **post-training quantization** (PTQ): there is no retraining, so quality depends heavily on calibration coverage. A set of short English prompts may not preserve behavior on code, other languages, or Qwen's very long contexts.
 
-A second classic wrong turn is treating conversion as free. Repackaging bf16 weights into a 4-bit format hands the algorithm the best available source. Requantizing an already 4-bit artifact into another format starts from values that were rounded and clipped once; the discarded precision is gone, and errors compound. A container can change; information cannot return. Keep provenance and hashes for the original checkpoint and every derived artifact.
+A third member of the same family is the one you will actually see named on the Hub. An **importance matrix**, `imatrix`, is produced by running calibration data through the model and accumulating, per tensor column, the sum of squared activations passing through it. The quantizer then weights its error by that statistic, spending scarce precision on the columns the corpus exercised hardest. It measures activations rather than per-weight sensitivity. And it is a measurement rather than a format, so it can be applied underneath several of them. [Lesson 7.13](/lessons/7-inference-and-efficiency/7.13-choosing-and-judging-a-community-quant/) works through the artifacts it produces and the distinction it is most often confused with.
 
-How much quality do the rungs cost on this model? Hedge honestly: no dedicated technical report exists for Qwen3.8-27B, and community quantizations ship without standardized evaluations, so treat any specific perplexity or benchmark delta you find as unverified. The qualitative shape is stable across models: 8-bit weight-only is usually hard to distinguish from bf16; mainstream 4-bit recipes give up measurable but often acceptable quality; below 4 bits degradation grows quickly and unevenly, hitting low-margin decisions — rare tokens, structured output, long-context retrieval — before averages move. Evaluate the artifact on your tasks and languages before trusting it.
+## QAT: training with the rounding in the loop
+
+**QAT**, quantization-aware training, moves the effort earlier. Fake-quantization ops round and clip inside the training forward pass, so the model sees the rounded values while it learns. Meanwhile higher-precision master weights receive approximate gradients, so the optimizer steers values away from fragile rounding boundaries. QAT costs training compute and needs a recipe matched to the deployment format. In return, it can recover quality where one-shot PTQ struggles at aggressive bit widths.
+
+## GGUF: a container, not an algorithm
+
+**GGUF** is not an algorithm at all. It is the container ecosystem of llama.cpp-family runtimes: one file carrying model metadata, tokenizer information, and tensors in any of a ladder of quantized types, from 8-bit down past 4-bit. Saying "a GGUF of Qwen3.8-27B" says nothing about quality until you name the tensor type, the tool that produced it, and the source checkpoint.
+
+The file sizes themselves show the layering. Pure 4-bit codes for a rounded 27 billion parameters would occupy $27\text{e}9 \times 4 / 8 = 13.5$ GB. At the pinned community revision, the Q4_K_M **text-model** file is exactly 17,106,773,984 bytes: 17.1 GB, or 15.93 GiB. Group metadata and tensors retained at higher precision account for the gap.
+
+Do not reverse that file size through the marketed 27B count and call the result exact bpw (bits per weight). The marketed count is rounded and includes the vision tower, while the GGUF is the text model. The multimodal projector, the piece that connects the vision tower to the text model, is a separate roughly 0.93 GB file.
+
+## Conversion only loses information
+
+It is also easy to assume that conversion is free. Repackaging bf16 weights into a 4-bit format hands the algorithm the best available source. Requantizing an already 4-bit artifact into another format starts from values that were rounded and clipped once. The discarded precision is gone, and errors compound. A container can change; information cannot return. Keep provenance (a record of where each file came from) and hashes for the original checkpoint and every derived artifact.
+
+## What quality to expect
+
+How much quality do the rungs cost on this model? Be honest about the uncertainty. No dedicated technical report exists for Qwen3.8-27B, and community quantizations ship without standardized evaluations, so treat any specific perplexity or benchmark delta you find as unverified. The qualitative shape is stable across models:
+
+- 8-bit weight-only is usually hard to distinguish from bf16;
+- mainstream 4-bit recipes give up measurable but often acceptable quality;
+- below 4 bits, degradation grows quickly and unevenly.
+
+The damage hits low-margin decisions first, where the right token only narrowly beat the wrong one: rare tokens, structured output, long-context retrieval. It shows there before the averages move. Evaluate the artifact on your tasks and languages before trusting it.
 
 :::warning
-Model formats are a supply-chain boundary. Community quantizations are third-party derived artifacts, not vendor releases: prefer non-executable tensor containers, verify hashes and licenses, reject inconsistent shapes or metadata, and bound allocations before loading untrusted files.
+Model formats are a supply-chain boundary. Community quantizations are third-party derived artifacts, not vendor releases. Prefer non-executable tensor containers, verify hashes and licenses, reject inconsistent shapes or metadata, and bound allocations before loading untrusted files.
 :::
 
 :::caveat
-The runtime layer has the final word. A server can load a GPTQ or AWQ file yet silently fall back to dequantized floating-point matmuls, keeping the small download and losing the speed. And for a brand-new hybrid architecture like this one, kernel support for each format arrives unevenly — measure resident memory, selected kernels, and tokens per second on your hardware rather than trusting the label.
+The runtime layer has the final word. A server can load a GPTQ or AWQ file yet fall back, without telling you, to dequantized floating-point matrix multiplications, keeping the small download and losing the speed. And for a brand-new hybrid architecture like this one, kernel support for each format arrives unevenly. Measure resident memory, selected kernels, and tokens per second on your hardware rather than trusting the label.
 :::
 
-The durable map: GPTQ reconstructs with error awareness, AWQ protects what activations prove salient, QAT lets training adapt to deployment error, and GGUF packages the result for compatible runtimes. Algorithms create approximations, formats transport them, kernels turn them into speed — and lessons 7.12 and 8.7 put these artifacts onto real machines.
+In one line each: GPTQ reconstructs with error awareness, AWQ protects what activations prove salient, QAT lets training adapt to deployment error, and GGUF packages the result for compatible runtimes. Algorithms create approximations, formats transport them, and kernels turn them into speed. [Lesson 7.12](/lessons/7-inference-and-efficiency/7.12-running-models-locally/) and [lesson 8.7](/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/) put these artifacts onto real machines.

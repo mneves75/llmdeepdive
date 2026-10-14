@@ -11,7 +11,7 @@ unlocks: ["11.3-mlx-lm-in-practice"]
 analogy: "Uma cozinha de restaurante recebe pedidos em comandas e não cozinha nada até o balcão chamar por um prato. Um bom chef agrupa as comandas, funde etapas que usam a mesma panela e manda o trabalho do forno e o da estação fria para cozinheiros diferentes. O vício ruim é provar a comida a cada colherada, o que para a linha inteira. Avaliação, compile e streams são essas três escolhas: quando chamar o prato, quais etapas fundir e qual cozinheiro faz cada tarefa."
 teachBack:
   prompt: "Explique o que mx.eval, mx.async_eval, mx.compile e um stream controlam, dê os dois erros de medição que a lazy evaluation causa e nomeie os quatro limites de memória."
-  modelAnswer: "O MLX registra as operações num grafo. O mx.eval o executa e bloqueia. O mx.async_eval o inicia e retorna, de modo que o próximo grafo possa ser montado enquanto a GPU trabalha, e é assim que o mlx-lm sobrepõe os passos de token. O mx.compile traça uma função uma vez, funde suas operações e guarda o resultado por shape e tipo; um shape ou dtype novo traça de novo. Um stream diz qual fila de device executa uma operação, e o MLX acrescenta as dependências entre streams. A lazy evaluation causa dois erros de medição: um cronômetro parado antes do eval mede a montagem do grafo, e uma leitura de pico de memória antes do eval vê memória que ainda não foi alocada. Os quatro limites são o wired limit do sistema, por trás do iogpu.wired_limit_mb, o wired limit do próprio MLX, o limite de memória, com padrão igual ao menor entre 1,5 vez o working set recomendado e 95% da memória instalada, e o limite de cache."
+  modelAnswer: "O MLX registra as operações num grafo e não executa nada até alguém pedir. O mx.eval executa o grafo e espera. O mx.async_eval o inicia e retorna na hora, de modo que o próximo grafo possa ser montado enquanto a GPU trabalha; é assim que o mlx-lm sobrepõe os passos de token. O mx.compile traça uma função uma vez, funde suas operações e guarda o resultado por shape e tipo; um shape ou dtype novo traça de novo. Um stream é a fila de device que executa uma operação, e o próprio MLX acrescenta as dependências entre streams. A lazy evaluation causa dois erros de medição. Um cronômetro parado antes do eval mede a montagem do grafo, e uma leitura de pico de memória antes do eval vê memória que ainda não foi alocada. Os quatro limites são: o wired limit do sistema, por trás do iogpu.wired_limit_mb; o wired limit do próprio MLX; o limite de memória, com padrão igual ao menor entre 1,5 vez o working set recomendado e 95% da memória instalada; e o limite de cache."
 quiz:
   - question: "Uma função compilada executa um contador Python no corpo. O contador marca 1 depois de duas chamadas com o mesmo shape de entrada e 2 depois de uma chamada com shape novo. O que isso mostra?"
     options: ["A função foi traçada uma vez e traçada de novo para o shape novo; portanto o contador mede traces", "A segunda chamada rodou na CPU", "A compilação foi desativada na segunda chamada", "O contador é um efeito colateral que o MLX proíbe, e ele levantou um erro"]
@@ -62,20 +62,22 @@ citations:
     authors: "Apple Machine Learning Research e contribuidores"
     year: 2026
     url: "https://github.com/ml-explore/mlx-lm/blob/v0.32.0/mlx_lm/models/gated_delta.py"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-A lição 8.9 apresentou duas ideias: o MLX é lazy, e seus arrays vivem em memória unificada. Esta lição as transforma em controles. Todo job de MLX tem quatro perguntas: quando o grafo roda, como ele é fundido, qual fila o executa e quanta memória ele pode ocupar. As respostas explicam a maior parte dos tempos estranhos e das surpresas de falta de memória que você vai encontrar num Mac Studio.
+A [aula 8.9](/pt-br/lessons/8-building-and-serving-stacks/8.9-mlx/) apresentou duas ideias. O MLX é **lazy** (preguiçoso): uma linha como `y = a @ a` ainda não multiplica nada; ela só registra a operação num **grafo**, uma lista de operações e dos arrays de que cada uma depende. E os arrays do MLX vivem em memória unificada, um único pool que a CPU e a GPU dividem. Esta aula transforma essas ideias em controles. Todo job de MLX levanta quatro perguntas: quando o grafo roda, como ele é fundido, qual fila o executa e quanta memória ele pode ocupar. As respostas explicam a maior parte dos tempos estranhos e das surpresas de falta de memória que você vai encontrar num Mac Studio.
 
 ## Quando o grafo roda
 
-As operações registram nós. `mx.eval(x)` executa o grafo de que `x` precisa e espera. `mx.async_eval(x)` o inicia e retorna. A docstring o chama de experimental, mas o mlx-lm depende dele. Em `generate_step`, o laço monta o grafo do próximo token a partir do token amostrado que ainda não foi calculado, chama `async_eval` nele e só então chama `.item()` no token anterior. A CPU prepara o passo n+1 enquanto a GPU executa o passo n. Sem a laziness, não haveria nada para sobrepor.
+Cada operação acrescenta um nó ao grafo, e nada é calculado até você pedir. `mx.eval(x)` executa a parte do grafo de que `x` precisa e espera terminar. `mx.async_eval(x)` inicia o mesmo trabalho e retorna na hora, enquanto a GPU continua. A docstring o chama de experimental, mas o mlx-lm depende dele.
 
-A documentação nomeia os gatilhos implícitos: imprimir um array, convertê-lo para NumPy, `.item()`, salvá-lo e usar um array escalar no controle de fluxo do Python. Ela também dá uma regra de tamanho: de algumas dezenas até muitos milhares de operações por avaliação é aceitável. Avaliar depois de cada operação paga um custo fixo a cada vez. O lugar natural para avaliar é uma vez por passo do laço externo.
+Veja como o mlx-lm o usa para manter a GPU ocupada. Em `generate_step`, o laço monta o grafo do próximo token a partir do token amostrado, que ainda é um nó não calculado. Ele chama `async_eval` nesse grafo e só então chama `.item()` para ler o valor do token anterior. Assim, a CPU prepara o passo n+1 enquanto a GPU executa o passo n. Sem a laziness, não haveria nada para sobrepor.
+
+Algumas ações forçam a avaliação sem uma chamada explícita. A documentação nomeia esses gatilhos implícitos: imprimir um array, convertê-lo para NumPy, `.item()`, salvá-lo e usar um array escalar no controle de fluxo do Python (um `if` ou um `while`). Ela também dá uma regra de tamanho: de algumas dezenas até muitos milhares de operações por avaliação é aceitável. Avaliar depois de cada operação paga um custo fixo a cada vez. O lugar natural para avaliar é uma vez por passo do laço externo.
 
 ## Como o grafo é fundido
 
-O `mx.compile` traça uma função uma vez com entradas de substituição, junta o trabalho em comum, funde cadeias elemento a elemento em menos kernels e guarda o resultado em cache. A documentação lista o que força uma nova compilação: mudança de shape, rank, dtype ou do número de entradas. Um contador de sonda torna isso visível, porque o Python executa o corpo só durante o trace. Rode:
+Um **kernel** é um pequeno programa que roda na GPU, e lançar cada um custa tempo. O `mx.compile` reduz esse custo. Ele **traça** a função uma vez: executa o seu código Python com entradas de substituição e registra quais operações ele faz. Depois junta o trabalho em comum, funde cadeias de passos elemento a elemento (passos que tratam cada número isoladamente) em menos kernels e guarda o resultado em cache. A documentação lista o que força uma nova compilação: mudança de shape (o tamanho de cada dimensão), de rank (o número de dimensões), de dtype (o tipo numérico, como float32 ou float16) ou do número de entradas. Um contador de sonda torna isso visível, porque o Python executa o corpo só durante o trace. Rode:
 
 ```python
 import math
@@ -106,15 +108,17 @@ mx.eval(flex(mx.random.uniform(shape=(2, 3, 5))))
 print("shapeless, new rank:", traces)
 ```
 
-No MLX 0.32.3, isto imprime 1, 2, 3, depois 1 e 2. Um shape novo e um dtype novo traçam de novo cada um. Com `shapeless=True`, três shapes do mesmo rank traçaram uma vez, e um rank novo traçou de novo; foi o que esta versão fez, então confira na sua. Funções compiladas precisam ser puras. Imprimir dentro de uma delas derruba o programa, porque os arrays são substitutos, e o estado que você quer carregar precisa passar pelos argumentos `inputs` e `outputs`. Os samplers do mlx-lm fazem exatamente isso, compilando com `inputs=mx.random.state, outputs=mx.random.state` para que a chave aleatória avance.
+No MLX 0.32.3, isto imprime 1, 2, 3, depois 1 e 2. Um shape novo e um dtype novo traçam de novo cada um. Com `shapeless=True`, três shapes do mesmo rank traçaram uma vez, e um rank novo traçou de novo. Foi o que esta versão fez; então confira na sua.
+
+Funções compiladas precisam ser **puras**: o resultado só pode depender das entradas, e elas não podem alterar nada fora de si. Imprimir dentro de uma delas derruba o programa, porque durante o trace os arrays são substitutos sem valores. O estado que você quer levar de uma chamada para a outra precisa passar pelos argumentos `inputs` e `outputs`. Os samplers do mlx-lm fazem exatamente isso, compilando com `inputs=mx.random.state, outputs=mx.random.state` para que a chave aleatória avance.
 
 ## Qual fila executa
 
-Toda operação aceita `stream=`, que pode ser um stream ou um device. O padrão é o stream padrão do device padrão. Os arrays não são movidos, porque vivem em memória unificada. Quando uma operação num stream precisa da saída de outro, o próprio MLX insere a dependência. `mx.synchronize()` espera por um stream, e `with mx.stream(s):` o define para um bloco.
+Um **stream** é uma fila de trabalho para um device, a CPU ou a GPU. Toda operação aceita `stream=`, que pode ser um stream ou um device. O padrão é o stream padrão do device padrão. Os arrays não são movidos entre devices, porque vivem em memória unificada. Quando uma operação num stream precisa da saída de outro, o próprio MLX insere a dependência. `mx.synchronize()` espera por um stream, e `with mx.stream(s):` o define para um bloco.
 
 ## Kernels escritos à mão
 
-O `mx.fast` reúne operações fundidas, entre outras `rms_norm`, `layer_norm`, `rope`, `scaled_dot_product_attention` e os construtores de kernel. Quando nenhuma operação fundida serve, o `mx.fast.metal_kernel` recebe só o corpo do kernel e monta a assinatura a partir dos nomes de entrada e de saída que você der:
+Algumas operações são comuns o bastante para o MLX já entregá-las fundidas. O `mx.fast` as reúne, entre outras `rms_norm`, `layer_norm`, `rope`, `scaled_dot_product_attention` e os construtores de kernel. Quando nenhuma operação fundida serve, você pode escrever o seu próprio kernel em Metal, a linguagem da Apple para programas de GPU. O `mx.fast.metal_kernel` recebe só o corpo do kernel e monta a assinatura a partir dos nomes de entrada e de saída que você der:
 
 ```python
 import mlx.core as mx
@@ -142,7 +146,7 @@ a = mx.random.normal(shape=(4, 16)).astype(mx.float16)
 print("matches mx.exp:", mx.allclose(exp_elementwise(a), mx.exp(a)).item())
 ```
 
-Construa o kernel uma vez; cada construção cria uma biblioteca Metal. O modelo do curso usa isso de verdade. No mlx-lm 0.32.0, o `gated_delta.py` executa a recorrência do Gated DeltaNet como um kernel Metal na GPU e recorre a operações comuns quando o device não é a GPU ou quando a dimensão da chave não é múltipla de 32. Compare os dois caminhos:
+Construa o kernel uma vez; cada construção cria uma biblioteca Metal. O modelo do curso usa isso de verdade. As camadas Gated DeltaNet dele ([aula 4.15](/pt-br/lessons/4-transformer/4.15-gated-deltanet/)) atualizam um estado de tamanho fixo uma vez por token, um passo chamado recorrência. No mlx-lm 0.32.0, o `gated_delta.py` executa essa recorrência como um kernel Metal na GPU. Ele recorre a operações comuns quando o device não é a GPU ou quando a dimensão da chave não é múltipla de 32. Compare os dois caminhos:
 
 ```python
 import mlx.core as mx
@@ -164,22 +168,24 @@ print("state:", s_gpu.dtype, s_gpu.shape)
 print("max output gap:", mx.abs(y_gpu - y_ref).max().item())
 ```
 
-As saídas concordam com precisão de cerca de $10^{-8}$, e o estado inicial é float32 com o shape batch, value heads, dimensão do value, dimensão da chave. A lição 8.9 deixou em aberto o dtype de estado do runtime. Para o estado inicial, esta fonte responde: float32, o dtype que a lição 7.2 supôs para o seu número de referência.
+As saídas concordam com precisão de cerca de $10^{-8}$, e o estado inicial é float32 com o shape batch, value heads, dimensão do value, dimensão da chave. A aula 8.9 deixou em aberto o dtype de estado do runtime. Para o estado inicial, esta fonte responde: float32, o dtype que a [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) supôs para o seu número de referência.
 
 ## Quanta memória ele pode ocupar
+
+Quatro limites separados decidem quanta memória um job de MLX pode ocupar. Os dois primeiros tratam de memória **wired**, travada na RAM para que o macOS não possa movê-la para o disco ([aula 11.1](/pt-br/lessons/11-mac-studio-ultra-and-mlx/11.1-mac-studio-ultra-as-an-inference-machine/)). Os outros dois são orçamentos do próprio MLX: um para os arrays que uma avaliação do grafo cria, outro para os buffers liberados que o MLX guarda para reutilizar. O "working set recomendado" da tabela é o máximo de memória que o macOS recomenda que a GPU use de uma vez.
 
 | Controle | O que faz |
 |---|---|
 | `iogpu.wired_limit_mb` (sistema) | O teto que o macOS põe na memória wired da GPU. `mx.device_info()["max_recommended_working_set_size"]` o informa. |
 | `mx.set_wired_limit(bytes)` | Mantém essa quantidade de memória residente. Padrão 0, útil no macOS 15 ou posterior, e um erro acima do limite do sistema. |
-| `mx.set_memory_limit(bytes)` | Uma diretriz para a avaliação do grafo. O padrão é o menor entre 1,5 vez o working set recomendado e 95% da memória instalada (60,8 GiB num Mac de 64 GB, onde 1,5 vez daria 77,8). A docstring diz apenas 1,5 vez. Passando dele, sem RAM sobrando, a alocação levanta uma exceção. |
+| `mx.set_memory_limit(bytes)` | Uma diretriz para a avaliação do grafo. O padrão é o menor entre 1,5 vez o working set recomendado e 95% da memória instalada (60,8 GiB num Mac com 64 GiB instalados, onde 1,5 vez daria 77,8, então o limite de 95% é o menor). A docstring diz apenas 1,5 vez. Passando dele, sem RAM sobrando, a alocação levanta uma exceção. |
 | `mx.set_cache_limit(bytes)`, `mx.clear_cache()` | Limitam e esvaziam o pool de buffers liberados que o MLX guarda para reutilizar. O limite de cache começa igual ao limite de memória. |
 
 Leia o uso com `get_active_memory` (exclui o cache), `get_cache_memory` e `get_peak_memory` com `reset_peak_memory`.
 
-## A virada errada clássica
+## Por que um cronômetro em volta de uma linha marca quase nada
 
-A virada errada é medir sem avaliar. As duas leituras abaixo mentem:
+A laziness também estraga a medição ingênua. Se você lê um cronômetro ou o pico de memória antes da avaliação, mede o registro do grafo, não o trabalho. As duas leituras abaixo estão erradas:
 
 ```python
 import time
@@ -200,7 +206,7 @@ print("build ms:", round(build_ms, 2), "total ms:", round(total_ms, 2))
 print("peak MB before eval:", peak_before // 10**6, "after:", mx.get_peak_memory() // 10**6)
 ```
 
-O primeiro tempo é a montagem do grafo, e o primeiro pico é zero porque o produto ainda não foi alocado. Avalie, aqueça e só então leia.
+O primeiro tempo é a montagem do grafo, e o primeiro pico é zero porque o produto ainda não foi alocado. A correção tem três passos: avalie, aqueça com uma execução que você descarta e só então leia.
 
 :::warning
 Não mude o wired limit enquanto um `async_eval` puder estar rodando. O código-fonte do mlx-lm diz isso, e o gerenciador de contexto `wired_limit` dele sincroniza o stream antes de restaurar o valor antigo.
@@ -210,4 +216,4 @@ Não mude o wired limit enquanto um `async_eval` puder estar rodando. O código-
 Os fatos aqui valem para o MLX 0.32.3 e o mlx-lm 0.32.0. A documentação marca o `async_eval` como experimental e descreve as variáveis de ambiente avançadas como sujeitas a mudança. O resultado do shapeless foi observado nesta versão, não prometido pela documentação.
 :::
 
-A ideia durável é que um programa MLX é um grafo que você conduz. A lição 11.3 usa essas regras dentro do mlx-lm para converter, ajustar e guardar em cache modelos de verdade.
+Um programa MLX é um grafo que você conduz: você escolhe quando ele roda, o que é fundido, onde ele roda e quanta memória pode ocupar. A [aula 11.3](/pt-br/lessons/11-mac-studio-ultra-and-mlx/11.3-mlx-lm-in-practice/) usa essas regras dentro do mlx-lm para converter, ajustar e guardar em cache modelos de verdade.

@@ -8,23 +8,23 @@ tier: "advanced"
 locale: "en"
 prerequisites: ["5.7-data-parallelism-zero-fsdp"]
 unlocks: ["5.9-mixed-precision"]
-analogy: "A theatre can divide one production three ways. Tensor parallelism gives sections of the orchestra different notes from the same chord, then combines their sound. Pipeline parallelism assigns acts to different stages and moves several casts through like an assembly line. Sequence parallelism gives each editor a different stretch of the same long script, then exchanges information when a scene needs the whole context."
+analogy: "A theatre can divide one production three ways. Tensor parallelism gives different sections of the orchestra different notes of the same chord, then combines their sound. Pipeline parallelism assigns each act to a different stage and moves several casts through, like an assembly line. Sequence parallelism gives each editor a different stretch of the same long script, and the editors exchange notes when a scene needs the whole context."
 teachBack:
   prompt: "Work out which tensor-parallel degrees divide Qwen3.8-27B cleanly, name the binding constraint, and explain how its 16 super-blocks map onto pipeline stages."
-  modelAnswer: "Every tensor-parallel dimension must divide by the degree. The padded vocabulary of 248,320 factors as 512 times 485, so it splits up to degree 512. The FFN intermediate of 17,408 is 1024 times 17, so it splits up to 1024. The 24 query heads divide by 1, 2, 3, 4, 6, 8, 12, and 24. But there are only 4 KV heads, so clean splitting stops at degree 4; beyond that a framework must replicate KV heads across ranks, which costs duplicated memory and extra communication for no saving. For pipelines, the 64 layers form 16 repeating super-blocks of three Gated DeltaNet layers plus one full-attention layer, so degrees that divide 16 give stages with identical composition and balanced cost, while a split inside a super-block leaves stages with different layer mixes."
+  modelAnswer: "Every dimension split by tensor parallelism must divide evenly by the degree. The padded vocabulary of 248,320 factors as 512 times 485, so it splits up to degree 512. The FFN intermediate of 17,408 is 1024 times 17, so it splits up to 1024. The 24 query heads divide by 1, 2, 3, 4, 6, 8, 12, and 24. But there are only 4 KV heads, so clean splitting stops at degree 4. Beyond that, a framework must replicate KV heads across ranks, which costs duplicated memory and extra communication for no saving. For pipelines, the 64 layers form 16 repeating super-blocks of three Gated DeltaNet layers plus one full-attention layer. Degrees that divide 16 give stages with identical composition and balanced cost, while a split inside a super-block leaves stages with different layer mixes."
 quiz:
   - question: "Which quantity binds the clean tensor-parallel degree of Qwen3.8-27B first?"
     options: ["The 4 KV heads — beyond degree 4 they must be replicated rather than split", "The 248,320-row vocabulary, which stops at degree 16", "The 17,408 FFN intermediate, which stops at degree 8", "The 64 layers, which stop at degree 2"]
     correctIndex: 0
-    explanation: "248,320 = 512 x 485 and 17,408 = 1024 x 17 both split far further; grouped-query attention leaves only 4 KV heads, so degree 8 forces replication."
+    explanation: "248,320 = 512 x 485 and 17,408 = 1024 x 17 both split far further. Grouped-query attention leaves only 4 KV heads, so degree 8 forces replication."
   - question: "Lesson 5.7 left about 6.75 GB of persistent state per rank under ZeRO-3 on 64 ranks. Why might a team still add tensor parallelism on top?"
     options: ["Because ZeRO-3 cannot shard optimizer moments", "Sharding state does not shard the computation of one layer, so very large matrices and long sequences still exceed a single rank's compute and activation budget", "Because tensor parallelism removes the need for gradients", "Because FSDP requires a tensor-parallel group"]
     correctIndex: 1
-    explanation: "FSDP materializes full parameters per module and asks one rank to execute the whole operation; tensor parallelism partitions that operation itself."
+    explanation: "FSDP rebuilds the full parameters of each module and asks one rank to execute the whole operation; tensor parallelism splits that operation itself."
   - question: "What is a pipeline bubble?"
     options: ["An attention probability", "A tokenizer fallback byte", "Stage idle time while the pipeline fills, drains, or waits", "An optimizer moment"]
     correctIndex: 2
-    explanation: "Dependencies and finite microbatches leave some stages without useful work during parts of the schedule."
+    explanation: "Dependencies between stages and a finite number of microbatches leave some stages without useful work during parts of the schedule."
 citations:
   - title: "Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism"
     authors: "Mohammad Shoeybi et al."
@@ -42,45 +42,81 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-Your cluster has eight accelerators per node, so you set tensor-parallel degree to eight. It is the obvious choice: eight is the node, eight divides everything you checked, and the job launches without complaint. Six hours later the memory profile looks wrong — the key and value projections are taking the same space on every rank instead of an eighth, and the collective time per step is higher than your model predicted. Nothing failed. The framework quietly did the only thing it could.
+Your cluster has eight accelerators per node, so you set the tensor-parallel degree to eight. It is the obvious choice: eight is the node, eight divides everything you checked, and the job launches without complaint. Six hours later the memory profile looks wrong. The key and value projections take the same space on every rank instead of an eighth, and the communication time per step is higher than your estimate. Nothing failed. The framework did the only thing it could, without a warning. This lesson explains what it did, and how to pick a layout the model's shapes actually allow.
 
-Fully sharded data parallelism distributes model *state* but still asks one rank to execute a module's complete matrix operations after gathering its parameters. When a single layer is too large to compute, when depth exceeds what one device can hold end to end, or when sequences are long enough that positions themselves must be divided, the computation has to be partitioned. **Model parallelism** is the family of layouts that do that, along three different axes.
+## Why is sharding the state not enough?
 
-**Tensor parallelism** divides an operation across feature dimensions. For a linear layer $Y=XW$, ranks can own columns of $W$ and produce different output slices, or own rows and sum partial results. Transformer projections are arranged in complementary column- and row-parallel pairs so no gather is needed between adjacent operations, and collectives — all-reduce, all-gather, reduce-scatter — restore whatever the next step requires. The absolute requirement is divisibility: every partitioned dimension must split evenly by the degree, or be padded until it does.
+Fully sharded data parallelism ([lesson 5.7](/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/)) distributes the model's *state*, but it still asks one rank to execute a module's complete matrix operations after gathering its parameters. Sometimes that is not enough:
 
-So audit this model dimension by dimension. The padded vocabulary is $248{,}320 = 512\times 485$, splitting cleanly at any power-of-two degree up to 512 — that padding was chosen for exactly this purpose, as lesson 5.3 showed. The FFN intermediate is $17{,}408 = 1024\times 17$, splitting up to 1024; at degree 8 each rank owns a $5120\times 2176$ slice of the up-projection. The 24 query heads divide by 1, 2, 3, 4, 6, 8, 12, and 24. Everything so far comfortably supports degree 8.
+- a single layer is too large to compute on one device,
+- the network is too deep for one device to hold end to end,
+- sequences are so long that the positions themselves must be divided.
 
-Then you reach the KV heads. There are four. Grouped-query attention — the serving decision from lesson 5.6 — means 24 query heads share only 4 key/value heads at head dimension 256, so the K and V projections are $5120\to 1024$ rather than $5120\to 6144$. Four divides by 1, 2, and 4, and stops. At degree 4 the split is exact: each rank owns 6 query heads and 1 KV head, a $5120\to 3072$ slice of the q_proj weight — 6 heads carrying 256 query values and 256 gate values each, because the weight is 12288 wide, not 6144 — a $5120\to 256$ slice each of K and V, and a $1536\to 5120$ row-parallel slice of the output projection. At degree 8 there is no exact split, and frameworks fall back to replicating KV heads across pairs of ranks. The job runs, the mathematics is correct, and you have paid for duplicated K/V storage and additional communication in exchange for nothing.
+Then the computation itself has to be partitioned. **Model parallelism** is the family of layouts that do this, along three different axes.
+
+## How does tensor parallelism split one layer?
+
+**Tensor parallelism** divides one operation across its feature dimensions (the widths of the matrices). Take a toy linear layer $Y=XW$ where $W$ has 6 output columns, and two ranks. Rank 0 owns columns 1 to 3, rank 1 owns columns 4 to 6. Each multiplies the same input by its own half and produces half of the output columns. Alternatively, ranks can own rows of $W$ and sum their partial results.
+
+Transformer projections are arranged in complementary pairs, a column-parallel layer followed by a row-parallel one, so no gather is needed between the two. Collectives (the group communications of lesson 5.7: all-reduce, all-gather, reduce-scatter) then restore whatever the next step requires. The absolute requirement is divisibility: every partitioned dimension must split evenly by the degree, or be padded until it does.
+
+## Which dimension limits Qwen3.8-27B's tensor-parallel degree?
+
+So audit this model dimension by dimension:
+
+- The padded vocabulary is $248{,}320 = 512\times 485$, splitting cleanly at any power-of-two degree up to 512. [Lesson 5.3](/lessons/5-pretraining-at-scale/5.3-training-tokenizer/) examined that divisibility; Qwen does not publish why it chose this size.
+- The FFN intermediate is $17{,}408 = 1024\times 17$, splitting up to 1024. At degree 8 each rank owns a $5120\times 2176$ slice of the up-projection.
+- The 24 query heads divide by 1, 2, 3, 4, 6, 8, 12, and 24.
+
+Everything so far comfortably supports degree 8. Then you reach the KV heads, and there are four. Grouped-query attention, the serving decision from [lesson 5.6](/lessons/5-pretraining-at-scale/5.6-inference-aware-scaling/), means 24 query heads share only 4 key/value heads at head dimension 256. So the K and V projections are $5120\to 1024$ rather than $5120\to 6144$. Four divides by 1, 2, and 4, and stops.
+
+At degree 4 the split is exact. Each rank owns 6 query heads and 1 KV head:
+
+- a $5120\to 3072$ slice of the q_proj weight. That is 6 heads carrying 256 query values and 256 gate values each (the gate values scale the attention output), because the full weight is 12288 wide, not 6144;
+- a $5120\to 256$ slice each of K and V;
+- a $1536\to 5120$ row-parallel slice of the output projection.
+
+At degree 8 there is no exact split, and frameworks fall back to replicating KV heads across pairs of ranks. The job runs and the mathematics is correct, but you have paid for duplicated K/V storage and additional communication in exchange for nothing.
 
 :::insight
-The binding constraint on tensor-parallel degree is rarely the number people check. Vocabulary and FFN width are padded generously precisely because someone thought about parallelism; head counts are chosen for serving economics and end up being the ceiling. For this model that ceiling is 4, and every larger degree is a replication decision in disguise.
+The binding constraint on tensor-parallel degree is rarely the number people check. Here the vocabulary and FFN width divide generously, while the head count, small enough to keep serving memory low, ends up being the ceiling. For this model that ceiling is 4, and every larger degree is a replication decision in disguise.
 :::
 
-The Gated DeltaNet layers have their own head structure — 48 value heads and 16 query/key heads, each of dimension 128 — so their clean divisor is 16 for the QK path. Since 48 of the 64 layers are DeltaNet, a layout has to satisfy both structures at once, and again the smallest divisor wins.
+The Gated DeltaNet layers have their own head structure: 48 value heads and 16 query/key heads, each of dimension 128. So their clean divisor is 16 for the QK path. Since 48 of the 64 layers are DeltaNet, a layout has to satisfy both structures at once, and again the smallest divisor wins.
 
-**Pipeline parallelism** partitions depth instead. Consecutive groups of layers become stages; a microbatch flows through stage 0, then stage 1, and so on, with activations crossing stage boundaries and parameters staying put. Here the architecture is unusually cooperative. The 64 layers are not a uniform stack but 16 repeating super-blocks, each three DeltaNet layers followed by one full-attention layer. Any pipeline degree dividing 16 — 2, 4, 8, or 16 — gives stages with identical layer composition. Pipeline degree 4 puts 4 super-blocks, 16 layers, on each stage, and every stage sees exactly 12 DeltaNet layers and 4 attention layers.
+## How does pipeline parallelism split the layers?
 
-Split at a degree that does not divide 16 and the balance breaks: a boundary drawn inside a super-block leaves one stage holding more full-attention layers than another. Since attention and DeltaNet layers have different compute profiles and different memory behaviour with sequence length, unequal composition means unequal stage time, and the slowest stage sets the pace for all of them.
+**Pipeline parallelism** partitions depth instead. Consecutive groups of layers become stages. A microbatch (a small slice of the batch) flows through stage 0, then stage 1, and so on; activations cross the stage boundaries while parameters stay put.
 
-Pipelines also have **bubbles** — idle periods during fill, drain, and dependency waits. With $P$ stages and $m$ microbatches, the classic schedule's bubble fraction is about
+Here the architecture is unusually cooperative. The 64 layers are not a uniform stack but 16 repeating super-blocks, each three DeltaNet layers followed by one full-attention layer. Any pipeline degree that divides 16 (2, 4, 8, or 16) gives stages with identical layer composition. Pipeline degree 4 puts 4 super-blocks, 16 layers, on each stage, and every stage holds exactly 12 DeltaNet layers and 4 attention layers.
+
+Split at a degree that does not divide 16 and the balance breaks: a boundary drawn inside a super-block leaves one stage holding more full-attention layers than another. Attention and DeltaNet layers have different compute costs and grow their memory differently with sequence length. So unequal composition means unequal stage time, and the slowest stage sets the pace for all of them.
+
+Pipelines also have **bubbles**: idle periods while the pipeline fills, drains, or waits on a dependency. With $P$ stages and $m$ microbatches, the classic schedule's bubble fraction is about
 
 $$
 \frac{P-1}{m+P-1},\qquad\text{so at } P=4,\ m=32:\ \frac{3}{35}\approx 8.6\%
 $$
 
-of ideal time lost. More microbatches shrink it and increase activation state. Interleaved schedules and activation checkpointing (lesson 5.10) trade memory, recomputation, and bubble size against each other.
+of ideal time lost. More microbatches shrink the bubble but increase the activation state held at once. Interleaved schedules and activation checkpointing ([lesson 5.10](/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/)) trade memory, recomputation, and bubble size against each other.
 
-**Sequence parallelism** partitions the token dimension. Normalization and position-wise FFNs process local slices happily. Attention needs interaction across positions, so the system exchanges query, key, value, or head partitions; DeepSpeed-Ulysses uses all-to-all to transpose between sequence and head partitions, letting each rank compute complete attention for a subset of heads before transposing back. This axis matters most for a model advertising 262,144 native context, and note that only the 16 attention layers need the exchange — the DeltaNet layers scan positions with a fixed-size recurrent state.
+## How does sequence parallelism split long inputs?
+
+**Sequence parallelism** partitions the token dimension. Normalization and FFNs work on each position independently, so they process local slices with no trouble. Attention needs interaction across positions, so the system exchanges query, key, value, or head partitions. DeepSpeed-Ulysses uses an all-to-all (every rank sends a different piece to every other rank) to switch from splitting by sequence to splitting by head. Each rank then computes complete attention for a subset of heads before switching back.
+
+This axis matters most for a model advertising 262,144 tokens of native context. Note that only the 16 attention layers need the exchange: the DeltaNet layers scan positions with a fixed-size recurrent state.
 
 :::caveat
-"Sequence parallelism" names more than one algorithm. Always ask which tensors are sharded, which collectives run, and whether attention remains exact, becomes ring-based, or is approximated. The same phrase in two frameworks can mean different memory and different numerics.
+"Sequence parallelism" names more than one algorithm. Always ask which tensors are sharded, which collectives run, and whether attention stays exact, becomes ring-based, or is approximated. The same phrase in two frameworks can mean different memory use and different numerical results.
 :::
 
-These axes compose into 3D or higher-dimensional layouts: data-parallel groups across replicas, pipeline stages across layer ranges, tensor-parallel ranks within a stage, sequence sharding for long contexts. The product of group sizes must equal the world size, and each rank needs deterministic coordinates in that grid. Composition also complicates checkpointing — the manifest must record which axis partitioned each tensor, and changing topology at resume requires resharding rather than reassigning rank files.
+## How do the axes combine?
 
-Measure **model FLOPs utilization**, but also collective time, exposed communication, stage idle time, memory peaks, and stragglers. A high theoretical FLOP count behind long bubbles is not efficiency. Profile at the real sequence and microbatch lengths, because a layout tuned for 4,096-token sequences can behave very differently at 262,144.
+These axes compose into 3D or higher-dimensional layouts: data-parallel groups across replicas, pipeline stages across layer ranges, tensor-parallel ranks within a stage, and sequence sharding for long contexts. The product of the group sizes must equal the world size, and each rank needs fixed coordinates in that grid. Composition also complicates checkpointing. The manifest must record which axis partitioned each tensor, and changing the topology at resume requires resharding rather than reassigning rank files.
 
-The durable map is by axis: data parallelism splits examples, tensor parallelism splits feature computation, pipeline parallelism splits depth, sequence parallelism splits positions. Each makes a larger problem fit by manufacturing coordination. The best topology aligns the heaviest communication with the fastest links, keeps every stage doing useful work, and — the lesson of the 4 KV heads — respects the divisor the architecture actually gives you rather than the one the hardware suggests.
+Measure **model FLOPs utilization** (MFU, the share of the hardware's peak arithmetic that goes into the model's own computation). Also measure collective time, communication that is not hidden behind compute, stage idle time, memory peaks, and stragglers (ranks that run slower than the rest). A high theoretical FLOP count behind long bubbles is not efficiency. Profile at the real sequence and microbatch lengths, because a layout tuned for 4,096-token sequences can behave very differently at 262,144.
+
+The map to keep is by axis: data parallelism splits examples, tensor parallelism splits feature computation, pipeline parallelism splits depth, and sequence parallelism splits positions. Each makes a larger problem fit by adding coordination. The best topology puts the heaviest communication on the fastest links, keeps every stage doing useful work, and, as the 4 KV heads show, respects the divisor the architecture actually gives you rather than the one the hardware suggests.

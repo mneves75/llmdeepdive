@@ -11,7 +11,7 @@ unlocks: ["7.4-sampling"]
 analogy: "Picture a busy newsroom. Every reporter writes a question on a card: that is the query. Each source wears a label describing what information they can help with: that is the key. The reporter compares the question with every label and assigns attention accordingly. What the chosen source actually says is the value. A source can have a label that matches the question strongly while delivering a separate payload. Self-attention repeats this tiny newsroom for every token, in parallel."
 teachBack:
   prompt: "Using Qwen3.8-27B's real dimensions, explain the jobs of the Q, K, V, and output projections and why none of them is a square matrix."
-  modelAnswer: "Each token's 5120-dimensional hidden state is projected three ways. The query projection produces 24 query heads of dimension 256, so the query state is 24 times 256 = 6144 wide, not 5120. Because these are gated attention layers, the same matrix also emits a 6144-wide gate, so the weight itself is 5120 to 12288 and is split per head into 256 query and 256 gate values each; only the query halves enter attention, and sigmoid of the gate scales the attention output before the output projection. The key and value projections map 5120 to 1024 because only 4 KV heads of dimension 256 exist: 4 times 256 is 1024. Queries express what a position is looking for, keys describe how a position can be matched, values carry the retrievable content. After attention mixes values, the output projection maps the 6144-wide concatenation back to 5120 so the result can be added to the residual stream. The widths are set by head count times head dimension, so nothing forces them to equal the hidden size."
+  modelAnswer: "Each token's 5120-dimensional hidden state is projected three ways. The query projection produces 24 query heads of dimension 256, so the query state is 24 times 256 = 6144 wide, not 5120. Because these are gated attention layers, the same matrix also emits a 6144-wide gate. The weight itself therefore maps 5120 to 12288, and it is split per head into 256 query and 256 gate values each. Only the query halves enter attention. The sigmoid of the gate then scales the attention output before the output projection. The key and value projections map 5120 to 1024 because only 4 KV heads of dimension 256 exist: 4 times 256 is 1024. Queries express what a position is looking for, keys describe how a position can be matched, and values carry the retrievable content. After attention mixes values, the output projection maps the 6144-wide concatenation back to 5120, so the result can be added to the residual stream. The widths are set by head count times head dimension, so nothing forces them to equal the hidden size."
 quiz:
   - question: "What is compared to produce raw attention scores?"
     options: ["Value vectors with vocabulary IDs", "Two softmax outputs", "A query vector with key vectors", "Token strings with citation URLs"]
@@ -38,52 +38,105 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-The embedding of a token is a context-free lookup. The token "bank" receives the same initial vector in "river bank" and "bank account," yet a useful model must treat those two occurrences differently. That is the concrete problem: turn a static token identity into a representation that depends on the surrounding sequence. **Self-attention** is the operation that does it — each position decides how much information to gather from every other allowed position. The positions themselves are tokenizer outputs from lesson 1.2; in Qwen3.8-27B each one is a vector of 5120 numbers, the model's hidden size.
+## Why does a token need its context?
 
-Represent the sequence as a matrix $X$: one row per token position, 5120 features per row. The attention layer learns three projection matrices, $W_Q$, $W_K$, and $W_V$, producing
+A token's embedding (the vector the model looks up for each token id, [lesson 1.5](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/)) is a context-free lookup. The token "bank" receives the same initial vector in "river bank" and "bank account," yet a useful model must treat those two occurrences differently. That is the concrete problem: turn a static token identity into a representation that depends on the surrounding sequence.
+
+**Self-attention** is the operation that does it: each position decides how much information to gather from every other allowed position. The positions themselves are tokenizer outputs from [lesson 1.2](/lessons/1-text-to-tensors/1.2-tokenization-i/). In Qwen3.8-27B each one is a vector of 5120 numbers, the model's **hidden size** (the width of the vector each token carries between layers).
+
+## Queries, keys and values
+
+Represent the sequence as a matrix $X$: one row per token position, 5120 features per row. The attention layer learns three projection matrices, $W_Q$, $W_K$, and $W_V$. A **projection** here is a learned matrix multiplication that turns each row into a new vector, possibly of a different length. The layer produces
 
 $$
 Q = XW_Q,\qquad K = XW_K,\qquad V = XW_V.
 $$
 
-The names describe roles, not different inputs. **Queries** express what each receiving position is looking for. **Keys** describe how each available position should be matched. **Values** contain the information that can be transferred. Every position creates all three from its current representation.
+The names describe roles, not different inputs:
 
-<Figure id="attention-projection-shapes" />
+- **Queries** express what each receiving position is looking for.
+- **Keys** describe how each available position should be matched.
+- **Values** contain the information that can be transferred.
 
-Now the worked example, with real shapes. A reasonable first guess — and the classic wrong one — is that each projection maps the hidden size to itself: $5120 \to 5120$, a square matrix. Qwen3.8-27B's configuration refutes it. The model's Gated Attention layers use 24 query heads, each of dimension 256. The query projection must produce all of them, so the query state is head count times head dimension:
+Every position creates all three from its current representation. A hash map is a useful first picture: you look something up with a query and get back a value. The difference is that attention never picks one exact key. It compares the query with every key and returns a blend of all the values, weighted by how well each key matched.
 
-$$
-24 \times 256 = 6144 \neq 5120.
-$$
+## Attention on three tokens, by hand
 
-That 6144 is the width of the *query state*, and it is genuinely non-square — $6144 - 5120 = 1024$ wider than a square matrix would be. The weight matrix that produces it is wider still. These are **gated** attention layers (`attn_output_gate` in the config), and the gate is fused into the same projection: `q_proj` emits head count times head dimension **twice over**, $24 \times 256 \times 2 = 12288$. The split is per head, not down the middle — the output is viewed as 24 heads of $256 \times 2$, and each head's last axis is cut into 256 query values and 256 gate values. Gather the query halves and you have the 6144-wide query state; gather the gate halves and you have a second 6144 that never enters the score matrix. Instead, once attention has run, its output is scaled elementwise by $\sigma(\text{gate})$ and only then projected. So on disk the tensor is $5120 \to 12288$; only half of it ever becomes a query. Keys and values are narrower still: the model has only 4 KV heads (a grouped-query design covered in lesson 7.6), so
+Take one query and three positions, each with 2-dimensional vectors so the arithmetic fits in your head. Let the query be $q = [2, 0]$ and the keys $k_1 = [1, 0]$, $k_2 = [0, 1]$, $k_3 = [0.5, 1]$.
 
-$$
-4 \times 256 = 1024,
-$$
+1. **Score each key** with a dot product (multiply matching components and add, [lesson 0.4](/lessons/0-orientation-and-foundations/0.4-vectors-matrices-dot-products/)). A larger dot product means more compatible directions. The scores are $[2, 0, 1]$.
+2. **Turn scores into weights** with softmax, the function from [lesson 0.3](/lessons/0-orientation-and-foundations/0.3-probability-you-need/) that exponentiates each score and divides by the total. That gives roughly $[0.67, 0.09, 0.24]$: positive, summing to one, with most weight on the best match.
+3. **Blend the values** with those weights. If the values are $v_1 = [10, 0]$, $v_2 = [0, 10]$, $v_3 = [5, 5]$, the output is about
 
-and both the key and value projections are $5120 \to 1024$. After the heads compute their outputs and are concatenated back to width 6144, an output projection maps $6144 \to 5120$ so the result fits the residual stream again. Four rectangles, no squares: $q: 5120 \to 12288$ (queries and gate together), $k: 5120 \to 1024$, $v: 5120 \to 1024$, $o: 6144 \to 5120$. Note that $o$'s input is 6144 wide, not 12288: what reaches it is the concatenated, gate-scaled attention *output*, which happens to share the query state's width. The gate is applied elementwise just before $o$, so it scales what $o$ receives without widening it.
+   $$
+   0.67 \cdot [10, 0] + 0.09 \cdot [0, 10] + 0.24 \cdot [5, 5] \approx [7.9, 2.1].
+   $$
 
-:::warning
-The most common misconception here is that attention projections "must" preserve the hidden width, so 24 heads of 256 dimensions "should" be corrected to fit 5120. They should not. Head count × head dimension is an independent design choice; the output projection is what reconciles it with the residual stream. If you ever inspect this model's weights and see a query projection that is neither 5120 nor 6144 but 12288, that is the architecture too: the gate rides in the same matrix, interleaved head by head, and lesson 4.14 shows exactly that shape in a real checkpoint.
-:::
+The output is a new vector for this position, built mostly from what position 1 offered. Real attention also divides the scores by the square root of the head dimension before softmax; this toy skips that step, and [lesson 4.3](/lessons/4-transformer/4.3-scaled-dot-product-attention/) explains why it is needed.
 
-With shapes settled, the mechanism: for one receiving position, take its query and compute a dot product with every key. A larger dot product means more compatible directions. All pairs at once form the score matrix $QK^\top$. Scale by the square root of the head dimension (the subject of lesson 4.3) and normalize each row with softmax:
+Doing this for every query at once is three matrix operations. All pairs at once form the score matrix $QK^\top$. Scale by the square root of the head dimension $d_k$ and normalize each row with softmax:
 
 $$
 \operatorname{Attention}(Q,K,V)
 = \operatorname{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V.
 $$
 
-The softmax outputs are attention weights: non-negative, each row summing to one. Multiplying by $V$ gives every query position a weighted sum of value vectors. This is the crucial separation — keys decide *where to read*, values determine *what is read*. If keys and values were forced to be the same vectors, addressing and payload would share one representation and each would compromise the other.
+The softmax outputs are attention weights: non-negative, each row summing to one. Multiplying by $V$ gives every query position a weighted sum of value vectors. This separation is the heart of the design: keys decide *where to read*, values determine *what is read*. If keys and values were forced to be the same vectors, addressing and payload would share one representation and each would compromise the other.
 
 Consider "The chef added salt because the soup tasted bland." The query at "bland" may match the keys for "soup" and "tasted" more strongly than the key for "chef." Its new representation then mixes value information from those positions. In another sentence the same token starts from the same embedding but ends somewhere different. That is the contextual mixing we set out to build.
 
-The word **self** means queries, keys, and values come from one sequence. Decoder-only models like Qwen3.8-27B add a **causal mask** — position $i$ must not read positions after $i$ — which lesson 4.4 develops. And one attention calculation is not asked to capture every relationship: the projections are split into the 24 parallel heads mentioned above, the subject of lesson 4.5. The full block adds residual connections, normalization, and a feed-forward network; attention is the routing operation inside that larger system.
+## The real shapes in Qwen3.8-27B
 
-Two computational properties matter later. First, all pairwise scores are matrix operations, so training processes positions in parallel. Second, the score matrix has an entry for every pair of positions, giving quadratic growth in sequence length — the bill lesson 4.3 quantifies at this model's real context length and track 7 works to reduce.
+<Figure id="attention-projection-shapes" />
 
-Attention weights are evidence about routing, not proof of reasoning. A high weight shows one head transferred value information along one edge at one layer; residual streams, other heads, and later layers can amplify or cancel it. The durable mental model is a differentiable lookup: every position writes a question, wears a label, and offers a payload, and the projections that define all three are learned end to end.
+Now the worked example with real shapes. A reasonable first guess, and the classic wrong one, is that each projection maps the hidden size to itself: $5120 \to 5120$, a square matrix. Qwen3.8-27B's configuration refutes it.
+
+**Queries.** The model's Gated Attention layers use 24 query heads, each of dimension 256 (a **head** is one independent copy of the attention calculation; [lesson 4.5](/lessons/4-transformer/4.5-multi-head-attention/) explains why there are several). The query projection must produce all of them, so the query state is head count times head dimension:
+
+$$
+24 \times 256 = 6144 \neq 5120.
+$$
+
+That 6144 is the width of the *query state*, and it is genuinely non-square: $6144 - 5120 = 1024$ wider than a square matrix would be.
+
+**The gate.** The weight matrix that produces the queries is wider still. These are **gated** attention layers (`attn_output_gate` in the config), and the gate is fused into the same projection: `q_proj` emits head count times head dimension **twice over**, $24 \times 256 \times 2 = 12288$. Follow the split carefully, because it is per head, not down the middle:
+
+- The output is viewed as 24 heads of $256 \times 2$, and each head's last axis is cut into 256 query values and 256 gate values.
+- Gather the query halves and you have the 6144-wide query state.
+- Gather the gate halves and you have a second 6144 that never enters the score matrix. Instead, once attention has run, its output is scaled elementwise by $\sigma(\text{gate})$ and only then projected. Here $\sigma$ is the sigmoid ([lesson 2.3](/lessons/2-neural-network-fundamentals/2.3-activation-functions/)), which squashes any number into the range 0 to 1, so each gate value acts as a dial on one output number.
+
+So on disk the tensor is $5120 \to 12288$; only half of it ever becomes a query.
+
+**Keys and values** are narrower still. The model has only 4 KV heads (a grouped-query design, where several query heads share one key and value head, covered in [lesson 7.6](/lessons/7-inference-and-efficiency/7.6-mqa-gqa-and-mla/)), so
+
+$$
+4 \times 256 = 1024,
+$$
+
+and both the key and value projections are $5120 \to 1024$.
+
+**Output.** After the heads compute their outputs and are concatenated back to width 6144, an output projection maps $6144 \to 5120$ so the result fits the residual stream again (the running per-token vector that every layer adds to, [lesson 4.10](/lessons/4-transformer/4.10-residuals-pre-norm-post-norm/)).
+
+Four rectangles, no squares: $q: 5120 \to 12288$ (queries and gate together), $k: 5120 \to 1024$, $v: 5120 \to 1024$, $o: 6144 \to 5120$. Note that $o$'s input is 6144 wide, not 12288: what reaches it is the concatenated, gate-scaled attention *output*, which happens to share the query state's width. The gate is applied elementwise just before $o$, so it scales what $o$ receives without widening it.
+
+:::warning
+It is tempting to think attention projections "must" preserve the hidden width, so 24 heads of 256 dimensions "should" be corrected to fit 5120. They should not. Head count × head dimension is an independent design choice; the output projection is what reconciles it with the residual stream. If you ever inspect this model's weights and see a query projection that is neither 5120 nor 6144 but 12288, that is the architecture too: the gate rides in the same matrix, interleaved head by head, and [lesson 4.14](/lessons/4-transformer/4.14-reading-real-weights/) shows exactly that shape in a real checkpoint.
+:::
+
+## What self-attention leaves to later lessons
+
+The word **self** means queries, keys, and values come from one sequence. Decoder-only models like Qwen3.8-27B add a **causal mask**: position $i$ must not read positions after $i$, which [lesson 4.4](/lessons/4-transformer/4.4-causal-masking/) develops. And one attention calculation is not asked to capture every relationship: the projections are split into the 24 parallel heads mentioned above, the subject of lesson 4.5. The full block adds residual connections, normalization, and a feed-forward network; attention is the routing operation inside that larger system.
+
+Two computational properties matter later:
+
+- All pairwise scores are matrix operations, so training processes positions in parallel.
+- The score matrix has an entry for every pair of positions, giving quadratic growth in sequence length. Lesson 4.3 quantifies that bill at this model's real context length, and track 7 works to reduce it.
+
+## What attention weights do and do not show
+
+Attention weights are evidence about routing, not proof of reasoning. A high weight shows one head transferred value information along one edge at one layer. Residual streams, other heads, and later layers can amplify or cancel it.
+
+The durable mental model is a differentiable lookup: every position writes a question, wears a label, and offers a payload. "Differentiable" means a small change in any query or key changes the output a little rather than flipping it, so training can use gradients (how the error changes as each weight changes, [lesson 0.6](/lessons/0-orientation-and-foundations/0.6-derivatives-gradients/)) to learn the projections that define all three, end to end.

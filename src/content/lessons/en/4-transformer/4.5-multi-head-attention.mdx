@@ -11,7 +11,7 @@ unlocks: ["4.6-positional-encoding-sinusoidal-learned", "4.15-gated-deltanet"]
 analogy: "A film editor reviews the same scene through several synchronized monitors. One monitor follows dialogue, another continuity, another lighting, and another movement. Each monitor can rewind only to frames allowed by the edit, and each produces its own notes. A chief editor concatenates those notes and decides what enters the cut. Twenty-four monitors provide useful viewpoints, but buying twenty-four monitors does not guarantee twenty-four distinct insights."
 teachBack:
   prompt: "Describe multi-head attention using Qwen3.8-27B's numbers, including why its query and key/value head counts differ, and why heads are opportunities rather than guaranteed human-readable roles."
-  modelAnswer: "Qwen3.8-27B's attention layers project the 5120-wide residual stream into 24 query heads of dimension 256 — a 6144-wide query tensor — but only 4 key/value heads, a 1024-wide K and V. Each query head runs scaled, causally masked attention in its own 256-dimensional subspace, with groups of 6 query heads sharing one KV head. The 24 head outputs are concatenated back to 6144 and an output projection maps them to 5120 for the residual stream. Separate projections let heads learn different routing patterns, but optimization can make heads redundant or distribute one function across several, so a head does not automatically correspond to one clean linguistic concept."
+  modelAnswer: "Qwen3.8-27B's attention layers project the 5120-wide residual stream into 24 query heads of dimension 256, a 6144-wide query tensor. They project it into only 4 key/value heads, a 1024-wide K and V. Each query head runs scaled, causally masked attention in its own 256-dimensional subspace. Groups of 6 query heads share one KV head. The 24 head outputs are concatenated back to 6144, and an output projection maps them to 5120 for the residual stream. Separate projections let heads learn different routing patterns. Optimization can still make heads redundant or spread one function across several, so a head does not automatically correspond to one clean linguistic concept."
 quiz:
   - question: "Qwen3.8-27B has 24 query heads but only 4 KV heads. How many query heads share each key/value head?"
     options: ["24, all of them", "6, since 24 ÷ 4 = 6", "4", "1, sharing never happens"]
@@ -42,20 +42,34 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-A single attention operation produces one score distribution per query and one mixture of values. Now give it a realistic job. In "The lawyer who signed the contract that the intern drafted was fired," the position for "was" simultaneously needs its subject ("lawyer," eight tokens back), agreement information (singular), and the boundary of the intervening clause. One set of projections must compress all of those different notions of "relevant" into a single similarity space — and a single softmax must express all of them in one weighting. Something has to give.
+## Why is one attention head not enough?
 
-The naive first fix is to make the one head bigger: widen the projections so the single similarity space has room for everything. But a wider dot product still yields *one* score per key and *one* distribution per query — a position cannot simultaneously attend sharply to its subject and diffusely to clause boundaries with a single set of weights. The correction is not a wider head but *more* heads: split the width into independent subspaces, each with its own projections, scores, and softmax. That is **multi-head attention**.
+A single attention operation produces one score distribution per query and one mixture of values. Now give it a realistic job. In "The lawyer who signed the contract that the intern drafted was fired," the position for "was" simultaneously needs three things:
 
-Here is the worked layout for Qwen3.8-27B's Gated Attention layers, continuing the shapes from lesson 4.2. The residual stream is 5120-dimensional. The layer forms $h = 24$ query heads of dimension $d_{head} = 256$:
+- its subject ("lawyer," with eight words in between);
+- agreement information (singular);
+- the boundary of the intervening clause.
+
+One set of projections must compress all of those different notions of "relevant" into a single similarity space, and a single softmax must express all of them in one weighting. Something has to give.
+
+The naive first fix is to make the one head bigger: widen the projections so the single similarity space has room for everything. But a wider dot product still yields *one* score per key and *one* distribution per query. A position cannot attend sharply to its subject and diffusely to clause boundaries at the same time with a single set of weights.
+
+The correction is not a wider head but *more* heads: split the width into independent **subspaces** (separate slices of coordinates, each with its own notion of similarity), each with its own projections, scores, and softmax. That is **multi-head attention**.
+
+## How Qwen3.8-27B splits the width into 24 heads
+
+Here is the worked layout for Qwen3.8-27B's Gated Attention layers, continuing the shapes from [lesson 4.2](/lessons/4-transformer/4.2-self-attention/). The residual stream (the per-token vector that flows between layers) is 5120-dimensional. The layer forms $h = 24$ query heads of dimension $d_{head} = 256$:
 
 $$
 24 \times 256 = 6144
 $$
 
-query features per token, reshaped into a head axis from the query half of the gated $5120 \to 12288$ projection (lesson 4.2) — $B \times T \times 6144$ becoming $B \times h \times T \times 256$. Each head $j$ then runs the machinery of lessons 4.3 and 4.4 independently in its own 256-dimensional coordinate system:
+query features per token. They come from the query half of the gated $5120 \to 12288$ projection (lesson 4.2) and are reshaped into a head axis. With $B$ the batch size (sequences processed together) and $T$ the number of tokens, $B \times T \times 6144$ becomes $B \times h \times T \times 256$: the same numbers, regrouped so each head owns one 256-wide slice.
+
+Each head $j$ then runs the machinery of [lesson 4.3](/lessons/4-transformer/4.3-scaled-dot-product-attention/) and [lesson 4.4](/lessons/4-transformer/4.4-causal-masking/) independently in its own 256-dimensional coordinate system:
 
 $$
 H_j=\operatorname{softmax}\left(\frac{Q_jK_j^\top}{\sqrt{256}}+M\right)V_j,
@@ -63,18 +77,28 @@ $$
 
 with $M$ the causal mask applied identically inside every head. The 24 outputs are concatenated back to width 6144, and the output projection $W_O: 6144 \to 5120$ mixes information *across* heads before the result rejoins the residual stream. That final mixing matters: without it, head 7's discoveries would be trapped in head 7's slice of the concatenation.
 
-Why does this beat one big head at equal parameter count? Because "relevant" no longer has to mean one thing. One head's subspace can emphasize positional proximity, another's can match syntactic features, another's can track an open quotation. Each gets its own softmax, so one head can be nearly one-hot on the subject while another spreads weight across a clause. Later layers compose these routes into behavior no single head could express.
+## What heads do, and what they do not promise
 
-Notice, though, what the paragraph above did *not* say: that head 3 is "the syntax head." Michel, Levy, and Neubig showed that in trained models many heads can be pruned with limited immediate damage while a smaller subset is critical; redundancy helps optimization and robustness, and a single function can be smeared across heads and layers. Twenty-four heads are twenty-four *opportunities* for specialization, not twenty-four labeled experts.
+Why does this beat one big head at equal parameter count? Because "relevant" no longer has to mean one thing. One head's subspace can emphasize positional proximity, another's can match syntactic features, another's can track an open quotation. Each gets its own softmax, so one head can be nearly one-hot on the subject (almost all weight on a single position) while another spreads weight across a clause. Later layers compose these routes into behavior no single head could express.
+
+Notice, though, what the paragraph above did *not* say: that head 3 is "the syntax head." Michel, Levy, and Neubig showed that in trained models many heads can be pruned (removed) with limited immediate damage while a smaller subset is critical. Redundancy helps optimization and robustness, and a single function can be smeared across heads and layers. Twenty-four heads are twenty-four *opportunities* for specialization, not twenty-four labeled experts.
 
 :::caveat
-The common misconception is to read per-head attention maps as a faithful explanation — averaging weights across heads, or naming a head after a few cherry-picked examples. Each head has its own value projection, and W_O can amplify, rotate, or cancel whatever a head wrote, so "head 12 attended to the verb" is a hypothesis about routing that needs causal testing, not an architectural fact.
+Per-head attention maps are easy to over-read as a faithful explanation: averaging weights across heads, or naming a head after a few cherry-picked examples. Each head has its own value projection, and W_O can amplify, rotate, or cancel whatever a head wrote, so "head 12 attended to the verb" is a hypothesis about routing that needs causal testing, not an architectural fact.
 :::
 
-Now the asymmetry that makes this model's layout genuinely modern. Nothing requires the number of key/value heads to equal the number of query heads. Qwen3.8-27B has 24 query heads but only **4 KV heads** — K and V projections of width $4 \times 256 = 1024$, as lesson 4.2 computed. The 24 query heads are partitioned into 4 groups of $24 \div 4 = 6$, and the 6 heads in a group all read the *same* key and value tensors while keeping their own queries. This is **grouped-query attention** (GQA): 24 independent ways of asking questions, but only 4 stored sets of answers. The motive is decode-time memory — fewer KV heads means proportionally less cached state per token — and the full cost–benefit analysis, including MQA at one extreme and MLA beyond it, is the business of lesson 7.6, with the cache arithmetic itself in lesson 7.2.
+## Fewer key/value heads: grouped-query attention
 
-One parameter-count subtlety survives from the classic design: at fixed total width, splitting into more or fewer query heads barely changes parameter count, since the big projections keep the same overall shape — head count changes how the width is *partitioned*, along with kernel behavior and score-matrix bookkeeping. What GQA changes is different: it shrinks K and V themselves, which is a real reduction, paid for by forcing head groups to share addressing targets.
+Now the asymmetry that makes this model's layout genuinely modern. Nothing requires the number of key/value heads to equal the number of query heads. Qwen3.8-27B has 24 query heads but only **4 KV heads**: K and V projections of width $4 \times 256 = 1024$, as lesson 4.2 computed.
 
-Multi-head attention is also the launch point for the other half of Qwen's architecture. The idea that a layer should mix the sequence through many parallel, learned, gated channels does not require softmax attention at all — Qwen's 48 Gated DeltaNet layers run 48 value heads of their own over a recurrent state instead of a score matrix. That mechanism, and why the model keeps only 16 layers of the full attention described here, is lesson 4.15.
+The 24 query heads are partitioned into 4 groups of $24 \div 4 = 6$. The 6 heads in a group all read the *same* key and value tensors while keeping their own queries. This is **grouped-query attention** (GQA): 24 independent ways of asking questions, but only 4 stored sets of answers.
 
-The enduring picture: a bank of learned communication channels, each deciding where to read in its own coordinate system, feeding a shared mixer. The architecture offers specialization, redundancy, and composition — and in its 2026 form, it economizes on the stored half of the conversation.
+The motive is decode-time memory. During generation the model stores every past token's keys and values (the KV cache), so fewer KV heads means proportionally less cached state per token. The full cost–benefit analysis, including multi-query attention (MQA, a single shared KV head) at one extreme and multi-head latent attention (MLA) beyond it, is the business of [lesson 7.6](/lessons/7-inference-and-efficiency/7.6-mqa-gqa-and-mla/), with the cache arithmetic itself in [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/).
+
+One parameter-count subtlety survives from the classic design. At fixed total width, splitting into more or fewer query heads barely changes parameter count, since the big projections keep the same overall shape. Head count changes how the width is *partitioned*, along with kernel behavior and score-matrix bookkeeping. What GQA changes is different: it shrinks K and V themselves, which is a real reduction, paid for by forcing head groups to share addressing targets.
+
+## From heads to Gated DeltaNet
+
+Multi-head attention is also the launch point for the other half of Qwen's architecture. The idea that a layer should mix the sequence through many parallel, learned, gated channels does not require softmax attention at all. Qwen's 48 Gated DeltaNet layers run 48 value heads of their own over a recurrent state instead of a score matrix. That mechanism, and why the model keeps only 16 layers of the full attention described here, is [lesson 4.15](/lessons/4-transformer/4.15-gated-deltanet/).
+
+The enduring picture: a bank of learned communication channels, each deciding where to read in its own coordinate system, feeding a shared mixer. The architecture offers specialization, redundancy, and composition, and in its 2026 form it economizes on the stored half of the conversation.

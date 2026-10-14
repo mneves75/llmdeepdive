@@ -38,23 +38,59 @@ citations:
     authors: "Alexey Dosovitskiy et al."
     year: 2020
     url: "https://arxiv.org/abs/2010.11929"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-The decoder you assembled in this track consumes exactly one thing: a sequence of 5120-dimensional vectors. Text has an obvious route in — tokenize, look up rows of the embedding table, done. But Qwen3.8-27B also accepts images and video, and a photograph has no tokens: it is a grid of pixel intensities with no vocabulary, no discrete units, no lookup table. The concrete problem of multimodality is therefore an adapter problem: manufacture, from raw pixels, vectors that can stand in the same sequence as word embeddings and be processed by the same 64 layers. The component that does this is the **vision encoder**, and in Qwen3.8-27B it is a 27-layer Transformer of its own.
+## How does a picture become vectors?
 
-The entry path starts with a **3D patch embedding**, not an independent linear map per still-image tile. A Conv3d uses a kernel of **2 frames × 16 × 16 pixels** and emits states at the tower width of **1152**. For a simple 224×224 still-image grid, before any processor-specific resizing or padding, the spatial grid is 14×14: 196 pre-merge patch states. Video also advances in two-frame temporal patches. These states are the tower sequence elements, analogous to text tokens only in their role as inputs to contextual processing.
+The decoder you assembled in this track consumes exactly one thing: a sequence of 5120-dimensional vectors. Text has an obvious route in: tokenize, look up rows of the embedding table ([lesson 1.5](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/)), done. But Qwen3.8-27B also accepts images and video, and a photograph has no tokens. It is a grid of pixel intensities with no vocabulary, no discrete units, no lookup table.
 
-Those raw patch embeddings are nearly useless alone — a tile of blue pixels could be sky, sea, or a car door. Meaning comes from context, and the tower supplies it the way you would now expect: **27 Transformer layers**, each with **16 attention heads** and an FFN of intermediate width **4304**, in which every patch attends to every other patch. No causal mask applies — an image has no "future" to hide, so the tower runs encoder-style, bidirectionally, exactly the connectivity lesson 4.12 assigned to models that see their whole input at once. Twenty-seven rounds of communicate-then-compute later, each patch's vector encodes not just its own pixels but its role in the scene.
+The concrete problem of multimodality is therefore an adapter problem: manufacture, from raw pixels, vectors that can stand in the same sequence as word embeddings and be processed by the same 64 layers. The component that does this is the **vision encoder** (also called the vision tower), and in Qwen3.8-27B it is a 27-layer Transformer of its own.
 
-One mismatch remains, and the model solves it with a **PatchMerger**, not a projection applied independently to every patch. The merger groups each 2×2 spatial neighborhood after the tower, concatenating four 1152-dimensional states into $4 \times 1152 = 4608$ features, then projects that group to **5120 dimensions**. In the simple 224×224 case above, the 14×14 pre-merge grid becomes 7×7, or **49 visual sequence elements**. This count is a shape derivation for that unpadded grid; the real processor may resize or pad an input before patching. The resulting continuous vectors join the decoder sequence beside text embeddings and are processed by the same 64 decoder layers.
+## Cutting pixels into patches
 
-Here is where a natural wrong model creeps in, so run the check explicitly. The tempting story: "the vision encoder converts the image into tokens — it captions the picture internally, and the decoder reads those words." If that were true, each patch vector would need to match a row of the 248,320-entry embedding table, and the tower's expressible outputs would be capped at the vocabulary. Check against the mechanism: the projector emits arbitrary points in the continuous 5120-dimensional space, subject to no lookup, no nearest-row snapping, no discretization. A patch vector almost never coincides with any word's row. The image is not translated into language before understanding; it enters the same geometric space lesson 1.5 introduced — where meaning is position, not spelling — through a different door.
+The entry path starts with a **3D patch embedding**, not an independent linear map per still-image tile. A **patch** is a small block of pixels treated as one unit. A Conv3d (a convolution whose kernel spans time, height, and width at once) uses a kernel of **2 frames × 16 × 16 pixels** and emits states at the tower width of **1152**.
+
+Take a simple 224×224 still-image grid, before any processor-specific resizing or padding (the processor is the preprocessing step that prepares raw images; padding adds filler pixels to reach a usable size). Since 224 ÷ 16 = 14, the spatial grid is 14×14: 196 pre-merge patch states. Video also advances in two-frame temporal patches. These states are the tower's sequence elements, analogous to text tokens only in their role as inputs to contextual processing.
+
+## Giving patches context: the 27-layer tower
+
+Those raw patch embeddings are nearly useless alone: a tile of blue pixels could be sky, sea, or a car door. Meaning comes from context, and the tower supplies it the way you would now expect: **27 Transformer layers**, each with **16 attention heads** and an FFN of intermediate width **4304**, in which every patch attends to every other patch.
+
+No causal mask applies, because an image has no "future" to hide. The tower runs encoder-style, bidirectionally, exactly the connectivity [lesson 4.12](/lessons/4-transformer/4.12-transformer-families/) assigned to models that see their whole input at once. Twenty-seven rounds of communicate-then-compute later, each patch's vector encodes not just its own pixels but its role in the scene.
+
+## Merging patches to decoder width
+
+One mismatch remains: the tower works at width 1152, and the decoder needs 5120. The model solves it with a **PatchMerger**, not a projection applied independently to every patch.
+
+1. After the tower, the merger groups each 2×2 spatial neighborhood of patches.
+2. It concatenates the four 1152-dimensional states into $4 \times 1152 = 4608$ features.
+3. It projects that group to **5120 dimensions**.
+
+In the simple 224×224 case above, the 14×14 pre-merge grid becomes 7×7, or **49 visual sequence elements**. This count is a shape derivation for that unpadded grid; the real processor may resize or pad an input before patching. The resulting continuous vectors join the decoder sequence beside text embeddings and are processed by the same 64 decoder layers.
+
+## Images are not translated into tokens
+
+Here is where a natural wrong model creeps in, so run the check explicitly. The tempting story: "the vision encoder converts the image into tokens; it captions the picture internally, and the decoder reads those words."
+
+If that were true, each patch vector would need to match a row of the 248,320-entry embedding table, and the tower's expressible outputs would be capped at the vocabulary. Check against the mechanism: the projector emits arbitrary points in the continuous 5120-dimensional space, subject to no lookup, no nearest-row snapping, no discretization. A patch vector almost never coincides with any word's row. The image is not translated into language before understanding. It enters the same geometric space lesson 1.5 introduced, where meaning is position, not spelling, through a different door.
 
 :::caveat
-"Image tokens" is a convenient phrase and a misleading ontology. Text tokens are drawn from a finite inventory and own rows of the embedding table; visual sequence elements are continuous vectors computed fresh from pixels, corresponding to no vocabulary entry. Conflating the two leads to real errors — such as expecting image content to be reachable by token IDs, or counting the vocabulary as if it bounded what the model can perceive.
+"Image tokens" is a convenient phrase and a misleading picture of what exists. Text tokens are drawn from a finite inventory and own rows of the embedding table; visual sequence elements are continuous vectors computed fresh from pixels, corresponding to no vocabulary entry. Conflating the two leads to real errors, such as expecting image content to be reachable by token IDs, or counting the vocabulary as if it bounded what the model can perceive.
 :::
 
-One question remains: position. Text positions are one-dimensional — token 7 follows token 6 — and lesson 4.7 showed how RoPE rotates query–key pairs to encode that order. But a patch's position is inherently spatial (row 3, column 11), and a video patch adds time (frame 40). Qwen3.8-27B answers with **MRoPE**, multimodal rotary position embedding: the decoder's rotary frequency pairs are partitioned into three interleaved sections of **11, 11, and 10 pairs**, dedicated respectively to **temporal, height, and width** coordinates. Every sequence element carries a three-part position. For an image patch, the height and width sections express the patch's grid coordinates while the temporal index holds still; for video, the temporal section advances frame by frame, letting attention measure "two frames earlier" as naturally as "three tokens back"; for plain text, all three indices advance together, and MRoPE degenerates gracefully into the ordinary 1D RoPE the text-only lessons assumed. Position, like meaning, turns out to be extensible: not abandoned for multimodality, but given more axes.
+## Where each patch sits: MRoPE
 
-Step back and the architecture completes. The vision tower is part of the ~27B parameter total, a specialist encoder connected to a hybrid decoder through a spatial merger and projection. Its patches ride the same residual stream, are retrieved by the same attention layers, and obey the same block contract from lesson 4.11 — arrive at width 5120 or do not arrive at all. Understanding it required nothing new: patchify is tokenization by scissors, the tower is the encoder family you already classified, the PatchMerger combines spatial neighbors and projects them to decoder width, and MRoPE is RoPE with three counters instead of one. Multimodality, in this model, is not a second brain. It is a second door into the same one.
+One question remains: position. Text positions are one-dimensional (token 7 follows token 6), and [lesson 4.7](/lessons/4-transformer/4.7-rope/) showed how RoPE rotates query–key pairs to encode that order. But a patch's position is inherently spatial (row 3, column 11), and a video patch adds time (frame 40).
+
+Qwen3.8-27B answers with **MRoPE**, multimodal rotary position embedding. The decoder's rotary frequency pairs are partitioned into three interleaved sections of **11, 11, and 10 pairs**, dedicated respectively to **temporal, height, and width** coordinates. Every sequence element carries a three-part position:
+
+- **an image patch:** the height and width sections express the patch's grid coordinates while the temporal index holds still;
+- **video:** the temporal section advances frame by frame, letting attention measure "two frames earlier" as naturally as "three tokens back";
+- **plain text:** all three indices advance together, and MRoPE reduces to the ordinary 1D RoPE the text-only lessons assumed.
+
+Position, like meaning, turns out to be extensible: not abandoned for multimodality, but given more axes.
+
+Step back and the architecture completes. The vision tower is part of the ~27B parameter total, a specialist encoder connected to a hybrid decoder through a spatial merger and projection. Its patches ride the same residual stream, are retrieved by the same attention layers, and obey the same block contract from [lesson 4.11](/lessons/4-transformer/4.11-full-transformer-block/): arrive at width 5120 or do not arrive at all.
+
+Understanding it required nothing new. Patchify is tokenization by scissors, the tower is the encoder family you already classified, the PatchMerger combines spatial neighbors and projects them to decoder width, and MRoPE is RoPE with three counters instead of one. Multimodality, in this model, is not a second brain. It is a second door into the same one.

@@ -11,12 +11,12 @@ unlocks: []
 analogy: "Think of a chef choosing tonight’s special from a ranked menu. Greedy decoding always serves the highest-rated dish, so dinner is consistent but repetitive. Temperature changes how strongly ratings influence the choice. Top-k allows only the best k dishes. Top-p keeps the smallest group whose combined popularity reaches a threshold. Min-p removes any dish whose popularity is too tiny relative to the favorite. None of these rules improves the recipes; they only change how the chef chooses among the model’s existing options."
 teachBack:
   prompt: "Explain Qwen3.8-27B's two recommended sampling configurations, including every parameter in the model card, and distinguish the documented values from the hypothesis for why thinking uses temperature 1.0 while instruct uses 0.7."
-  modelAnswer: "The model card recommends thinking mode with temperature 1.0, top-p 0.95, top-k 20, min-p 0.0, presence penalty 0.0, and repetition penalty 1.0. For instruct mode it recommends 0.7, 0.80, 20, 0.0, 1.5, and 1.0 respectively. Those are recommendations, and framework support varies. The card does not explain the causal reason for the difference. A useful deployment hypothesis is that temperature 1.0 preserves more diversity during a long trace while top-k 20 and top-p 0.95 fence off the tail; the shorter instruct path sharpens the distribution and uses a stronger presence penalty. That explanation should be tested rather than attributed to the vendor."
+  modelAnswer: "The model card recommends thinking mode with temperature 1.0, top-p 0.95, top-k 20, min-p 0.0, presence penalty 0.0, and repetition penalty 1.0. For instruct mode it recommends 0.7, 0.80, 20, 0.0, 1.5, and 1.0 respectively. Those are recommendations, and framework support varies. The card does not explain the causal reason for the difference. A useful deployment hypothesis is that temperature 1.0 preserves more diversity during a long trace, while top-k 20 and top-p 0.95 cut off the low-probability tail. In the same hypothesis, the shorter instruct path sharpens the distribution and uses a stronger presence penalty. That explanation should be tested rather than attributed to the vendor."
 quiz:
   - question: "The logits that temperature rescales are produced by what?"
     options: ["Projecting the final position's hidden state through the language-model head over the 248,320-entry vocabulary", "Averaging the attention weights of all heads", "The tokenizer's merge table", "The KV cache contents directly"]
     correctIndex: 0
-    explanation: "The transformer stack — attention and FFN layers — yields a final hidden state; the lm_head maps it to one score per vocabulary token, and only then does decoding begin."
+    explanation: "The transformer stack (attention and feed-forward layers) yields a final hidden state; the language-model head (lm_head) maps it to one score per vocabulary token, and only then does decoding begin."
   - question: "What is the evidence-backed way to describe why Qwen recommends temperature 1.0 for thinking mode?"
     options: ["The card proves that every long reasoning trace self-corrects", "The card documents the setting but not its rationale; tail truncation and search diversity are a plausible hypothesis to test", "Temperature 1.0 disables sampling entirely", "Thinking mode uses a different vocabulary"]
     correctIndex: 1
@@ -34,29 +34,68 @@ citations:
     authors: "Angela Fan, Mike Lewis, and Yann Dauphin"
     year: 2018
     url: "https://arxiv.org/abs/1805.04833"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-The Qwen3.8-27B model card **recommends** two sampling configurations; it does not mandate them. Thinking mode uses temperature 1.0, top-p 0.95, top-k 20, min-p 0.0, presence penalty 0.0, and repetition penalty 1.0. Instruct mode uses 0.7, 0.80, 20, 0.0, 1.5, and 1.0 respectively. Framework support varies, which the card states explicitly. This lesson explains what the controls do and presents a testable hypothesis for the different temperature choices; the model card does not publish the vendor's causal rationale.
+At every decode step the model does not output a word. It outputs a score for every token it knows, and a separate rule, the sampler, picks one. That rule decides whether the same prompt gives the same answer twice, whether long outputs fall into loops, and how adventurous the text reads. The Qwen3.8-27B model card **recommends** two sampling configurations, one for thinking mode and one for instruct mode; it does not mandate them. Framework support varies, which the card states explicitly.
 
-Start from what the model hands the sampler. After the final layer, the language-model head projects the last position's hidden state into one **logit** per vocabulary entry — 248,320 unrestricted scores. Softmax turns them into a distribution; **decoding** is the family of rules that then picks one token. Greedy decoding always takes the argmax: deterministic, cheap, and prone to repetitive, locally-safe text. Sampling from the untouched distribution preserves every tail token — including ones the model itself scored as implausible.
+This lesson explains what each control does, then shows the two presets and presents a testable hypothesis for their different temperature choices. The model card does not publish the vendor's causal rationale.
 
-**Temperature** rescales logits before softmax. For logits $z_i$ and $T>0$,
+## From scores to one token
+
+Start from what the model hands the sampler. After the final layer, the language-model head (the last matrix, which maps the model's internal vector to the vocabulary) projects the last position's hidden state, the vector the network has built for that position, into one **logit** per vocabulary entry: 248,320 unrestricted scores. Softmax turns them into a probability distribution, positive numbers that add up to 1. **Decoding** is the family of rules that then picks one token.
+
+The simplest rule is greedy decoding: always take the argmax, the single highest-scoring token. It is deterministic, cheap, and prone to repetitive, locally safe text. The opposite extreme, sampling from the untouched distribution, preserves every tail token, meaning every low-probability candidate, including ones the model itself scored as implausible. The controls below sit between those two extremes.
+
+## Temperature: sharpen or flatten
+
+**Temperature** rescales logits before softmax. Watch it work on two candidates with logits 2.0 and 1.0. At $T=1$ the gap is $1.0$, so the leader's probability is $1/(1+e^{-1.0}) = 1/1.368 \approx 0.731$. At the instruct preset's $T=0.7$ the gap becomes $1.0/0.7 \approx 1.429$, giving $1/(1+e^{-1.429}) = 1/1.240 \approx 0.807$. Cooling from 1.0 to 0.7 moved the leader from 73 percent to 81 percent: a precise sharpening of confidence, nothing more.
+
+In general, for logits $z_i$ and $T>0$, each logit is divided by $T$ before softmax:
 
 $$
 p_i = \frac{\exp(z_i/T)}{\sum_j \exp(z_j/T)}.
 $$
 
-Watch it work on two candidates with logits 2.0 and 1.0. At $T=1$ the gap is $1.0$, so the leader's probability is $1/(1+e^{-1.0}) = 1/1.368 \approx 0.731$. At the instruct preset's $T=0.7$ the gap becomes $1.0/0.7 \approx 1.429$, giving $1/(1+e^{-1.429}) = 1/1.240 \approx 0.807$. Cooling from 1.0 to 0.7 moved the leader from 73 percent to 81 percent — a precise sharpening of confidence, nothing more. Below 1 sharpens toward greedy; above 1 flattens; exactly 1 leaves the model's distribution untouched.
+Below 1 sharpens toward greedy; above 1 flattens; exactly 1 leaves the model's distribution untouched.
 
-**Top-k** keeps only the $k$ highest-probability tokens and renormalizes. Both recommended configurations set $k=20$: every draw happens among at most twenty survivors out of 248,320 — about 0.008 percent of the vocabulary. **Top-p** (nucleus sampling) adapts instead of fixing a count: keep the smallest prefix of the sorted tokens whose cumulative mass reaches $p$. A confident distribution may cross $p=0.95$ with two tokens; a flat one may need many (still capped at 20 here by top-k). **Min-p** keeps tokens with $p_i \geq \alpha\, p_{\max}$, a cutoff relative to the leader; Qwen sets it to 0.0, effectively disabling that extra filter. The recommended **presence penalty** differs materially: 0.0 for thinking and 1.5 for instruct. The card says it can reduce endless repetition but may also cause language mixing and a slight performance decrease. Repetition penalty stays neutral at 1.0 in both modes.
+## Cutting the tail: top-k, top-p and min-p
 
-Why temperature 1.0 for thinking mode? The card does not say. One plausible hypothesis starts from degeneration research: greedy decoding can yield repetitive loops, while a longer reasoning trace may benefit from exploring alternatives that later tokens can revisit. Top-k 20 and top-p 0.95 still fence off much of the tail. The instruct configuration instead sharpens the distribution ($T=0.7$), tightens the nucleus ($p=0.80$), and adds presence penalty 1.5. That mechanism is coherent, but it is not a vendor-documented explanation and it does not guarantee self-correction. Treat it as a hypothesis: compare task success, truncation, latency, and variance under a fixed output budget before choosing a deployment default.
+These three filters, also called truncation, delete unlikely candidates and then renormalize: they rescale the survivors' probabilities so they add up to 1 again.
+
+- **Top-k** keeps only the $k$ highest-probability tokens. Both recommended configurations set $k=20$: every draw happens among at most twenty survivors out of 248,320, about 0.008 percent of the vocabulary.
+- **Top-p** (nucleus sampling) adapts instead of fixing a count. Sort the tokens by probability and keep the smallest prefix whose cumulative mass reaches $p$. A confident distribution may cross $p=0.95$ with two tokens; a flat one may need many (still capped at 20 here by top-k).
+- **Min-p** keeps tokens with $p_i \geq \alpha\, p_{\max}$, a cutoff relative to the leader's probability. Qwen sets it to 0.0, effectively disabling that extra filter.
+
+## Penalties, and Qwen's two presets
+
+Penalties look at what the model has already written. A presence penalty lowers the score of any token that has already appeared, which discourages repeating it; a repetition penalty of 1.0 leaves scores unchanged. Here are the two recommended presets side by side:
+
+| Parameter | Thinking mode | Instruct mode |
+| --- | --- | --- |
+| temperature | 1.0 | 0.7 |
+| top-p | 0.95 | 0.80 |
+| top-k | 20 | 20 |
+| min-p | 0.0 | 0.0 |
+| presence penalty | 0.0 | 1.5 |
+| repetition penalty | 1.0 | 1.0 |
+
+The recommended **presence penalty** differs materially: 0.0 for thinking and 1.5 for instruct. The card says it can reduce endless repetition but may also cause language mixing and a slight performance decrease. Repetition penalty stays neutral at 1.0 in both modes.
+
+## Why thinking mode runs hotter: a hypothesis
+
+Why temperature 1.0 for thinking mode? The card does not say. One plausible hypothesis starts from degeneration research, the study of why generated text falls into loops and dull repetition. Greedy decoding can yield repetitive loops, while a longer reasoning trace may benefit from exploring alternatives that later tokens can revisit. Top-k 20 and top-p 0.95 still fence off much of the tail. The instruct configuration instead sharpens the distribution ($T=0.7$), tightens the nucleus ($p=0.80$), and adds presence penalty 1.5.
+
+That mechanism is coherent, but it is not a vendor-documented explanation, and it does not guarantee self-correction. Treat it as a hypothesis. Before choosing a deployment default, compare task success, truncation, latency, and variance under a fixed output budget.
 
 :::warning
-Temperature is not a knowledge dial. If Qwen3.8-27B puts the correct token deep in the tail, raising temperature mostly elevates wrong tail tokens along with it, and truncation may delete it entirely; lowering temperature makes a confidently wrong mode more dominant. Decoding redistributes and selects among scores the model already produced — retrieval, tools, and better training fix what sampling cannot.
+Temperature is not a knowledge dial. If Qwen3.8-27B puts the correct token deep in the tail, raising temperature mostly lifts wrong tail tokens along with it, and truncation may delete the correct one entirely. Lowering temperature makes a confidently wrong answer even more dominant. Decoding redistributes and selects among scores the model already produced; retrieval, tools, and better training fix what sampling cannot.
 :::
 
-Order of operations matters in practice. A runtime may apply temperature, top-k, top-p, penalties, and other processors in sequence before renormalizing, and identical labels do not guarantee identical outputs across libraries if the order, edge cases, or RNG differ. A seed reproduces output only when the whole execution path is deterministic. When you deploy the model through vLLM, SGLang, or Workers AI, pin the preset explicitly rather than trusting defaults — and record model version, tokenizer, and the full decoding configuration with every request you might need to replay.
+## Reproducing a configuration
 
-The reliable mental sequence: the model outputs 248,320 logits; temperature reshapes them; truncation removes candidates; renormalization restores a distribution; a pseudorandom draw picks one token; the token joins the context; inference repeats. Separate the model's scoring from the decoder's choosing, and the two presets stop looking like folklore and start looking like two deliberate positions on one dial.
+Order of operations matters in practice. A runtime may apply temperature, top-k, top-p, penalties, and other processors in sequence before renormalizing. Identical labels do not guarantee identical outputs across libraries if the order, the edge cases, or the RNG (random number generator) differ. A seed, the starting value of that generator, reproduces output only when the whole execution path is deterministic.
+
+When you deploy the model through vLLM, SGLang, or Workers AI, pin the preset explicitly rather than trusting defaults. Record the model version, the tokenizer, and the full decoding configuration with every request you might need to replay.
+
+The whole sequence, step by step: the model outputs 248,320 logits; temperature reshapes them; truncation removes candidates; renormalization restores a distribution; a pseudorandom draw picks one token; the token joins the context; inference repeats. Keep the model's scoring separate from the decoder's choosing, and the two presets stop looking like folklore. They become two deliberate positions on one dial.

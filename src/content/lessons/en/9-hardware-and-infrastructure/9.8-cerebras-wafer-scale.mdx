@@ -34,43 +34,72 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-09-13"
+updated: "2026-10-14"
 ---
 
-Lesson 9.1 ended on an uncomfortable number. For a measured batch-one path, the bandwidth roofline is
+[Lesson 9.1](/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/) ended on an uncomfortable number. For a measured batch-one path (one conversation, one token per step), the bandwidth roofline is
 
 $$
 \text{tokens per second} \le \frac{B}{W},
 $$
 
-with $B$ the memory bandwidth and $W$ the actual bytes read per token. Using the full 54 GB checkpoint as a stated proxy, and an H100 SXM's reported 3.35 TB/s of HBM3 gives roughly 60 tokens per second as a simple checkpoint-size estimate. Every subsequent lesson in this track has accepted that structure and argued about the numerator or the denominator. This lesson is about a design that attacks the numerator B by changing the memory technology.
+with $B$ the memory bandwidth and $W$ the actual bytes read per token. Take the full 54 GB checkpoint as a stated proxy for W and an H100 SXM's reported 3.35 TB/s of HBM3 as B, and you get roughly 60 tokens per second as a simple checkpoint-size estimate. Every later lesson in this track has accepted that structure and argued about the numerator or the denominator. This lesson is about a design that attacks the numerator B by changing the memory technology.
 
-The reason HBM bandwidth is where it is comes down to where the memory sits. High-bandwidth memory is DRAM stacked beside the processor die and reached through an interposer — vastly better than a socketed DIMM, but still an off-die interface with a finite number of wires running at a finite rate. SRAM, the memory used for on-chip caches, sits in the same silicon as the arithmetic and is reached without leaving the die. Its bandwidth is orders of magnitude higher, and its capacity per unit of silicon area is orders of magnitude lower. That single trade is the whole story of every cache hierarchy ever built: a small fast tier in front of a large slow one, with a hit rate deciding which one you actually feel.
+## Why memory location sets bandwidth
 
-Wafer-scale processing takes the trade to its logical extreme. Instead of cutting a wafer into hundreds of separate chips, the entire wafer is fabricated as one device, tiled with a very large number of small cores each carrying its own local SRAM, connected by an on-wafer fabric. Cerebras describes this architecture and the inference service built on it in its product and documentation pages. The consequence for language-model decode is direct: if the model's weights are distributed across that on-wafer SRAM, the per-token weight read never touches an HBM interface, and the numerator B in lesson 9.1's roofline is replaced by something much larger.
+HBM bandwidth is where it is because of where the memory sits. High-bandwidth memory is DRAM stacked beside the processor die and reached through an **interposer**, a silicon base that wires the memory stacks to the processor. That is vastly better than a socketed DIMM (an ordinary memory stick), but it is still an off-die interface: a finite number of wires running at a finite rate.
 
-How much larger? Rather than quoting a bandwidth figure and asking you to trust it, invert the formula and turn a public throughput claim into a bandwidth requirement. Vendors in this space advertise rates above a thousand tokens per second on large models. Take a stated scenario in which 54 GB are active per token:
+**SRAM**, the memory used for on-chip caches, sits in the same silicon as the arithmetic and is reached without leaving the die. Compared with HBM:
+
+- its bandwidth is orders of magnitude higher;
+- its capacity per unit of silicon area is orders of magnitude lower.
+
+That trade is the whole story of every cache hierarchy ever built, including the CPU caches a developer already knows: a small fast tier in front of a large slow one, with the hit rate deciding which one you actually feel.
+
+## What wafer scale changes
+
+Wafer-scale processing takes the trade to its logical extreme. Normally a wafer, the silicon disc chips are made on, is cut into hundreds of separate chips. Here the entire wafer is fabricated as one device. It is tiled with a very large number of small cores, each carrying its own local SRAM, connected by an on-wafer fabric (the network linking the cores). Cerebras describes this architecture, and the inference service built on it, in its product and documentation pages.
+
+The consequence for language-model decode is direct. If the model's weights are spread across that on-wafer SRAM, the per-token weight read never touches an HBM interface. The numerator B in lesson 9.1's roofline is replaced by something much larger.
+
+## Checking a throughput claim by inverting the formula
+
+How much larger? Rather than quoting a bandwidth figure and asking you to trust it, invert the formula: multiply a public throughput claim by bytes per token to get the bandwidth it requires. Vendors in this space advertise rates above a thousand tokens per second on large models. Take a stated scenario in which 54 GB are active per token:
 
 $$
 1000\ \text{tok/s} \times 54\ \text{GB per token} = 54\ \text{TB/s of effective weight-read bandwidth}.
 $$
 
-Fifty-four terabytes per second — about sixteen times an H100's HBM3 figure. Using the pinned 17.1 GB Q4_K_M file size only as a proxy the requirement softens but stays severe:
+Fifty-four terabytes per second is about sixteen times an H100's HBM3 figure. Using the pinned 17.1 GB Q4_K_M file size (the course's 4-bit file) only as a proxy, the requirement softens but stays severe:
 
 $$
 1000\ \text{tok/s} \times 17.1\ \text{GB artifact} = 17.1\ \text{TB/s}.
 $$
 
-Still about five times HBM3, but only as an artifact-size sanity check; exact active bytes require profiling. This is the useful discipline: a throughput claim implies a bandwidth, and you can check whether the implied bandwidth is plausible for the memory technology in question. From stacked DRAM these rates are not merely difficult, they are outside the interface's physics. From on-wafer SRAM they are dimensionally consistent. That does not make them true — it makes them the kind of claim worth investigating rather than dismissing.
+That is still about five times HBM3, but only as an artifact-size sanity check; exact active bytes require profiling.
 
-Now the wrong turn, which is the reason this lesson sits before the cost capstone rather than after it. A reader computes that a wafer-scale system is roughly sixteen times faster per stream than a GPU and concludes it must therefore be roughly sixteen times cheaper per token. Two errors are stacked there. The first is treating a roofline bound as a throughput prediction: B/W is an upper bound only when W is actual active traffic, and achieved rates depend on kernel efficiency, compiler quality, the fabric's behaviour under the model's actual dataflow, and whether every operator — including this model's Gated DeltaNet layers — maps onto the hardware at all. The second error is comparing the wrong quantity. Nobody serves a production GPU at batch one. Lesson 7.3 showed that batching amortizes the weight read across many concurrent sequences, so a GPU's aggregate throughput climbs far above its single-stream ceiling while each user still sees roughly single-stream latency. The GPU's product is throughput per dollar; the wafer's product is latency per stream. Those are different goods, and lesson 9.10 will show that cost per token is set by system cost per second divided by tokens per second, never by a speed ratio alone.
+This is the useful discipline: a throughput claim implies a bandwidth, and you can check whether that bandwidth is plausible for the memory technology in question. From stacked DRAM, these rates are not merely difficult; they are outside what the interface can physically deliver. From on-wafer SRAM, they are dimensionally consistent. That does not make them true. It makes them the kind of claim worth investigating rather than dismissing.
+
+## Faster per stream does not mean cheaper per token
+
+This wrong turn is the reason this lesson sits before the cost lesson rather than after it. A reader computes that a wafer-scale system is roughly sixteen times faster per stream than a GPU, and concludes it must therefore be roughly sixteen times cheaper per token. Two errors are stacked there.
+
+The first error is treating a roofline bound as a throughput prediction. B/W is an upper bound only when W is the actual active traffic. Achieved rates depend on kernel efficiency, compiler quality, how the fabric behaves under the model's actual dataflow, and whether every operator, including this model's Gated DeltaNet layers, maps onto the hardware at all.
+
+The second error is comparing the wrong quantity. Nobody serves a production GPU at batch one. [Lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) showed that batching spreads the weight read across many concurrent sequences. A GPU's total throughput therefore climbs far above its single-stream ceiling, while each user still sees roughly single-stream latency. The GPU's product is throughput per dollar; the wafer's product is latency per stream. Those are different goods. [Lesson 9.10](/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) shows that cost per token is set by system cost per second divided by tokens per second, never by a speed ratio alone.
 
 :::warning
-The most common misconception here is that wafer scale repeals the memory wall. It relocates it. On-wafer SRAM capacity is small relative to DRAM for the same silicon, so a model whose weights exceed what one wafer holds must be split across several or streamed from a separate weight store — and the moment weights stream from off-wafer memory, an interface is back in the path and lesson 9.1's arithmetic applies to that interface. Read a vendor architecture description for where the weights actually reside during decode before assuming the SRAM figure governs your workload. The KV cache is a separate question again: lesson 7.2's 16 GiB at full native context does not shrink because the compute substrate changed.
+A frequent misconception here is that wafer scale repeals the memory wall. It moves it. On-wafer SRAM capacity is small relative to DRAM for the same silicon. A model whose weights exceed what one wafer holds must be split across several wafers or streamed from a separate weight store. The moment weights stream from off-wafer memory, an interface is back in the path, and lesson 9.1's arithmetic applies to that interface. Before assuming the SRAM figure governs your workload, read the vendor's architecture description for where the weights actually reside during decode. The KV cache is a separate question again: [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)'s 16 GiB at full native context does not shrink because the compute substrate changed.
 :::
 
 :::caveat
 Every performance number attributed to a wafer-scale system in this lesson is vendor-reported and, as of August 2026, awaiting broad independent reproduction under disclosed conditions. When you read such a figure, ask four things: which model and which precision, what context length, what batch size, and whether the number is peak or sustained. A thousand tokens per second at 4-bit and 2,000 tokens of context is a different claim from the same rate at bf16 and 262,144 tokens, and only the first is comparable to the numbers this course has derived.
 :::
 
-The durable takeaway is a method, not a verdict on a vendor. The bandwidth wall of lesson 9.1 is not a law about GPUs, it is a law about the ratio of supply rate to bytes moved — and any architecture that changes where the weights physically sit changes that ratio. Wafer scale is one such architecture; quantization is another, reducing the denominator W; the hybrid Gated DeltaNet layout of lesson 4.16 reduces growing KV-history traffic at long context rather than the model-weight term. Cost decides which one you can afford, and that is the last lesson of the course.
+The takeaway is a method, not a verdict on a vendor. The bandwidth wall of lesson 9.1 is not a law about GPUs. It is a law about the ratio of supply rate to bytes moved, and any architecture that changes where the weights physically sit changes that ratio. Each approach changes a different term:
+
+- Wafer scale raises the numerator B.
+- Quantization reduces the denominator W.
+- The hybrid Gated DeltaNet layout of [lesson 4.16](/lessons/4-transformer/4.16-hybrid-layouts/) reduces the growing KV-history traffic at long context, not the model-weight term.
+
+Cost decides which one you can afford, and that is the last lesson of this track.

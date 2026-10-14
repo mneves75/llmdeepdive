@@ -11,7 +11,7 @@ unlocks: ["8.8-ollama-and-local-runners", "8.9-mlx", "13.1-inside-llama-cpp-ggml
 analogy: "A shipping container is not a way of making cargo smaller. It is a standard box with a manifest bolted to the door: what is inside, in what units, packed by whom, and which cranes can lift it. Any port that reads the manifest can unload it without opening the box first. GGUF is that container for model weights — the compression happened before packing, and the manifest is what lets a runtime refuse a load it cannot honour instead of failing halfway through."
 teachBack:
   prompt: "Explain what GGUF actually is, distinguish it from a quantization method, and explain how you would validate a Q4_K_M Qwen3.8-27B deployment on a 24 GB GPU and a 16 GB GPU."
-  modelAnswer: "GGUF is a container format, not a compression algorithm: one file holds typed metadata and tensor data, and each tensor carries its own quantization type. The k-quant schemes perform the compression, and one file may mix types to preserve sensitive tensors at higher precision. The pinned community Q4_K_M text-model artifact is 17,106,773,984 bytes: 17.1 GB, or 15.93 GiB. Do not infer an exact effective bits-per-weight value from the rounded 27B label, because the file mixes tensor types and the exact denominator must come from the tensors it contains. Whether it fits a 24 GB or 16 GB GPU is a runtime measurement, not artifact size subtracted from brochure VRAM: lesson 7.2 owns the cache and recurrent-state derivation, including about 144 MiB per sequence for the reference fp32 DeltaNet state, while lesson 9.3 owns the full device budget. llama.cpp may use a different state dtype or layout. Load the exact artifact and build, inspect realized allocations, and treat any required CPU partial offload as a bandwidth path to benchmark rather than a graceful percentage slowdown."
+  modelAnswer: "GGUF is a container format, not a compression algorithm. One file holds typed metadata and tensor data, and each tensor carries its own quantization type. The k-quant schemes perform the compression, and one file may mix types to preserve sensitive tensors at higher precision. The pinned community Q4_K_M text-model artifact is 17,106,773,984 bytes: 17.1 GB, or 15.93 GiB. Do not infer an exact effective bits-per-weight value from the rounded 27B label. The file mixes tensor types, so the exact denominator must come from the tensors it contains. Whether the artifact fits a 24 GB or 16 GB GPU is a runtime measurement, not artifact size subtracted from the advertised VRAM. Lesson 7.2 owns the cache and recurrent-state derivation, including about 144 MiB per sequence for the reference fp32 DeltaNet state. Lesson 9.3 owns the full device budget. The llama.cpp runtime may use a different state dtype or layout. Load the exact artifact and build, and inspect the realized allocations. Treat any required partial offload to the CPU as a bandwidth path to benchmark, not as a graceful percentage slowdown."
 quiz:
   - question: "The pinned Qwen3.8-27B Q4_K_M text-model GGUF is 17.1 GB. What does the Q4_K_M part describe?"
     options: ["The GGUF format version, which fixes 4-bit for every tensor","The dominant quantization scheme of the tensors inside; the container itself stores a type per tensor and mixes several","A compression applied to the whole file, decompressed at load time","The number of layers kept in 4-bit while the rest stay bf16 on disk"]
@@ -30,34 +30,68 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-04"
+updated: "2026-10-14"
 ---
 
-You downloaded one file. It is exactly 17,106,773,984 bytes in the pinned release, its name ends in Q4_K_M.gguf, and it claims to be Qwen3.8-27B. Lesson 7.12 told you which rung of the quantization ladder that is; this lesson opens the box. What is inside a GGUF, why is this pinned file 17.1 GB rather than the naive 13.5 GB estimate, and what has to be true about your machine before the file is worth the download?
+You downloaded one file. It is exactly 17,106,773,984 bytes in the pinned release, its name ends in Q4_K_M.gguf, and it claims to be Qwen3.8-27B. [Lesson 7.12](/lessons/7-inference-and-efficiency/7.12-running-models-locally/) told you which rung of the quantization ladder that is; this lesson opens the box. Three questions guide it. What is inside a GGUF? Why is this pinned file 17.1 GB rather than the naive 13.5 GB estimate? And what has to be true about your machine before the file is worth the download?
 
-Start with the engine, because the format exists to serve it. llama.cpp is an inference runtime written in C and C++ with no Python runtime dependency, built on the ggml tensor library. Its defining constraint is that a model must be one artifact and one binary, runnable on a laptop CPU, an Apple GPU through Metal, an NVIDIA GPU through CUDA, or a cross-vendor path through Vulkan, with the same file in every case. That constraint produced GGUF.
+## What llama.cpp needed from a file format
 
-A GGUF file is a **container**, and the single most common misunderstanding is to treat it as a compression method. It is not. The layout is a header of typed key-value metadata followed by a tensor directory followed by the tensor bytes. The metadata names the architecture, the hyperparameters a runtime needs to build the compute graph, the full tokenizer including merges and special tokens, and the chat template. The tensor directory gives every tensor a name, a shape, an offset, and — this is the important part — **its own quantization type**. A GGUF is therefore self-describing and mmap-able: the runtime maps the file, reads the manifest, decides before allocating anything whether it can build this graph, and pages weights in from disk rather than copying them through a loader.
+Start with the engine, because the format exists to serve it. llama.cpp is an inference runtime written in C and C++ with no Python runtime dependency, built on the ggml tensor library. Its defining constraint is that a model must be one artifact and one binary. The same file has to run on a laptop CPU, on an Apple GPU through Metal, on an NVIDIA GPU through CUDA, or on a cross-vendor path through Vulkan. That constraint produced GGUF.
 
-The compression lives in those per-tensor types, and they form a ladder. Q8_0 is a straightforward 8-bit block scheme, close to lossless in practice and about half the bf16 size. The k-quants — Q6_K, Q5_K_M, Q4_K_M, Q4_K_S, Q3_K_M, down to Q2_K — use a super-block structure in which small blocks of weights share a scale and the scales themselves are quantized against a block-level scale, which is how they buy precision at low bit rates. The trailing letter is a mix policy rather than a bit width: an M variant keeps tensors the converter considers sensitive at a higher type than the S variant does. That is why the arithmetic from lesson 7.10 works out. Nominally 4 bits over 27 billion parameters gives $27\text{e}9 \times 0.5 = 13.5$ GB; the scales, super-block metadata, and deliberately preserved tensors add bytes, and the pinned artifact lands at 17.1 GB (15.93 GiB). The rounded 27B label is not a sufficient denominator for an exact effective-bits claim. The gap is not waste. It is the reason the file is still usable.
+## What is inside a GGUF file?
 
-Below the k-quants sits a second family, the **i-quants** — `IQ1_S`, `IQ2_XXS` through `IQ4_XS` and `IQ4_NL`. These reconstruct weights from a codebook rather than a plain scaled integer, which is what lets them stay coherent at bit rates where a k-quant falls apart. Two things they are routinely confused with, both worth getting straight before you download one. The importance matrix is **separable from the format**: plenty of well-regarded `Q4_K_M` files are imatrix-calibrated, and not every IQ type needs one — llama.cpp refuses at its lowest rungs (the IQ1 and IQ2 families, the smaller IQ3 types, and `Q2_K_S`), warning that the result would otherwise be garbage, while `IQ4_XS` and `IQ4_NL` build fine without. The check is per tensor and keyed on the target type, so the precise set shifts between releases. And lower is not automatically better value, because codebook lookups cost decode time that a k-quant does not pay. Reach for an i-quant when memory is the binding constraint, not as a general upgrade. Lesson 7.13 compares these artifacts properly.
+A GGUF file is a **container**, and the single most common misunderstanding is to treat it as a compression method. It is not. The file has three parts, in order:
 
-Do not repeat the model's memory budget from artifact size alone. Lesson 7.2 owns the model-specific KV-cache and recurrent-state derivation, and lesson 9.3 owns the complete accelerator budget after runtime reserve. The reference implementation's Gated DeltaNet state is about 144 MiB per sequence when stored in fp32, constant in context length; llama.cpp can use a different dtype or layout, and its compute buffers and graph workspace depend on the exact build and backend. On either a 24 GB or 16 GiB-class device, load the exact GGUF, inspect the realized allocation and offload reported by `llama-server`, and validate the intended context and concurrency instead of declaring a fit from the nominal VRAM ceiling.
+1. A header of typed key-value metadata. It names the architecture, the hyperparameters a runtime needs to build the compute graph, the full tokenizer including merges and special tokens, and the chat template.
+2. A tensor directory. It gives every tensor a name, a shape, an offset in the file, and, most importantly, **its own quantization type**.
+3. The tensor bytes themselves.
+
+A GGUF is therefore self-describing and mmap-able (the operating system can map the file into memory and load pages only when they are read). The runtime maps the file and reads the manifest. Before allocating anything, it decides whether it can build this graph. Then it pages weights in from disk rather than copying them through a loader.
+
+## The quantization ladder: why 17.1 GB and not 13.5 GB
+
+The compression lives in those per-tensor types, and they form a ladder from larger and more faithful to smaller and lossier.
+
+- **Q8_0** is a straightforward 8-bit block scheme: close to lossless in practice and about half the bf16 size.
+- The **k-quants** (Q6_K, Q5_K_M, Q4_K_M, Q4_K_S, Q3_K_M, down to Q2_K) use a super-block structure. Small blocks of weights share a scale, and those scales are themselves quantized against a block-level scale. That two-level scheme is how they keep precision at low bit rates.
+
+The trailing letter is a mix policy, not a bit width. An M variant keeps the tensors the converter considers sensitive at a higher type than the S variant does.
+
+That is why the arithmetic from [lesson 7.10](/lessons/7-inference-and-efficiency/7.10-quantization-ii-gptq-awq-gguf-qat/) works out. Nominally, 4 bits over 27 billion parameters gives $27\text{e}9 \times 0.5 = 13.5$ GB. The scales, the super-block metadata, and the deliberately preserved tensors add bytes, and the pinned artifact lands at 17.1 GB (15.93 GiB). The rounded 27B label is not a sufficient denominator for an exact effective-bits claim. The gap is not waste. It is the reason the file is still usable.
+
+## i-quants and the importance matrix
+
+Below the k-quants sits a second family, the **i-quants**: `IQ1_S`, `IQ2_XXS` through `IQ4_XS`, and `IQ4_NL`. These reconstruct weights from a codebook (a fixed table of value patterns, indexed by the stored code) rather than from a plain scaled integer. That is what lets them stay coherent at bit rates where a k-quant falls apart.
+
+Two things are routinely confused with them, and both are worth getting straight before you download one.
+
+First, the importance matrix (imatrix: statistics from running sample text through the model, used to decide which weights most need precision) is **separable from the format**. Plenty of well-regarded `Q4_K_M` files are imatrix-calibrated. And not every IQ type needs one. llama.cpp refuses without it at its lowest rungs (the IQ1 and IQ2 families, the smaller IQ3 types, and `Q2_K_S`), warning that the result would otherwise be garbage, while `IQ4_XS` and `IQ4_NL` build fine without. The check is per tensor and keyed on the target type, so the precise set shifts between releases.
+
+Second, lower is not automatically better value, because codebook lookups cost decode time that a k-quant does not pay. Reach for an i-quant when memory is the binding constraint (the limit you hit first), not as a general upgrade. [Lesson 7.13](/lessons/7-inference-and-efficiency/7.13-choosing-and-judging-a-community-quant/) compares these artifacts properly.
+
+## Will it fit on your GPU?
+
+Do not repeat the model's memory budget from artifact size alone. [Lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) owns the model-specific KV-cache and recurrent-state derivation, and [lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns the complete accelerator budget after runtime reserve. Two facts make a size-only estimate unsafe:
+
+- The reference implementation's Gated DeltaNet state is about 144 MiB per sequence when stored in fp32, constant in context length. llama.cpp can use a different dtype or layout.
+- Its compute buffers and graph workspace depend on the exact build and backend.
+
+So on either a 24 GB or a 16 GB GPU, load the exact GGUF and inspect the realized allocation and offload reported by `llama-server`. Validate the intended context and concurrency there, instead of declaring a fit from the nominal VRAM ceiling.
 
 ```
 llama-server -m Qwen3.8-27B-Q4_K_M.gguf -ngl 99 -c 8192 \
   --temp 0.7 --top-p 0.80 --top-k 20
 ```
 
-If the measured allocation requires partial offload, the performance warning is still real. Decode is bandwidth-bound — each token reads essentially all resident weight bytes — so layers left on the host run at system-memory speed and their activations cross PCIe during every token. A configuration with ninety percent of layers on the GPU does not imply ninety percent of full-offload throughput; benchmark the exact split. The honest decision is between a smaller artifact with measured quality loss and the measured CPU-offload throughput, not a fit inferred from the filename.
+If the measured allocation requires partial offload (some layers kept in system memory on the CPU side), the performance warning is still real. Decode is bandwidth-bound: each token reads essentially all resident weight bytes. So layers left on the host run at system-memory speed, and their activations cross PCIe (the link between the CPU and the GPU) during every token. A configuration with ninety percent of layers on the GPU does not imply ninety percent of full-offload throughput; benchmark the exact split. The honest decision is between a smaller artifact with measured quality loss and the measured CPU-offload throughput, not a fit inferred from the filename.
 
 :::warning
-A GGUF loads only if llama.cpp implements the architecture its metadata names. Qwen3.8-27B is a hybrid — 48 Gated DeltaNet layers interleaved with 16 full-attention layers — and support for a new layer type arrives in a specific release, not by osmosis. Check the repository for that architecture and match your binary's version to the converter's before spending an hour on a 17.1 GB download. A file being valid GGUF says nothing about whether your build can execute it.
+A GGUF loads only if llama.cpp implements the architecture its metadata names. Qwen3.8-27B is a hybrid, with 48 Gated DeltaNet layers interleaved with 16 full-attention layers, and support for a new layer type arrives in a specific release, not automatically. Check the repository for that architecture, and match your binary's version to the converter's, before spending an hour on a 17.1 GB download. A file being valid GGUF says nothing about whether your build can execute it.
 :::
 
 :::caveat
 Community quantizations are third-party artifacts. The same model at the same nominal rung, converted by two people with different mix policies and different calibration data, can differ measurably on your task. Verify hashes and provenance, and treat quality as something you measure on your own prompts rather than something the filename promises.
 :::
 
-The durable idea is separation of concerns. The quantizer decided how many bits each tensor deserves; the container recorded those decisions in a manifest a runtime can read before committing memory; the engine builds a graph if it recognises the architecture and refuses if it does not. Everything downstream in this track — the convenience runners in lesson 8.8, and the comparison with Apple's own path in lesson 8.9 — is built on that one file and that one manifest.
+What ties the three parts together is separation of concerns. The quantizer decided how many bits each tensor deserves. The container recorded those decisions in a manifest a runtime can read before committing memory. The engine builds a graph if it recognises the architecture and refuses if it does not. Everything downstream in this track, the convenience runners in [lesson 8.8](/lessons/8-building-and-serving-stacks/8.8-ollama-and-local-runners/) and the comparison with Apple's own path in [lesson 8.9](/lessons/8-building-and-serving-stacks/8.9-mlx/), is built on that one file and that one manifest.
