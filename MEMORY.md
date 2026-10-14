@@ -2,6 +2,27 @@
 
 ## Current Direction
 
+- **2026-10-14, 0.12.0 live: every lesson reviewed for a junior developer.**
+  All 250 lesson files (tracks 0–13, EN and pt-BR) were rewritten to explain
+  more plainly without changing what they claim; the voice contract is
+  `docs/WRITING.md`, the plan and frozen acceptance criteria are in
+  `docs/specs/feynman-rewrite/plan.md`, one verdict per lesson in its
+  `ledger/`, and every fact fix with its source in `fact-fixes.md`. pt-BR
+  prose says *aula*; `content:parity` fails *lição* (except *a lição
+  amarga*). Shipped as PR #13 (merge `e1aa18d`) plus PR #15 (merge
+  `baca722`), which put the worked case before the formula in 2.2 and 5.11,
+  plainer wording in 7.8, and recorded the roofline caption fix. Tags:
+  `v0.12.0-beta1` (`756c306`, never deployed), `v0.12.0-beta2` (`e1aa18d`,
+  staging), `v0.12.0-beta3` (`baca722`, staging version `0375e686`),
+  `v0.12.0` (`baca722`, production version `7c7ab70a`). `verify:live` PASS on
+  staging and production (939 files byte-identical, three engines). An
+  independent verification on another model failed the first round (three
+  findings, all fixed in PR #15); the fresh full reverify passed criteria 1–4
+  and confirmed the fixes, and production `verify:live` closed criterion 5.
+  The readability numbers in the CHANGELOG are text measurements; no learner
+  was tested. `pnpm privacy` still fails in the main checkout because of
+  local-only `refs/t3/…` checkpoint refs; run it in a clean clone.
+
 - **2026-10-05, after 0.11.1: X still showed an old home card. Nothing was
   deployed, because production was already right.** The owner's X composer
   showed the 0.8.1 card for `https://llmdeepdive.com/` (navy, Roboto
