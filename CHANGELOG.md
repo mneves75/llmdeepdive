@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-10-18
+
+Agent-engineering curriculum plan (tracks 14-25) documented under `docs/plans/agent-engineering/`. Wave 0 factual repairs applied to existing lessons (F01, F02, F04, F11, F13, F20, F21, F28, F30, F40 and others) in both locales. Assessment-repair procedure added to `docs/WRITING.md`. Pilot lessons and new tracks deferred pending the sky-layout redesign for more than 14 tracks.
+
 ## [0.12.0] — 2026-10-14
 
 Every lesson, in both languages, was reviewed for a reader who can program

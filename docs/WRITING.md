@@ -87,6 +87,34 @@ A rewrite changes how a lesson explains, never what it claims.
 A fact that looks wrong is reported with its primary source, not silently
 rewritten. `updated` moves to the date of the commit that changes the lesson.
 
+## Assessment repair (narrow exception to the voice rule)
+
+The quiz `options` and `correctIndex` are protected during voice rewrites, but a
+reviewed assessment repair may change distractors when the intended correct
+concept is preserved. This is a separate workstream from prose rewrites and
+must be recorded as such.
+
+Rules for an assessment repair:
+
+- The correct concept and the intended correct answer do not change. Only
+  distractors are rewritten, to be plausible and comparable in detail.
+- Do not mechanically pad wrong answers or impose a universal character
+  ratio. A distractor is acceptable when a learner could reasonably choose it
+  for a stated reason.
+- Bilingual option ordering and intent stay aligned: the same distractor
+  occupies the same position in both locales, and the same misconception is
+  tested in both.
+- Every changed item records evidence: the lesson id, the question, the old
+  and new option text, the reason, and the reviewer. Store this in the commit
+  message or a review note, never silently.
+- Indices are not shuffled merely to improve statistics. If an index changes,
+  the reason is a corrected mapping, not a cosmetic one.
+- Add at least one changed-scenario, trace-reading, or numerical-reasoning item
+  per lesson where appropriate, rather than only recognition questions.
+- Run `pnpm content:parity`, `pnpm content:stubs`, and the affected tests
+  after any assessment repair, and re-check the answer-length census so it does
+  not become a new cue.
+
 ## Portuguese
 
 pt-BR is written, not translated word by word: the same explanation, examples

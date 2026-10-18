@@ -2,6 +2,16 @@
 
 ## Current Direction
 
+- **2026-10-18, 0.13.0: agent-engineering curriculum plan implemented (wave 0 + pilot).**
+  Added tracks 14-16 (agent architecture/state, tool contracts/MCP, agent security)
+  with pilot lessons 14.2, 15.4, 16.2 in both locales. Applied P1 factual repairs
+  to existing lessons (F01, F02, F04, F13, F20, F21, F28, F30, F40, F11, F19
+  partial). Added assessment-repair procedure to docs/WRITING.md. Plan, review and
+  coverage ledger live under docs/plans/agent-engineering/. Remaining P1/P2 repairs
+  and tracks 17-25 are follow-up waves.
+
+## Current Direction
+
 - **2026-10-14, 0.12.0 live: every lesson reviewed for a junior developer.**
   All 250 lesson files (tracks 0–13, EN and pt-BR) were rewritten to explain
   more plainly without changing what they claim; the voice contract is
