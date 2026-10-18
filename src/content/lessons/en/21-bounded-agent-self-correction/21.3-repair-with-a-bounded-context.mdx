@@ -1,0 +1,115 @@
+---
+id: "21.3-repair-with-a-bounded-context"
+track: "21-bounded-agent-self-correction"
+order: 3
+title: "Repair With a Bounded Context"
+summary: "Each repair attempt states a hypothesis, changes one allowed file by a few lines and runs the same tests on a fresh copy of the original files. A planted bug must fail before the patch and pass after it, and no patch may reach green by editing a test."
+tier: "advanced"
+locale: "en"
+prerequisites: ["21.2-read-a-failure"]
+unlocks: ["21.4-budget-the-repair-loop"]
+analogy: "A watch repairer works on one movement at a time, on a clean bench, with the fault written on a tag: \"loses two minutes a day, suspect the hairspring\". Each try starts from the watch as it came in, not from the last try's loose screws, and the timing machine that measures the result is not the repairer's to adjust. The comparison stops at undoing a try. Putting a watch back the way it came in takes care, while software can start every attempt from an exact copy of the original files, so a clean start is cheap."
+teachBack:
+  prompt: "Change the setting: the pricing bug is now in invoice_total, which forgets the last line of every invoice, and the task's allowed files are pricing.py and rates.py. A model's first patch fixes invoice_total and also rewrites the docstrings of every function, for 16 changed lines. Its second patch fixes only invoice_total, and also edits test_pricing.py to add a test for empty invoices. Say what the policy does with each patch and why, and what the second attempt runs against."
+  modelAnswer: "The first patch is inside an allowed file, but 16 changed lines is over the limit of 10, so it is refused as too large. The fix inside it may be right. The limit exists because a person can review a two-line patch, and a rewrite hides the change that matters. The second attempt cannot carry its test edit. A patch replaces one file, and test_pricing.py is a test, which is read-only whatever the allowed list says. A new test is a good idea, but a person adds it, outside the loop. So the model should send only the pricing.py change. That patch is applied to a fresh copy of the original files. It never sees anything from the first attempt, because the first attempt was refused and nothing from it was ever applied."
+quiz:
+  - question: "A patch changes > to >= in pricing.py and also renames every variable for readability, for 14 changed lines. What does check_patch return?"
+    options: ["too large: 14 changed lines is more than the 10-line limit", "None, because the file is allowed and the tests would pass", "outside the allowed files, because renaming changes the API", "None, after the policy trims it to the one line that matters"]
+    correctIndex: 0
+    explanation: "The size check counts removed plus added lines, and 14 is over 10, even though the fix inside the patch is right. The policy never runs the tests to decide, and it never edits a patch. The file is pricing.py, which is allowed, so scope is not the reason."
+  - question: "Attempt 1's patch broke invoice_total and failed. Attempt 2 proposes only the >= change. Which files does attempt 2's test run see?"
+    options: ["Attempt 1's broken files with attempt 2's change applied on top", "The original files plus attempt 2's patch, nothing from attempt 1", "The original files only, because a failed attempt resets every patch", "Whichever files the model names in the hypothesis for this attempt"]
+    correctIndex: 1
+    explanation: "apply returns a new snapshot built from the original project and one patch, and the runner writes it to a new directory. Stacking patches would mix a known-bad change into every later result. The patch itself is applied, and a hypothesis is text, never a file list."
+  - question: "A model proposes editing test_pricing.py to expect USD 120.00, and by mistake the task's allowed list includes test_pricing.py. What happens?"
+    options: ["It runs, because the task explicitly allows that file to change", "It runs, but only if the hypothesis explains why the test was wrong", "It is refused, because the test check comes before the scope check", "It is refused, because USD 120.00 does not match the purchase order"]
+    correctIndex: 2
+    explanation: "check_patch asks is_test first, so a test is read-only whatever the allowed list says; the exercise has a test for exactly this mistake. A persuasive hypothesis does not change the rule. The policy never compares amounts with purchase orders."
+citations:
+  - title: "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
+    authors: "Carlos E. Jimenez et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.06770"
+  - title: "An Analysis of Patch Plausibility and Correctness for Generate-and-Validate Patch Generation Systems"
+    authors: "Zichao Qi, Fan Long, Sara Achour, Martin Rinard"
+    year: 2015
+    url: "https://www.cs.toronto.edu/~fanl/papers/kali-issta2015.pdf"
+  - title: "difflib: Helpers for computing deltas (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/difflib.html"
+updated: "2026-10-18"
+---
+
+The failure is now precise: `test_ten_units_get_the_bulk_discount` expects `Decimal('114.00')` and gets `Decimal('120.00')`, at line 9 of `test_pricing.py`. A model could answer with a new version of the whole pricing module, a change to the test, or one character in one line. All three might turn the test green. Only one of them is a repair you would want to merge. This lesson defines what one repair attempt may contain, checks it before anything runs and proves the fix with the same tests that failed.
+
+## What goes into one attempt?
+
+Each attempt carries four things, and the loop supplies or checks each one:
+
+- **A hypothesis**: one sentence about the cause, such as "the discount condition uses > where the rule says 10 or more units". It is required, at least 10 characters, and recorded with the attempt. A person reading an escalation later sees what each attempt believed.
+- **A failing test**: the test id and relevant frame from [lesson 21.2](/lessons/21-bounded-agent-self-correction/21.2-read-a-failure/). The repair must turn that test green without turning another one red.
+- **An affected-file scope**: the files a patch may replace. For this task it is `pricing.py` alone. The model sees that file's source and no other.
+- **A clean starting snapshot**: the original files, exactly as the initial failing run saw them.
+
+Bounding the context is a choice with a cost. The model cannot read a file outside the scope, so a bug whose cause lives elsewhere, say in a rates table another module loads, cannot be fixed by this loop. Every attempt fails and the loop escalates, which is the right outcome for a task scoped too narrowly. In exchange, the first prompt stays small, 355 tokens by [lesson 19.3](/lessons/19-agent-memory-and-context/19.3-token-budgets-and-compression/)'s four-characters-per-token approximation. The model also has fewer places to make an unrelated change, and the reviewer knows in advance which file can differ.
+
+A *patch* in this exercise is the full new text of one file plus the hypothesis. The patch's `path` field must be a bare module name such as `pricing.py`, so `../pricing.py` or `/tmp/pricing.py` fail validation before any policy runs. SWE-bench (Jimenez et al., 2023) gives a model an issue and a whole codebase, and represents its edits as patch files that are applied with the Unix `patch` program before the tests run. The authors note that solving its tasks means finding the relatively small number of lines that need editing. The exercise keeps the same shape at a smaller scale.
+
+<Figure id="repair-attempt" />
+
+## The patch policy
+
+`check_patch` runs before the patched code ever executes and returns the reason for a refusal, or `None`:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/patch.py
+def check_patch(patch: Patch, project: Mapping[str, str], allowed: Collection[str], seen: Collection[str] = ()) -> str | None:
+    """Why ``patch`` is refused, or None if it may run."""
+    if is_test(patch.path):
+        return f"tests are read-only: {patch.path}"
+    if patch.path not in allowed:
+        return f"outside the allowed files: {patch.path}"
+    before = project.get(patch.path, "")
+    if patch.content == before:
+        return "changes nothing"
+    if patch.sha256 in seen:
+        return "repeats an earlier attempt"
+    changed = changed_lines(before, patch.content)
+    if changed > MAX_CHANGED_LINES:
+        return f"too large: {changed} changed lines, at most {MAX_CHANGED_LINES}"
+    return None
+```
+
+The order matters. The test check comes first, so a test stays read-only even if a task's allowed list includes it by mistake. Editing a test, weakening an expected value or deleting an assertion are all the same refusal: the repair changed the check it was supposed to pass. Qi et al. (2015) analysed patches earlier repair systems reported as successful and found that the overwhelming majority were equivalent to a single change that simply deletes functionality. A patch that guts a test is the same move aimed at the test instead of the code.
+
+`changed_lines` counts removed plus added lines in a `difflib` unified diff. The real fix is 2: one line removed, one added. `MAX_CHANGED_LINES` is 10. A ten-line cap does not prove a patch minimal, but it makes a rewrite impossible to slip in and keeps every accepted patch small enough for a person to read in seconds. A patch identical to an earlier one is refused without running, because the answer would be the same.
+
+:::warning
+The policy runs on the patch's text. A patch inside the allowed file can still change behaviour far from the bug, for example by calling `sys.exit(0)` when it is imported. That is why [lesson 21.1](/lessons/21-bounded-agent-self-correction/21.1-what-counts-as-corrective-feedback/)'s runtime checks exist: no summary, a skip or fewer tests than the baseline means the run did not pass.
+:::
+
+## Why every attempt starts from the clean snapshot
+
+If attempt 1 breaks `invoice_total` and attempt 2 is applied on top of it, attempt 2 is judged on two changes, one of them known to be bad. Its result says nothing clear about its own hypothesis. So the loop never edits the original:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/patch.py
+def apply(project: Mapping[str, str], patch: Patch) -> dict[str, str]:
+    """A new snapshot; the original is never modified, so every attempt starts clean."""
+    return {**project, patch.path: patch.content}
+```
+
+The runner then writes that snapshot into a new, empty temporary directory, the same discipline [lesson 17.2](/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/) applied to sandbox working directories. An attempt cannot see files an earlier attempt wrote, and nothing it writes survives it. The model still learns from earlier attempts through their recorded hypotheses and results, which [lesson 21.4](/lessons/21-bounded-agent-self-correction/21.4-budget-the-repair-loop/) puts in its context.
+
+## Fails before, passes after, with the same tests
+
+The proof of a repair is a pair of runs on the same tests. Before the patch, `test_pricing` runs 3 tests: two pass and `test_ten_units_get_the_bulk_discount` fails with an assertion. After the `>=` patch, the same 3 tests run and all pass. The count matters as much as the result: `classify` takes the baseline's 3 as `minimum_tests`, so a patched run that ran 2 would not count. These are the visible tests, the ones the loop saw while repairing. [Lesson 21.5](/lessons/21-bounded-agent-self-correction/21.5-evaluate-a-correction/) asks what they cannot tell you.
+
+## Run the exercise
+
+The module is `src/agentlab/repair/patch.py`; the tests are in `tests/test_repair_patch.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_repair_patch -v`. Expect `Ran 10 tests` and `OK`.
+
+`PlantedBug` runs the bug before and after the one-line fix and checks the test count is unchanged. `PatchPolicy` covers each refusal next to the accepted fix: a weakened expected value, deleted assertions with the test file wrongly allowed, a new file outside the scope, a rewrite, a no-op, a repeat and three paths with directories. `CleanSnapshot` checks that a second patch never carries the first one's change.
+
+To see a test catch a policy hole, change `if is_test(patch.path):` in `check_patch` to `if False and is_test(patch.path):`. `test_editing_a_test_is_refused` and `test_deleting_assertions_is_refused_even_when_the_file_is_allowed` fail, and so does lesson 21.2's obedient-model test: the refusal now rests on the allowed list alone, so one wrong entry in that list would let the note's request through. Restore the line before moving on.

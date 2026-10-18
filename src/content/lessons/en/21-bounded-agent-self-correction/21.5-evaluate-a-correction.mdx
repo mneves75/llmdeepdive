@@ -1,0 +1,107 @@
+---
+id: "21.5-evaluate-a-correction"
+track: "21-bounded-agent-self-correction"
+order: 5
+title: "Evaluate a Correction"
+summary: "Tests a repair loop used cannot tell a real fix from a patch that only fits them. Judge a repair on held-out tests the loop never saw, sort every test into fixed, still working, broken and still failing, and keep the original when the repair broke something that worked."
+tier: "advanced"
+locale: "en"
+prerequisites: ["21.4-budget-the-repair-loop"]
+unlocks: ["22.1-decide-whether-to-divide-work"]
+analogy: "A student who memorised last year's exam answers scores full marks on last year's exam. Only a new exam, written by someone who did not show it to the student, says whether they learned the subject, and a good teacher also checks that cramming for one topic did not wipe out another. The comparison stops at the stakes of a wrong grade. A student who crammed loses only a grade, while a patch that fits the visible tests and breaks an untested path goes on to compute real invoices."
+teachBack:
+  prompt: "A teammate's repair adds a line to pricing.py that applies the discount when quantity >= 10 and unit_price < 100, because every visible test uses small prices. The held-out set gains a third test: 10 units at USD 150.00 should cost USD 1,425.00. Sort the five original tests and the new one into the four groups for this patch, give the verdict and explain why the visible tests could not have caught it."
+  modelAnswer: "On the original code, the nine-unit, invoice and twelve-unit tests pass, while the ten-unit, rounding and new 150-dollar tests fail, because ten units get no discount. With the patch, the ten-unit and rounding tests pass, so they are fail-to-pass. The nine-unit, invoice and twelve-unit tests still pass, so they are pass-to-pass. The new test still fails: 10 units at 150 is not under the price cap, so it costs USD 1,500.00. That is fail-to-fail, with no pass-to-fail. The verdict is escalate: nothing regressed, but a case the rule covers is still wrong. The visible tests all use a price of 12, so a cap at 100 never changes their result. Only a test the patch author did not see can reveal the extra condition."
+quiz:
+  - question: "The patch changes > to == in pricing.py. All three visible tests pass. Held out, the twelve-unit test now fails (it passed before) and the rounding test now passes (it failed before). What does evaluate return?"
+    options: ["ship, because every visible test passes and a held-out test was fixed", "escalate, because one held-out test is still failing after the repair", "keep_original, because a test that passed before the repair now fails", "ship, because the repaired code passes four of five tests instead of three"]
+    correctIndex: 2
+    explanation: "The twelve-unit test is pass-to-fail, a regression, and a regression keeps the original whatever else improved. Escalate is for tests still failing with nothing broken. Four of five sounds better than three of five, but the counts hide that orders above ten units lost their discount."
+  - question: "Why must the held-out tests never appear in the repair loop's prompts or test runs?"
+    options: ["They would push the prompt over the loop's 20,000-token budget", "A model refuses to change code when it can read all of its tests", "unittest cannot load a test module that a model has already seen", "A patch can fit tests it saw; only unseen tests measure the fix"]
+    correctIndex: 3
+    explanation: "Once the loop optimises against a test, passing it says little about other inputs, as the patch that special-cases ten units at USD 12.00 shows. Two held-out tests are a few hundred tokens, and nothing about reading tests stops a model or unittest."
+  - question: "Smith et al. (2015) evaluated two repair tools on tests independent of the ones used for repair. What did they find for programs that already passed most tests?"
+    options: ["The tools were as likely to break independent tests as to fix them", "The tools were almost always right once the repair tests passed", "The tools beat novice developers on every independent held-out test", "The tools could produce no patch at all that passed the repair tests"]
+    correctIndex: 0
+    explanation: "The paper reports that for programs passing most tests the tools were as likely to break tests as to fix them, and that patch quality tracked the coverage of the repair suite. It also found that automated repair did no worse than novice developers, who overfit too, which is not the same as beating them."
+citations:
+  - title: "Is the Cure Worse Than the Disease? Overfitting in Automated Program Repair"
+    authors: "Edward K. Smith, Earl T. Barr, Claire Le Goues, Yuriy Brun"
+    year: 2015
+    url: "https://people.cs.umass.edu/~brun/pubs/pubs/Smith15fse.pdf"
+  - title: "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
+    authors: "Carlos E. Jimenez et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.06770"
+  - title: "An Analysis of Patch Plausibility and Correctness for Generate-and-Validate Patch Generation Systems"
+    authors: "Zichao Qi, Fan Long, Sara Achour, Martin Rinard"
+    year: 2015
+    url: "https://www.cs.toronto.edu/~fanl/papers/kali-issta2015.pdf"
+updated: "2026-10-18"
+---
+
+Three patches for the pricing bug all pass the three visible tests. One changes `>` to `>=`. One changes `>` to `==`. One adds a special case: if the order is exactly 10 units at USD 12.00, return USD 114.00. The repair loop from [lesson 21.4](/lessons/21-bounded-agent-self-correction/21.4-budget-the-repair-loop/) would accept any of them, because it has nothing else to go on. Which one should ship? This lesson answers with tests the loop never saw, and shows a case where shipping no repair at all is the safer choice.
+
+## Why the loop's own tests cannot grade the loop
+
+The visible tests are what the loop optimised against. Each attempt was judged by them, and the loop stopped as soon as they passed. Passing them is therefore the condition for the loop to stop, and says little about anything else. Smith et al. (2015) named the problem with machine-learning vocabulary: the tests used to build a patch are its *training* data, and an independent set used only to judge it is *held-out* data. A patch that passes the training tests and fails the held-out ones *overfits*: it fits the examples instead of the rule.
+
+They studied two test-driven repair tools, GenProg and TrpAutoRepair, on a benchmark of 998 bugs and judged their patches with tests independent of the repair tests. The tools were unlikely to improve the share of independent tests passed. Patch quality grew with the coverage of the repair test suite, and for programs that already passed most tests, the tools were as likely to break tests as to fix them. The authors also found that novice developers overfit too, and that the tools did no worse than they did. Qi et al. (2015) found that the overwhelming majority of patches earlier systems had reported were not correct and were equivalent to a single change that deletes functionality. A test suite that does not check a behaviour cannot notice it disappear.
+
+## Four groups of tests
+
+The exercise holds out two tests in a file the loop never loads: twelve units at USD 10.00 should cost USD 114.00, and ten units at USD 0.99 should cost USD 9.41 (9.90 minus 5% is 9.405, rounded half up). `evaluate` runs the original and the patched code against the visible and held-out tests together and sorts every test by its two results:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/evaluate.py
+    groups = {
+        "fail_to_pass": (everything - before.passed) & after.passed,
+        "pass_to_pass": before.passed & after.passed,
+        "pass_to_fail": before.passed - after.passed,
+        "fail_to_fail": everything - before.passed - after.passed,
+    }
+```
+
+The names come from SWE-bench (Jimenez et al., 2023). Its tasks keep a list of *fail-to-pass* tests, which the reference fix turns green and which check that the issue was addressed, and *pass-to-pass* tests, which already passed and check that existing behaviour is not broken. A task counts as resolved only if every test in both lists passes. The exercise adds the two groups SWE-bench leaves out of its score, because a repair loop's verdict needs them: *pass-to-fail* is a regression, and *fail-to-fail* is a test the repair did not fix.
+
+Then the verdict, in this order:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/evaluate.py
+    if groups["pass_to_fail"]:
+        return Evaluation("keep_original", f"regression: {', '.join(sorted(groups['pass_to_fail']))}", **groups, **counts)
+    if groups["fail_to_fail"]:
+        return Evaluation("escalate", f"still failing: {', '.join(sorted(groups['fail_to_fail']))}", **groups, **counts)
+    return Evaluation("ship", f"{len(after.passed)} of {len(everything)} tests pass and nothing regressed", **groups, **counts)
+```
+
+A check before these refuses a repaired run that skipped tests, ran fewer than the original or never reported, for the reasons [lesson 21.1](/lessons/21-bounded-agent-self-correction/21.1-what-counts-as-corrective-feedback/) gave.
+
+## Three patches, three verdicts
+
+The original code passes 3 of the 5 tests: nine units, the invoice sum and twelve units. Here is each patch:
+
+| Patch | Passes | Fixed | Broken | Still failing | Verdict |
+|---|---|---|---|---|---|
+| `>=` | 5 of 5 | ten units, rounding | none | none | ship |
+| `==` | 4 of 5 | ten units, rounding | twelve units | none | keep_original |
+| special case | 4 of 5 | ten units | none | rounding | escalate |
+
+The two overfitted patches both score 4 of 5, and that single number hides the difference between them. The special case broke nothing; it fixed exactly the example it was shown and nothing else, so a person should look. The `==` patch fixed ten units and took the discount away from every order above ten. That is a regression, and here the original is safer than the repair. The original overcharges orders of exactly ten units, a known bug with a failing test pointing at it. The patched code would overcharge every larger order, and the visible tests would report it as fixed. Keeping the original and escalating leaves the system no worse than it was. Shipping the patch makes it worse in a way nobody is watching.
+
+## Independent evidence
+
+Held-out tests are only independent if the loop never sees them. The exercise checks this end to end: it runs the loop with a model that proposes the `==` patch, confirms that the loop accepts it, that no prompt contains the held-out file's name or its test names, and that `evaluate` then returns `keep_original`. Whoever writes the held-out tests should not be the author of the patch, whether that author is a model or a person.
+
+:::caveat
+Two held-out tests make a teaching example, not a reliability estimate. Every result in this track is *fixture-tested*: a scripted model proposed patches and real tests judged them. It proves the loop's control logic, not how often a real model repairs real bugs. Measuring that needs a corpus of held-out scenarios, repeated trials and a live model, which [lesson 23.3](/lessons/23-agent-evaluation-and-ci/23.3-build-a-100-case-corpus/) builds.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/repair/evaluate.py`; the held-out tests are in `src/agentlab/fixtures/repair/held_out/`, and the tests are in `tests/test_repair_evaluate.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_repair_evaluate -v`. Expect `Ran 5 tests` and `OK`. The cases are the three patches from the table, a patch that exits at import and is never shipped, and the end-to-end check that the held-out tests stay held out.
+
+To see the regression rule matter, delete the two lines that return `keep_original` for `pass_to_fail`. `test_a_patch_that_breaks_a_passing_test_is_worse_than_no_repair` fails with `ship` in place of `keep_original`, and so does `test_the_loop_never_sees_the_held_out_tests`: the `==` patch has no still-failing test, so nothing else stops it. Restore the lines before moving on.
+
+The next track, starting with [lesson 22.1](/lessons/22-multi-agent-systems-and-a2a/22.1-decide-whether-to-divide-work/), asks when splitting work across several agents is worth its cost. The rule from this track carries over: an agent's report about its own work is a claim, and tests it did not write are the evidence.

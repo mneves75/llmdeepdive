@@ -1,0 +1,122 @@
+---
+id: "21.4-budget-the-repair-loop"
+track: "21-bounded-agent-self-correction"
+order: 4
+title: "Budget the Repair Loop"
+summary: "A repair loop gets at most three repair attempts after the initial failing run, plus token and wall-time limits, and stops early when the same failure comes back twice. Its counters live in SQLite and are charged before each model call, so a restart cannot reset them."
+tier: "advanced"
+locale: "en"
+prerequisites: ["21.3-repair-with-a-bounded-context"]
+unlocks: ["21.5-evaluate-a-correction"]
+lab:
+  id: "retry-budget"
+  kind: "calculator"
+  budgetKb: 12
+analogy: "A locksmith called to a jammed door agrees on a price before starting: three tries with different tools, then they call the building manager. Each try is written on the job sheet before the locksmith picks up the tool, so if the phone rings halfway through, nobody later thinks only one try happened. If the same tool slips in the same way twice, the third try with it is skipped. The comparison stops at independence. A locksmith's three tools fail for different reasons, while three patches from one model, written from the same evidence, tend to fail for the same reason, so the third try is worth less than the first."
+teachBack:
+  prompt: "A team raises the per-attempt success chance in the calculator from 0.4 to 0.6 by giving the model more context, keeps three attempts and USD 0.12 per attempt, and wants to drop the repeated-failure rule because escalations are now rare. Work out the new success and escalation rates and the expected and worst-case cost, then say what the calculator still assumes and what dropping the rule would cost when its assumption fails."
+  modelAnswer: "Each attempt fails with chance 0.4, so all three fail with chance 0.4 cubed, which is 0.064. The loop succeeds 93.6% of the time and escalates 6.4%. Attempt one always runs, attempt two runs with chance 0.4, attempt three with chance 0.16. So the expected number of attempts is 1.56. The expected cost is 1.56 times USD 0.12, which is USD 0.1872. The worst case is still three attempts, USD 0.36. The calculator assumes each attempt succeeds independently. When the bug sits outside the allowed files, every attempt fails for the same reason, and the real success chance is zero. The repeated-failure rule catches exactly that case after two attempts. Dropping it spends the third attempt for nothing and delays the person who has to look."
+quiz:
+  - question: "Use the calculator's model with a success chance of 0.5 per attempt, at most 3 attempts and USD 0.20 per attempt. What are the escalation rate and the expected cost?"
+    options: ["12.5% escalate, and USD 0.60 expected, because every attempt is paid", "12.5% escalate, and USD 0.35 expected, from 1.75 attempts on average", "50% escalate, and USD 0.30 expected, because half the runs stop early", "25% escalate, and USD 0.40 expected, from 2 attempts on average"]
+    correctIndex: 1
+    explanation: "All three fail with chance 0.5 × 0.5 × 0.5 = 0.125. Attempts run with chances 1, 0.5 and 0.25, so 1.75 are expected, times USD 0.20 is USD 0.35. USD 0.60 is the worst case, paid only when all three run."
+  - question: "A process dies during attempt 2's model call. The store says attempts = 2. After a restart, how many more repair attempts may the loop start?"
+    options: ["Three, because a restart begins a new loop with a fresh budget", "Two, because attempt 2 never got a result and so does not count", "One, because attempt 2 was charged before its model call was made", "None, because a crash inside an attempt escalates the run at once"]
+    correctIndex: 2
+    explanation: "The charge is committed before the model is called, so the dead attempt is spent and one of three remains. Counting only finished attempts would let a loop that crashes on every call retry forever. A crash is not a verdict about the code, so it does not escalate by itself."
+  - question: "Attempt 1 raises the discount rate to 0.5 and attempt 2 lowers it to 0.25. Both fail test_ten_units_get_the_bulk_discount at test_pricing.py line 9. What does the loop do next?"
+    options: ["Runs attempt 3, because the budget still allows three attempts", "Accepts attempt 2, because its result is closer to USD 114.00", "Retries attempt 2's patch, since an identical failure may be flaky", "Escalates: the same failure twice in a row means the loop is stuck"]
+    correctIndex: 3
+    explanation: "Both runs have the same signature (test, error type, file and line), so the patches did not touch the cause: ten units still get no discount. A third rate would fail the same way. Being closer is not passing, and a repeated patch is refused without running."
+citations:
+  - title: "Building effective agents"
+    authors: "Erik Schluntz, Barry Zhang (Anthropic)"
+    year: 2024
+    url: "https://www.anthropic.com/engineering/building-effective-agents"
+  - title: "Reflexion: Language Agents with Verbal Reinforcement Learning"
+    authors: "Noah Shinn et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2303.11366"
+  - title: "Large Language Models Cannot Self-Correct Reasoning Yet"
+    authors: "Jie Huang et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.01798"
+updated: "2026-10-18"
+---
+
+The repair loop from [lesson 21.3](/lessons/21-bounded-agent-self-correction/21.3-repair-with-a-bounded-context/) could, in principle, ask the model for patches forever. Each attempt costs a model call, a test run and a little time, and a loop stuck on a bug it cannot fix keeps paying. How many attempts should it get, what does that cost on average and in the worst case, and how does the limit survive the process crashing halfway through? This lesson sets the budget, works out its arithmetic and makes the counters durable.
+
+## What does "three attempts" mean?
+
+The loop begins with one *initial run*: the tests on the original code, which measure the failure. It asks the model for nothing. After that come at most three *repair attempts*. Each attempt is one model call proposing one patch, the policy check and, if the patch is allowed, one test run. A patch refused by the policy still counts as an attempt, because the model call was made and paid for. The loop stops at the first attempt whose tests pass, or after the third.
+
+Anthropic's guidance on building agents notes that a task usually ends when it is done, but that it is also common to include stopping conditions, such as a maximum number of iterations, to keep control. Three is this course's choice, not a rule from a source; the calculator below shows what it buys.
+
+## What the arithmetic says
+
+Suppose each repair attempt passes the tests with probability 0.4, independently of the others, and costs USD 0.12. All three fail with probability 0.6 × 0.6 × 0.6 = 0.216, so the loop escalates 21.6% of the time and succeeds 78.4% of the time.
+
+The *expected attempts* count repair attempts only, including the successful one, and never the initial run. Attempt 1 always runs. Attempt 2 runs only if attempt 1 failed, with probability 0.6. Attempt 3 runs only if both failed, with probability 0.36. So the expected number is 1 + 0.6 + 0.36 = 1.96, and the expected cost is 1.96 × USD 0.12 = USD 0.2352. The worst case is all three attempts, USD 0.36. Budget for the worst case: an average does not tell you what one bad run costs.
+
+The calculator starts from these numbers. Change the success chance or the number of attempts and watch how fast the extra attempts stop paying for themselves.
+
+:::caveat
+Every number above assumes independent attempts. Real ones are rarely independent. If the bug sits outside the allowed files, or the failing test itself is wrong, every attempt fails for the same reason and the true success chance is zero. Huang et al. (2023) found that models revising their own reasoning without outside feedback often fail to correct it. A model writing its third patch from the same evidence is in a similar position. Correlated failures make escalation more likely than the calculator says, which is why the loop also stops on repeated failures.
+:::
+
+## Three limits, checked before every attempt
+
+Attempts are one limit. Tokens and wall-clock time are the other two, because one huge prompt or one hung test run can blow a budget without using many attempts. The loop checks all three before it starts an attempt:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/budget.py
+    def exhausted(self, spent: Spent) -> str | None:
+        """Why no further attempt may start, or None."""
+        if spent.attempts >= self.max_attempts:
+            return f"budget: {spent.attempts} of {self.max_attempts} repair attempts used"
+        if spent.tokens >= self.max_tokens:
+            return f"budget: tokens {spent.tokens} of {self.max_tokens}"
+        if spent.seconds >= self.max_seconds:
+            return f"budget: wall time {spent.seconds:.0f} of {self.max_seconds:.0f} seconds"
+        return None
+```
+
+The defaults are 3 attempts, 20,000 tokens and 600 seconds. Tokens are counted with the same approximation [lesson 19.3](/lessons/19-agent-memory-and-context/19.3-token-budgets-and-compression/) labels as one, about four characters per token, over every repair prompt and reply. In the exercise, three wrong patches spend 1,793 approximate tokens; with a 1,000-token budget the loop stops after two attempts, at 1,178. A limit is checked between attempts, so one attempt can overshoot it; the per-run limits of [lesson 17.2](/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/) bound how far. Time comes from an injected clock, so the test of the wall-time limit runs instantly: with a clock that advances 100 seconds per reading and a 150-second budget, the second attempt is the last.
+
+## Counters that survive a restart
+
+A budget held in a variable resets when the process dies, and a loop that crashes on every model call would then retry forever. The counters therefore live in SQLite, one row per run, written with the compare-and-swap of [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): an update matches only if nobody committed since the writer read the row. The order of writes is the point:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/loop.py
+    while (reason := budget.exhausted(spent)) is None:
+        messages = repair_messages(task, original, spent.history)
+        number = spent.attempts + 1
+        # Charged before the model call, so a crash from here on still counts this attempt.
+        spent = store.charge(run_id, spent, attempts=1, tokens=sum(approx_tokens(m["content"]) for m in messages))
+        started = clock()
+        reply = model.complete(messages, tools=[PATCH_TOOL])
+```
+
+The attempt and its prompt tokens are committed before the call. If the process dies inside the call, the attempt is spent; what is lost is only that attempt's reply tokens and elapsed time, which were never measured. The exercise kills a run inside attempt 2, opens the database again as a new process would and finds `attempts` at 2. The resumed loop calls the model once more, for attempt 3, and then escalates.
+
+The same row keeps the history: each attempt's number, hypothesis, patch hash, result and failure signature. The next prompt lists earlier hypotheses and their results, much as Reflexion (Shinn et al., 2023) stores verbal reflections on earlier trials in an episodic memory buffer for later ones. Here the history also feeds two rules: a patch identical to an earlier one is refused, and a repeated failure stops the loop.
+
+## Stop when the same failure comes back
+
+A failure's *signature* is the failing test, the error type and the relevant frame's file and line, which stay the same when only the values change. If two consecutive patches that ran produce the same signature, neither patch touched the cause, and a third is likely to miss it too:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/loop.py
+        if previous is not None and previous.signature == feedback.signature:
+            return RepairOutcome("escalated", f"repeated failure: attempts {previous.number} and {number} failed the same way ({feedback.signature})", original, spent)
+```
+
+Changing the discount rate to 0.5 and then to 0.25 leaves ten units without a discount both times, so the loop escalates after two attempts instead of three. Escalation is the designed exit, not a crash: the outcome carries the original failure, every attempt's hypothesis and result, and the counters, which is what a person needs to start where the loop stopped.
+
+## Run the exercise
+
+The modules are `src/agentlab/repair/budget.py` and `src/agentlab/repair/loop.py`; the tests are in `tests/test_repair_loop.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_repair_loop -v`. Expect `Ran 10 tests` and `OK`. The cases cover a passing start that never calls the model, a fix on the second attempt, escalation after the third failed repair with a fourth reply left unused, the restart, a repeated failure, both budgets, a critic's approval that cannot end the loop while tests fail, and `retry_odds`, which checks this lesson's five numbers against the same arithmetic as the calculator.
+
+To watch the restart test catch a real regression, move the `store.charge(... attempts=1 ...)` line below `reply = model.complete(...)`. The crash in attempt 2 now happens before the charge, `attempts` comes back as 1, and `test_counters_survive_a_restart_mid_attempt` fails. Restore the order before moving on.

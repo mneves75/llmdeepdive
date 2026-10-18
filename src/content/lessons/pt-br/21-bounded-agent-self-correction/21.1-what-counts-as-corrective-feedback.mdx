@@ -1,0 +1,120 @@
+---
+id: "21.1-what-counts-as-corrective-feedback"
+track: "21-bounded-agent-self-correction"
+order: 1
+title: "O que conta como feedback corretivo"
+summary: "Um laço de reparo precisa de sinais que meçam o código: um erro de sintaxe, uma asserção que falhou, uma exceção, um limite de recursos. A opinião de um crítico é um conselho que pode mandar um patch aprovado para uma pessoa, mas nunca faz um teste que falha contar como corrigido."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["17.2-resource-and-filesystem-limits", "14.2-states-dags-branches-and-loops"]
+unlocks: ["21.2-read-a-failure"]
+analogy: "Um mecânico com um leitor de diagnóstico ligado ao carro. O leitor diz qual sensor acusa defeito e, depois do conserto, o código de erro some ou não some. Um passageiro que diz que o motor agora parece bom pode ter razão, e vale ouvi-lo quando o leitor está quieto mas algo ainda parece errado. O passageiro não apaga um código de erro só por dizer isso. A comparação para no próprio leitor: os sensores de um carro foram feitos por outra pessoa, enquanto os testes de um laço de reparo rodam no mesmo processo que o código em conserto, e esse código pode adulterar a própria leitura."
+teachBack:
+  prompt: "Uma colega propõe um laço mais rápido: pular a execução dos testes quando uma segunda chamada de modelo revisa o patch e diz que ele está correto, e rodar os testes só quando o revisor está em dúvida. Usando o bug de preços do assistente de compras, diga o que essa mudança aceitaria que o laço atual recusa, e para que o revisor ainda serve."
+  modelAnswer: "O laço atual só aceita um patch quando os testes relatam que todos passaram. A proposta aceitaria um patch sempre que o revisor aprovasse. No bug de preços, um patch que sobe a taxa de desconto para 0,5 ainda deixa dez caixas em USD 120,00, e o teste mostra isso. Um revisor lendo um diff bem arrumado poderia aprová-lo mesmo assim. O Self-Refine mostra que o feedback de um modelo sobre a própria saída pode melhorar resultados. Huang e colegas viram que, sem feedback externo, os modelos muitas vezes não corrigem o próprio raciocínio e às vezes pioram. Então o revisor é útil como segunda opinião sobre um patch que passou. Se ele objetar nesse caso, uma pessoa deve olhar. Ele nunca pode substituir o teste que falha."
+quiz:
+  - question: "Um patch deixa test_ten_units_get_the_bulk_discount falhando com AssertionError. Um modelo crítico responde \"approve: o diff está correto e o teste parece desatualizado.\" O que next_step retorna?"
+    options: ["accept, porque o crítico leu o diff e apontou o próprio teste como desatualizado", "escalate, porque o teste e o crítico discordam e uma pessoa desempata", "repair, porque um teste executável que falha supera qualquer opinião sobre o diff", "accept, desde que o motivo do crítico fique guardado junto da falha para auditoria"]
+    correctIndex: 2
+    explanation: "next_step retorna repair para todo resultado exceto passed e environment, e nesse caminho nunca lê o crítico. Dizer que o teste está desatualizado é justamente o que uma pessoa, não o laço, deve julgar, mas o laço também não escala por causa da aprovação de um crítico. Guardar o motivo não muda nada do que foi medido."
+  - question: "Uma execução com patch imprime \"Ran 3 tests\" e \"OK (skipped=3)\" e sai com código 0. A execução de base rodou 3 testes. O que classify(run, minimum_tests=3) retorna?"
+    options: ["passed, porque o unittest imprimiu OK e o código de saída do processo é 0", "passed com aviso, porque pular um teste não é falha nem erro", "environment, porque testes costumam ser pulados quando falta uma dependência", "incomplete, porque nenhum teste exercitou o código, então nada foi medido"]
+    correctIndex: 3
+    explanation: "Passar exige um resumo, nenhuma falha, nenhum teste pulado e pelo menos a contagem de testes da base. Três testes pulados não medem nada. O próprio resumo do unittest diz OK e sai com 0 aqui, e é por isso que o laço não lê só o código de saída. Nada na execução aponta para uma dependência ausente."
+  - question: "A execução de base falha com ModuleNotFoundError: No module named 'invoice_rates_service'. O laço só pode alterar pricing.py. O que ele deve fazer?"
+    options: ["Escalar, porque editar pricing.py não consegue instalar o pacote que falta", "Reparar, pedindo ao modelo um patch que remova a linha de import que falha", "Repetir a execução três vezes, porque imports muitas vezes falham só às vezes", "Aceitar, porque os testes nem rodaram e então nenhum deles falhou de fato"]
+    correctIndex: 0
+    explanation: "Um pacote ausente é um fato sobre a máquina, não sobre pricing.py. Um patch que apaga o import poderia fazer os testes carregarem e ao mesmo tempo remover algo de que o código precisa, e o laço não tem como saber. Uma falha de import não é intermitente, e testes que nunca rodaram não provam nada."
+citations:
+  - title: "Self-Refine: Iterative Refinement with Self-Feedback"
+    authors: "Aman Madaan et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2303.17651"
+  - title: "Large Language Models Cannot Self-Correct Reasoning Yet"
+    authors: "Jie Huang et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.01798"
+  - title: "An Analysis of Patch Plausibility and Correctness for Generate-and-Validate Patch Generation Systems"
+    authors: "Zichao Qi, Fan Long, Sara Achour, Martin Rinard"
+    year: 2015
+    url: "https://www.cs.toronto.edu/~fanl/papers/kali-issta2015.pdf"
+  - title: "unittest: Unit testing framework (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/unittest.html"
+updated: "2026-10-18"
+---
+
+O assistente de compras calcula as linhas da fatura num módulo pequeno, `pricing.py`. Pedidos de dez unidades ou mais ganham 5% de desconto por volume, então dez caixas de luvas a USD 12,00 deveriam custar USD 114,00. A fatura diz USD 120,00. Você pede a um modelo que conserte. Ele propõe um *patch* (uma alteração no código) e uma segunda chamada de modelo revisa o patch e responde que está bom. O bug foi corrigido? Esta trilha constrói um laço de reparo que responde a essa pergunta com uma medição, e esta aula separa os sinais que o laço pode receber entre os que medem o código e os que só aconselham.
+
+## Que sinais um laço de reparo pode receber?
+
+Um *laço de reparo* roda uma verificação, pede uma mudança a um modelo quando a verificação falha, aplica a mudança e roda a verificação de novo. O *feedback* dele é tudo o que volta de cada execução. Seis tipos voltam das execuções do exercício:
+
+- **Erros de sintaxe.** O Python nem conseguiu compilar o módulo. O erro aponta um arquivo e uma linha.
+- **Asserções que falharam.** Um teste comparou a resposta do código com a esperada e elas diferiram: `Decimal('120.00') != Decimal('114.00')`.
+- **Erros de execução.** Escapou outra exceção, como um `TypeError` por somar `None` a um preço.
+- **Limites de recursos.** A execução foi parada por um limite de CPU ou de tempo de relógio, do tipo que a [aula 17.2](/pt-br/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/) define. Um laço que nunca termina não produz traceback, só isso.
+- **Falhas de ambiente.** O problema está na máquina, não no código: falta um pacote, ou o *sandbox* (o ambiente isolado de execução) não conseguiu iniciar.
+- **Opiniões de crítico.** Uma pessoa ou outro modelo leu o patch e diz o que acha dele.
+
+Os quatro primeiros são *feedback corretivo* no sentido que esta trilha usa: cada um mede o código contra uma expectativa declarada, e você pode repetir a medição depois de uma mudança e obter uma resposta nova. O quinto mede o ambiente, que o laço não consegue mudar editando arquivos. O sexto nem é uma medição.
+
+## Por que a aprovação de um crítico não é uma medição
+
+Um crítico pode ser útil. O Self-Refine (Madaan et al., 2023) faz um modelo rascunhar uma resposta, dar feedback sobre o próprio rascunho e revisá-lo, sem treino extra. Em sete tarefas, os autores relatam cerca de 20% de melhora absoluta, em média, sobre a geração de uma passada só. O Reflexion (Shinn et al., 2023) alimenta as tentativas seguintes de um agente com reflexões verbais sobre as anteriores, e aceita feedback escalar ou em texto livre, externo ou simulado internamente.
+
+A cautela vem de outro estudo, sobre tarefas de raciocínio. Huang et al. (2023) examinaram a autocorreção *intrínseca*, em que um modelo revisa a resposta usando só o próprio julgamento, sem feedback externo. Eles viram que os modelos têm dificuldade em se corrigir dessa forma, e que o desempenho às vezes piora depois da revisão. Um crítico que diz "parece bom" sobre um patch dá exatamente esse tipo de feedback intrínseco, a menos que tenha uma execução por trás.
+
+Por isso o laço trata os dois tipos de sinal de forma assimétrica. O resultado de um teste decide. Um crítico pode acrescentar dúvida, nunca removê-la:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/feedback.py
+def next_step(feedback: Feedback, critic: Literal["approve", "object"] | None = None) -> Step:
+    """Tests decide; a critic can only add doubt."""
+    if feedback.kind == "environment":
+        return "escalate"
+    if feedback.kind != "passed":
+        return "repair"  # whatever the critic said
+    return "escalate" if critic == "object" else "accept"
+```
+
+Quando os testes falham, o veredito do crítico nunca é lido. Quando passam e o crítico objeta, uma pessoa olha, porque uma suíte que passa ainda pode deixar escapar algo que um leitor percebeu. *Escalar* significa parar e entregar o caso a uma pessoa com tudo o que o laço aprendeu.
+
+:::insight
+O fluxo de controle é a salvaguarda. Uma instrução no prompt do crítico dizendo "só aprove se os testes passarem" seria um pedido a um modelo; o `if` acima é código com o qual o modelo não pode discutir.
+:::
+
+## Código de saída 0 não é aprovação
+
+Um executor de testes relata pelo código de saída e pelo resumo impresso, e um laço descuidado lê só o código de saída. Qi et al. (2015) analisaram patches que sistemas anteriores de reparo automático tinham relatado como bem-sucedidos. Um harness de testes verificava só parte do código de saída de um script de teste, e o patch em avaliação podia mudar o comportamento desse script. Dos 167 patches aceitos para um programa, 138 não passavam em todos os casos de teste.
+
+O exercício reproduz a armadilha. O código em teste roda dentro do mesmo processo Python que o executor de testes, então um módulo com patch pode chamar `sys.exit(0)` enquanto está sendo importado. O processo sai com código 0 e nenhum teste rodou. Um patch também pode fazer todos os testes serem pulados: o unittest então imprime `OK (skipped=3)` e ainda sai com 0. A documentação dele define `skipped` como uma lista separada de testes, à parte das falhas e dos erros.
+
+Por isso o executor do laço imprime uma linha de resumo própria depois dos testes, e `classify` só conta uma execução como aprovada nestes termos:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/feedback.py
+    if run.ran is not None and not run.failed and not run.skipped and run.ran >= max(minimum_tests, 1):
+        return Feedback("passed", f"{run.ran} tests passed")
+```
+
+`run.ran is None` significa que o resumo nunca apareceu. `minimum_tests` é o número de testes que a execução inicial, sem patch, rodou: um patch não pode apagar um teste protegido, mas pode impedir que testes rodem. Qualquer coisa que não atenda a esses termos e não tenha traceback é classificada como `incomplete`, que o laço trata como qualquer outra falha.
+
+:::caveat
+Essas verificações pegam erros honestos e atalhos preguiçosos. Um patch escrito de propósito para forjar os próprios resultados, por exemplo substituindo os métodos de asserção do unittest, passa por elas, porque roda no mesmo processo. As defesas contra isso são ler o diff (a [aula 21.3](/pt-br/lessons/21-bounded-agent-self-correction/21.3-repair-with-a-bounded-context/) mantém os patches pequenos por esse motivo) e testes que o laço nunca vê ([aula 21.5](/pt-br/lessons/21-bounded-agent-self-correction/21.5-evaluate-a-correction/)).
+:::
+
+## Falhas de ambiente vão para uma pessoa
+
+Se a execução inicial falha com `ModuleNotFoundError: No module named 'invoice_rates_service'`, o laço poderia pedir ao modelo que apagasse o import, e os testes talvez carregassem. Esse patch também poderia remover justamente aquilo de que o código precisa. O laço só pode alterar `pricing.py`; ele não instala pacotes nem conserta um sandbox. `classify` rotula um módulo ausente e um sandbox que não iniciou como `environment`, e `next_step` escala os dois sem pedir nada ao modelo.
+
+Isso também mantém honesto o grafo do laço. A [aula 14.2](/pt-br/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) mostrou um ciclo limitado por um orçamento de passos; aqui o ciclo só roda para falhas que um patch plausivelmente corrigiria, e a [aula 21.4](/pt-br/lessons/21-bounded-agent-self-correction/21.4-budget-the-repair-loop/) o limita.
+
+## Rode o exercício
+
+Os módulos são `src/agentlab/repair/feedback.py` e `src/agentlab/repair/runner.py`, que roda os testes de um projeto pelo `run_python` da aula 17.2. Os testes estão em `tests/test_repair_feedback.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_repair_feedback -v`. Espere `Ran 13 tests` e `OK`. A execução leva alguns segundos, porque cada caso inicia um subprocesso real, e o caso do laço infinito espera um limite de CPU de um segundo.
+
+Os casos cobrem cada tipo de sinal da lista acima com o mesmo bug plantado: o módulo original falha com uma asserção na linha 9 de `test_pricing.py`, uma correção de uma linha passa nos três testes, e variantes produzem um erro de sintaxe, um `TypeError` dentro de `line_total`, uma interrupção pelo limite de CPU e um módulo ausente. `ExitCodeZeroIsNotAPass` verifica que um módulo que chama `sys.exit(0)` na importação deixa código de saída 0 e mesmo assim é `incomplete`, e que três testes pulados não são aprovação.
+
+Para ver um teste pegar uma regressão real, troque a linha `return "repair"  # whatever the critic said` em `next_step` por `return "accept" if critic == "approve" else "repair"`. `test_a_critic_approval_cannot_turn_a_failing_test_into_acceptance` falha: a aprovação de um revisor agora libera um patch que deixa dez caixas em USD 120,00. Restaure a linha antes de seguir.
