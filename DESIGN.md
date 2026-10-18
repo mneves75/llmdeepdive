@@ -178,10 +178,12 @@ dark grey with no hue of its own, so every colour on it is a pigment that means
 something.
 
 Charts are real data, never decoration. One deterministic layout
-(`src/lib/sky.ts`, a 1000 × 560 chart) feeds the home sky, each track's
-constellation, the "you are here" plate in a lesson header, and the 3D sky.
+(`src/lib/sky.ts`) feeds the home sky, each track's constellation, the "you
+are here" plate in a lesson header, and the 3D sky. Each part of the course is
+one 1000 × 560 band, the agent-systems band below the model band with a 60-unit
+gap, so the whole chart is a portrait atlas plate (1000 × 1180 with two parts).
 Star size is the lesson's in-degree in the prerequisite graph; star pigment is
-its tier; constellations stand left to right in track order. A graticule
+its tier; within a band, constellations stand left to right in track order. A graticule
 appears only where it locates something. Every page is complete as HTML and
 SVG before any WebGL loads, and every string is HTML.
 
@@ -360,7 +362,10 @@ Sections are separated by a hairline rule and `6rem` of padding (`4rem` below
 backdrop blur; anchors land below it through `scroll-padding-top`.
 
 - **Home:** the hero is a two-column grid (`0.78fr` copy, `1.22fr` sky) that
-  stacks below `70rem`. The five-step loop runs across in five columns, three
+  stacks below `70rem`. The atlas is taller than the copy, so the grid aligns to
+  the top and the copy is sticky below the masthead; stacked, the sky caps at
+  `46rem` wide. The catalog and the tracks index group tracks under a heading
+  per course part. The five-step loop runs across in five columns, three
   below `70rem`, and down the page below `50rem`. The catalog is ruled rows:
   a `13rem` constellation figure, the text, and an `11rem` facts column; below
   `50rem` the figure narrows to `5.5rem`.

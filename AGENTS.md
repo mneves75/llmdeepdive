@@ -5,8 +5,9 @@ How to work in this repo. Read before non-trivial changes. `CLAUDE.md` points he
 ## What this is
 
 A free, open-source, bilingual (EN + pt-BR) interactive course on large language
-models — from what a parameter is through efficient inference. Static site on
-Cloudflare Workers, MIT licensed.
+models in two parts: how a model works, from what a parameter is through
+efficient inference (tracks 0–13), and how to build agent systems around one
+(tracks 14–25). Static site on Cloudflare Workers, MIT licensed.
 
 ## Commands
 
@@ -23,6 +24,7 @@ pnpm content:graph       # prerequisite ids resolve, no cycles
 pnpm content:citations   # citations present or reason given
 pnpm content:assets      # every referenced asset exists
 pnpm content:figures     # every <Figure id> resolves; both locales; labels differ
+pnpm content:excerpts    # every `# file: examples/...` code block matches that file verbatim
 pnpm links               # every internal link in dist/ resolves (runs in build)
 pnpm a11y:contrast       # palette stays above accessible contrast ratios; dark grounds
                          #   and inks stay neutral, with a visible lightness ladder
@@ -124,7 +126,13 @@ the two cannot disagree. Same rules as the explorer: dynamic import only after
 an IntersectionObserver, a WebGL check, page load and idle; a real `.catch()`
 that leaves the poster; no wheel or touch-scroll capture; stopped offscreen,
 when hidden, when paused (`[data-motion-toggle]`) and under reduced motion.
-It owns its own renderer — one WebGL context per page, never two. Its contract
+It owns its own renderer — one WebGL context per page, never two. The chart has one band per course
+*part* (the track field `part`: `models`, then `agents`), each laid out as the
+whole sky once was, stacked vertically in one SVG; that is how 26 tracks fit
+without a second chart or a second context. A track with no lessons yet draws
+nothing. `tests/sky-layout.test.mjs` runs every geometry check against the
+published corpus and the full planned catalog in
+`docs/specs/agent-engineering/inventory.json`. Its contract
 (poster-identical first frame, no three.js in the boot module, every point in
 view over the sway) is `tests/sky-scene.test.mjs`; the 2D layout it lifts is
 `tests/sky-layout.test.mjs`.
@@ -465,6 +473,14 @@ Every lesson is **concept → analogy → optional lab → teach-back → quiz**
 lesson completes only when the teach-back is ≥80 characters and ≥15 words *and*
 the quiz is answered correctly.
 
+**Quiz answers must not be guessable by length.** `content:parity` fails a
+locale where the correct option is uniquely the longest in more than 20% of
+items or uniquely the shortest in more than 35%, and any track over half in
+either direction; it also fails a track whose answer positions repeat. The
+gate is a floor: changing an existing option is an *assessment repair*
+(`docs/WRITING.md`), reviewed on another model, because a swapped option
+once left an answer key pointing at a wrong answer with every gate green.
+
 Markdown runs on the **unified** pipeline, pinned over Astro 7's Sätteri default
 — see `docs/adr/0001`. Math, callouts (`:::note`, `:::insight`, `:::warning`,
 `:::caveat`), heading anchors and Shiki all work; verify against emitted HTML if
@@ -578,7 +594,8 @@ HTML, not by any gate.
 comes from the model card and its `config.json`; the model has **no technical
 report**, so training-token counts, dataset composition, cutoff and training
 compute must never be stated. The KV-cache arithmetic is derived once in lesson
-7.2 and the memory budget once in 9.3; every other lesson references them rather
+7.2, the serving memory budget once in 9.3 and the training-state budget
+(16 bytes per parameter under the illustrative AdamW recipe) once in 5.7; every other lesson references them rather
 than re-deriving, because four parallel writers produced three different budgets
 for the same card before this rule existed.
 
@@ -616,9 +633,45 @@ the browser's UI language and Safari rewrites a typed comma, so "1,5" on a
 pt-BR page is not reliably 1.5. An invalid input blanks every result rather
 than leaving the last valid answer beside it.
 
+## Agent-engineering tracks and the examples project
+
+Tracks 14–25 teach building agent systems; their plan is
+`docs/plans/agent-engineering/plan.md` and the frozen decisions (inventory,
+pins, writer contract, labs) are `docs/specs/agent-engineering/`. Their
+exercises live in `examples/agent-engineering/`, a uv project that never
+enters the website's package manifest:
+
+```bash
+cd examples/agent-engineering
+uv sync --frozen --all-groups
+uv run --frozen python -m unittest discover -s tests            # core, offline
+uv run --frozen python -m unittest discover -s tests_frameworks # LangGraph, Temporal
+uv run --frozen python -m unittest discover -s tests_browser    # Playwright portal
+uv run --frozen python -m unittest discover -s tests_postgres   # needs AGENTLAB_PG_DSN
+```
+
+CI's `examples` job runs all four (Postgres as a service container). Rules
+that keep the lessons true:
+
+- **A lesson may call code runnable only if a test runs it.** A block that
+  quotes the project starts with `# file: examples/agent-engineering/<path>`
+  and `content:excerpts` fails unless the rest appears in that file verbatim.
+  Anything else (Firecracker on KVM, live Slack or Teams calls, E2B) says in
+  the prose that the course's CI does not run it.
+- **Evidence has four kinds and they never merge**: source-reviewed,
+  fixture-tested, live-model-tested, environment-tested (the project README).
+  A scripted-model pass is not a claim about a real model.
+- **Identity comes from the trusted runtime**, never from model output: the
+  records in `agentlab/domain.py` are strict and take a `Principal` from the
+  controller. Times are timezone-aware.
+- New lessons' `unlocks` are the exact inverse of new lessons' prerequisites;
+  existing lessons' frontmatter does not gain forward unlocks.
+- Postgres tests create and drop their own `agentlab_test_*` database and
+  roles; they never touch another database.
+
 ## External systems reference
 
-The published corpus is tracks 0–13 (125 lessons per locale); documentation
+The published corpus is tracks 0–25 (185 lessons per locale); documentation
 must describe that shipped scope exactly. Tracks 11–13 (Mac Studio Ultra and
 MLX, DGX and CUDA, llama.cpp in depth) pin their software: MLX `v0.32.3`,
 mlx-lm `v0.32.0`, ddalcu/mlx-serve `v26.10.1` and llama.cpp `b11380`. Re-read
