@@ -11,20 +11,20 @@ unlocks: ["5.9-mixed-precision"]
 analogy: "A theatre can divide one production three ways. Tensor parallelism gives different sections of the orchestra different notes of the same chord, then combines their sound. Pipeline parallelism assigns each act to a different stage and moves several casts through, like an assembly line. Sequence parallelism gives each editor a different stretch of the same long script, and the editors exchange notes when a scene needs the whole context."
 teachBack:
   prompt: "Work out which tensor-parallel degrees divide Qwen3.8-27B cleanly, name the binding constraint, and explain how its 16 super-blocks map onto pipeline stages."
-  modelAnswer: "Every dimension split by tensor parallelism must divide evenly by the degree. The padded vocabulary of 248,320 factors as 512 times 485, so it splits up to degree 512. The FFN intermediate of 17,408 is 1024 times 17, so it splits up to 1024. The 24 query heads divide by 1, 2, 3, 4, 6, 8, 12, and 24. But there are only 4 KV heads, so clean splitting stops at degree 4. Beyond that, a framework must replicate KV heads across ranks, which costs duplicated memory and extra communication for no saving. For pipelines, the 64 layers form 16 repeating super-blocks of three Gated DeltaNet layers plus one full-attention layer. Degrees that divide 16 give stages with identical composition and balanced cost, while a split inside a super-block leaves stages with different layer mixes."
+  modelAnswer: "Every dimension split by tensor parallelism must divide evenly by the degree. The padded vocabulary of 248,320 factors as 512 times 485, so it splits up to degree 512. The FFN intermediate of 17,408 is 1024 times 17, so it splits up to 1024. The 24 query heads divide by 1, 2, 3, 4, 6, 8, 12, and 24. But there are only 4 KV heads, so clean splitting stops at degree 4. Beyond that, a framework must replicate KV heads across ranks, which costs duplicated K/V memory and extra communication, while the query, FFN and output projections still shard; whether a higher degree pays off is a measured memory and latency question. For pipelines, the 64 layers form 16 repeating super-blocks of three Gated DeltaNet layers plus one full-attention layer. Degrees that divide 16 give stages with identical composition and balanced cost, while a split inside a super-block leaves stages with different layer mixes."
 quiz:
   - question: "Which quantity binds the clean tensor-parallel degree of Qwen3.8-27B first?"
-    options: ["The 4 KV heads — beyond degree 4 they must be replicated rather than split", "The 248,320-row vocabulary, which stops at degree 16", "The 17,408 FFN intermediate, which stops at degree 8", "The 64 layers, which stop at degree 2"]
+    options: ["The 4 KV heads, which must be replicated past degree 4", "The 248,320-row vocabulary, which stops dividing evenly at degree 16", "The 17,408 FFN width, which stops dividing evenly past degree 8", "The 24 query heads, which stop dividing evenly at degree 16"]
     correctIndex: 0
-    explanation: "248,320 = 512 x 485 and 17,408 = 1024 x 17 both split far further. Grouped-query attention leaves only 4 KV heads, so degree 8 forces replication."
+    explanation: "248,320 = 512 x 485 and 17,408 = 1024 x 17 both split far further. The 24 query heads do stop at 16, but grouped-query attention leaves only 4 KV heads, so degree 8 already forces replication."
   - question: "Lesson 5.7 left about 6.75 GB of persistent state per rank under ZeRO-3 on 64 ranks. Why might a team still add tensor parallelism on top?"
-    options: ["Because ZeRO-3 cannot shard optimizer moments", "Sharding state does not shard the computation of one layer, so very large matrices and long sequences still exceed a single rank's compute and activation budget", "Because tensor parallelism removes the need for gradients", "Because FSDP requires a tensor-parallel group"]
+    options: ["ZeRO-3 shards optimizer moments but keeps a full parameter copy on every rank", "Sharding state leaves one layer's computation whole, and it can exceed one rank", "Tensor parallelism removes the per-module all-gathers that ZeRO-3 needs each step", "FSDP only runs inside a tensor-parallel group, so the two always come together"]
     correctIndex: 1
-    explanation: "FSDP rebuilds the full parameters of each module and asks one rank to execute the whole operation; tensor parallelism splits that operation itself."
+    explanation: "FSDP rebuilds the full parameters of each module and asks one rank to execute the whole operation; tensor parallelism splits that operation itself, so very large matrices and long sequences stop exceeding one rank's compute and activation budget. ZeRO-3 does shard parameters, and combining it with tensor parallelism is optional and does not remove its gathers."
   - question: "What is a pipeline bubble?"
-    options: ["An attention probability", "A tokenizer fallback byte", "Stage idle time while the pipeline fills, drains, or waits", "An optimizer moment"]
+    options: ["Extra memory held for the activations of in-flight microbatches", "The delay of sending activations across a stage boundary", "Stage idle time while the pipeline fills, drains, or waits", "Padding added when a batch does not divide into microbatches"]
     correctIndex: 2
-    explanation: "Dependencies between stages and a finite number of microbatches leave some stages without useful work during parts of the schedule."
+    explanation: "Dependencies between stages and a finite number of microbatches leave some stages without useful work during parts of the schedule. Activation memory and transfer latency are real pipeline costs, but the bubble is the idle time itself."
 citations:
   - title: "Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism"
     authors: "Mohammad Shoeybi et al."
@@ -45,7 +45,7 @@ citations:
 updated: "2026-10-18"
 ---
 
-Your cluster has eight accelerators per node, so you set the tensor-parallel degree to eight. It is the obvious choice: eight is the node, eight divides everything you checked, and the job launches without complaint. Six hours later the memory profile looks wrong. The key and value projections take the same space on every rank instead of an eighth, and the communication time per step is higher than your estimate. Nothing failed. The framework did the only thing it could, without a warning. This lesson explains what it did, and how to pick a layout the model's shapes actually allow.
+Your cluster has eight accelerators per node, so you set the tensor-parallel degree to eight. It is the obvious choice: eight is the node, eight divides everything you checked, and the job launches without complaint. Six hours later the memory profile looks wrong. The key and value projections take a quarter of their full size on every rank instead of an eighth, and the communication time per step is higher than your estimate. Nothing failed. The framework did the only thing it could, without a warning. This lesson explains what it did, and how to pick a layout the model's shapes actually allow.
 
 ## Why is sharding the state not enough?
 
@@ -79,7 +79,7 @@ At degree 4 the split is exact. Each rank owns 6 query heads and 1 KV head:
 - a $5120\to 256$ slice each of K and V;
 - a $1536\to 5120$ row-parallel slice of the output projection.
 
-At degree 8 there is no exact split, and frameworks fall back to replicating KV heads across pairs of ranks. The job runs and the mathematics is correct, but you have paid for duplicated K/V storage and additional communication in exchange for nothing.
+At degree 8 there is no exact split, and frameworks fall back to replicating KV heads across pairs of ranks. The job runs and the mathematics is correct. You pay for duplicated K/V storage and additional communication, while the query, gate, FFN and output projections still split eight ways. Whether that trade beats degree 4 is something to measure, not assume.
 
 :::insight
 The binding constraint on tensor-parallel degree is rarely the number people check. Here the vocabulary and FFN width divide generously, while the head count, small enough to keep serving memory low, is the first to stop dividing evenly. Past degree 4 the K and V heads must be replicated across ranks, which costs memory and communication, but the query, gate, FFN and output projections still shard. A larger degree is therefore a tradeoff between replicated KV state and sharded compute, not an impossibility, and the right degree is a measured memory and latency result rather than a head-count ceiling.
@@ -107,7 +107,7 @@ of ideal time lost. More microbatches shrink the bubble but increase the activat
 
 **Sequence parallelism** partitions the token dimension. Normalization and FFNs work on each position independently, so they process local slices with no trouble. Attention needs interaction across positions, so the system exchanges query, key, value, or head partitions. DeepSpeed-Ulysses uses an all-to-all (every rank sends a different piece to every other rank) to switch from splitting by sequence to splitting by head. Each rank then computes complete attention for a subset of heads before switching back.
 
-This axis matters most for a model advertising 262,144 tokens of native context. Note that only the 16 attention layers need the exchange: the DeltaNet layers scan positions with a fixed-size recurrent state.
+This axis matters most for a model advertising 262,144 tokens of native context. The 48 DeltaNet layers need a different exchange, not none. They scan positions with a fixed-size recurrent state, so a rank holding a later stretch of positions needs the state left by the rank before it: the state is passed rank to rank in the forward pass, and its gradient flows back the same way. That message stays the same size however long the sequence grows, but it adds a dependency between ranks that a schedule has to hide.
 
 :::caveat
 "Sequence parallelism" names more than one algorithm. Always ask which tensors are sharded, which collectives run, and whether attention stays exact, becomes ring-based, or is approximated. The same phrase in two frameworks can mean different memory use and different numerical results.

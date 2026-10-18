@@ -1,0 +1,158 @@
+---
+id: "14.1-when-a-workflow-needs-an-agent"
+track: "14-agent-architecture-and-state"
+order: 1
+title: "When a Workflow Needs an Agent"
+summary: "A fixed parser, one model call and an agent that chooses its own tools solve different problems. Pick the least complex one that does the job, then prove each run succeeded by checking the recorded outcome."
+tier: "core"
+locale: "en"
+prerequisites: ["0.1-what-is-a-language-model"]
+unlocks: ["14.2-states-dags-branches-and-loops", "15.1-from-model-output-to-a-tool-request"]
+analogy: "An office reads mail three ways. A clerk with a checklist handles printed forms, because every box is in the same place. A reader interprets handwritten letters, because the wording changes. An investigator handles a disputed claim, deciding whom to call next from what the last call revealed. Sending the investigator to read printed forms costs more and adds judgment where none was needed. The comparison stops at accountability: a human investigator answers for the choices made and learns from them, while an agent's choices are model outputs that the surrounding code must bound and check."
+teachBack:
+  prompt: "A colleague proposes one agent that reads every supplier e-mail, decides which tools to call and creates the invoice. Most e-mails come from three suppliers who always use the same layout; the rest are free text, and a few are disputes about short deliveries. Which system would you build for each group, and how would you prove that a run succeeded?"
+  modelAnswer: "I would split the mail by what each group needs. The three fixed layouts get deterministic parsers like parse_supplier_invoice. They are cheap, repeatable and refuse any layout they do not know. Free-text invoices get one model call that extracts the purchase order and the total into JSON. The code then validates that JSON. The model does not choose any further steps. Only the disputes need an agent, because the next step depends on what the last one found. For example, it looks up the order, then asks the supplier, then checks again. That agent still runs under a transition table and a step budget. For every group, success is judged the same way. I compare the recorded total with quantity times unit price from the run's own tenant's purchase record. A run that reports success while the record disagrees has failed."
+quiz:
+  - question: "Next month Supplier Alpha changes its invoice to read \"Amount due: USD 500.00\" with no quantity line. What does parse_supplier_invoice from this lesson do with the new layout?"
+    options: ["It still finds the total, because its pattern accepts any USD figure that appears in the text", "It raises ValueError, so the layout change shows up as an error instead of a wrong payment", "It returns a total of zero, which the success assertion then flags as a mismatch", "It hands the message to a model call, because the parser falls back when its pattern fails"]
+    correctIndex: 1
+    explanation: "The pattern needs both the subject line and the \"quantity x USD price = USD total\" line, and the function raises when either is missing. Guessing a figure would be worse than failing: a wrong number would flow into a payment with no error for anyone to see. There is no fallback to a model in this code."
+  - question: "Which property of a task is the best reason to build an agent rather than a workflow with fixed code paths?"
+    options: ["The task calls a language model at least once, since the model then decides the answer", "The input is free text rather than a fixed format, because no parser can read free text", "The task has more than three steps, since long code paths are hard to maintain by hand", "The next step depends on what earlier steps found, so no fixed path can be written down"]
+    correctIndex: 3
+    explanation: "A single model call inside fixed code is still a workflow, and free text often needs only one extraction call. Step count alone does not matter either: a long but predictable sequence is ordinary code. An agent earns its cost when the path itself cannot be known in advance."
+  - question: "A run's final message says \"Invoice created for USD 500.00 against PO-1001.\" The accounts system holds that invoice with a total of USD 5,000.00. What does the success assertion conclude?"
+    options: ["The run succeeded, because its final report names the correct amount and order", "The run failed, because success is judged by the recorded outcome, not by the report", "The run succeeded, because a total in another system is a reporting issue downstream", "The outcome is unknown until the model is asked again to confirm what it created"]
+    correctIndex: 1
+    explanation: "invoice_matches_purchase compares the recorded total with quantity times unit price from the purchase record: 40 x 12.50 is 500.00, so 5,000.00 is a failure. The run's own message is part of the transcript and proves nothing about the outcome. Asking the model again would only produce more transcript."
+citations:
+  - title: "Building effective agents"
+    authors: "Erik S. and Barry Zhang, Anthropic"
+    year: 2024
+    url: "https://www.anthropic.com/engineering/building-effective-agents"
+  - title: "Demystifying evals for AI agents"
+    authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares and Jiri De Jonghe, Anthropic"
+    year: 2026
+    url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
+  - title: "RFC 9110: HTTP Semantics"
+    authors: "R. Fielding, M. Nottingham and J. Reschke (eds.), IETF"
+    year: 2022
+    url: "https://www.rfc-editor.org/rfc/rfc9110.html"
+  - title: "RFC 8259: The JavaScript Object Notation (JSON) Data Interchange Format"
+    authors: "T. Bray (ed.), IETF"
+    year: 2017
+    url: "https://www.rfc-editor.org/rfc/rfc8259.html"
+updated: "2026-10-18"
+---
+
+The purchasing assistant you will build across these tracks starts with an ordinary job. A supplier e-mails an invoice for purchase order PO-1001: forty boxes of bolts at USD 12.50, total USD 500.00. Your code must read the total, check it against the order and record the invoice. Does that job need an agent? It is tempting to reach for one. This lesson gives you a way to decide, and a test that tells you afterwards whether any run, agent or not, actually did its job.
+
+## Three ways to read one invoice
+
+Here is the start of the supplier's message, one of the synthetic fixtures in the exercise project:
+
+```text
+# file: examples/agent-engineering/src/agentlab/fixtures/supplier_messages/benign.txt
+Subject: Invoice for PO-1001
+
+Hello,
+
+The 40 boxes of M8 hex bolts on purchase order PO-1001 were delivered on
+Tuesday. Please find our invoice attached: 40 x USD 12.50 = USD 500.00.
+```
+
+There are three kinds of system that could read it.
+
+**A deterministic parser.** "Deterministic" means the same input always gives the same output. This supplier always writes the subject line and the "quantity x USD price = USD total" line the same way, so a regular expression (a text pattern) finds both:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/workflow.py
+SUBJECT = re.compile(r"^Subject: Invoice for (PO-\d{4})$", re.MULTILINE)
+TOTAL = re.compile(r"(\d+) x USD ([\d,]+\.\d{2}) = USD ([\d,]+\.\d{2})")
+
+
+def parse_supplier_invoice(text: str) -> tuple[str, Decimal]:
+    """Return (purchase order id, invoice total) from the supplier's fixed layout.
+
+    Raises ``ValueError`` on any other layout: a parser that guesses would turn
+    a format change into a wrong payment instead of an error someone sees.
+    """
+    subject, total = SUBJECT.search(text), TOTAL.search(text)
+    if subject is None or total is None:
+        raise ValueError("not the expected invoice layout")
+    return subject.group(1), Decimal(total.group(3).replace(",", ""))
+```
+
+It costs nothing to run, gives the same answer every time and refuses what it does not recognise. Its weakness is the other side of that strength: a new layout makes it fail.
+
+**One model call.** When forty suppliers each write in their own words, a pattern per supplier stops being practical. A language model ([lesson 0.1](/lessons/0-orientation-and-foundations/0.1-what-is-a-language-model/)) can read free text and return the purchase order and total as JSON. Your code still decides everything else: it validates the JSON, checks the total and records the invoice. The model fills one box in a fixed sequence.
+
+**An agent.** Anthropic's engineering guidance draws the line this course uses. A *workflow* orchestrates models and tools "through predefined code paths". An *agent* is a system where the model dynamically directs "its own processes and tool usage". Picture a disputed delivery: the supplier billed for 40 boxes, the warehouse logged 36. The next step depends on what the last one found. Look up the order, ask the supplier, maybe split the invoice. No fixed path covers every case. The same guidance says agents suit open-ended problems where the number of steps cannot be predicted.
+
+The guidance also recommends "finding the simplest solution possible, and only increasing complexity when needed". Each step up costs more per run and is harder to test. It also gives a model more room to be wrong.
+
+## What travels between the parts?
+
+Whichever system you build, its parts exchange messages. Two formats appear in every later track.
+
+**JSON** (JavaScript Object Notation, RFC 8259) is text that encodes objects (`{"key": value}`), arrays (`[1, 2]`), strings, numbers, `true`, `false` and `null`. Every language can read and write it, which is why models, tools and services use it to exchange data.
+
+**HTTP** (RFC 9110) is the request-and-response protocol behind web APIs. A request carries a *method* (`GET` to read, `POST` to create), a *path* (`/v1/chat/completions`), *headers* (metadata such as `Content-Type: application/json`) and a *body*. The response carries a *status code*: 200 means success, 4xx means the request was wrong, and 5xx means the server failed. People call this wrapper the *envelope* and the JSON inside it the *payload*.
+
+The next block is an illustration of the payload the project's `OpenAICompatibleModel` adapter posts for one model call. The course's CI runs that adapter only against a local fake server in `tests/test_core.py`, never against a real model, so treat the values as an example:
+
+```json
+{
+  "model": "local-test",
+  "messages": [{"role": "user", "content": "find PO-1001"}],
+  "tools": [{"type": "function", "function": {"name": "lookup_po", "parameters": {"type": "object"}}}]
+}
+```
+
+One case belongs to neither status family: no response at all. A request that times out may or may not have taken effect on the server. [Lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) is about exactly that gap.
+
+## How do you know a run succeeded?
+
+A run produces two things. The *transcript* is what the system said and did along the way. The *outcome* is the state of the world when it finished. Anthropic's evaluation guidance gives the example of an agent that says "Your flight has been booked": the outcome is whether the reservation exists in the database. The same holds for invoices.
+
+So the project's *task success assertion* ignores what the run reports. It recomputes the expected total from the trusted purchase record:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/workflow.py
+def invoice_matches_purchase(po_id: str, total: Decimal, purchases: list[dict], tenant_id: str) -> list[str]:
+    """The task success assertion: problems found, or an empty list.
+
+    It compares the claimed total with quantity x unit price from the
+    purchase record of the run's own tenant, so another tenant's order is
+    treated as missing.
+    """
+    record = next((p for p in purchases if p["po_id"] == po_id and p["tenant_id"] == tenant_id), None)
+    if record is None:
+        return [f"{po_id} is not a purchase order of {tenant_id}"]
+    expected = record["quantity"] * Decimal(record["unit_price"])
+    if total != expected:
+        return [f"total {total} but the purchase order expected {expected}"]
+    return []
+```
+
+A *tenant* is one customer whose data must stay separate from every other customer's. The fixtures hold two. PO-2001 belongs to `tenant-b`, so a `tenant-a` run treats it as missing even though the record exists.
+
+:::caveat
+The fixtures include a second message whose hidden HTML comment tells "the AI assistant" to change the payee and raise the amount to USD 11,340.00. The parser above reads only the total line, so it returns USD 1,134.00. A model given the whole message would read the comment as part of its input. Track 16 treats that problem; the success assertion here would still catch the inflated total.
+:::
+
+## Choosing the least complex system
+
+| Task | Least complex system | Why |
+|---|---|---|
+| Invoices from one supplier with a fixed layout | Deterministic parser | Same input, same answer; an unknown layout fails loudly |
+| Free-text invoices from many suppliers | One model call inside fixed code | Extraction varies; the steps around it do not |
+| A disputed short delivery | Agent with a step budget | The next step depends on what the last one found |
+
+Every row uses the same success assertion. The system that produced the total does not change how you judge it.
+
+## Run the exercise
+
+The module is `src/agentlab/state/workflow.py` and its tests are in `tests/test_state_workflow.py`, inside `examples/agent-engineering/`. From that directory, run `uv run --frozen python -m unittest discover -s tests -p "test_state_workflow.py"`.
+
+Expected output ends with `Ran 6 tests` and `OK`. The test that matters most feeds the assertion a total of USD 5,000.00 for PO-1001 and expects one problem, "expected 500.00". Change `if total != expected:` to `if False:` and that test goes red: a run reporting the wrong total would pass as a success. Restore the line before you continue to [lesson 14.2](/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/), which gives the agent case a structure it cannot leave.

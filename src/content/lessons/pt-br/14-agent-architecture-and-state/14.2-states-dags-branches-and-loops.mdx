@@ -1,0 +1,131 @@
+---
+id: "14.2-states-dags-branches-and-loops"
+track: "14-agent-architecture-and-state"
+order: 2
+title: "Estados, DAGs, ramificações e laços"
+summary: "Um DAG, um grafo dirigido com ciclo e um sistema de transições de estados finitos são três coisas diferentes. A execução de compras é do terceiro tipo, escrita como uma tabela que rejeita movimentos ilegais e um orçamento de passos que encerra todo laço."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["14.1-when-a-workflow-needs-an-agent"]
+unlocks: ["14.3-checkpoints-and-serialization", "16.1-threat-model-the-assistant", "21.1-what-counts-as-corrective-feedback", "23.2-evaluate-valid-paths"]
+analogy: "Uma cabine de sinalização ferroviária guarda um quadro das rotas legais. O sinaleiro só manda um trem da plataforma 2 para o pátio de cargas se o quadro listar essa rota, e as alavancas são intertravadas para que uma rota proibida nem possa ser montada. Um trem pode dar voltas na linha circular, mas o horário só permite um certo número de voltas antes de ele sair. A tabela de transições é o quadro, e o orçamento de passos é o limite de voltas. A comparação para no que o quadro sabe: ele registra quais movimentos são legais, nunca se um trem de fato chegou. Uma execução que alcança completed na tabela não enviou com isso uma fatura correta; essa prova vem da conferência do resultado da aula 14.1."
+teachBack:
+  prompt: "Sua equipe acrescenta um status chamado disputed: de checked, uma execução pode ir para disputed, e de disputed voltar para checked quando o fornecedor manda uma fatura corrigida. Um fornecedor contesta toda correção para sempre. Quais linhas mudam na tabela, o grafo da execução continua sem ciclos, e o que para essa execução?"
+  modelAnswer: "A linha de checked ganha disputed, e uma nova linha disputed lista checked, cancelled e failed. O grafo agora tem dois ciclos: de checked para needs_info e de volta, e de checked para disputed e de volta. Então ele já não era um DAG antes, e continua não sendo. Isso não é problema para um grafo de execução, que pode ter laços. O grafo de pré-requisitos do curso é outro grafo e precisa continuar acíclico. Quem para a disputa sem fim é o orçamento de passos, não a tabela. Cada movimento soma um passo. O movimento que usaria o último passo sem chegar a um status terminal encerra a execução em failed. Assim, a execução para depois de no máximo max_steps movimentos, não importa o que o fornecedor faça."
+quiz:
+  - question: "Qual afirmação sobre os grafos desta aula está correta?"
+    options: ["O grafo da execução é um DAG, porque toda seta vai de um status anterior para um posterior", "O grafo de pré-requisitos do curso pode ter um ciclo, desde que cada aula nele seja curta", "O grafo da execução tem um ciclo por needs_info, então é um grafo dirigido, mas não um DAG", "Um DAG e uma máquina de estados finitos são a mesma ideia desenhada de dois jeitos, então os nomes se equivalem"]
+    correctIndex: 2
+    explanation: "checked → needs_info → checked é um caminho que volta ao início, exatamente o que um DAG proíbe. O grafo de pré-requisitos é outro grafo e precisa continuar acíclico, senão alguma aula nunca poderia ser alcançada. Um DAG ordena itens de trabalho, enquanto uma máquina de estados finitos diz qual estado pode seguir qual; não são intercambiáveis."
+  - question: "Uma execução começa em received com max_steps=4. O modelo sempre propõe checked quando a execução está em received ou needs_info, e needs_info quando está em checked. Onde run_until_terminal a deixa?"
+    options: ["Em failed no passo 4, porque o quarto movimento não terminaria a execução", "Em needs_info no passo 4, onde a execução pausa até o fornecedor responder", "Em checked no passo 5, porque só movimentos para needs_info contam no orçamento", "Com IllegalTransition no passo 4, porque a linha de needs_info não tem saída"]
+    correctIndex: 0
+    explanation: "Os movimentos 1 a 3 vão para checked, needs_info e checked. A quarta proposta é needs_info, que não é terminal, e o passo 4 alcança max_steps, então advance registra failed no lugar. Todo movimento conta, e a linha de needs_info lista saídas, inclusive failed, então nada levanta erro."
+  - question: "A execução está em checked e o modelo roteirizado responde \"completed\". O que run_until_terminal faz com essa resposta?"
+    options: ["Conclui a execução, já que completed é um dos status que o registro permite", "Ignora a resposta e pergunta de novo, o que gasta um passo do orçamento", "advance levanta IllegalTransition, porque a linha de checked não lista completed", "Leva a execução para failed, já que toda resposta inesperada conta como gasto do orçamento"]
+    correctIndex: 2
+    explanation: "Ser um status válido de RunState não basta: o movimento precisa constar da linha do status atual, e checked lista needs_info, ready, cancelled e failed. O laço não tenta de novo nem converte a resposta em failed; a proposta ilegal para a execução com um erro que um desenvolvedor vai ver."
+citations:
+  - title: "directed acyclic graph, no Dictionary of Algorithms and Data Structures"
+    authors: "Paul E. Black (ed.), NIST"
+    year: 2004
+    url: "https://xlinux.nist.gov/dads/HTML/directAcycGraph.html"
+  - title: "finite state machine, no Dictionary of Algorithms and Data Structures"
+    authors: "Paul E. Black (ed.), NIST"
+    year: 2024
+    url: "https://xlinux.nist.gov/dads/HTML/finiteStateMachine.html"
+  - title: "Building effective agents"
+    authors: "Erik S. e Barry Zhang, Anthropic"
+    year: 2024
+    url: "https://www.anthropic.com/engineering/building-effective-agents"
+updated: "2026-10-18"
+---
+
+O pedido de compra PO-1003 é de 25 pacotes de luvas de segurança. A fatura do fornecedor chega sem a quantidade, então o assistente pede essa informação, o fornecedor responde, a fatura é conferida de novo e desta vez passa. Essa execução foi `received → checked → needs_info → checked → ready → completed`. A pergunta desta aula é como escrever esses movimentos para que o código recuse um movimento sem sentido e pare um laço que nunca se resolve. A palavra que você vai ouvir para isso é "grafo", e ela esconde três ideias diferentes.
+
+## Que tipo de grafo é uma execução?
+
+Um *grafo dirigido* é um conjunto de nós ligados por setas. Ele aceita quaisquer setas, inclusive as que levam de volta ao ponto de partida.
+
+Um *DAG* (directed acyclic graph, grafo dirigido acíclico) é um grafo dirigido "with no path that starts and ends at the same vertex" (sem nenhum caminho que comece e termine no mesmo vértice), nas palavras do Dictionary of Algorithms and Data Structures do NIST. As aulas deste curso formam um: cada aula lista seus pré-requisitos, e a verificação `content:graph` do repositório, que roda no CI, falha se essas ligações formarem um ciclo. Um ciclo ali significaria que alguma aula nunca poderia ser alcançada.
+
+A execução acima não é um DAG. O caminho `checked → needs_info → checked` volta ao início. Isso é um *ciclo*, e não há problema: um grafo de execução pode ter laços, enquanto o grafo de pré-requisitos não pode. Mantenha os dois separados: chamar um workflow com laços de "DAG" esconde justamente a propriedade que você mais precisa controlar.
+
+A terceira ideia é a que a execução usa. Uma *máquina de estados finitos* é, na definição do NIST, um modelo com "a set of states, a start state, an input alphabet, and a transition function" (um conjunto de estados, um estado inicial, um alfabeto de entrada e uma função de transição). Aqui os estados são os status da execução, o estado inicial é `received`, e a função de transição é uma tabela que diz qual status pode seguir qual. Os nós de um DAG costumam ser trabalhos separados, cada um feito uma vez. Os nós de uma máquina de estados são as condições de uma execução, e uma execução pode visitar o mesmo nó muitas vezes.
+
+## A tabela de transições da execução
+
+O projeto escreve a tabela como um dicionário que leva cada status ao conjunto de status permitidos em seguida:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/transitions.py
+TERMINAL = frozenset({"completed", "failed", "cancelled"})
+
+# Track 20 adds ``awaiting_approval``; until then no row leads to it.
+TRANSITIONS: dict[str, frozenset[str]] = {
+    "received": frozenset({"checked", "cancelled", "failed"}),
+    "checked": frozenset({"needs_info", "ready", "cancelled", "failed"}),
+    "needs_info": frozenset({"checked", "cancelled", "failed"}),
+    "ready": frozenset({"completed", "cancelled", "failed"}),
+    "completed": frozenset(),
+    "failed": frozenset(),
+    "cancelled": frozenset(),
+}
+```
+
+Quatro características aparecem nela. A *ramificação* é a linha de `checked`: a execução vai para `needs_info` ou para `ready`. O *laço* é `needs_info`, cuja linha leva de volta a `checked`. A *pausa* também é `needs_info`, porque a execução espera ali pelo fornecedor. Os *estados terminais* têm linhas vazias, então nada sai de `completed`, `failed` ou `cancelled`. Todo status ativo também pode ir para `cancelled`, quando uma pessoa interrompe a execução, ou para `failed`, quando há um erro.
+
+Por que uma tabela, e não uma cadeia de `if` espalhada pelo código? Porque a tabela é um dado que se lê numa tela só. Quem revisa vê todos os movimentos legais de uma vez, e uma mudança nas regras aparece como uma diferença de uma linha na revisão. Um teste também consegue percorrer cada linha, o que é bem mais difícil quando as regras ficam escondidas nas funções que fazem o trabalho. As trilhas seguintes partem da mesma ideia. A trilha 23, por exemplo, julga uma execução por seu caminho ter sido permitido, e não por ter seguido uma única sequência "de ouro" fixa de passos.
+
+## Por que um laço precisa de orçamento?
+
+Um laço com saída é código correto. O risco é um laço cuja saída depende de algo fora do seu controle, como um fornecedor que nunca responde ou um modelo que continua propondo `needs_info`. O guia da Anthropic observa que agentes costumam incluir "stopping conditions (such as a maximum number of iterations) to maintain control" (condições de parada, como um número máximo de iterações, para manter o controle). O registro `RunState` do projeto traz um contador `step` e um limite `max_steps`, e `advance` aplica os dois:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/transitions.py
+def advance(state: RunState, to: str) -> RunState:
+    """Return the next state, or raise ``IllegalTransition``.
+
+    The new record is validated again, because ``model_copy`` would accept a
+    status the record does not allow.
+    """
+    if to not in TRANSITIONS.get(state.status, frozenset()):
+        raise IllegalTransition(f"{state.status} -> {to} is not in the table")
+    step = state.step + 1
+    if step >= state.max_steps and to not in TERMINAL:
+        to = "failed"  # the budget is spent and the run has not finished
+    return RunState.model_validate({**state.model_dump(), "status": to, "step": step})
+```
+
+Leia a regra do orçamento assim: o movimento que usaria o último passo sem terminar a execução a encerra em `failed`. Com `max_steps=5` e um fornecedor que nunca responde, os movimentos 1 a 4 vão para `checked`, `needs_info`, `checked`, `needs_info`. O movimento 5 propõe `checked`, mas a execução não pode terminar nesse movimento, então ela falha no passo 5.
+
+<Figure id="agent-run-paths" />
+
+:::warning
+Escrever uma execução como máquina de estados não a torna confiável por si só. Um laço limitado é tão correto quanto uma máquina de estados; o que decide se uma execução sobrevive a uma queda é se o estado é persistido, como um replay trata os efeitos colaterais e se dois workers podem sobrescrever um ao outro. Esses são os assuntos das duas próximas aulas.
+:::
+
+## O modelo propõe e a tabela decide
+
+Num agente, o modelo escolhe o próximo status. Neste projeto ele nunca define o status diretamente. O laço condutor pede uma proposta e a passa por `advance`:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/transitions.py
+def run_until_terminal(state: RunState, decide: Callable[[RunState], str]) -> RunState:
+    """Ask ``decide`` for each next status until the run reaches a terminal state.
+
+    The loop always ends: every move adds a step, and the budget turns the
+    last one into ``failed``.
+    """
+    while state.status not in TERMINAL:
+        state = advance(state, decide(state))
+    return state
+```
+
+Nos testes, `decide` lê a resposta de um `ScriptedModel`, o modelo offline do projeto que repete respostas fixas. Quando o roteiro responde `completed` com a execução em `checked`, `advance` levanta `IllegalTransition`. A tabela não consegue julgar se `ready` é uma escolha *sensata* quando falta informação. Ela só garante que a execução anda por rotas que alguém escreveu e revisou.
+
+## Rode o exercício
+
+O módulo é `src/agentlab/state/transitions.py`; os testes estão em `tests/test_state_transitions.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_state_transitions.py"`.
+
+A saída esperada termina com `Ran 6 tests` e `OK`. A falha para experimentar: em `advance`, troque `to = "failed"` por `pass`. O teste `test_a_loop_that_never_settles_stops_at_the_budget` passa a dar erro com `ScriptExhausted`. O laço passou do orçamento até o modelo roteirizado ficar sem respostas. Com um modelo real nada se esgotaria, e a execução continuaria. Restaure a linha e siga para a [aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/), em que esse estado precisa sobreviver a um reinício.

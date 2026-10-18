@@ -14,13 +14,13 @@ teachBack:
   modelAnswer: "Produzir um token em batch 1 transmite os tensors ativos do modelo de linguagem pela HBM. O checkpoint bf16 completo tem cerca de 54 GB, então dividir 54e9 pelo pico de fabricante de 3,35e12 B/s de uma H100 SXM dá cerca de 16 milissegundos, ou aproximadamente 60 passos por segundo. Esse quociente é uma heurística de planejamento, não um limite rígido. O decode de texto pula tensors inativos de visão e lê uma linha de embedding, enquanto cache, estado e overhead de runtime acrescentam outro tráfego. O roofline exato usa bytes ativos medidos por token. Com baixa arithmetic intensity, os tensor cores esperam a memória. Menos bytes ativos ou mais trabalho útil por leitura ajuda, enquanto FLOPs adicionais sozinhos em geral não ajudam."
 quiz:
   - question: "O Qwen3.8-27B faz decode em batch 1 numa GPU classe H100. Qual mudança reduz diretamente o tráfego de pesos por token?"
-    options: ["Trocar por uma GPU com a mesma bandwidth de HBM e o dobro de FLOPs nos tensor cores","Servir um artefato validado de bits mais baixos, reduzindo os bytes ativos de peso lidos por token","Aumentar a temperatura de amostragem","Ampliar o pool do KV cache"]
+    options: ["Trocar por uma GPU com a mesma bandwidth de HBM e o dobro de FLOPs por segundo nos tensor cores", "Servir um artefato validado de bits mais baixos, reduzindo os bytes ativos de peso lidos por token", "Ampliar o pool do KV cache, para que mais pesos fiquem em cache no chip entre os passos", "Subir o clock dos tensor cores, para que cada byte de peso seja consumido em menos ciclos"]
     correctIndex: 1
-    explanation: "Num decode limitado por bandwidth, reduzir bytes ativos de peso reduz o tráfego; dobrar aritmética não ataca esse gargalo. O ganho exato ainda depende dos tensors ativos e do overhead do runtime."
+    explanation: "Num decode limitado por bandwidth, reduzir bytes ativos de peso reduz o tráfego; dobrar aritmética ou clock não ataca esse gargalo, e o pool de KV guarda keys e values, não pesos. O ganho exato ainda depende dos tensors ativos e do overhead do runtime."
   - question: "Na aula 7.3 a arithmetic intensity de uma matriz de pesos foi aproximada pelo número de tokens processados por leitura de peso. O que isso faz do prefill de um prompt de 8.192 tokens?"
-    options: ["Aproximadamente uma operação por byte de peso, então o prefill é limitado por bandwidth","Independente do comprimento do prompt","Aproximadamente 8.192 operações por byte de peso, muito acima do ponto de equilíbrio da máquina, então o prefill é normalmente limitado por compute","Limitado pelo tokenizer"]
+    options: ["Aproximadamente uma operação por byte de peso, como no decode, então o prefill também é limitado por bandwidth", "Aproximadamente 8.192 bytes lidos por operação, então um prompt mais longo deixa o prefill cada vez mais limitado por bandwidth", "Cerca de 8.192 operações por byte de peso, muito além do ponto de equilíbrio: normalmente limitado por compute", "Aproximadamente 300 operações por byte em qualquer comprimento, já que a intensidade é fixada pelo ridge point da GPU"]
     correctIndex: 2
-    explanation: "Cada byte de peso buscado durante o prefill serve todas as 8.192 posições de uma vez, e é por isso que prefill e decode ficam em lados opostos do mesmo hardware."
+    explanation: "Cada byte de peso buscado durante o prefill serve todas as 8.192 posições de uma vez, e é por isso que prefill e decode ficam em lados opostos do mesmo hardware. A intensidade pertence à carga; o ridge point perto de 300 pertence à máquina."
 citations:
   - title: "CUDA C++ Programming Guide"
     authors: "NVIDIA Corporation"
@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Alugue uma única GPU classe H100, carregue o Qwen3.8-27B em bf16, abra uma janela de chat e cronometre a saída. Os tokens chegam a algumas dezenas por segundo, enquanto a ficha técnica da placa anuncia throughput aritmético na casa dos petaflops (um petaflop é um milhão de bilhões de operações de ponto flutuante por segundo). Nada está quebrado e nada está mal configurado. Neste exemplo, a principal restrição é a bandwidth de memória: você está pagando a máquina na moeda errada. Esta aula mostra qual moeda a geração de um único chat realmente gasta, para você distinguir uma configuração lenta de uma que está funcionando como deveria.
@@ -99,7 +99,7 @@ A correção é cortar bytes, e não operações. Todo remédio eficaz de decode
 
 ## Batching: a alavanca mais barata
 
-O batching merece sua própria linha de aritmética, porque é a alavanca mais barata e a mais mal compreendida. Fazer decode de 32 sequências independentes juntas ainda lê os pesos uma vez por passo. Cada byte agora serve a 32 tokens, então a intensidade sobe de cerca de uma operação por byte para cerca de 32. O throughput total sobe aproximadamente 32 vezes, enquanto a latência que cada sequência percebe quase não se move.
+O batching merece sua própria linha de aritmética, porque é a alavanca mais barata e a mais mal compreendida. Fazer decode de 32 sequências independentes juntas ainda lê os pesos uma vez por passo. Cada byte agora serve a 32 tokens, então a intensidade sobe de cerca de uma operação por byte para cerca de 32. Num modelo simplificado só de pesos, que conta os bytes de peso e ignora todo o resto, o throughput total sobe aproximadamente 32 vezes, enquanto a latência que cada sequência percebe quase não se move. O batching real ganha menos: cada sequência a mais também lê o seu próprio KV cache e o seu estado recorrente a cada passo, o trabalho de attention cresce com o contexto e o escalonamento tem overhead, então meça a taxa em batch em vez de multiplicar.
 
 Mas 32 ainda está muito abaixo do ponto de equilíbrio de 300, então o passo continua limitado por bandwidth; a bandwidth só está fazendo mais trabalho útil por leitura. É por isso que a economia de serving (tokens totais por segundo por dólar) e a latência de chat (a rapidez com que um usuário vê os tokens) são problemas diferentes, com respostas diferentes. Um sistema ajustado para um pode parecer quebrado quando medido pelo outro.
 

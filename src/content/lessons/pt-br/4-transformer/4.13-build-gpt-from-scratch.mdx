@@ -14,15 +14,15 @@ teachBack:
   modelAnswer: "IDs inteiros indexam embeddings de token e de posição, produzindo estados B×T×C. Cada bloco idêntico aplica attention multi-head causal normalizada e uma atualização feed-forward através de conexões residuais. Uma norm final e uma projeção de vocabulário produzem logits B×T×V. Os logits achatados contra os targets deslocados dão a cross-entropy do próximo token. A geração reutiliza o mesmo forward pass, amostrando da última posição. O Qwen3.8-27B se afasta ao usar RMSNorm em vez de LayerNorm, posições rotativas em vez de uma tabela de posição aprendida, uma FFN gated com SiLU em vez de uma GELU sem gate, e grouped-query attention com projeções não quadradas. De forma mais estrutural, ele substitui attention por Gated DeltaNet em 48 das suas 64 camadas, de modo que a pilha não é uniforme de jeito nenhum."
 quiz:
   - question: "Por que a máscara triangular é registrada como buffer?"
-    options: ["Ela vira um parâmetro do otimizador", "Ela acompanha o módulo entre devices mas não é treinável", "Ela armazena o texto gerado", "Ela substitui os embeddings de posição"]
+    options: ["Ela vira um parâmetro, para o otimizador poder refinar a máscara durante o treino", "Ela acompanha o módulo entre devices mas não é treinável", "Ela armazena o texto gerado", "Ela substitui os embeddings de posição"]
     correctIndex: 1
-    explanation: "Buffers são salvos com o estado do módulo e se movem com ele, enquanto gradientes e atualizações do otimizador não são computados para eles."
+    explanation: "Buffers são salvos com o estado do módulo e se movem com ele, enquanto gradientes e atualizações do otimizador não são computados para eles. Uma máscara treinável poderia derivar e deixar posições lerem o futuro."
   - question: "Usando os cinco eixos da aula anterior, como o GPT mínimo é classificado?"
-    options: ["Encoder–decoder com cross-attention, denso, híbrido", "Mixture-of-experts decoder-only, multimodal", "Decoder-only, objetivo de próximo token, denso, mixer de attention uniforme, apenas texto", "Encoder-only com objetivo de corrupção"]
+    options: ["Decoder-only, próximo token, denso, híbrido de attention e DeltaNet, só texto", "Decoder-only, próximo token, mixture-of-experts, attention uniforme, só texto", "Decoder-only, próximo token, denso, attention uniforme, só texto", "Encoder-only com objetivo de corrupção"]
     correctIndex: 2
-    explanation: "Ele tem uma pilha causal treinada em predição do próximo token, cada token paga cada FFN, cada camada usa o mesmo mixer de attention e ele lê apenas texto — a baseline uniforme em todos os eixos."
+    explanation: "Ele tem uma pilha causal treinada em predição do próximo token, cada token paga cada FFN, cada camada usa o mesmo mixer de attention e ele lê apenas texto — a baseline uniforme em todos os eixos. O mixer híbrido pertence ao Qwen3.8-27B, não a este brinquedo."
   - question: "No topo de 27B da escada de parâmetros, qual componente guarda mais parâmetros?"
-    options: ["A tabela de embedding de tokens sozinha", "As máscaras causais", "O schedule de learning rate do otimizador", "As FFNs gated, cerca de 17B ao longo das 64 camadas"]
+    options: ["Embeddings mais lm_head, cerca de 2,54B", "As máscaras causais", "O schedule de learning rate do otimizador", "As FFNs gated, cerca de 17B ao longo das 64 camadas"]
     correctIndex: 3
     explanation: "A cerca de 267M por camada vezes 64 camadas, as FFNs guardam aproximadamente 17B dos ~27B; o embedding e o lm_head não amarrados somam cerca de 1,271B cada."
 citations:
@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 ## O que você vai construir
@@ -203,6 +203,16 @@ class MiniGPT(nn.Module):
 model = MiniGPT().to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
 
+
+@torch.no_grad()
+def estimate_loss(source: torch.Tensor, batches: int = 20) -> float:
+    """Average loss on fresh batches from one split, without gradients."""
+    model.eval()
+    losses = [model(*get_batch(source))[1].item() for _ in range(batches)]
+    model.train()
+    return sum(losses) / len(losses)
+
+
 for step in range(301):
     inputs, targets = get_batch(train_data)
     _, loss = model(inputs, targets)
@@ -212,7 +222,10 @@ for step in range(301):
     loss.backward()
     optimizer.step()
     if step % 100 == 0:
-        print(f"step {step}: train loss {loss.item():.4f}")
+        print(
+            f"step {step}: train loss {loss.item():.4f}, "
+            f"validation loss {estimate_loss(validation_data):.4f}"
+        )
 
 seed = torch.zeros((1, 1), dtype=torch.long, device=device)
 generated = model.generate(seed, new_tokens=160)[0].tolist()
@@ -231,6 +244,8 @@ Leia o código seguindo os shapes. Quatro letras fazem a contabilidade: $B$ é o
 Toda soma residual, portanto, tem shape compatível.
 
 O treino compara as previsões com a verdade. O target é a entrada deslocada em uma posição. A cross-entropy compara os logits de vocabulário (scores brutos, um por caractere) em cada posição com o caractere seguinte real. O AdamW, o otimizador da [aula 2.7](/pt-br/lessons/2-neural-network-fundamentals/2.7-optimizers/), atualiza os parâmetros, enquanto a máscara causal, registrada como **buffer** (um tensor salvo e movido junto com o modelo, mas nunca treinado), permanece fixa. A geração usa o mesmo forward pass sem targets, amostrando dos logits da última posição e cortando pelo limite de contexto.
+
+A cada cem passos o loop também mede a loss em `validation_data`, os últimos 10 por cento do texto, nos quais o modelo nunca treina. `estimate_loss` coloca o modelo em modo de avaliação, desliga o registro de gradientes com `torch.no_grad` e tira a média de 20 batches novos. Uma execução em CPU com PyTorch 2.14.1 imprimiu loss de treino de 0,0470 e loss de validação de 0,0576 no passo 300. Leia esse par com cuidado. O corpus é uma frase repetida 200 vezes, então o trecho separado é a mesma frase de novo, e uma loss de validação baixa só mostra que o modelo a reproduz. Se um modelo generaliza para texto novo só pode ser medido em texto separado que difere daquilo em que ele treinou.
 
 Um detalhe incidental merece destaque: `language_head` é uma matriz separada de `token_embedding`. Este brinquedo não amarra seu output head à sua tabela de embedding (amarrar seria reaproveitar uma única matriz para as duas funções). O Qwen3.8-27B também não amarra, a um custo imensamente maior. Guarde esse pensamento para a escada abaixo e para a [aula 4.14](/pt-br/lessons/4-transformer/4.14-reading-real-weights/), onde as duas matrizes não amarradas aparecem no checkpoint como tensores separados.
 

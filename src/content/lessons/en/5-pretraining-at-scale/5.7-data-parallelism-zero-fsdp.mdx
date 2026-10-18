@@ -10,21 +10,21 @@ prerequisites: ["5.6-inference-aware-scaling"]
 unlocks: ["5.8-model-parallelism"]
 analogy: "Several kitchens receive different customer orders but cook from the same recipe. Ordinary data parallelism gives every kitchen a full pantry, and after service the kitchens average their corrections to the recipe. Sharding splits the pantry stock, the correction notebooks, and even the recipe cards across kitchens; ingredients are gathered just before a dish is cooked and released afterwards. Together the kitchens can store far more, but delivery traffic becomes part of cooking."
 teachBack:
-  prompt: "Using the illustrative mixed-precision AdamW budget owned by lesson 9.3, show what each ZeRO stage leaves on one rank of a 64-GPU job and identify which conclusions depend on that recipe."
-  modelAnswer: "Lesson 9.3 derives an illustrative 432 GB persistent-state budget for a 27-billion-parameter model under a conservative recipe: bf16 parameters and gradients, plus fp32 master weights and two fp32 AdamW moments. That recipe is an assumption, not a published fact about Qwen training. Replicated data parallelism keeps the full assumed budget on every rank. Across 64 ranks, ZeRO-1 shards only the 324 GB optimizer portion, leaving about 113 GB per rank. ZeRO-2 also shards the assumed 54 GB of gradients, leaving about 59.9 GB. ZeRO-3 and FSDP shard the parameters too, leaving about 6.75 GB of persistent state per rank, with temporary all-gathers when a module runs. Different dtype and optimizer recipes change every total but not the sharding logic."
+  prompt: "Using this lesson's illustrative mixed-precision AdamW budget, show what each ZeRO stage leaves on one rank of a 64-GPU job and identify which conclusions depend on that recipe."
+  modelAnswer: "The illustrative recipe gives a 432 GB persistent-state budget for a 27-billion-parameter model: bf16 parameters and gradients (2 + 2 bytes), plus fp32 master weights (4 bytes) and two fp32 AdamW moments (8 bytes), 16 bytes per parameter. That recipe is an assumption, not a published fact about Qwen training. Replicated data parallelism keeps the full assumed budget on every rank. Across 64 ranks, ZeRO-1 shards only the 324 GB optimizer portion, leaving about 113 GB per rank. ZeRO-2 also shards the assumed 54 GB of gradients, leaving about 59.9 GB. ZeRO-3 and FSDP shard the parameters too, leaving about 6.75 GB of persistent state per rank, with temporary all-gathers when a module runs. Different dtype and optimizer recipes change every total but not the sharding logic."
 quiz:
-  - question: "Under lesson 9.3’s illustrative mixed-precision AdamW recipe, what persistent-state budget is assumed for 27 billion parameters before activations?"
-    options: ["About 54 GB, the same as bf16 inference weights", "About 108 GB, twice the bf16 weights", "About 17 GB, matching the pinned Q4_K_M text artifact", "About 432 GB: 54 GB bf16 weights, 54 GB bf16 gradients, and about 324 GB of fp32 master weights and moments"]
+  - question: "Under this lesson’s illustrative mixed-precision AdamW recipe, what persistent-state budget is assumed for 27 billion parameters before activations?"
+    options: ["About 54 GB: the bf16 weights, since optimizer state lives on the CPU", "About 108 GB: 54 GB of bf16 weights and 54 GB of bf16 gradients", "About 540 GB: 20 bytes per parameter once 16 optimizer bytes are added", "About 432 GB: 16 bytes per parameter, 324 GB of them in fp32 state"]
     correctIndex: 3
-    explanation: "The 432 GB result follows from that explicitly assumed recipe; other optimizers or pure-bf16 state policies change it."
+    explanation: "Per parameter the recipe is 2 + 2 + 4 + 8 = 16 bytes, and 27 billion × 16 bytes is about 432 GB. Adding a further 16 optimizer bytes on top of the weights and gradients counts the master weights and moments twice, which is how a 540 GB figure appears. The result follows from that explicitly assumed recipe; other optimizers or pure-bf16 state policies change it."
   - question: "Lesson 5.6 showed that 48 of the 64 layers are Gated DeltaNet and hold only a small fixed-size state at inference. What does that imply for their training memory?"
-    options: ["Nothing favourable — their parameters still need gradients and full AdamW state, so they shard exactly like attention layers", "They need no optimizer state because their state is constant in sequence length", "They are excluded from ZeRO sharding", "They halve the fp32 master weight cost"]
+    options: ["Nothing favourable: their parameters still need gradients and full AdamW state", "They need no optimizer state because their state is constant in sequence length", "Their state is recomputed in backward, so they need no saved activations", "They can keep AdamW state in bf16, since their recurrent state never grows"]
     correctIndex: 0
-    explanation: "The approximately 144 MiB reference-fp32 figure is a per-request inference state. Training memory is driven by parameter count and optimizer moments, which every layer type pays in full."
+    explanation: "The approximately 144 MiB reference-fp32 figure is a per-request inference state. Training memory is driven by parameter count and optimizer moments, which every layer type pays in full, so these layers shard exactly like attention layers. They still save activations for backward, and a fixed inference state says nothing about optimizer precision."
   - question: "What does FSDP typically all-gather before a sharded module computes?"
-    options: ["The complete raw dataset", "Its full parameters for that computation", "All historical checkpoints", "Vocabulary strings from the internet"]
+    options: ["The full optimizer state for that module", "Its full parameters for that computation", "The gradients of every other rank", "The activations saved by the previous step"]
     correctIndex: 1
-    explanation: "Ranks exchange parameter shards just in time, so each one can run the local forward or backward operation with the full parameters."
+    explanation: "Ranks exchange parameter shards just in time, so each one can run the local forward or backward operation with the full parameters. Optimizer state stays sharded, and gradients are reduce-scattered after backward rather than gathered before compute."
 citations:
   - title: "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models"
     authors: "Samyam Rajbhandari et al."
@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Training a 27-billion-parameter model needs far more memory than running it. Under the illustrative recipe this lesson uses, the persistent training state alone is several times what one 80 GB GPU holds. This lesson shows how a training job spreads that memory across many GPUs, and what the spreading costs.
@@ -47,13 +47,13 @@ Training a 27-billion-parameter model needs far more memory than running it. Und
 
 Qwen3.8-27B ships as safetensors files (the weight-file format on the model page) stored in bf16, totalling about 54 GB. That is a fact about checkpoint storage. It is not a training-memory recipe, and not proof that the full serving stack fits a nominal 80 GB device: the KV cache, activations (the intermediate values each layer produces), runtime workspaces, and fragmentation also consume memory. Training adds further persistent and temporary categories, and their dtypes (number formats) must be stated rather than inferred from the released checkpoint.
 
-[Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns the course-wide derivation of this model’s memory budget. This lesson imports one explicit scenario from it:
+[Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns this model’s serving budget on one accelerator: weights, KV cache, recurrent state and runtime reserve. Training state is a different budget, and this lesson owns the course’s illustrative breakdown of it. It uses one explicit scenario:
 
 - bf16 parameters and bf16 gradients (the per-weight corrections from backpropagation),
 - fp32 master weights, a 32-bit copy of the weights that the optimizer updates,
 - two fp32 AdamW moments, the running averages the AdamW optimizer ([lesson 2.7](/lessons/2-neural-network-fundamentals/2.7-optimizers/)) keeps for every weight.
 
-Together that is about 432 GB of persistent state for 27 billion parameters, before activations and workspaces. It is a common conservative recipe, not a claim about Qwen’s undisclosed training run and not a universal requirement; pure-bf16 and alternative optimizer-state policies exist. The ZeRO arithmetic below is conditional on that scenario, so the sharding stages can be compared consistently.
+Per parameter that is 2 + 2 + 4 + 8 = 16 bytes, so together it is about 432 GB of persistent state for 27 billion parameters, before activations and workspaces. It is a common conservative recipe, not a claim about Qwen’s undisclosed training run and not a universal requirement; pure-bf16 and alternative optimizer-state policies exist. The ZeRO arithmetic below is conditional on that scenario, so the sharding stages can be compared consistently.
 
 ## What does data parallelism do?
 
@@ -63,7 +63,7 @@ The batch the optimizer sees grows with the number of ranks. Take a toy setup: 8
 
 ## How do ZeRO's three stages cut memory?
 
-**ZeRO** removes that redundancy in three stages. Each stage shards (splits into equal slices, one per rank) one more category of state. Compute the effect on a concrete cluster: 64 ranks and the illustrative 432 GB budget imported from lesson 9.3.
+**ZeRO** removes that redundancy in three stages. Each stage shards (splits into equal slices, one per rank) one more category of state. Compute the effect on a concrete cluster: 64 ranks and the illustrative 432 GB budget above.
 
 Stage 1 shards optimizer state only. Each rank keeps full bf16 parameters and gradients but $1/64$ of the optimizer: $324/64 = 5.06$ GB. Per-rank persistent state becomes $54+54+5.06 \approx 113$ GB. That still cannot fit on 80 GB cards.
 

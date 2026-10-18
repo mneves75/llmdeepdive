@@ -15,7 +15,7 @@ export function getSky(locale: Locale): Promise<Sky> {
     const tracks = allTracks.filter((track) => track.data.locale === locale)
     const lessons = allLessons.filter((lesson) => lesson.data.locale === locale)
     return buildSky(
-      tracks.map((track) => ({ id: track.data.id, order: track.data.order, tier: track.data.tier, title: track.data.title })),
+      tracks.map((track) => ({ id: track.data.id, order: track.data.order, tier: track.data.tier, title: track.data.title, part: track.data.part })),
       lessons.map((lesson) => ({ id: lesson.data.id, track: lesson.data.track, order: lesson.data.order, prerequisites: lesson.data.prerequisites })),
     )
   })()

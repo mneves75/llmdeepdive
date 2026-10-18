@@ -3,7 +3,7 @@ id: "8.5-sglang"
 track: "8-building-and-serving-stacks"
 order: 5
 title: "SGLang"
-summary: "Quando o tráfego são programas estruturados em vez de prompts isolados, o RadixAttention transforma prefixos compartilhados em memória compartilhada e o decoding restrito transforma um schema em garantia."
+summary: "Quando o tráfego são programas estruturados em vez de prompts isolados, o RadixAttention transforma prefixos compartilhados em memória compartilhada e o decoding restrito impõe o formato de um schema a cada token que emite."
 tier: "advanced"
 locale: "pt-br"
 prerequisites: ["8.4-vllm"]
@@ -14,17 +14,17 @@ teachBack:
   modelAnswer: "A 64 KiB de KV por token da aula 7.2, um prefixo de 3.000 tokens custa cerca de 188 MiB de cache. Sem compartilhamento, 40 chamadas guardam 40 cópias separadas, cerca de 7,3 GiB. Cada chamada também paga o compute de prefill desses 3.000 tokens, 120.000 tokens de prefill no total. Com o RadixAttention o prefixo é armazenado uma vez (cerca de 188 MiB) e passa pelo prefill uma vez. Cada chamada guarda apenas os blocos do seu próprio sufixo divergente. O hábito que destrói a economia é colocar qualquer coisa volátil no topo do prompt: um timestamp, um id de requisição, uma lista de tools embaralhada ou uma saudação por usuário. O casamento é exato e ancorado no início dos ids de token, então um único token diferente na primeira linha reduz o prefixo compartilhado a nada. Toda chamada passa então a pagar o preço cheio."
 quiz:
   - question: "Por que conteúdo volátil como um timestamp deve ficar no fim do prompt, e não no começo?"
-    options: ["Timestamps confundem o tokenizer","O modelo lê prompts de trás para frente","Tokens tardios são cacheados, mas os iniciais não","O casamento de prefixo é exato e ancorado na posição um, então um token diferente logo no início significa que nenhum bloco é compartilhado"]
+    options: ["O casamento acha blocos iguais em qualquer ponto do prompt, então um timestamp no começo custa só o próprio bloco", "A radix tree é indexada a partir do fim do prompt, então é o final que precisa ficar idêntico entre as chamadas", "Tokens iniciais são despejados primeiro pelo LRU, então conteúdo volátil no começo sai do cache de qualquer jeito", "O casamento de prefixo é exato e ancorado na posição um, então um token diferente no início não compartilha nada"]
     correctIndex: 3
-    explanation: "Uma radix tree sobre ids de token só compartilha o trecho inicial comum; divergir no token um deixa um prefixo compartilhado vazio, e tudo depois dele é recomputado."
-  - question: "Pela aula 8.4, o que economizar memória de KV via compartilhamento de prefixo compra de fato numa placa fixa?"
-    options: ["Um pool efetivo de tokens maior e, portanto, mais sessões concorrentes no mesmo comprimento de contexto","Mais FLOPs por segundo","Um modelo menor em disco","Menos banda por token para os pesos"]
+    explanation: "Uma radix tree sobre ids de token só compartilha o trecho inicial comum; divergir no token um deixa um prefixo compartilhado vazio, e tudo depois dele é recomputado. O casamento não procura conteúdo em qualquer ponto do prompt, e o LRU despeja pelo último uso, não pela posição."
+  - question: "No exemplo de 40 chamadas desta aula, o compartilhamento de prefixo libera cerca de 7 GiB de KV duplicado numa placa fixa. Com o comprimento de contexto de cada sessão inalterado, o que isso compra, pela contabilidade da aula 8.4?"
+    options: ["Mais sessões concorrentes, porque os bytes liberados entram no pool de tokens que a concorrência divide", "Decode mais rápido para cada sessão, porque um prefixo compartilhado reduz os FLOPs de cada token novo", "Um modelo residente menor, porque blocos compartilhados deixam o engine paginar pesos sem uso para fora", "Menos banda de pesos por token, porque as sessões agora leem uma única cópia compartilhada dos parâmetros"]
     correctIndex: 0
-    explanation: "Concorrência é o tamanho do pool dividido pelos tokens por sessão; recuperar gibibytes de prefixo duplicado aumenta o numerador sem tocar nos pesos."
+    explanation: "Concorrência é o tamanho do pool dividido pelos tokens por sessão; recuperar gibibytes de prefixo duplicado aumenta o numerador sem tocar nos pesos. Toda sessão já lê a mesma cópia única dos pesos, e cada token novo continua fazendo attention sobre o prefixo inteiro, então o trabalho de decode por token não encolhe."
   - question: "O que o decoding restrito por gramática garante, e o que ele não garante?"
-    options: ["Garante exatidão factual","Garante que a saída obedece ao schema, não que o conteúdo está correto ou bem raciocinado","Garante latência menor","Garante que o modelo usou thinking mode"]
+    options: ["Garante um objeto completo e válido pelo schema, então o resultado pode ir direto para a ferramenta sem checagem", "Os tokens que ele emite seguem o formato do schema; ele não promete conteúdo correto nem objeto terminado", "Garante valores de campo corretos, porque a máscara remove todo valor que o schema não permite", "Nada durante o sampling: o schema só é conferido depois que a resposta inteira foi gerada"]
     correctIndex: 1
-    explanation: "Mascarar tokens não permitidos antes do sampling impõe apenas o formato; um objeto válido pelo schema ainda pode estar errado, então validar o significado continua sendo seu trabalho."
+    explanation: "Mascarar tokens não permitidos antes do sampling impõe formato ao que é emitido, nada mais. Um objeto válido pelo schema ainda pode estar errado, e uma requisição truncada ou cancelada para no meio do objeto, então confira o motivo de parada e valide o objeto final e o significado antes de qualquer ferramenta rodar."
 citations:
   - title: "SGLang Documentation"
     authors: "SGLang Team"
@@ -42,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Seu tráfego não é o que a [aula 8.4](/pt-br/lessons/8-building-and-serving-stacks/8.4-vllm/) supôs. Em vez de usuários independentes fazendo perguntas independentes, você está rodando um agente. Uma tarefa se abre em quarenta chamadas ao modelo. Cada chamada começa com o mesmo system prompt, os mesmos schemas de tools e os mesmos exemplos few-shot (pares de pergunta e resposta que mostram ao modelo o formato esperado): cerca de três mil tokens de preâmbulo idêntico. As chamadas só diferem no último parágrafo, e toda chamada precisa devolver um objeto JSON que o seu código vai parsear. Num engine de propósito geral essa carga desperdiça memória e compute sem nenhum erro para avisar, e entender por quê é a razão inteira de o SGLang existir.
@@ -83,18 +83,18 @@ Quando o runtime conhece a estrutura do programa, ele pode escalonar com esse co
 
 ## Como o decoding restrito garante o formato do JSON
 
-A saída estruturada é a terceira peça, e ela transforma a exigência de JSON em garantia em vez de esperança. A [aula 7.4](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/) descreveu o sampling como sortear o próximo token a partir da distribuição de probabilidade do modelo sobre o vocabulário. O decoding restrito acrescenta um passo antes desse sorteio:
+A saída estruturada é a terceira peça, e ela impõe o formato JSON no sampler em vez de torcer para o prompt ser obedecido. A [aula 7.4](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/) descreveu o sampling como sortear o próximo token a partir da distribuição de probabilidade do modelo sobre o vocabulário. O decoding restrito acrescenta um passo antes desse sorteio:
 
 1. O seu schema JSON ou gramática é compilado numa máquina de estados, que acompanha o que pode legalmente vir a seguir.
 2. A cada passo, o engine mascara os logits (as pontuações brutas) de todo token que não pode legalmente seguir o texto até ali, zerando a probabilidade deles.
 3. O sampling então acontece sobre os tokens que restaram.
 
-Assim o modelo não consegue emitir um pedido de desculpas em prosa antes da chave de abertura, não consegue fechar um array que não abriu e não consegue inventar um nome de campo fora do schema. Isso vale porque esses tokens tiveram a probabilidade zerada, não porque o prompt pediu com educação.
+Assim o modelo não consegue emitir um pedido de desculpas em prosa antes da chave de abertura, não consegue fechar um array que não abriu e não consegue inventar um nome de campo fora do schema. Isso vale porque esses tokens tiveram a probabilidade zerada, não porque o prompt pediu com educação. A garantia cobre só os tokens de fato emitidos, e só os recursos de schema que o compilador de gramática do engine suporta.
 
 Duas notas práticas. Compilar uma gramática custa tempo real, então reaproveite e faça cache de schemas em vez de construir um por requisição. E a restrição se aplica apenas ao formato.
 
 :::caveat
-Válido pelo schema não é correto. Um decode restrito produzirá alegremente um objeto perfeitamente formado cujos campos estão errados, inventados ou contraditórios. Ele vai até parecer mais confiante que texto livre, porque o sinal usual de um modelo confuso, divagar, foi mascarado. Mantenha a validação semântica a jusante. O decoding restrito remove erros de parsing da sua lista de incidentes; ele não remove alucinação.
+Válido pelo schema não é correto. Um decode restrito produzirá alegremente um objeto perfeitamente formado cujos campos estão errados, inventados ou contraditórios. Ele vai até parecer mais confiante que texto livre, porque o sinal usual de um modelo confuso, divagar, foi mascarado. Mantenha a validação semântica a jusante. O decoding restrito também não promete um objeto terminado. Uma requisição que atinge o limite de tokens, é cancelada ou estoura o tempo para no meio do objeto, e uma palavra-chave de schema que o compilador de gramática não suporta pode ser descartada em vez de imposta. Então, antes de qualquer ferramenta rodar, confira que a geração terminou normalmente (uma parada, não um limite de comprimento), faça o parsing da saída inteira, valide-a contra o schema de novo e só então confira o significado e as permissões, como faz a [aula 15.1](/pt-br/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/). O decoding restrito torna erros de parsing mais raros; ele não remove nem esses erros nem alucinação.
 :::
 
 ## Compartilhar um prefixo num modelo híbrido

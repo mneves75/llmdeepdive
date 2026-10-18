@@ -14,13 +14,13 @@ teachBack:
   modelAnswer: "The released Qwen safetensors are bf16, so the checkpoint stores approximately 2 bytes per parameter. The dtypes of its training state are unpublished. The bf16 format has seven explicit fraction bits, so an in-place update much smaller than the local spacing between representable values can round away to nothing. A common conservative recipe applies updates to fp32 master weights and casts reduced-precision copies for compute. Validated pure-bf16/AnyPrecision recipes also exist. The fp16 format has more fraction bits but a narrower exponent range, and often needs loss scaling. The bf16 format keeps the fp32 exponent width with a coarser significand. The fp8 format requires explicit scaling, wider accumulation, and validation on the specific hardware."
 quiz:
   - question: "Why might a conservative mixed-precision recipe keep fp32 master weights when compute uses bf16?"
-    options: ["bf16 cannot represent negative numbers", "Small updates can be below bf16 spacing near a large weight, so wider master state can accumulate them before casting", "bf16 has a narrower exponent range than fp16", "Safetensors files are read-only by design"]
+    options: ["bf16 lacks the exponent range for gradients, so weights overflow without fp32", "Tiny updates can round away near a large bf16 weight; an fp32 master keeps them", "The released checkpoint is fp32, so training must keep that storage dtype", "AdamW's moments are defined against fp32 weights and must be stored beside them"]
     correctIndex: 1
-    explanation: "An fp32 master copy is one way to prevent swamping. It is not the only viable recipe, and Qwen does not publish which training-state policy produced this checkpoint."
+    explanation: "An fp32 master copy is one way to prevent swamping. bf16 keeps fp32's exponent range, the released checkpoint is bf16, and AdamW does not require fp32 weights by definition. It is not the only viable recipe, and Qwen does not publish which training-state policy produced this checkpoint."
   - question: "Lesson 5.8 partitioned one logical tensor across tensor-parallel ranks. If that tensor uses one fp8 scaling factor for the whole tensor (tensor-wide scaling), what follows?"
-    options: ["Each rank should pick its own scale to maximize local range", "fp8 removes the need for collectives", "Ranks that jointly own one logical tensor must agree on its scale, or their partial results cannot be combined correctly", "Scales apply only to the vocabulary dimension"]
+    options: ["Each rank picks its own scale to maximize local range, and the partial sums are added", "fp8 values carry their own exponent, so no shared scale is needed across ranks", "Ranks sharing a logical tensor must share its scale, or the partials won't add up", "The scale only matters in the forward pass, since the gradients stay in bf16"]
     correctIndex: 2
-    explanation: "Partial products from shards scaled differently are not in the same units, so they cannot just be added. With one tensor-wide scale, that scale must be synchronized wherever the tensor is logically shared. Finer-grained recipes, such as one scale per block, avoid this by giving each block its own scale."
+    explanation: "Partial products from shards scaled differently are not in the same units, so they cannot just be added. A per-element exponent does not remove the tensor-wide scale, and gradients that use fp8 need scales too. With one tensor-wide scale, that scale must be synchronized wherever the tensor is logically shared. Finer-grained recipes, such as one scale per block, avoid this by giving each block its own scale."
   - question: "What major range advantage does bf16 have over fp16?"
     options: ["More fraction bits than fp32", "Exact representation of all integers", "No rounding at all", "An exponent width matching fp32"]
     correctIndex: 3
@@ -42,7 +42,7 @@ citations:
     authors: "PyTorch Team"
     year: 2024
     url: "https://pytorch.org/blog/efficient-large-scale-training-with-pytorch/"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Download Qwen3.8-27B and the released safetensors are bf16: about 2 bytes per stored parameter. That fact describes the distributed checkpoint. It says nothing about the dtypes (number formats) used during training for the optimizer state, master weights, accumulation, or gradients, and the training recipe is not published. So this lesson teaches mixed-precision design as a set of explicit policies and measured safeguards. It does not reconstruct Qwen's history from the dtype of the output.
@@ -74,9 +74,9 @@ because the next representable bf16 value above 1.0 is 1.0078125, and 1.00001 is
 
 One conservative fix is a **master copy** of the weights in fp32. Updates accumulate there, where the significand is 24 bits and $10^{-5}$ is representable against 1.0 with room to spare. The bf16 tensors used in the forward pass are regenerated from it. The master state costs 4 bytes per parameter.
 
-[Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns the model-wide byte budget for this course. Here the important point is conditional: **if** a recipe keeps fp32 master weights and two fp32 AdamW moments alongside bf16 parameters and gradients, it reaches about 16 persistent bytes per parameter. Pure-bf16/AnyPrecision variants (optimizers that keep their state in bf16 and compensate in other ways, such as the AnyPrecision optimizer in the cited PyTorch post) use different state policies and must establish stability empirically.
+[Lesson 5.7](/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) owns the course's training-state breakdown. Here the important point is conditional: **if** a recipe keeps fp32 master weights and two fp32 AdamW moments alongside bf16 parameters and gradients, it reaches 2 + 2 + 4 + 8 = 16 persistent bytes per parameter, which is the whole 432 GB budget of lesson 5.7, not an optimizer-only figure. Pure-bf16/AnyPrecision variants (optimizers that keep their state in bf16 and compensate in other ways, such as the AnyPrecision optimizer in the cited PyTorch post) use different state policies and must establish stability empirically.
 
-Now the comparison that is usually stated wrongly. Training everything in fp32, at 4 bytes each for weights, gradients, and the two moments, also costs 16 bytes per parameter. Under that conservative recipe, **mixed precision does not shrink the persistent optimizer footprint.** What it buys is three other things:
+Now the comparison that is usually stated wrongly. Training everything in fp32, at 4 bytes each for weights, gradients, and the two moments, also costs 16 bytes per parameter. Under that conservative recipe, **mixed precision does not shrink the persistent per-parameter footprint.** What it buys is three other things:
 
 - access to the accelerator's fast reduced-precision matrix units,
 - roughly half the bandwidth on every weight and gradient it moves,

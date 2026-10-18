@@ -73,6 +73,18 @@ export const tierLabels = {
   'pt-br': { foundations: 'Fundamentos', core: 'Essencial', advanced: 'Avançado', frontier: 'Fronteira' },
 } as const satisfies Record<Locale, Record<string, string>>
 
+/** The course's two parts, as the home catalog and the tracks index head them. */
+export const partLabels = {
+  en: {
+    models: { title: 'How language models work', summary: 'From what a parameter is to running a model efficiently on real hardware.' },
+    agents: { title: 'Building agent systems', summary: 'Durable state, tool protocols, security, isolation, memory, human approval, evaluation and recovery for software that acts on a model\u2019s output.' },
+  },
+  'pt-br': {
+    models: { title: 'Como os modelos de linguagem funcionam', summary: 'Do que é um parâmetro até rodar um modelo com eficiência em hardware real.' },
+    agents: { title: 'Construindo sistemas de agentes', summary: 'Estado durável, protocolos de ferramentas, segurança, isolamento, memória, aprovação humana, avaliação e recuperação para software que age sobre a saída de um modelo.' },
+  },
+} as const satisfies Record<Locale, Record<string, { title: string; summary: string }>>
+
 /**
  * The short position of a lesson or track, taken from its id ("1.3-bpe-…" →
  * "1.3", "4-transformer" → "4"). Ids already carry the course numbering, so no

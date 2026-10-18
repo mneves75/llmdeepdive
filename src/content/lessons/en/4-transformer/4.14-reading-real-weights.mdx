@@ -11,20 +11,20 @@ unlocks: []
 analogy: "Opening a checkpoint is like receiving every machined part of a clock in labelled trays. A tray's dimensions tell you whether it is a gear, spring, or axle; its scratches show use, not purpose. You can inventory parts and detect a warped gear, but understanding timekeeping requires tracing how parts connect. Tensor names and shapes are the trays; the architecture you spent this track learning is the assembly diagram."
 teachBack:
   prompt: "Given Qwen3.8-27B's safetensors listing, explain how tensor names and shapes identify the untied embeddings, the attention projections, the gated FFN, and the DeltaNet layers — and what a shape alone cannot tell you."
-  modelAnswer: "The embedding table and lm_head both appear as 248320-by-5120 tensors under different names. That confirms untied weights of about 1.271B parameters each. In an attention layer, q_proj is 12288-by-5120, because these gated layers pack the output gate into the same matrix: 24 heads times head dimension 256, twice over. The k_proj and v_proj tensors are 1024-by-5120 (4 KV heads). The o_proj tensor maps the 6144-wide gated attention output back to 5120, non-square by design. Each layer's FFN contributes gate, up, and down projections between 5120 and 17408. Some layers have mixer tensors that are not q/k/v/o but convolution and state-update machinery; those are the 48 Gated DeltaNet layers. Shapes verify architecture and catch conversion errors. They cannot reveal semantics: that requires activations and interventions."
+  modelAnswer: "The embedding table and lm_head both appear as 248320-by-5120 tensors under different names. Together with tie_word_embeddings set to false in config.json, which tells the loader to keep them as separate matrices, that confirms untied weights of about 1.271B parameters each. In an attention layer, q_proj is 12288-by-5120, because these gated layers pack the output gate into the same matrix: 24 heads times head dimension 256, twice over. The k_proj and v_proj tensors are 1024-by-5120 (4 KV heads). The o_proj tensor maps the 6144-wide gated attention output back to 5120, non-square by design. Each layer's FFN contributes gate, up, and down projections between 5120 and 17408. Some layers have mixer tensors that are not q/k/v/o but convolution and state-update machinery; those are the 48 Gated DeltaNet layers. Shapes verify architecture and catch conversion errors. They cannot reveal semantics: that requires activations and interventions."
 quiz:
-  - question: "Two tensors in the checkpoint have identical shape 248320×5120. What does their coexistence under different names prove?"
-    options: ["The checkpoint is corrupted by duplication", "The model ties its embeddings to save memory", "The embeddings are untied: the input table and the lm_head are separate parameters of about 1.271B each", "The vocabulary is stored twice for speed"]
+  - question: "Two tensors in the checkpoint have identical shape 248320×5120 under different names, and config.json sets tie_word_embeddings to false. What do the two facts together establish?"
+    options: ["The checkpoint is corrupted, since a correct file stores each matrix once", "Nothing yet: two names prove only two stored tensors, and loaders ignore that config flag", "Untied embeddings: input table and lm_head are separate parameters of about 1.271B each", "The vocabulary is stored twice for speed, and the loader keeps only one copy"]
     correctIndex: 2
-    explanation: "A tied model stores one such matrix referenced by both roles; Qwen3.8-27B stores two, roughly 2.54B parameters combined."
+    explanation: "Names alone show only that the file stores two tensors: a converter can save one matrix twice, and the loader re-ties the two roles when the configuration asks for it. The flag is exactly what the Hugging Face loader reads, and false keeps two separate parameters, roughly 2.54B combined."
   - question: "In the minimal GPT you built last lesson, which module pair corresponds to these two 248320×5120 tensors?"
-    options: ["the causal buffer and the optimizer state", "norm_attention and norm_ffn", "get_batch and generate", "token_embedding and language_head, which were also separate matrices"]
+    options: ["token_embedding and position_embedding, the two lookup tables of the toy", "final_norm and language_head, the two modules that sit after the last block", "get_batch and generate", "token_embedding and language_head, which were also separate matrices"]
     correctIndex: 3
-    explanation: "The toy also kept its embedding and output head untied, so the correspondence is direct — only the shapes changed from a few dozen rows to 248,320."
+    explanation: "The toy also kept its embedding and output head untied, so the correspondence is direct — only the shapes changed from a few dozen rows to 248,320. position_embedding has one row per position up to block_size, not one per vocabulary entry, and it sits only at the input."
   - question: "You encounter q_proj with shape 12288×5120 and conclude the conversion is broken, since 24 heads × 256 is 6144. What is the correct diagnosis?"
-    options: ["Nothing is broken: these layers are gated, so q_proj emits 24 × 256 × 2 = 12288, each head owning 256 query values then 256 gate values", "The tensor is transposed and must be fixed to 5120×5120", "The file mixed up q_proj with the FFN", "Head dimension must equal hidden size divided by head count"]
+    options: ["Nothing is broken: these layers are gated, so each head emits 256 query and 256 gate values", "The rows hold queries for 48 heads of 256 each, so the config's head count of 24 must be wrong", "The file mixed up q_proj with the FFN", "Head dimension must equal hidden size divided by head count"]
     correctIndex: 0
-    explanation: "Head count times head dimension need not equal the model width; forcing squareness would silently change the architecture."
+    explanation: "q_proj emits 24 × 256 × 2 = 12288, each head owning 256 query values then 256 gate values. 48 × 256 is also 12288, but the config's head count and its output-gate setting say 24 gated heads. Head count times head dimension need not equal the model width; forcing squareness would silently change the architecture."
 citations:
   - title: "A Mathematical Framework for Transformer Circuits"
     authors: "Nelson Elhage et al."
@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 ## What is inside a checkpoint?
@@ -91,7 +91,7 @@ Walk it top to bottom and the whole course reports for duty.
 
 That last point deserves its own section, because it is where a confident reader goes wrong. Many famous models tie the output head to the embedding table (one matrix, two roles), and a common habit is to count `lm_head` as free.
 
-Run the check. If the weights were tied, the checkpoint would store one tensor referenced by both names, and total parameter accounting would include it once. Qwen3.8-27B stores both tensors. The embeddings are **untied**: about 1.271 billion parameters going in, another ~1.271 billion coming out, roughly 2.54 billion combined. A parameter audit that assumes tying will be off by more than a billion, which is real money at bf16 (2 bytes per parameter).
+Run the check, on the configuration as well as on the file. A tied model usually stores one tensor, and parameter accounting includes it once. Two stored names alone do not settle the question, though: a converter can write the same matrix twice, and the Hugging Face loader ties the two roles whenever the configuration asks for it. The deciding evidence is `tie_word_embeddings`, which Qwen3.8-27B's `config.json` sets to `false` at the top level and in `text_config`; with that setting the loader keeps `lm_head` as its own matrix, and the file stores both tensors. The embeddings are **untied**: about 1.271 billion parameters going in, another ~1.271 billion coming out, roughly 2.54 billion combined. A parameter audit that assumes tying will be off by more than a billion, which is real money at bf16 (2 bytes per parameter).
 
 :::caveat
 Do not assume weight tying, and do not assume squareness. Both assumptions produce audits and conversions that look plausible and are wrong. A tensor can even fit a destination shape while being transposed or mapped to the wrong convention, producing fluent-looking failure that no loader error will catch. Shapes are necessary evidence, never sufficient.
@@ -113,9 +113,11 @@ For now, treat unfamiliar names the way an archaeologist treats an unfamiliar to
 
 Basic statistics come next, exactly as with any checkpoint: check for NaNs (not-a-number values) and infinities, compute norms and ranges per tensor, compare layers against each other.
 
-- A layer of zeros is a missing shard.
-- A norm vector at a wild scale is a bad dtype cast.
-- Q, K, V distributions that diverge radically from a known-good conversion expose a slicing error.
+- A tensor of all zeros suggests a missing or truncated shard.
+- A norm vector at a wild scale suggests a bad dtype cast.
+- Q, K, V distributions that diverge radically from a known-good conversion suggest a slicing error.
+
+Each of these is a clue, not a diagnosis. Before naming a cause, check that the index lists every shard, that every expected key loaded with its expected shape, that file hashes match the published ones, and what the loader warned about.
 
 Qwen3.8-27B ships in bfloat16, so a float32 reader that converts every value up to float32 without telling you is harmless, while one that misinterprets the raw bytes is not. Histograms show health, not meaning: a large weight is not an important concept, and rotating an internal basis can change every coordinate while preserving behavior.
 

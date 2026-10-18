@@ -16,17 +16,25 @@
  *   other lessons stand on are the bright ones;
  * - a star's pigment is its tier (spectral class, hot to cool with depth);
  * - constellations sit left to right in track order, alternating above and
- *   below the course's ecliptic; within one, lessons run as a serpentine.
+ *   below the course's ecliptic; within one, lessons run as a serpentine;
+ * - each part of the course (how models work, then building agent systems) is
+ *   its own band with its own ecliptic, the second below the first, so one
+ *   chart still holds the whole course and a page keeps one WebGL context.
  */
 
 export const SKY_WIDTH = 1000
-export const SKY_HEIGHT = 560
+/** One part's band. A sky is as tall as its bands plus the gaps between them. */
+export const BAND_HEIGHT = 560
+/** Clear sky between bands: the lower names of one band and the upper names of the next, as number-only names on a phone (~90 units tall), must not meet. */
+const BAND_GAP = 60
 
 export interface SkyTrackInput {
   id: string
   order: number
   tier: string
   title: string
+  /** The part of the course; each part is one band of the sky, in order of its first track. */
+  part: string
 }
 
 export interface SkyLessonInput {
@@ -53,6 +61,7 @@ export interface SkyConstellation {
   order: number
   tier: string
   title: string
+  part: string
   /** Stars in course order. */
   stars: SkyStar[]
   /** Consecutive pairs, in course order. */
@@ -97,12 +106,32 @@ const PLATE_MARGIN = 16
 const NAME_HALF_WIDTH = 100
 
 export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly SkyLessonInput[]): Sky {
-  const ordered = [...tracks].sort((left, right) => left.order - right.order)
-  const count = Math.max(ordered.length, 1)
+  // A track whose lessons have not landed yet has no figure to draw.
+  const withLessons = new Set(lessons.map((lesson) => lesson.track))
+  const ordered = [...tracks].filter((track) => withLessons.has(track.id)).sort((left, right) => left.order - right.order)
+  const parts = [...new Set(ordered.map((track) => track.part))]
   const inDegree = new Map<string, number>()
   for (const lesson of lessons) {
     for (const prerequisite of lesson.prerequisites) inDegree.set(prerequisite, (inDegree.get(prerequisite) ?? 0) + 1)
   }
+  const constellations = parts.flatMap((part, band) => layoutBand(
+    ordered.filter((track) => track.part === part),
+    lessons,
+    inDegree,
+    band * (BAND_HEIGHT + BAND_GAP),
+  ))
+  const height = Math.max(parts.length, 1) * BAND_HEIGHT + Math.max(parts.length - 1, 0) * BAND_GAP
+  return { width: SKY_WIDTH, height, constellations, stars: constellations.flatMap((item) => item.stars) }
+}
+
+/** One band: the layout every chart used before the course had parts, shifted down by `bandTop`. */
+function layoutBand(
+  ordered: readonly SkyTrackInput[],
+  lessons: readonly SkyLessonInput[],
+  inDegree: ReadonlyMap<string, number>,
+  bandTop: number,
+): SkyConstellation[] {
+  const count = Math.max(ordered.length, 1)
 
   // Wide enough that the first and last columns sit about NAME_HALF_WIDTH in
   // from the edge, so edge names stay on the plate without being pulled onto
@@ -119,9 +148,9 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     // neighbour, and names sit on the outer side of their row.
     const centerX = marginX + cell * (index + 0.5)
     const high = index % 2 === 0
-    const centerY = SKY_HEIGHT * (high ? 0.33 : 0.67) + Math.sin(index * 1.7) * 14
+    const centerY = bandTop + BAND_HEIGHT * (high ? 0.33 : 0.67) + Math.sin(index * 1.7) * 14
     const width = cell * 1.65
-    const height = SKY_HEIGHT * 0.24
+    const height = BAND_HEIGHT * 0.24
 
     // A serpentine with seeded jitter: lessons run left to right, step down,
     // run back. Every figure stays landscape and compact, reads in course
@@ -188,6 +217,7 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
       order: track.order,
       tier: track.tier,
       title: track.title,
+      part: track.part,
       stars,
       lines: stars.slice(1).map((star, step): [SkyStar, SkyStar] => [stars[step] as SkyStar, star]),
       box,
@@ -206,8 +236,7 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
       ? round(highTop - 22 - stagger)
       : round(lowBottom + 24 + stagger)
   }
-
-  return { width: SKY_WIDTH, height: SKY_HEIGHT, constellations, stars: constellations.flatMap((item) => item.stars) }
+  return constellations
 }
 
 /** A viewBox that frames one constellation with room for its markers. */

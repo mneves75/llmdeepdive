@@ -14,17 +14,17 @@ teachBack:
   modelAnswer: "Entradas e alvos são tensores com shapes deliberados. O forward pass computa previsões e as reduz a uma loss escalar enquanto o autograd registra cada operação diferenciável. A chamada optimizer.zero_grad limpa os gradientes deixados pelo passo anterior, porque o PyTorch acumula em vez de sobrescrever. A chamada loss.backward percorre o grafo registrado e preenche o campo grad de cada parâmetro. A chamada optimizer.step consome esses gradientes para atualizar os parâmetros; ela não os computa. Para constantes arquiteturais, carregue a própria configuração do modelo com AutoConfig.from_pretrained e leia hidden_size, num_hidden_layers e vocab_size diretamente. No Qwen3.8-27B esses valores são 5120, 64 e 248320. Todo cálculo de capacidade e custo neste curso parte de números obtidos assim, e não da memória."
 quiz:
   - question: "Ler a configuração do Qwen3.8-27B dá vocab_size 248320. O que esse número descreve exatamente?"
-    options: ["O número de tokens que o modelo consegue processar de uma vez","O número de parâmetros da camada de saída","O número de palavras distintas que o modelo conhece","O número de linhas da matriz de embedding, que pode estar preenchida acima do vocabulário efetivo do tokenizador"]
+    options: ["Tokens que o modelo consegue ler numa requisição, que é seu comprimento de contexto", "Ids que o tokenizador pode emitir, cada um deles mapeado para um trecho de texto", "Palavras distintas que o modelo conhece, uma linha por palavra", "Linhas da matriz de embedding, que podem passar dos ids mapeados pelo tokenizador"]
     correctIndex: 3
-    explanation: "vocab_size dimensiona as matrizes de embedding e de saída. Vocabulários costumam ser preenchidos até um múltiplo conveniente, então a contagem de tokens que o tokenizador consegue de fato emitir pode ser menor; a aula 1.2 trabalha a consequência."
+    explanation: "vocab_size dimensiona as matrizes de embedding e de saída. Vocabulários costumam ser preenchidos até um múltiplo conveniente, então a contagem de ids que o tokenizador de fato mapeia pode ser menor: 248.077 aqui, e é por isso que lê-lo como a contagem de ids do tokenizador é um erro. A aula 1.2 trabalha a consequência."
   - question: "Por que optimizer.zero_grad normalmente é chamado antes de backward?"
-    options: ["O PyTorch acumula gradientes nos campos grad em vez de substituí-los","Ele move os tensores para a GPU","Ele seleciona a função de loss","Ele apaga os parâmetros do modelo"]
+    options: ["O backward soma em .grad em vez de sobrescrever", "Ele zera o momentum do otimizador para cada passo começar do zero", "Ele libera o grafo computacional do passo anterior, que o backward precisa limpo", "Ele apaga os parâmetros do modelo"]
     correctIndex: 0
-    explanation: "A acumulação é deliberada, já que permite técnicas como acumulação de gradiente entre micro-batches, mas um passo independente comum precisa limpar antes os valores do passo anterior."
+    explanation: "A acumulação é deliberada, já que permite técnicas como acumulação de gradiente entre micro-batches, mas um passo independente comum precisa limpar antes os valores do passo anterior. zero_grad só mexe nos campos .grad; o momentum que o otimizador guarda sobrevive a ele. Quem libera o grafo é o próprio backward; zero_grad só zera os gradientes guardados."
   - question: "A aula 0.6 mostrou que um learning rate de 1,1 sobre L(w) = w ao quadrado faz o parâmetro divergir. Se você visse esse comportamento num loop de treinamento real, o que o autograd teria lhe dito?"
-    options: ["Ele reduziria o learning rate automaticamente","Nada; o autograd computa gradientes corretos para uma execução divergente exatamente como faz para uma convergente","Ele reportaria o gradiente como not-a-number imediatamente","Ele levantaria uma exceção no segundo passo"]
+    options: ["Ele baixaria o learning rate, já que o autograd acompanha a tendência da loss", "Nada: ele computa gradientes corretos também numa execução divergente", "Ele marcaria o gradiente como not-a-number desde o primeiro passo", "Ele levantaria um erro assim que a loss parasse de cair"]
     correctIndex: 1
-    explanation: "Diferenciação automática reporta sensibilidade, não julgamento. Um loop que computa gradientes perfeitos e dá passos ruinosos é Python plenamente válido e autograd plenamente válido."
+    explanation: "Diferenciação automática reporta sensibilidade, não julgamento. Ela não acompanha a tendência da loss nem levanta erro quando a loss sobe, e os gradientes continuam números finitos por um tempo. Um loop que computa gradientes perfeitos e dá passos ruinosos é Python plenamente válido e autograd plenamente válido."
 citations:
   - title: "Array programming with NumPy"
     authors: "Charles R. Harris et al."
@@ -42,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Quatro aulas desta trilha se apoiaram em três números: hidden size 5120, 64 camadas e largura de saída 248.320. Você não deveria aceitá-los na confiança vindos de um curso, e certamente não deveria aceitá-los de um post de blog. Todo modelo publicado vem com um arquivo de configuração que os declara, e lê-lo você mesmo leva uns dez segundos.
@@ -64,14 +64,42 @@ Tensores do PyTorch oferecem as mesmas operações de array mais duas adições:
 - Um **device** é onde um tensor mora: a CPU ou uma GPU específica. Tensores em uma mesma operação em geral precisam de dtypes compatíveis e do mesmo device, e mover um modelo para uma GPU não arrasta junto todo objeto relacionado.
 - O **autograd**, a diferenciação automática do PyTorch, registra operações sobre tensores que exigem gradientes. Quando você chama `backward` numa loss escalar, ele aplica a regra da cadeia da [aula 0.6](/pt-br/lessons/0-orientation-and-foundations/0.6-derivatives-gradients/) de trás para frente por esse grafo registrado.
 
-O loop de treinamento tem um ritmo fixo: limpe os gradientes acumulados, rode o forward pass, reduza a uma loss escalar, chame `backward`, e então chame o `step` do otimizador. Em código, um passo fica assim:
+O loop de treinamento tem um ritmo fixo: limpe os gradientes acumulados, rode o forward pass, reduza a uma loss escalar, chame `backward`, e então chame o `step` do otimizador. Aqui está um programa completo que roda essas quatro linhas numa CPU. Ele constrói os alvos a partir de uma regra conhecida e repete um passo de treinamento 100 vezes, até que um modelo linear de três features recupere essa regra. Salve-o como `train_step.py` e rode `uv run --with numpy --with torch python train_step.py` (ou instale `torch` e `numpy` com o pip e rode `python train_step.py`):
 
 ```python
-optimizer.zero_grad()        # limpa os gradientes deixados pelo passo anterior
-loss = loss_fn(model(x), y)  # forward pass, reduzido a um número
-loss.backward()              # preenche o .grad de cada parâmetro
-optimizer.step()             # atualiza os parâmetros
+import torch
+
+torch.manual_seed(0)                          # os mesmos números aleatórios a cada execução
+x = torch.randn(64, 3)                        # 64 exemplos, 3 features cada
+true_w = torch.tensor([[2.0], [-1.0], [0.5]]) # a regra que o modelo precisa encontrar
+y = x @ true_w + 0.1                          # alvos, shape (64, 1)
+
+model = torch.nn.Linear(3, 1)                 # aprende um peso 3x1 e um bias
+loss_fn = torch.nn.MSELoss()                  # erro quadrático médio
+optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+for step in range(100):
+    optimizer.zero_grad()        # limpa os gradientes deixados pelo passo anterior
+    loss = loss_fn(model(x), y)  # forward pass, reduzido a um número
+    loss.backward()              # preenche o .grad de cada parâmetro
+    optimizer.step()             # atualiza os parâmetros
+    if step in (0, 99):
+        print(f"step {step}: loss {loss.item():.4f}")
+
+print("weight", [round(w, 2) for w in model.weight.flatten().tolist()])
+print("bias", round(model.bias.item(), 2))
 ```
+
+Com PyTorch 2.14.1, NumPy 2.5.4 e Python 3.13.11 numa CPU, ele imprimiu:
+
+```text
+step 0: loss 6.2754
+step 99: loss 0.0000
+weight [2.0, -1.0, 0.5]
+bias 0.1
+```
+
+A loss do passo 0 depende dos pesos iniciais aleatórios, então outra versão do PyTorch pode imprimir outros dígitos ali. Os pesos e o bias recuperados ainda devem bater com a regra usada para construir os alvos.
 
 Manter essas responsabilidades separadas é o que torna depurável um loop quebrado. `backward` computa gradientes e nunca muda parâmetros; `step` muda parâmetros e nunca computa gradientes.
 

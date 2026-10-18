@@ -14,17 +14,17 @@ teachBack:
   modelAnswer: "O LoRA congela uma matriz de pesos pré-treinada W e aprende um delta de posto baixo BA, com o posto muito menor que as dimensões de W. Só A e B recebem gradientes e estado de otimizador. A receita padrão adapta as projeções de query e value da attention, mas o Qwen3.8-27B tem attention completa em apenas 16 das suas 64 camadas. As outras 48 são camadas Gated DeltaNet com suas próprias projeções de query, key, value e saída, mais uma convolução curta. Mirar só a attention alcança um quarto da profundidade. Uma lista de alvos razoável cobre também as projeções do DeltaNet, e frequentemente as matrizes feed-forward com gate, que guardam cerca de 17B dos parâmetros do modelo."
 quiz:
   - question: "Quais parâmetros normalmente são atualizados no treino com LoRA?"
-    options: ["Todo peso base congelado", "Apenas as strings do vocabulário do tokenizer", "Nenhum parâmetro", "As pequenas matrizes de adapter de posto baixo"]
+    options: ["Todo peso base, num posto mais baixo", "Só as linhas de embedding e da camada de saída", "Só os biases e os ganhos das normas", "As matrizes de adapter de posto baixo"]
     correctIndex: 3
-    explanation: "O LoRA congela a matriz original e otimiza as duas matrizes fatoradas cujo produto forma a atualização."
+    explanation: "O LoRA congela a matriz original e otimiza as duas matrizes-fator cujo produto forma o update. Os pesos base não são retreinados num posto mais baixo, e ajustar só biases ou só as linhas do vocabulário são outros métodos."
   - question: "Você roda SFT com LoRA e o modelo adaptado passa a escrever a próxima pergunta do usuário depois de responder. Dada a aula 6.2, qual é a causa mais provável?"
-    options: ["A máscara da loss não foi restrita às posições do turno do assistente", "O posto do LoRA era baixo demais", "Os pesos base foram quantizados", "O adapter foi mesclado antes da avaliação"]
+    options: ["A máscara da loss não ficou restrita aos turnos do assistente", "O posto do LoRA era baixo demais para aprender onde um turno termina", "Os pesos base foram quantizados e perderam o token de parada", "O adapter foi mesclado aos pesos base antes de a avaliação rodar"]
     correctIndex: 0
-    explanation: "PEFT muda quais pesos se movem, não o que a loss recompensa. Uma conversa sem máscara treina o modelo a prever turnos de usuário e marcadores de template exatamente como um fine-tuning completo faria."
+    explanation: "O PEFT muda quais pesos se movem, não o que a loss recompensa. Uma conversa sem máscara treina o modelo a prever turnos do usuário e marcadores do template, como faria um fine-tuning completo. Posto, quantização e mesclagem mudam capacidade ou armazenamento, não quais posições a loss ensina."
   - question: "Qual é o passo extra que define o QLoRA?"
-    options: ["Os adapters são removidos antes do treino", "O modelo base congelado é armazenado e usado em forma quantizada enquanto os adapters treinam", "Toda a computação vira aritmética inteira exata", "O dataset é substituído por pares de preferência"]
+    options: ["Os próprios adapters são treinados em 4 bits para poupar memória do otimizador", "O base congelado é armazenado e usado quantizado enquanto os adapters treinam", "Toda a computação roda em aritmética inteira exata, inclusive o backward", "O base é quantizado depois do treino, e então os adapters são mesclados"]
     correctIndex: 1
-    explanation: "O QLoRA combina adapters de posto baixo com um backbone congelado e quantizado para reduzir uso de memória. A computação em si não vira treino todo em inteiros."
+    explanation: "O QLoRA combina adapters de posto baixo com um backbone congelado quantizado para reduzir o uso de memória. Os adapters treinam em precisão maior, a quantização acontece antes do treino e não depois, e a computação em si não é treino todo em inteiros."
 citations:
   - title: "LoRA: Low-Rank Adaptation of Large Language Models"
     authors: "Edward J. Hu et al."
@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 A [aula 6.2](/pt-br/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/) descreveu o supervised fine-tuning como se desse para atualizar todos os pesos. Num modelo de 27B você normalmente não consegue, e esta aula trata dos métodos que contornam isso e da aritmética por trás deles.
@@ -49,9 +49,9 @@ Comece pelo número que encerra a conversa sobre fine-tuning completo: atualizar
 
 - **Os pesos.** O Qwen3.8-27B são 54 GB de pesos em bf16, um formato numérico de 16 bits que ocupa 2 bytes por peso ([aula 5.9](/pt-br/lessons/5-pretraining-at-scale/5.9-mixed-precision/)).
 - **Os gradientes**, um número por peso dizendo para que lado ele deve se mover. São outra cópia do mesmo tamanho.
-- **O estado do otimizador.** O AdamW, o otimizador de costume ([aula 2.7](/pt-br/lessons/2-neural-network-fundamentals/2.7-optimizers/)), guarda duas médias móveis por peso, e o treino em precisão mista acrescenta uma cópia de precisão completa de cada peso: algo entre 12 e 16 bytes de estado por parâmetro. Para 27B de parâmetros isso dá entre 324 e 432 GB.
+- **O estado do otimizador.** O AdamW, o otimizador de costume ([aula 2.7](/pt-br/lessons/2-neural-network-fundamentals/2.7-optimizers/)), guarda duas estimativas de momento em fp32 (8 bytes) mais um master weight em fp32 (4 bytes): 12 bytes de estado de otimizador e master por parâmetro. Somando o peso e o gradiente em bf16 (2 + 2 bytes), são 16 bytes por parâmetro no total. Para 27B de parâmetros isso dá 324 GB de estado de otimizador e master, e cerca de 432 GB incluindo pesos e gradientes, o orçamento ilustrativo que a [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) calcula.
 
-Some tudo, e o fine-tuning completo quer algo na vizinhança de 430 a 540 GB antes de armazenar uma única ativação (um resultado intermediário de que o backward pass precisa). Isso é um job espalhado por várias máquinas. Enquanto isso, a máquina que você realmente tem é uma única placa de 24 GB ou 48 GB. O **fine-tuning parameter-efficient** (PEFT, ajuste fino eficiente em parâmetros) existe para fechar esse vão, e a aritmética de como ele fecha é a substância desta aula.
+Some tudo, e o fine-tuning completo quer cerca de 432 GB antes de armazenar uma única ativação (um resultado intermediário de que o backward pass precisa). Isso é um job espalhado por várias máquinas. Enquanto isso, a máquina que você realmente tem é uma única placa de 24 GB ou 48 GB. O **fine-tuning parameter-efficient** (PEFT, ajuste fino eficiente em parâmetros) existe para fechar esse vão, e a aritmética de como ele fecha é a substância desta aula.
 
 ## Como o LoRA representa uma atualização
 
@@ -87,7 +87,7 @@ Leia os nomes dos tensores do índice do safetensors (o arquivo que lista todo t
 
 Agora a aritmética de memória, passo a passo. Tome um posto de 16 e considere uma matriz que lê e escreve o residual stream de largura 5120. Seu adapter custa $r(d_{in}+d_{out}) = 16 \times (5120 + 5120) \approx 164{,}000$ parâmetros; chame de 0,16M. Adapte quatro projeções em cada uma das 64 camadas e você tem 256 matrizes adaptadas, ou seja, cerca de 42M de parâmetros treináveis. (As larguras reais variam por módulo, então trate isso como dimensionamento ilustrativo, não como especificação.)
 
-Em bf16 esses pesos são cerca de 84 MB. O estado do AdamW a 12–16 bytes por parâmetro acrescenta aproximadamente 0,5 a 0,7 GB. Coloque isso ao lado dos 324 a 432 GB que o mesmo otimizador exigiria para o fine-tuning completo. A diferença é de três ordens de grandeza, com o mesmo otimizador, porque agora ele tem três ordens de grandeza menos parâmetros para rastrear.
+Em bf16 esses pesos são cerca de 84 MB. O estado do AdamW a 12 bytes por parâmetro acrescenta aproximadamente 0,5 GB. Coloque isso ao lado dos 324 GB de estado de otimizador e master que a mesma receita exigiria para o fine-tuning completo. A diferença é de três ordens de grandeza, com o mesmo otimizador, porque agora ele tem três ordens de grandeza menos parâmetros para rastrear.
 
 ## Como o QLoRA encolhe o modelo congelado
 

@@ -11,16 +11,16 @@ unlocks: []
 analogy: "Uma confeiteira precisa combinar cada item de duas listas longas de ingredientes, mas a bancada só comporta poucas tigelas. O método ingênuo registra toda mistura par a par em bandejas, leva todas as bandejas a um depósito distante e depois as busca de volta para normalizar. Uma confeiteira IO-aware trabalha em tiles que cabem na bancada, mantém totais correntes e envia para fora apenas os pães finais. FlashAttention, de modo análogo, recalcula quantidades locais baratas para evitar transportar uma matriz de attention gigantesca."
 teachBack:
   prompt: "Explique por que materializar os scores de attention no contexto nativo do Qwen3.8-27B é inviável, e como o softmax online em tiles calcula o mesmo resultado sem armazenar a matriz de scores."
-  modelAnswer: "Com 262.144 tokens, a matriz de scores tem dois elevado à trigésima sexta entradas por head, cerca de 128 GiB em bf16. Esses 128 GiB são mais do que a memória inteira de um acelerador para um único head de uma única camada. E isso antes de contar os 24 query heads do Qwen e as 16 camadas de full attention. O FlashAttention carrega tiles de query e de key/value na SRAM on-chip rápida e calcula scores locais ali. Ele também mantém um máximo corrente por linha e uma soma de normalização. Sempre que um tile posterior eleva o máximo, o FlashAttention reescala as saídas parciais anteriores pela exponencial do máximo antigo menos o novo. A saída final é igual à softmax attention padrão, salvo reordenação de ponto flutuante. Só as estatísticas dos tiles chegam a existir, então o tráfego de memória escala com as entradas e saídas, não com o quadrado do comprimento da sequência."
+  modelAnswer: "Com 262.144 tokens, a matriz de scores tem dois elevado à trigésima sexta entradas por head, cerca de 128 GiB em bf16. Esses 128 GiB são mais do que a memória inteira de um acelerador para um único head de uma única camada. E isso antes de contar os 24 query heads do Qwen e as 16 camadas de full attention. O FlashAttention carrega tiles de query e de key/value na SRAM on-chip rápida e calcula scores locais ali. Ele também mantém um máximo corrente por linha e uma soma de normalização. Sempre que um tile posterior eleva o máximo, o FlashAttention reescala as saídas parciais anteriores pela exponencial do máximo antigo menos o novo. A saída final é igual à softmax attention padrão, salvo reordenação de ponto flutuante. Só os tiles e as estatísticas por linha chegam a existir, então a memória extra além das entradas e da saída cresce linearmente com o comprimento da sequência. O tráfego de memória ainda cresce com o quadrado do comprimento da sequência, mas o limite do artigo o torna muitas vezes menor que o da attention padrão quando o quadrado da dimensão de head é pequeno perto da memória on-chip."
 quiz:
   - question: "Qual é o principal objeto que FlashAttention evita materializar na memória do dispositivo?"
-    options: ["A matriz completa de scores/probabilidades de attention", "Todos os pesos do modelo", "Cada ID de token de entrada", "A saída final"]
+    options: ["A matriz inteira de scores/probabilidades", "Os tensores completos de key e value da camada", "A saída da attention antes da projeção", "O bloco de queries de cada tile de keys"]
     correctIndex: 0
-    explanation: "O tiling percorre blocos de scores em fluxo e mantém apenas o máximo corrente e as estatísticas de normalização necessárias para combiná-los exatamente."
+    explanation: "O tiling percorre blocos de scores e guarda só o máximo corrente e as estatísticas de normalização necessárias para combiná-los exatamente. Keys, values, queries e a saída são entradas e resultados que continuam na HBM; a matriz quadrática de scores é o que nunca existe inteira."
   - question: "Usando a aula 7.3, por que o ganho principal de FlashAttention se aplica mais ao prefill do que ao decode de um token?"
-    options: ["Prefill processa muitas linhas de query de uma vez e é dominado pelo tráfego de scores, enquanto decode tem uma linha de query e é dominado pela leitura de pesos e do KV cache", "Decode nunca executa attention", "Prefill pula o softmax", "Decode já armazena a matriz completa de scores na SRAM"]
+    options: ["O prefill tem muitas linhas de query e tráfego de scores; o decode tem uma linha e lê pesos e KV", "O decode pula a attention nas 16 camadas de full attention quando o cache está aquecido", "O prefill usa softmax enquanto o decode troca para uma attention linear mais barata", "O decode já mantém sua matriz completa de scores na SRAM on-chip, então não sobra nada para dividir em tiles"]
     correctIndex: 0
-    explanation: "Prefill é a fase com um bloco grande de queries e uma matriz de scores potencialmente enorme; a linha única do decode faz da largura de banda de pesos e KV cache a restrição dominante."
+    explanation: "O prefill é a fase com um bloco grande de queries e uma matriz de scores potencialmente enorme; a linha única do decode faz da largura de banda de pesos e KV cache a restrição dominante. O decode ainda roda a mesma attention com softmax, e sua única linha de scores é pequena, não uma matriz guardada."
 citations:
   - title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
     authors: "Tri Dao et al."
@@ -30,7 +30,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 O Qwen3.8-27B aceita um contexto nativo de 262.144 tokens, e 16 de suas 64 camadas executam full softmax attention sobre todo esse intervalo. Alimente o modelo com um prompt máximo e cada uma dessas camadas precisa, em princípio, comparar cada query com cada key. A fórmula de attention é uma linha. A pergunta que esta aula responde é se os objetos intermediários que ela implica podem existir fisicamente, e o que fazer quando não podem.
@@ -66,7 +66,7 @@ Calculando diretamente, $e^{-4} + e^{-2} + e^{0} = 0.018 + 0.135 + 1 = 1.154$: i
 A recomputação estende a mesma lógica ao treinamento. O backward pass, a etapa que calcula os gradientes, pode recalcular scores locais dentro dos tiles em vez de ler uma matriz $N^2$ armazenada. Ele gasta aritmética barata para evitar tráfego caro de HBM.
 
 :::caveat
-FlashAttention corrige a memória dos intermediários armazenados, não a estrutura de dependências. Attention densa exata continua realizando trabalho par a par que cresce quadraticamente com o comprimento da sequência, então um prefill de 262.144 tokens segue sendo uma computação grande. Ela apenas passa a caber.
+FlashAttention corrige a memória dos intermediários armazenados, não a estrutura de dependências. Attention densa exata continua realizando trabalho par a par que cresce quadraticamente com o comprimento da sequência, então um prefill de 262.144 tokens segue sendo uma computação grande. Ela apenas passa a caber. Os limites do artigo mantêm os dois custos separados. A memória extra cresce linearmente com o comprimento da sequência $N$. O tráfego com a HBM é $\Theta(N^2d^2/M)$ para dimensão de head $d$ e tamanho de SRAM $M$, ainda quadrático em $N$, e muitas vezes abaixo do da attention padrão só quando $d^2$ é bem menor que $M$, uma margem que encolhe com $d = 256$.
 :::
 
 ## Onde o ganho se aplica

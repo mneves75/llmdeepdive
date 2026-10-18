@@ -15,6 +15,18 @@ import { TRACK_4_FIGURES } from './4-transformer'
 import { TRACK_7_FIGURES } from './7-inference-and-efficiency'
 import { TRACK_9_FIGURES } from './9-hardware-and-infrastructure'
 import { TRACK_10_FIGURES } from './10-video-and-world-models'
+import { TRACK_14_FIGURES } from './14-agent-architecture-and-state'
+import { TRACK_15_FIGURES } from './15-tool-contracts-and-mcp'
+import { TRACK_16_FIGURES } from './16-agent-security-and-guardrails'
+import { TRACK_17_FIGURES } from './17-sandboxed-agent-execution'
+import { TRACK_18_FIGURES } from './18-computer-use-and-gui-automation'
+import { TRACK_19_FIGURES } from './19-agent-memory-and-context'
+import { TRACK_20_FIGURES } from './20-human-approval-and-durable-pauses'
+import { TRACK_21_FIGURES } from './21-bounded-agent-self-correction'
+import { TRACK_22_FIGURES } from './22-multi-agent-systems-and-a2a'
+import { TRACK_23_FIGURES } from './23-agent-evaluation-and-ci'
+import { TRACK_24_FIGURES } from './24-agent-resilience-and-fallbacks'
+import { TRACK_25_FIGURES } from './25-agent-capstone-and-portfolio'
 
 export const FIGURES = {
   ...TRACK_1_FIGURES,
@@ -22,6 +34,18 @@ export const FIGURES = {
   ...TRACK_7_FIGURES,
   ...TRACK_9_FIGURES,
   ...TRACK_10_FIGURES,
+  ...TRACK_14_FIGURES,
+  ...TRACK_15_FIGURES,
+  ...TRACK_16_FIGURES,
+  ...TRACK_17_FIGURES,
+  ...TRACK_18_FIGURES,
+  ...TRACK_19_FIGURES,
+  ...TRACK_20_FIGURES,
+  ...TRACK_21_FIGURES,
+  ...TRACK_22_FIGURES,
+  ...TRACK_23_FIGURES,
+  ...TRACK_24_FIGURES,
+  ...TRACK_25_FIGURES,
 } as const satisfies FigureRegistry
 
 export type FigureId = keyof typeof FIGURES

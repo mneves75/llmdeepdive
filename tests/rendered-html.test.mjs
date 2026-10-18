@@ -389,3 +389,30 @@ test('a lesson renders the date its frontmatter states, independent of build tim
     )
   }
 })
+
+// From 0.14 the course has two parts. The home catalog and the tracks index
+// group every track under its part's heading, in course order, so a reader
+// sees where model internals end and agent systems begin.
+test('home and tracks index list every track under its part, in order', () => {
+  const parts = {}
+  for (const locale of ['en', 'pt-br']) {
+    const dir = join('src/content/tracks', locale)
+    for (const name of readdirSync(dir)) {
+      const track = JSON.parse(readFileSync(join(dir, name), 'utf8'))
+      ;(parts[locale] ??= {})[track.id] = track
+    }
+  }
+  for (const [route, locale] of [['/', 'en'], ['/tracks/', 'en'], ['/pt-br/', 'pt-br'], ['/pt-br/tracks/', 'pt-br']]) {
+    const html = pages().find((page) => page.route === route)?.html ?? ''
+    const main = html.slice(0, html.indexOf('</main>'))
+    const sections = main.split(/data-part="/u).slice(1).map((chunk) => [null, chunk.slice(0, chunk.indexOf('"')), chunk])
+    const order = Object.values(parts[locale]).sort((a, b) => a.order - b.order)
+    const expectedParts = [...new Set(order.map((track) => track.part))]
+    assert.deepEqual(sections.map((match) => match[1]), expectedParts, `${route}: one section per part, in order`)
+    for (const [, part, body] of sections) {
+      const listed = [...body.matchAll(/href="(?:\/pt-br)?\/tracks\/([^/"]+)\/"/gu)].map((match) => match[1])
+      const expected = order.filter((track) => track.part === part).map((track) => track.id)
+      assert.deepEqual([...new Set(listed)], expected, `${route}: ${part} lists its tracks in order`)
+    }
+  }
+})
