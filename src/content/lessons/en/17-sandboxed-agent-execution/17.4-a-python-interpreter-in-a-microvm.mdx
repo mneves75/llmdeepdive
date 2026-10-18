@@ -1,0 +1,174 @@
+---
+id: "17.4-a-python-interpreter-in-a-microvm"
+track: "17-sandboxed-agent-execution"
+order: 4
+title: "A Python Interpreter in a MicroVM"
+summary: "Define the interpreter as a contract first: a validated request, a bounded response, and a sandbox that is created and destroyed for each run. The course tests that contract against a subprocess backend and describes a Firecracker microVM backend that needs Linux with KVM."
+tier: "advanced"
+locale: "en"
+prerequisites: ["17.3-network-egress-and-secrets"]
+unlocks: ["17.5-choose-and-test-the-boundary", "22.5-researcher-coder-reviewer"]
+analogy: "A laboratory glovebox has one pass-through hatch. Samples go in through the hatch, the work happens inside a sealed box you never put your head into, and results come back out through the same hatch, where someone inspects them before they enter the room. For dangerous work, the box is discarded after each job rather than wiped down. The interpreter follows the same pattern: one channel in, one channel out, inspection on the way out, and a new box every time. The comparison stops at the hatch. A physical hatch is a door, while this one is a protocol, so the hatch itself is code that must validate everything that passes through it."
+teachBack:
+  prompt: "A teammate adds a network interface to the microVM's configuration \"just for debugging\" and copies the NAT and IP-forwarding lines from Firecracker's getting-started guide onto the host. The tests still pass. What changed about the boundary, and what would you ask for before accepting the change?"
+  modelAnswer: "The guest can now reach whatever the host can reach. The getting-started guide adds a MASQUERADE rule and enables IP forwarding to give the guest internet access. It is a demonstration, not a production setup. Firecracker itself filters no traffic, so the cloud metadata address and private networks are reachable too, on IPv4 and maybe IPv6. The tests still pass because they pin the request and response contract, not the network. Before accepting it, I would ask why the run needs a network at all. If it does, I would want default-deny host rules on that TAP device for both address families, a metadata drop rule, and a probe that checks for a real application reply from a denied destination."
+quiz:
+  - question: "A guest script creates out/report.txt as a symlink to the controller's checkpoint database. What does collect_artifacts do with report.txt?"
+    options: ["Reads the database through the link, because the link sits inside out/ and only its location is checked", "Rejects it as not a regular file, because O_NOFOLLOW makes opening a symlink fail rather than follow it", "Copies the link itself into the response, so that the controller can decide later whether to follow it", "Stops the whole collection and returns no artifacts, because one bad entry taints the entire directory"]
+    correctIndex: 1
+    explanation: "collect_artifacts opens every entry with O_NOFOLLOW, so a symlink fails to open and is listed as not a regular file, while ordinary files beside it are still collected. Checking only the location is the bug that would leak the database. Nothing passes a link on for later. Returning nothing happens only when out itself is replaced by a symlink."
+  - question: "Which machine can run the course's Firecracker reference as written?"
+    options: ["A recent Mac with Apple silicon, because Firecracker supports aarch64 and macOS has a hypervisor", "Any Linux container on a hosted CI runner, as long as its image includes the firecracker binary", "A Linux x86_64 host whose own user can read and write /dev/kvm, for example a bare-metal server", "Any Linux virtual machine, because Firecracker falls back to CPU emulation when KVM is missing"]
+    correctIndex: 2
+    explanation: "Firecracker needs the KVM module and read/write access to /dev/kvm on a Linux host; the course's reference targets x86_64. macOS is not Linux, whatever its hypervisor. An ordinary container on a hosted runner usually has no /dev/kvm. Firecracker never emulates a CPU, so a Linux VM works only if it exposes /dev/kvm through nested virtualization."
+  - question: "Mid-run, the guest kernel panics and Firecracker exits. What must the controller still do?"
+    options: ["Nothing more, because Firecracker removes its jail directory and cgroup by itself when the guest stops", "Retry the same microVM, because panic=1 reboots the guest with its old workspace still intact", "Read the serial console log in full, because the guest kernel writes its own error report there", "Validate whatever came back, then remove the jail directory and the cgroup it created for that id"]
+    correctIndex: 3
+    explanation: "The jailer documentation says cleanup after a run is up to the user, so the controller removes exactly the resources it created for that id. A guest reboot shuts Firecracker down, since it implements no guest power management, so nothing restarts. Firecracker's production guide warns that serial output can grow without bound, so reading it in full is a risk, not a duty."
+citations:
+  - title: "Getting started with Firecracker (docs/getting-started.md at v1.17.0)"
+    authors: "Firecracker project"
+    year: 2026
+    url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/getting-started.md"
+  - title: "The Firecracker jailer (docs/jailer.md at v1.17.0)"
+    authors: "Firecracker project"
+    year: 2026
+    url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/jailer.md"
+  - title: "Production host setup recommendations (docs/prod-host-setup.md at v1.17.0)"
+    authors: "Firecracker project"
+    year: 2026
+    url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/prod-host-setup.md"
+  - title: "Using the Firecracker virtio-vsock device (docs/vsock.md at v1.17.0)"
+    authors: "Firecracker project"
+    year: 2026
+    url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/vsock.md"
+  - title: "Firecracker v1.17.0 release"
+    authors: "Firecracker project"
+    year: 2026
+    url: "https://github.com/firecracker-microvm/firecracker/releases/tag/v1.17.0"
+updated: "2026-10-18"
+---
+
+The controller needs a CSV summary that untrusted code produces. It sends the purchases file and the model's script, and it wants back a short `summary.json` with totals per supplier. [Lesson 17.1](/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/) showed that a process with limits cannot keep that script away from host files, so this lesson moves the script behind a virtual machine. It starts with the part that does not change when the boundary does: the contract between the controller and whatever runs the code.
+
+:::note
+The microVM part of this lesson needs a Linux x86_64 machine where your user can read and write `/dev/kvm`, such as a bare-metal server. macOS, ordinary containers and typical hosted CI runners are not substitutes. Without one, you can still run the contract tests below and study the commands, but you cannot claim the microVM milestone. The course's CI does not run any microVM command in this lesson.
+:::
+
+## Start with the contract, not the VM
+
+A *backend* is anything that takes a request and returns a response under the same rules. The project defines both sides as strict records, using the `Record` base from `agentlab.domain` that rejects unknown fields and wrong types:
+
+```python
+# file: examples/agent-engineering/src/agentlab/sandbox/interpreter.py
+class InputFile(Record):
+    # A bare name: no directory, no "..", and never main.py, so an input cannot overwrite the script.
+    name: str = Field(pattern=r"^[a-z0-9_-]{1,40}\.csv$")
+    content: str = Field(max_length=1_000_000)
+
+
+class InterpreterRequest(Record):
+    request_id: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
+    code: str = Field(min_length=1, max_length=20_000)
+    files: tuple[InputFile, ...] = Field(default=(), max_length=8)
+```
+
+Each limit has a reason. File names cannot climb out of the workspace or replace the script. Sizes are capped before anything starts. The request id allows only letters, digits and hyphens, up to 64 characters, which is exactly what Firecracker's jailer accepts as a VM id. So the same id can name the microVM and, later, the exact resources to remove.
+
+The response carries the exit code, whether the wall clock fired, bounded stdout and stderr, `memory_limited` from [lesson 17.2](/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/), the collected artifacts with their SHA-256 hashes, and a list of outputs it refused. Artifact bytes travel as base64 in JSON, so the response survives a socket unchanged. A test proves that round trip.
+
+## Collecting results without trusting them
+
+The guest writes its results into `out/`, and the guest may be hostile. Collecting them is therefore an input-validation problem, and the loop treats every entry as suspect:
+
+```python
+# file: examples/agent-engineering/src/agentlab/sandbox/interpreter.py
+        try:
+            # O_NOFOLLOW: a symlink fails instead of being read through.
+            # O_NONBLOCK: a FIFO the guest left behind cannot hang the controller.
+            fd = os.open(out / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            rejected.append(f"{name}: not a regular file")
+            continue
+        with os.fdopen(fd, "rb") as file:
+            info = os.fstat(file.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                rejected.append(f"{name}: not a regular file")
+                continue
+            if info.st_size > budget:
+                rejected.append(f"{name}: over the artifact size budget")
+                continue
+```
+
+A *symlink* is a file that points at another path. Without `O_NOFOLLOW`, a guest could link `out/report.txt` to a host file, and "collect my results" would become "read the host's secrets". A *FIFO* is a named pipe, and opening one blocks until a writer appears, so `O_NONBLOCK` keeps a leftover pipe from freezing the controller. Before the loop, the function also refuses an `out` that is itself a symlink, and it caps the number of artifacts and their total size.
+
+The subprocess backend runs the five steps in the figure. A `with tempfile.TemporaryDirectory(...)` block creates the workspace and removes that exact directory on success, on timeout and on an exception.
+
+<Figure id="interpreter-lifecycle" />
+
+## The microVM backend
+
+The second backend keeps the contract and replaces the subprocess with a Firecracker microVM. This is the design; the course does not implement it:
+
+- **The guest image** is a read-only root filesystem with Python and every dependency already installed, built ahead of time ([lesson 17.3](/lessons/17-sandboxed-agent-execution/17.3-network-egress-and-secrets/)). A small *guest agent* inside it receives the request, runs the same bootstrap with limits in a writable in-memory directory, and returns the response.
+- **No network device.** The configuration lists no network interface, so the guest has no route anywhere.
+- **One channel.** *vsock* is a virtual socket between host and guest. Firecracker maps it to a Unix socket on the host, so the controller connects there, sends `CONNECT <port>`, writes the request JSON and reads the response JSON.
+- **The jailer.** In production, Firecracker runs inside its jailer, which creates a chroot for the VM's id, drops privileges to a dedicated user, applies resource limits and clears the environment.
+
+## Commands at v1.17.0, not run by the course's CI
+
+Everything below follows Firecracker's documentation at tag v1.17.0. It needs a KVM host, so it is an illustration that the course's CI does not run. First, check that your user can use KVM. The line comes from the getting-started guide:
+
+```bash
+[ -r /dev/kvm ] && [ -w /dev/kvm ] && echo "OK" || echo "FAIL"
+```
+
+A configuration file sets every pre-boot resource with the same names as the API. This one has no network interfaces. It uses a read-only root drive, and it boots with `8250.nr_uarts=0`, which the production guide recommends because the guest can flood the serial console:
+
+```json
+{
+  "boot-source": {
+    "kernel_image_path": "vmlinux.bin",
+    "boot_args": "reboot=k panic=1 8250.nr_uarts=0"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "path_on_host": "python-guest.ext4",
+      "is_root_device": true,
+      "is_read_only": true
+    }
+  ],
+  "machine-config": { "vcpu_count": 1, "mem_size_mib": 512 },
+  "network-interfaces": [],
+  "vsock": { "guest_cid": 3, "uds_path": "./v.sock" }
+}
+```
+
+The jailer documentation says files the VM uses must be hard-linked or copied into the jail first. Place `vmlinux.bin`, `python-guest.ext4` and `vm.json` in `/srv/jailer/firecracker/req-1/root/`, readable by the dedicated user, then start it:
+
+```bash
+sudo jailer --id req-1 \
+  --exec-file /usr/bin/firecracker \
+  --uid 10001 --gid 10001 \
+  --resource-limit fsize=268435456 --resource-limit no-file=1024 \
+  --new-pid-ns --daemonize \
+  -- --config-file vm.json
+```
+
+Arguments after `--` go to Firecracker. Configuring with `--config-file` starts the VM immediately, so nothing races between configuration calls. The getting-started guide's API sequence needs a `sleep` between calls, and it skips the jailer, which is why it calls itself "not intended for production".
+
+## What stays the controller's job
+
+A microVM moves the boundary. It does not remove the controller's duties:
+
+- **Cleanup.** The jailer documentation says "It's up to the user to handle cleanup after running the jailer." The controller kills the process named in `/srv/jailer/firecracker/req-1/root/firecracker.pid` and removes `/srv/jailer/firecracker/req-1`, plus any cgroup created for `req-1`. Lesson 17.5 explains why the removal must name that id exactly.
+- **Bounded output.** The guest can grow Firecracker's logs and serial output, and the production guide asks for bounded storage for both. The response channel needs the same limits as the subprocess.
+- **Narrow vsock.** A connection the guest starts to port 52 is forwarded to `./v.sock_52` on the host, if something listens there. Listen only on the port the protocol needs.
+- **Liveness.** The production guide recommends an overwatcher process that kills unresponsive Firecracker processes. The wall-clock timeout plays that role here.
+
+## Run the exercise
+
+The module is `src/agentlab/sandbox/interpreter.py`; the tests are in `tests/test_sandbox_interpreter.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_sandbox_interpreter -v`. Expect `Ran 7 tests` and `OK`.
+
+The positive control uploads tenant-a's synthetic purchases as a CSV and gets back `summary.json` with Supplier Alpha at 1634.00 (40 × 12.50 + 6 × 189.00), Supplier Beta at 780.00 and Supplier Gamma at 10000.00. The hostile cases are a symlink to a host file, an `out` directory replaced by a symlink, a FIFO and too many outputs. Each is refused while legitimate files beside it are still collected. To see a real catch, remove `os.O_NOFOLLOW` from the `os.open` call: `test_a_symlinked_artifact_is_not_followed` fails because the host file's contents come back as an artifact. Restore it before moving on.

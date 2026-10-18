@@ -1,0 +1,141 @@
+---
+id: "17.2-resource-and-filesystem-limits"
+track: "17-sandboxed-agent-execution"
+order: 2
+title: "Limites de recursos e de sistema de arquivos"
+summary: "Limites de recursos do kernel impedem que um script descontrolado tome CPU, memória, descritores de arquivo, processos e disco, e um timeout de relógio com a morte do grupo de processos resolve o resto. Eles limitam o consumo no host; não isolam nada."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["17.1-what-isolation-protects"]
+unlocks: ["17.3-network-egress-and-secrets", "21.1-what-counts-as-corrective-feedback"]
+analogy: "Uma oficina alugada com medidor de energia pré-pago corta a luz quando o crédito acaba, faça o inquilino o que fizer. Antes disso soa um bipe de aviso, e o inquilino consegue terminar um corte. É um limite flexível seguido de um rígido. Um cronômetro de cozinha separado encerra a sessão depois de uma hora mesmo que o inquilino só tenha ficado sentado esperando, coisa que o medidor nunca percebe. A comparação para na porta. O medidor limita quanto o inquilino usa e não faz nada contra o inquilino entrar na oficina do vizinho. Limites de recursos são exatamente esse tipo de controle."
+teachBack:
+  prompt: "Seus workers rodam como root dentro de um contêiner, e run_python é chamado com allow_processes=False. Um script escrito pelo modelo começa um laço que cria filhos com fork o mais rápido que pode. O que acontece, por quê, e quais duas mudanças o limitariam?"
+  modelAnswer: "O laço de fork não é contido. A página de manual do getrlimit diz que RLIMIT_NPROC não é aplicado a processos com CAP_SYS_ADMIN ou CAP_SYS_RESOURCE, ou com ID real de usuário 0, e o root num contêiner costuma ter essas capabilities. Então todo fork dá certo até a tabela de processos ou a memória do host sofrerem. O timeout de relógio acaba matando o grupo de processos, mas filhos que chamaram setsid() já saíram desse grupo. A primeira mudança é rodar a sandbox como um usuário dedicado sem privilégios, para que o limite valha. Mesmo assim, o limite conta todo processo desse usuário, não só os desta execução. A segunda mudança é um controlador de pids num cgroup, cujo pids.max limita exatamente os processos de uma sandbox."
+quiz:
+  - question: "Um script roda while True: time.sleep(1). Os limites são cpu_seconds=2, e quem chamou esqueceu o timeout de relógio. O que para o script?"
+    options: ["O RLIMIT_CPU depois de dois segundos, porque o laço nunca termina e o kernel conta há quanto tempo ele roda", "O RLIMIT_AS depois de alguns minutos, porque cada chamada a sleep reserva um pouco mais de espaço de endereços", "O RLIMIT_CPU no valor rígido, um segundo depois do flexível, porque o limite flexível só avisa", "Nada, porque dormir quase não usa tempo de CPU, e só um timeout de relógio teria encerrado o script"]
+    correctIndex: 3
+    explanation: "O RLIMIT_CPU conta tempo de processador realmente usado, e um processo dormindo quase não usa nenhum, então nem o limite flexível nem o rígido são atingidos. Tempo decorrido não é tempo de CPU; essa confusão é o motivo de run_python manter um timeout de relógio separado. Dormir também não aumenta o espaço de endereços."
+  - question: "Com Limits(max_file_bytes=65536), um script escreve 10.000.000 bytes em stdout. O que run_python devolve?"
+    options: ["65.536 bytes de stdout, com stdout_truncated verdadeiro, porque o arquivo de stdout parou de crescer", "Os 10.000.000 bytes, porque o stdout vai para um arquivo temporário e não para um pipe de buffer pequeno", "Um stdout vazio, porque o SIGXFSZ mata o filho antes que a primeira escrita chegue ao arquivo", "Um SandboxSetupError, porque a saída pedida é maior que o limite que o bootstrap aplicou"]
+    correctIndex: 0
+    explanation: "O RLIMIT_FSIZE limita todo arquivo que o filho escreve, e o stdout dele é um arquivo, então o arquivo para em 65.536 bytes e o pai lê no máximo isso. O CPython ignora o SIGXFSZ, então a escrita falha com EFBIG em vez de matar o filho na hora, e os bytes anteriores ao limite ficam. SandboxSetupError só significa que um limite não pôde ser aplicado antes de o script começar."
+  - question: "Num Mac, todo RunResult informa memory_limited=False. O que isso significa?"
+    options: ["O script usou menos memória que o limite, então o limite nunca foi necessário na execução", "O macOS recusou o RLIMIT_AS, então não houve limite de espaço de endereços, e quem chamou decide", "O macOS aplicou uma forma mais branda do limite, que ele impõe mais tarde na próxima alocação", "A execução falhou fechada, então o script nunca começou e tanto stdout quanto stderr ficaram vazios"]
+    correctIndex: 1
+    explanation: "O bootstrap tenta o RLIMIT_AS, e no macOS o setrlimit levanta ValueError, então a flag informa que não houve limite de memória. A flag não diz nada sobre quanta memória o script usou. Nenhuma imposição mais branda acontece depois. Falhar fechado é o que os outros limites fazem: um limite de CPU, arquivo ou processo recusado levanta SandboxSetupError antes de o script rodar."
+citations:
+  - title: "getrlimit(2), página de manual do Linux"
+    authors: "Michael Kerrisk (projeto man-pages)"
+    year: 2026
+    url: "https://man7.org/linux/man-pages/man2/getrlimit.2.html"
+  - title: "resource: informações de uso de recursos (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/resource.html"
+  - title: "subprocess: gerenciamento de subprocessos (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/subprocess.html"
+  - title: "Production host setup recommendations (docs/prod-host-setup.md na v1.17.0)"
+    authors: "Projeto Firecracker"
+    year: 2026
+    url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/prod-host-setup.md"
+updated: "2026-10-18"
+---
+
+O script de relatório do modelo tem um bug. Ele pretende ler o CSV de compras linha por linha, mas nunca avança a linha, então o laço nunca termina. Uma segunda versão continua acrescentando cada linha a uma lista dentro desse laço, e uma terceira imprime a tabela inteira a cada volta. Ninguém atacou nada: o modelo cometeu um erro comum. Mesmo assim, o primeiro script prende um núcleo de CPU para sempre, o segundo toma memória até a máquina entrar em swap, e o terceiro despeja megabytes de texto de volta no próximo prompt do modelo. Esta aula limita cada um deles com limites que o kernel impõe, e é honesta sobre o que esses limites deixam aberto.
+
+## O que um bug honesto consegue esgotar?
+
+Cinco recursos se esgotam, e cada um tem seu sintoma:
+
+- **Tempo de CPU**: um laço que nunca termina.
+- **Memória**: uma lista ou string que não para de crescer.
+- **Disco e saída**: um arquivo ou um print que nunca para.
+- **Descritores de arquivo**: arquivos ou sockets abertos num laço e nunca fechados. Um *descritor de arquivo* é o número que o kernel dá a um processo para cada arquivo, pipe ou socket aberto.
+- **Processos**: um laço que inicia processos novos, a clássica *fork bomb*. `fork` é a chamada de sistema que copia o processo atual.
+
+O tempo de relógio é um sexto. Um script que dorme ou espera um lock não usa CPU, e ainda assim mantém a execução aberta.
+
+## Limites que o kernel impõe por processo
+
+Um *limite de recurso*, ou *rlimit*, é um teto que o kernel prende a um processo e aos processos que ele inicia. Cada um tem um valor *flexível* (*soft*), onde o kernel começa a reclamar, e um valor *rígido* (*hard*), o teto para o flexível. Um processo sem privilégios pode baixar qualquer um dos dois, mas nunca pode subir o rígido de novo. Por isso limites aplicados dentro do filho antes de o script começar valem pela vida inteira do script.
+
+A página de manual do getrlimit diz o que cada limite faz quando é atingido:
+
+| Limite | Limita | Quando atingido |
+|---|---|---|
+| `RLIMIT_CPU` | segundos de CPU | `SIGXCPU` no valor flexível, depois `SIGKILL` no rígido |
+| `RLIMIT_AS` | espaço de endereços | pedidos de memória falham; o Python levanta `MemoryError` |
+| `RLIMIT_FSIZE` | tamanho de cada arquivo escrito | a escrita falha com `EFBIG` (o CPython ignora o `SIGXFSZ`) |
+| `RLIMIT_NOFILE` | descritores de arquivo abertos | `open` falha com `EMFILE` |
+| `RLIMIT_NPROC` | processos do usuário real | `fork` falha com `EAGAIN` |
+
+Os limites do projeto são um registro pequeno:
+
+```python
+# file: examples/agent-engineering/src/agentlab/sandbox/process.py
+@dataclass(frozen=True)
+class Limits:
+    cpu_seconds: int = 2
+    wall_seconds: float = 10.0
+    # Address space. macOS refuses RLIMIT_AS, so this one is applied where the OS allows
+    # and reported in RunResult.memory_limited instead of failing every run there.
+    memory_bytes: int | None = 256 * 1024 * 1024
+    # RLIMIT_FSIZE: caps every file the script writes, stdout and stderr included.
+    max_file_bytes: int = 1024 * 1024
+    max_open_files: int = 64
+    # RLIMIT_NPROC counts every process of the user, so the only portable setting is 0: no new processes.
+    allow_processes: bool = False
+```
+
+Um bootstrap curto os aplica dentro do filho, antes de o script rodar. A documentação do Python avisa que a alternativa, um callback `preexec_fn`, "is NOT SAFE to use in the presence of threads in your application" (NÃO É SEGURO na presença de threads na sua aplicação). Os limites obrigatórios falham fechados:
+
+```python
+# file: examples/agent-engineering/src/agentlab/sandbox/process.py
+try:
+    cap("RLIMIT_CPU", limits["cpu_seconds"], limits["cpu_seconds"] + 1)
+    cap("RLIMIT_FSIZE", limits["max_file_bytes"])
+    cap("RLIMIT_NOFILE", limits["max_open_files"])
+    if not limits["allow_processes"]:
+        cap("RLIMIT_NPROC", 0)
+except (ValueError, OSError) as error:
+    os.write(report, json.dumps({"error": repr(error)}).encode())
+    sys.exit(125)
+```
+
+Se algum deles não pode ser aplicado, o bootstrap informa o erro e sai antes de o script começar, e `run_python` levanta `SandboxSetupError`. O limite de CPU tem o valor rígido um segundo acima do flexível, então o primeiro sinal é `SIGXCPU`, como a página de manual descreve. O relatório viaja por um pipe que o bootstrap fecha antes de o script rodar, então o script não consegue escrever um relatório falso.
+
+## O tempo que o limite de CPU não enxerga
+
+Um laço que dorme quase não usa CPU, então o `RLIMIT_CPU` nunca dispara. Por isso o pai espera com um timeout de relógio e depois mata o filho. Uma morte enviada só ao filho erraria qualquer processo que o filho iniciou. É por isso que o filho começa com `start_new_session=True`, que o torna líder de um novo *grupo de processos*, e por isso o pai mata o grupo inteiro com uma única chamada a `killpg`. A morte mira exatamente o grupo que esta execução criou, nunca todos os processos Python da máquina.
+
+O timeout não aceita um relógio injetado. O kernel mede tempo real, então os testes que o comprovam gastam cerca de um segundo de tempo real cada um.
+
+:::caveat
+Um processo que chama `setsid()` sai do grupo e sobrevive à morte. Um *cgroup* do Linux, um grupo do kernel que carrega cotas e pode ser esvaziado de uma vez, o alcança. Destruir uma VM também. Os dois aparecem na [aula 17.4](/pt-br/lessons/17-sandboxed-agent-execution/17.4-a-python-interpreter-in-a-microvm/).
+:::
+
+## A saída também é um recurso
+
+O stdout e o stderr do filho vão para arquivos temporários, não para pipes. Um pipe faria o pai ler tudo o que o filho escreve, então uma enxurrada de saída cairia na memória do pai. Um arquivo é limitado pelo `RLIMIT_FSIZE`, e o pai depois lê no máximo `max_file_bytes` dele. O mesmo limite vale para todo arquivo que o script escreve no seu diretório de trabalho. Esse teto por arquivo é o único limite de disco aqui.
+
+O diretório de trabalho é tarefa de quem chama: cada execução ganha um novo e vazio, e ele é apagado depois. O backend da aula 17.4 faz as duas coisas.
+
+## Onde a plataforma diz não
+
+Três fatos de plataforma moldam o que esses limites significam:
+
+- **O macOS recusa o `RLIMIT_AS`.** No macOS, o `setrlimit` levantou `ValueError` para `RLIMIT_AS` e `RLIMIT_DATA` nas verificações deste projeto, então um Mac não dá limite de espaço de endereços pelo `resource`. Falhar fechado faria toda execução falhar, então a memória é o único limite aplicado na base do possível. `RunResult.memory_limited` diz se ele foi aplicado, e no Linux o teste exige que seja verdadeiro.
+- **O `RLIMIT_NPROC` conta o usuário inteiro.** A página de manual o define por ID real de usuário e diz que ele "is not enforced" (não é aplicado) para o root ou para processos com `CAP_SYS_ADMIN` ou `CAP_SYS_RESOURCE`. Um número positivo pequeno bloquearia também os outros processos do usuário, então o único valor portável é zero: nenhum processo novo, e no Linux nenhuma thread nova.
+- **Alguns limites precisam de mais que rlimits.** Uma cota total de disco, um sistema de arquivos somente leitura e uma contagem de processos por sandbox exigem recursos do sistema operacional: montagens, namespaces, cgroups. O guia de produção do Firecracker recomenda exatamente essa camada para os seus próprios processos.
+
+## Rode o exercício
+
+O módulo é `src/agentlab/sandbox/process.py`; os testes estão em `tests/test_sandbox_process.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_sandbox_process -v`.
+
+No Linux, espere `Ran 9 tests` e `OK`. No macOS, espere `OK (skipped=1)`: o teste de memória é pulado com o motivo "setrlimit(RLIMIT_AS) is refused on darwin". Rodando como root, o teste de fork também é pulado, porque o `RLIMIT_NPROC` não vale para o root. Todo teste negativo tem um controle positivo. O laço ocupado é encerrado pelo limite de CPU, enquanto o laço que dorme é encerrado pelo timeout. Dez megabytes de saída chegam como exatamente 65.536 bytes, enquanto um print curto fica intacto. Oito forks são recusados, enquanto o mesmo script faz oito forks com `allow_processes=True`.
+
+Para ver um teste pegar uma regressão real, troque `start_new_session=True` por `False` em `run_python`. O filho então fica no grupo de processos do executor de testes, nenhum grupo carrega o id do filho, o `killpg` não encontra nada para matar e o órfão que dorme sobrevive. `test_a_background_process_is_killed_with_its_group` falha com "survived the run". Restaure a linha e pare o órfão que a execução com falha deixou para trás pelo id de processo (a mensagem de falha o mostra).

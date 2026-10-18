@@ -1,0 +1,108 @@
+---
+id: "19.4-scoring-eviction-and-forgetting"
+track: "19-agent-memory-and-context"
+order: 4
+title: "Pontuação, despejo e esquecimento"
+summary: "Registros saem da memória por motivos diferentes: expiram, são despejados para liberar espaço, uma versão mais nova os substitui, ou alguém pede que sejam esquecidos. O despejo pode manter um resumo do que removeu; a exclusão também precisa remover todo resumo, fato e cópia no índice feitos a partir da fonte excluída."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["19.3-token-budgets-and-compression"]
+unlocks: ["19.5-evaluate-memory"]
+analogy: "O arquivo de um escritório tem três jeitos de perder uma pasta. Pastas que passaram do prazo de guarda vão para a fragmentadora na data marcada. Quando a sala enche, as pastas mais antigas que ninguém pediu descem para uma caixa no porão, mas o resumo de uma página no fichário de índice fica. Quando um cliente exerce o direito de ter sua pasta destruída, o arquivista fragmenta a pasta e também cada fotocópia, página de resumo e ficha de índice feita a partir dela. A comparação para nas fotocópias. Um arquivista pode percorrer o prédio e achá-las; um software só acha uma cópia se cada cópia registrou de que pasta veio."
+teachBack:
+  prompt: "O comprador pede para esquecer o número de telefone em turn-12. sum-1 guarda esse número e também a regra da doca vinda de turn-13, que o comprador quer manter. forget(\"turn-12\") remove sum-1 e fact-1. O que o sistema deve fazer em seguida para não perder a regra da doca, e quais dois atalhos ele precisa evitar?"
+  modelAnswer: "A regra da doca ainda existe em turn-13, que ninguém pediu para esquecer. O sistema deve montar um resumo novo só a partir de turn-13, com derived_from apontando para turn-13, e conferir que o número não aparece nele. Um atalho é editar sum-1 no lugar, apagando o número mas mantendo o registro. O derived_from dele ainda citaria turn-12, e o texto pode ter sido copiado para outro lugar, como uma cópia no índice ou outro resumo. O outro atalho é pular o índice vetorial. A cópia de sum-1 que ele guarda manteria o número buscável. O teste da mudança é o mesmo de antes: depois de forget, uma busca pelo número não devolve nada."
+quiz:
+  - question: "Com meia-vida de sete dias, o registro A tem 21 dias e foi recuperado duas vezes; o registro B tem 7 dias e nunca foi recuperado. Nenhum está fixado. Qual dos dois evict(capacity=1) remove?"
+    options: ["B, porque um registro que ninguém recuperou sempre sai antes de um que foi usado", "Nenhum, porque os dois são mais novos que o prazo de expiração padrão do store", "B, porque a nota de B, 0,5 × 1, é menor que a nota de A, 0,125 × 3", "A, porque 0,5³ × 3 = 0,375 é menor que a nota de B, 0,5¹ × 1 = 0,5"]
+    correctIndex: 3
+    explanation: "A caiu pela metade três vezes, 0,125, e suas duas recuperações multiplicam isso por 3, dando 0,375; B caiu pela metade uma vez, 0,5, sem recuperações. Sai a nota menor. O uso nem sempre vence: a idade pode pesar mais. Não há expiração padrão neste store, e 0,5 não é menor que 0,375."
+  - question: "O comprador pede para esquecer turn-12. sum-1 foi feito a partir de turn-12 e turn-13. O que forget(\"turn-12\") faz com sum-1 e turn-13?"
+    options: ["Remove sum-1, que vem de turn-12, e mantém turn-13, que não vem de nenhum registro", "Mantém sum-1, porque ele também deriva de turn-13, que ninguém pediu para esquecer", "Remove os dois, porque turn-13 divide um resumo com a fala que está sendo esquecida", "Mantém sum-1, mas apaga o telefone do texto, para que o resto do resumo sobreviva"]
+    correctIndex: 0
+    explanation: "forget segue os vínculos derived_from a partir do registro excluído: tudo o que foi feito de turn-12 sai, e nada mais. Manter sum-1 manteria o número. turn-13 é uma fonte, não uma cópia de turn-12. Editar o texto no lugar não é o que forget faz, e deixaria um registro cuja linhagem ainda cita dados excluídos."
+  - question: "Seu índice vetorial é um IndexFlat do Faiss, e seu código lembra cada registro pela posição no índice. Você chama remove_ids para o vetor na posição 10. O que quebra?"
+    options: ["Nada: a remoção deixa a posição 10 vazia e mantém todas as outras como estavam", "Os vetores acima da posição 10 descem, e cada posição guardada muda de registro", "A chamada falha, porque o IndexFlat não permite remover vetor nenhum", "Só as buscas pelo texto excluído, porque a remoção espera a próxima reconstrução"]
+    correctIndex: 1
+    explanation: "A documentação do Faiss diz que remover de índices sequenciais como o IndexFlat desloca os ids dos vetores acima do removido. O IndexFlat permite remove_ids, sim, e não fica nenhum buraco. Um mapa de posições fica então errado para todo registro posterior, então mantenha seus próprios ids estáveis e teste a recuperação depois da exclusão."
+citations:
+  - title: "Special operations on indexes (Faiss wiki)"
+    authors: "Meta AI Research (Faiss)"
+    year: 2026
+    url: "https://github.com/facebookresearch/faiss/wiki/Special-operations-on-indexes"
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+updated: "2026-10-18"
+---
+
+Na fala 12 de uma conversa, o comprador deu ao assistente um número de celular, 555-0142, para ligações sobre entregas atrasadas. Uma semana depois, o comprador pede ao assistente que o esqueça. O store guarda a própria fala, `turn-12`. Guarda também `sum-1`, um resumo que um modelo escreveu das falas 12 e 13, e `fact-1`, um fato extraído desse resumo. O índice vetorial mantém sua própria cópia dos três. Exclua só `turn-12` e uma busca pelo número ainda o encontra duas vezes. Esta aula separa os motivos pelos quais um registro sai da memória e dá a cada um a sua regra.
+
+## Por que registros saem da memória?
+
+Quatro eventos diferentes removem um registro ou impedem que ele seja usado.
+
+- **Expiração.** Um *TTL* (*time to live*, tempo de vida) encerra a vida útil de um registro num instante fixo, `expires_at`. Um código de doca de uso único não deve ser oferecido no mês seguinte. A recuperação ignora um registro expirado mesmo antes de alguém excluí-lo.
+- **Substituição.** Um registro mais novo substitui um mais antigo: "Deliver to dock 5" tem `supersedes="addr-1"`, o registro que dizia doca 2. O registro antigo fica como histórico, mas a recuperação não o devolve mais.
+- **Despejo.** O store está cheio, então algo precisa sair para abrir espaço.
+- **Exclusão.** Alguém com direito de pedir quer os dados apagados.
+
+Os dois primeiros são regras sobre a verdade ao longo do tempo. Os dois últimos tratam de espaço e de direitos, e diferem no que acontece com os registros derivados.
+
+## Pontuar o que manter: recência e uso
+
+O despejo precisa de uma nota que não dependa de uma consulta, porque nenhuma consulta está rodando quando o espaço acaba. *Relevância* no sentido da recuperação pertence a uma consulta, então este store usa um substituto: quantas vezes um registro foi recuperado no passado. A nota combina isso com a *recência*, o quão recentemente o registro foi criado:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/store.py
+    def retention_score(self, record: MemoryRecord) -> float:
+        """Halves every ``half_life`` of age, times one plus the number of past retrievals."""
+        age = self._now() - record.created_at
+        return 0.5 ** (age / self._half_life) * (1 + self._hits[record.memory_id])
+```
+
+A *meia-vida* é o tempo depois do qual a parte da recência cai pela metade. Com meia-vida de sete dias, um registro de dez dias que ninguém recuperou tem nota $0.5^{10/7} \approx 0.37$. O mesmo registro recuperado três vezes tem cerca de $4 \times 0.37 \approx 1.49$. Um registro de dois dias que ninguém recuperou tem $0.5^{2/7} \approx 0.82$. Então o registro antigo e muito usado sobrevive ao novo e sem uso, e, sem uso, a recência decide. O relógio é injetado (`now`), então os testes avançam o tempo sem esperar.
+
+Essa escolha traz dois limites. Uma contagem de uso premia tudo o que foi recuperado, inclusive um registro recuperado por engano. E um compromisso pode ser raramente recuperado e ainda assim essencial, então o store deixa você *fixar* um registro: registros fixados nunca são despejados por espaço. A expiração continua valendo para eles, porque um código de uso único expirado está errado, fixado ou não.
+
+## Despejo não é exclusão
+
+O despejo libera espaço. Se ele remove `turn-3` mas mantém `sum-1`, o resumo dele, esse é justamente o propósito do resumo: a versão curta fica. A exclusão atende a um pedido de esquecimento, então também precisa remover todo registro feito a partir do excluído, direta ou indiretamente por meio de outro registro derivado:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/store.py
+        doomed = [memory_id]
+        changed = True
+        while changed:
+            changed = False
+            for record in self._records.values():
+                if record.memory_id not in doomed and any(source in doomed for source in record.derived_from):
+                    doomed.append(record.memory_id)
+                    changed = True
+        for doomed_id in doomed:
+            self._remove(doomed_id)
+        return doomed
+```
+
+O laço se repete até uma passada não acrescentar nada, então `fact-1`, feito de `sum-1`, sai junto com `sum-1`, feito de `turn-12`. `turn-13` e um resumo de `turn-20` ficam: eles não foram feitos da fala excluída. Antes de excluir qualquer coisa, `forget` confere `visible(record, principal)`, então outro tenant não consegue excluir os registros deste comprador.
+
+<Figure id="memory-deletion-lineage" />
+
+A regra só funciona porque todo registro derivado lista suas fontes. É por isso que a [aula 19.1](/pt-br/lessons/19-agent-memory-and-context/19.1-working-episodic-and-semantic-memory/) exigiu `derived_from` e os trechos da [aula 19.2](/pt-br/lessons/19-agent-memory-and-context/19.2-ingestion-and-retrieval/) citam sua mensagem. Um resumo escrito sem sua linhagem não pode ser encontrado por um pedido de exclusão depois.
+
+## Exclusão num índice vetorial de verdade
+
+O store do projeto mantém uma cópia separada de cada registro no índice, fazendo o papel de um banco vetorial que guarda texto ou metadados ao lado de cada vetor. `_remove` apaga as duas, e um teste confere que a busca vetorial não alcança um registro esquecido. Um índice real torna isso mais difícil, então leia a documentação de exclusão do que você usa. A wiki do Faiss, por exemplo, diz que `remove_ids` percorre o banco inteiro, então só é eficiente quando muitos vetores são removidos de uma vez. Ela lista `IndexFlat`, `IndexIVFFlat` e `IDMap` como compatíveis. Também diz que remover de índices sequenciais como o `IndexFlat` desloca os ids dos vetores acima do removido, então um código que mapeia ids de memória para posições passa a apontar para os registros errados.
+
+Pesos são mais difíceis ainda. Lewis et al. (2020) descrevem a atualização do conhecimento guardado nos parâmetros de um modelo como um problema em aberto e apresentam a recuperação a partir de um índice externo como um jeito de contorná-lo. Um registro que você pode excluir é muito mais fácil de esquecer do que algo treinado nos pesos.
+
+:::caveat
+A política de retenção deste exercício cobre os registros do store e o seu índice. Ela não cobre backups, logs, traces, caches nem cópias enviadas a um provedor de modelo. Cada um deles precisa da sua própria regra e do seu próprio teste, então nunca afirme uma exclusão além do que você testou.
+:::
+
+## Rode o exercício
+
+O módulo é `src/agentlab/memory/store.py`; os testes estão em `tests/test_memory_store.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_memory_store`. A saída termina com `Ran 10 tests` e `OK`. O teste de exclusão primeiro prova que uma busca por 555-0142 encontra `turn-12`, `sum-1` e `fact-1`, depois que ela não encontra nada após `forget`, e o teste seguinte prova que registros de outras fontes sobrevivem.
+
+Para ver a cópia no índice fazer diferença, apague a linha `del self._vector_index[memory_id]` em `_remove`. `test_forgetting_a_source_removes_every_record_derived_from_it` e `test_vector_search_cannot_reach_a_forgotten_record` falham: o registro sumiu do store, mas a busca vetorial ainda devolve o texto dele. Restaure a linha antes de seguir.

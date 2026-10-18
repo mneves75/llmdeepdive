@@ -1,0 +1,125 @@
+---
+id: "15.5-transport-and-authorization-boundaries"
+track: "15-tool-contracts-and-mcp"
+order: 5
+title: "Transports and Authorization Boundaries"
+summary: "A stdio server trusts whoever launched it; a remote HTTP server must check a token on every request. The token must name this server as its audience, carry the needed scopes, be unexpired and unrevoked, and this course's fixture checks those claims without doing any cryptography."
+tier: "core"
+locale: "en"
+prerequisites: ["15.4-a-raw-postgres-mcp-server"]
+unlocks: ["20.4-slack-and-teams-approval-adapters", "22.4-a2a-interoperability", "24.1-classify-failures-before-retrying"]
+analogy: "A warehouse has two doors. Staff who work inside were placed there by the site manager, so the manager's word at the start of the shift is their authority. Visitors come through the front gate with a badge issued by head office. The guard checks that the badge names this warehouse rather than the one across town, that it covers the area the visitor wants, that its date has not passed, and that it is not on today's list of lost badges. The guard neither prints badges nor judges whether head office should have issued one. The comparison stops at forgery. A guard can feel a badge's hologram, while a server has to verify a token's signature with the issuer's keys and a maintained library, the step this lesson's fixture deliberately leaves out."
+teachBack:
+  prompt: "The purchasing server becomes a remote HTTP service. To save work, it forwards each bearer token it receives to the company's accounts API, which happens to accept it too. Using this lesson, what is wrong with that design, and what should the server do instead?"
+  modelAnswer: "This is token passthrough, which the MCP authorization spec forbids. The token was issued for the purchasing server as its audience. If the accounts API accepts it, that API cannot tell whether the purchasing server checked anything, and its own controls are bypassed. The audit trail also stops showing which service really made the call. A stolen token for one service now opens two. The purchasing server should accept only tokens whose audience is its own canonical URI, and refuse everything else with a 401. To call the accounts API it should get a separate token issued for that API, with only the scopes the call needs. It should log both calls under its own identity, so each service checks a token that was meant for it."
+quiz:
+  - question: "A request reaches the purchasing server with a correctly signed, unexpired token whose aud is https://mcp.calendar.example/mcp and whose scope includes purchases:read. What should the server answer?"
+    options: ["401 invalid_token, because the token was issued for another resource and so must be refused", "200, because the signature is valid and the token carries the scope that the tool requires", "403 insufficient_scope, because a token for the calendar server cannot carry purchasing scopes", "200, provided the server first forwards the token to the calendar server to have it checked"]
+    correctIndex: 0
+    explanation: "MCP servers must validate that a token was issued specifically for them as its audience, and RFC 9068 says a token whose aud does not name this server must be rejected; an invalid token gets 401. A scope string inside a token for another audience means nothing here. Forwarding the token would be token passthrough."
+  - question: "The fixture is called with now at 12:00:00 UTC and a token whose exp is exactly 12:00:00 UTC. Every other claim is fine. What does check_access return?"
+    options: ["200, because the token expires at the end of that second, not at the start of it", "401, because the current time must be before exp, and an equal time is not before it", "200 with a warning, because clock skew between servers could mean the token is still valid", "403, because an expired token still proves who the caller is but has lost its scopes"]
+    correctIndex: 1
+    explanation: "RFC 9068 says the current time must be before the time in exp, so equal means expired, and the fixture's boundary test checks exactly this second. A small leeway for clock skew is allowed by the RFC, but this fixture uses none. Expiry makes the whole token invalid, which is a 401, not a 403."
+  - question: "A teammate says the stdio server needs no token because only its parent process can write to its standard input. What is accurate?"
+    options: ["The stdio server must still validate OAuth tokens, because MCP requires authorization on every transport", "The claim is wrong, since any process running on the same machine can write to another process's stdin", "The pipe is private, but the server trusts its launcher, so the launch command and environment need care", "The claim makes tenant scoping unnecessary, because one parent process always means exactly one user"]
+    correctIndex: 2
+    explanation: "MCP says stdio implementations should not follow the HTTP authorization spec and should take credentials from the environment, which moves the trust to the launcher. The security guidance asks clients to show the exact launch command and get consent. Tenant scoping still matters: the launcher's tenant is exactly what the queries must enforce."
+citations:
+  - title: "Model Context Protocol specification 2026-07-28: Authorization"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization"
+  - title: "Model Context Protocol 2026-07-28: Security Best Practices"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices"
+  - title: "Model Context Protocol specification 2026-07-28: Transports"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports"
+  - title: "RFC 6750: The OAuth 2.0 Authorization Framework: Bearer Token Usage"
+    authors: "M. Jones and D. Hardt, IETF"
+    year: 2012
+    url: "https://www.rfc-editor.org/rfc/rfc6750"
+  - title: "RFC 8707: Resource Indicators for OAuth 2.0"
+    authors: "B. Campbell, J. Bradley and H. Tschofenig, IETF"
+    year: 2020
+    url: "https://www.rfc-editor.org/rfc/rfc8707"
+  - title: "RFC 9068: JSON Web Token (JWT) Profile for OAuth 2.0 Access Tokens"
+    authors: "V. Bertocci, IETF"
+    year: 2021
+    url: "https://www.rfc-editor.org/rfc/rfc9068"
+  - title: "RFC 7662: OAuth 2.0 Token Introspection"
+    authors: "J. Richer (ed.), IETF"
+    year: 2015
+    url: "https://www.rfc-editor.org/rfc/rfc7662"
+  - title: "MCP Python SDK v2.2.0 (README and src/mcp/server/auth)"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://github.com/modelcontextprotocol/python-sdk/tree/v2.2.0"
+updated: "2026-10-18"
+---
+
+Until now the purchasing server has run as a child process on the buyer's own machine, launched by the assistant with the buyer's tenant in its environment. Next quarter the team wants one shared server on the network that both companies' assistants can reach. A request arrives over HTTP carrying a perfectly signed token, but the token was issued for the company's calendar server, not for purchasing. Should the purchasing server answer? On stdio that question never came up, so this lesson starts by asking who the caller is on each transport.
+
+## Who is the caller on stdio?
+
+On the stdio transport the host starts the server and holds both ends of its pipes. Nothing on the network can reach those pipes; another program would need access to the host's own processes on that machine. The base protocol of the Model Context Protocol (MCP) draws the consequence: implementations using stdio "SHOULD NOT follow this specification, and instead retrieve credentials from the environment". That is what the purchasing server does with `AGENTLAB_USER_ID` and `AGENTLAB_TENANT_ID` in [lesson 15.4](/lessons/15-tool-contracts-and-mcp/15.4-a-raw-postgres-mcp-server/). This identity is configuration chosen at launch and fixed for the life of the process. The server never infers it from earlier requests, which the stateless protocol forbids.
+
+The trust does not disappear. It moves to whoever writes the launch command. MCP's security guidance describes a local server compromise in which an attacker plants a malicious startup command in a client's configuration. When a client offers one-click setup of a local server, the guidance says it MUST "Show the exact command that will be executed, without truncation" and "Require explicit user approval before proceeding". It also recommends launching servers with restricted access to the file system and the network, which is track 17's subject. A stdio server runs with the privileges of the user who launched it.
+
+## A remote server checks a token on every request
+
+The Streamable HTTP transport sends each message as an HTTP POST to one MCP endpoint, and anyone on the network can send one. MCP's authorization spec, built on OAuth 2.1, gives the parties names. The MCP server is a *resource server*. The client is an OAuth *client* acting for the user. An *authorization server* signs the user in, asks for *consent*, the user's explicit agreement to what the client may do, and issues an *access token*. The client sends that token in an `Authorization: Bearer` header, on every request and never in the URL. Four of the token's *claims*, the facts it states about itself, decide each request:
+
+- `aud`, the *audience*: which server the token is for. MCP servers "MUST validate that access tokens were issued specifically for them as the intended audience", per RFC 8707 (an RFC, or Request for Comments, is one of the IETF's numbered standards documents).
+- `scope`: the permissions granted, as words separated by spaces, such as `purchases:read`.
+- `exp`: the expiry time, in seconds since 1970. RFC 9068 says "The current time MUST be before the time represented by the 'exp' claim."
+- `jti`: the token's unique id, which lets a server recognize a token that was *revoked*, withdrawn before its expiry.
+
+A token for the calendar server is refused even if it is genuine. The spec says MCP servers "MUST NOT accept or transit any other tokens", and its security guidance names the failure: *token passthrough*, where a server accepts tokens meant for someone else and forwards them downstream, so that the downstream service cannot tell what was checked.
+
+## The four checks as a fixture
+
+The course does not hand-roll OAuth, and it does no cryptography. Verifying a token's signature, issuer and algorithm is a job for a maintained library using the authorization server's keys. `remote_auth.py` starts after that point: it receives claims that a library has already verified, and makes the four decisions above with an injected clock and an injected set of revoked ids.
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/remote_auth.py
+    audiences = [token.aud] if isinstance(token.aud, str) else token.aud
+    if resource not in audiences:
+        return _invalid("token was issued for another resource")  # the audience check MCP requires (RFC 8707)
+    if token.exp <= int(now.timestamp()):
+        return _invalid("token expired")
+    if token.jti in revoked:
+        return _invalid("token revoked")
+    if not required_scopes <= set(token.scope.split()):
+        needed = " ".join(sorted(required_scopes))
+        return Decision(False, 403, "insufficient_scope", f'Bearer error="insufficient_scope", scope="{needed}"')
+    return Decision(True, 200, subject=token.sub)
+```
+
+The status codes come from the spec: "Invalid or expired tokens MUST receive a HTTP 401 response", and an insufficient scope gets 403 with a `WWW-Authenticate` header naming the scope needed, as RFC 6750 describes. The scope test splits the string on spaces and compares whole words, so `purchases:read-all-tenants` does not satisfy `purchases:read`. With `now` at 12:00:00 UTC, the tests see these answers:
+
+| Token | Answer |
+|---|---|
+| for this server, `purchases:read`, expires 12:05:00 | 200 |
+| `aud` is the calendar server | 401 `invalid_token` |
+| expires 12:00:00 exactly | 401 `invalid_token` |
+| expires 12:00:01 | 200 |
+| `jti` on the revoked list | 401 `invalid_token` |
+| scope `calendar:read` only | 403 `insufficient_scope`, `scope="purchases:read"` |
+
+Revocation needs a source. A self-contained token stays valid until it expires unless the server asks someone. RFC 7662 defines *token introspection*: the resource server asks the authorization server about a token, and gets back `active`, a boolean "indicator of whether or not the presented token is currently active". Short expiry times limit how long a token that nobody revoked stays useful. After the four checks pass, a real server would still map the token's subject to a `Principal` through its own user directory, and the queries of lesson 15.4 would then scope by that tenant. The fixture stops at the decision.
+
+## Cancellation and transport failures
+
+Each transport also signals cancellation differently. On stdio the client sends `notifications/cancelled`; on Streamable HTTP, where replies can arrive as an SSE (Server-Sent Events) stream, "Closing the SSE response stream is the cancellation signal" and the server must treat a disconnect as cancellation. The course's client sends `notifications/cancelled` when a request times out and ignores any late answer. The server handles one request at a time, so it never sees a cancellation while work is still running. That is one of the features this subset does not implement. When the server process dies, the client raises `TransportClosed` instead of waiting forever, and a test kills the process to check it.
+
+## What the raw subset leaves out
+
+The server's docstring lists what is missing: resources, prompts, completions, logging, progress, multi round-trip requests, extensions, the Streamable HTTP transport and its authorization, cancelling work in flight, closing a subscription gracefully at shutdown, caching beyond `ttlMs: 0`, and the legacy `initialize` handshake. It is a learning implementation, not a compliant one. The comparison that follows comes from reading the README of the official MCP Python SDK (software development kit) and source at tag v2.2.0 (released 2026-09-07). The course does not install or run the SDK, and the course's continuous integration (CI) does not test it. The README says v2 supports the 2026-07-28 specification "and every earlier revision", and the stdio, Streamable HTTP and SSE transports. For authorization, the SDK defines a `TokenVerifier` interface that you implement, for example with a JWT (JSON Web Token) library, returning an `AccessToken` with the client id, scopes, expiry, resource and subject. Its bearer authentication backend refuses expired tokens and, when configured with the server's own URL, tokens issued for another resource; a separate `RequireAuthMiddleware` answers 403 `insufficient_scope` when a required scope is missing. The decisions are the ones this lesson's fixture makes, and the cryptography stays in libraries.
+
+## Run the exercise
+
+The fixture is `src/agentlab/tools/remote_auth.py` and its tests are in `tests/test_tools_remote_auth.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_tools_remote_auth.py"`. The output ends with `Ran 8 tests` and `OK`, covering every row of the table plus an audience list that includes this server and three malformed claim sets. To see the boundary test work, change `token.exp <= int(now.timestamp())` to `<`. `test_an_expired_token_is_refused_at_the_second_it_expires` fails, because a token would now be accepted during the very second it expires. Restore the line afterwards.

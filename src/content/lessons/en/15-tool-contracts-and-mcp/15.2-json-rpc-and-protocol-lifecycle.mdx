@@ -1,0 +1,153 @@
+---
+id: "15.2-json-rpc-and-protocol-lifecycle"
+track: "15-tool-contracts-and-mcp"
+order: 2
+title: "JSON-RPC and the Protocol Lifecycle"
+summary: "MCP messages are JSON-RPC 2.0 requests, responses and notifications, matched by id. In revision 2026-07-28 there is no handshake: every request states its own protocol version and capabilities, and the server checks each one."
+tier: "core"
+locale: "en"
+prerequisites: ["15.1-from-model-output-to-a-tool-request"]
+unlocks: ["15.3-tools-resources-prompts-and-discovery"]
+analogy: "A busy warehouse dispatch desk stamps a number on every order slip and staples the same number to whatever it sends back. A buyer with three slips outstanding can match each delivery note to its order, whatever order the notes arrive in. A slip marked \"for information only\" gets no answer at all. Every slip also names the edition of the order form it uses, and the desk refuses an edition it does not know, listing the editions it accepts. The comparison stops at memory. A clerk remembers yesterday's chat with a regular buyer, while this protocol revision forbids the server to rely on anything an earlier message said."
+teachBack:
+  prompt: "You give the client two worker threads so that two tools/call requests can be in flight at once. A colleague's change gives each thread its own request counter, and both counters start at 1. What can go wrong when the responses come back, and which rule in the MCP specification does the change break?"
+  modelAnswer: "Both threads can send a request with id 1 at the same time. The responses carry only that id, so the client cannot tell which answer belongs to which question. One thread might take PO-1002's details as the answer to its lookup of PO-1001, and the model would then reason from the wrong record. MCP says a request id must not match the id of any other request the sender has issued and not yet seen answered. The fix is one id source shared by every thread, such as a single PendingCalls object guarded by a lock. PendingCalls would also catch part of the damage: a second response for an id that was already settled raises ProtocolViolation instead of being accepted."
+quiz:
+  - question: "The client has sent request 7 (tools/list) and then request 8 (tools/call). The first line it reads back is {\"jsonrpc\": \"2.0\", \"id\": 8, \"result\": {...}}. What should it do?"
+    options: ["Treat the line as the answer to 7, because stdio delivers responses in the order requests were sent", "Match the line to request 8 by its id, then keep waiting for the separate answer to request 7", "Raise a protocol violation, because a server must always answer requests in the order received", "Discard the line and send both requests again, because the reversed order shows corruption"]
+    correctIndex: 1
+    explanation: "JSON-RPC matches a response to its request by id, never by position, so an answer to 8 may arrive before the answer to 7. Neither JSON-RPC nor MCP promises ordering on a shared stream. Resending would duplicate work, and a tools/call can have effects."
+  - question: "A client sends {\"jsonrpc\": \"2.0\", \"method\": \"notifications/cancelled\", \"params\": {\"requestId\": 41}} after the server has already finished request 41. What does the server write back?"
+    options: ["An error with code -32602, because request 41 is no longer in progress and cannot be cancelled", "A result that confirms the cancellation, so that the client knows its message arrived", "Nothing, because a message without an id is a notification and never gets any response", "A second copy of the result for request 41, so that the client can decide whether to keep it"]
+    correctIndex: 2
+    explanation: "JSON-RPC says the server must not reply to a notification, and MCP's cancellation rules let a server ignore a cancellation for a request that already finished. An error or a confirmation would both be replies. Sending a result twice would break the one-response-per-request rule."
+  - question: "A request reaches this course's server with every required _meta field, and its protocol version is \"2025-11-25\". What comes back?"
+    options: ["A result in the older format, since a server has to keep answering every revision it has ever seen", "Error -32602, because a request in an older revision is missing its required capabilities", "Error -32601, because the method is unknown in the revision that the client has named", "Error -32022, with the supported versions in data, so the client can retry with one of them"]
+    correctIndex: 3
+    explanation: "The specification defines -32022, UnsupportedProtocolVersion, for exactly this case, and its data lists what the server supports and what was requested. Nothing obliges a server to support older revisions: this one supports only 2026-07-28. The fields are present, so -32602 does not apply."
+citations:
+  - title: "JSON-RPC 2.0 Specification"
+    authors: "JSON-RPC Working Group"
+    year: 2013
+    url: "https://www.jsonrpc.org/specification"
+  - title: "Model Context Protocol specification 2026-07-28: Base Protocol overview"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/basic"
+  - title: "Model Context Protocol specification 2026-07-28: Versioning and Compatibility"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning"
+  - title: "Model Context Protocol specification 2026-07-28: stdio transport"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio"
+  - title: "Model Context Protocol specification 2026-07-28: Cancellation"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/cancellation"
+updated: "2026-10-18"
+---
+
+The purchasing assistant has a validated request from [lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/): look up PO-1001. The lookup runs in a separate program, the purchasing server, and the two programs talk through one pair of pipes. The assistant may have several questions in the air at once, and the answers come back on the same stream. How does it know which answer belongs to which question? And what if the server expects a different version of the conversation? This lesson builds the message layer that answers both: JSON-RPC 2.0, as the Model Context Protocol uses it.
+
+## Four kinds of message
+
+The *Model Context Protocol* (MCP) is an open protocol that lets an AI application, the *host*, connect to programs that offer tools and data, called *servers*. Inside the host, one *client* per server speaks the protocol. MCP's messages are *JSON-RPC 2.0* messages: JSON objects for calling a named method on another program. There are four shapes:
+
+- A *request* has `"jsonrpc": "2.0"`, an `id`, a `method` and optional `params`. It expects exactly one answer.
+- A *result response* carries the same `id` and a `result`.
+- An *error response* carries the same `id` and an `error` with an integer `code` and a `message`.
+- A *notification* is a request without an `id`. The JSON-RPC specification says: "The Server MUST NOT reply to a Notification."
+
+On the stdio transport, where the client starts the server as a child process, each message is one line of JSON on the server's standard input or output. The trace below is real output from this course's server, given five lines on standard input: discovery (id 1), a request with an unknown version (id 2), a cancellation notification for id 2, a lookup (id 3) and a tool listing (id 4). Four lines came back:
+
+```json
+{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true}},"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"agentlab-purchasing","version":"0.1.0"}},"ttlMs":0,"cacheScope":"private"}}
+{"jsonrpc":"2.0","id":2,"error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28"],"requested":"1900-01-01"}}}
+{"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":"{\"po_id\": \"PO-1001\", \"supplier\": \"Supplier Alpha\", \"item\": \"M8 hex bolts, box of 500\", \"quantity\": 40, \"unit_price\": \"12.50\", \"currency\": \"USD\", \"status\": \"received\"}"}],"structuredContent":{"po_id":"PO-1001","supplier":"Supplier Alpha","item":"M8 hex bolts, box of 500","quantity":40,"unit_price":"12.50","currency":"USD","status":"received"},"isError":false}}
+```
+
+The fourth line, the first page of the tool listing, is long; [lesson 15.3](/lessons/15-tool-contracts-and-mcp/15.3-tools-resources-prompts-and-discovery/) explains what it holds. Nothing came back for the notification.
+
+## Matching answers to questions
+
+The `id` is the only link between an answer and its question. MCP tightens JSON-RPC here: an id is a string or an integer and "MUST NOT be `null`", and it must not repeat the id of any other request the sender has not yet seen answered. The client keeps the waiting ids in a `PendingCalls` object and checks every response against it:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/jsonrpc.py
+    def settle(self, response: dict) -> int | None:
+        """Return the id this response answers, None for a cancelled request, or raise."""
+        request_id = response.get("id")
+        if not is_valid_id(request_id):  # also stops True from matching id 1
+            raise ProtocolViolation(f"response without a usable id: {str(request_id)[:64]}")
+        if request_id in self._waiting:
+            self._waiting.remove(request_id)
+            return request_id
+        if request_id in self._cancelled:
+            self._cancelled.remove(request_id)
+            return None
+        raise ProtocolViolation(f"response for id {request_id!r}, which is not waiting for one")
+```
+
+Three cases. An id that is waiting is settled once and removed, so a second answer to the same request is a violation. An id the client cancelled returns `None`: MCP says a client "SHOULD ignore any response to the cancelled request that arrives afterward". Any other id means the server answered a question nobody asked, and the client stops trusting the stream. The comment about `True` is there because in Python `True == 1`, so a server that sent `"id": true` would otherwise match request 1.
+
+## The receiving side and its error codes
+
+The server's `Dispatcher` takes one line and returns the lines to write back. JSON-RPC fixes five error codes, and MCP adds its own in a reserved range:
+
+| Code | Meaning | When this server sends it |
+|---|---|---|
+| -32700 | Parse error | the line is not JSON (the id is `null`, since none could be read) |
+| -32600 | Invalid Request | wrong `jsonrpc` value, no method, a bad id, or a batch |
+| -32601 | Method not found | an unknown method, and the legacy `initialize` |
+| -32602 | Invalid params | params are not an object, `_meta` is missing, an unknown tool |
+| -32603 | Internal error | the handler crashed |
+| -32022 | Unsupported protocol version (MCP) | the request names a version this server does not speak |
+
+MCP divides JSON-RPC's server-error range: codes from -32020 to -32099 belong to the MCP specification, and an implementation must not invent its own there. A *batch*, a JSON array of several requests, is legal JSON-RPC, but MCP's stdio binding says each line is "a single JSON-RPC request, notification, or response", so the dispatcher refuses an array as one invalid request. Here is the heart of `_reply`:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/jsonrpc.py
+        params = message.get("params", {})
+        handler = self._methods.get(message["method"])
+        try:
+            if not isinstance(params, dict):
+                raise RpcError(INVALID_PARAMS, "params must be an object")
+            if handler is None:
+                raise RpcError(METHOD_NOT_FOUND, f"Method not found: {message['method'][:64]}")
+            result = handler(params, request_id, emit)
+        except RpcError as error:
+            return None if notification else error_response(request_id, error.code, error.message, error.data)
+        except Exception:
+            # Details go to the server's log (stderr), never to the peer.
+            log.exception("handler for %s failed", message["method"][:64])
+            return None if notification else error_response(request_id, INTERNAL_ERROR, "Internal error")
+```
+
+Every exit checks `notification` first, so even a failing notification gets no reply. A crash becomes a bare "Internal error": the details go to standard error, which the stdio binding reserves for logs. One test makes a handler raise an exception whose message contains a fake password and checks that the password never reaches the client.
+
+## A lifecycle without a handshake
+
+If you have read about MCP before, you may expect an `initialize` request that opens a session and fixes the version. The specification now calls those revisions, 2025-11-25 and earlier, *legacy*. In revision 2026-07-28, "There is no negotiation handshake." MCP is stateless: "Servers MUST NOT rely on prior requests over the same connection to establish context". Every request instead carries two required fields in `params._meta`: `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities`, the client features this request may rely on. The server checks both, on every request:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/server.py
+def check_request_meta(params: dict) -> None:
+    """Every request states its version and capabilities; the server remembers nothing between requests."""
+    meta = params.get("_meta")
+    if not isinstance(meta, dict) or not isinstance(meta.get(VERSION_KEY), str) or not isinstance(meta.get(CAPABILITIES_KEY), dict):
+        raise RpcError(INVALID_PARAMS, "missing required _meta fields", {"required": [VERSION_KEY, CAPABILITIES_KEY]})
+    if meta[VERSION_KEY] not in SUPPORTED_VERSIONS:
+        raise RpcError(UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version", {"supported": SUPPORTED_VERSIONS, "requested": meta[VERSION_KEY][:64]})
+```
+
+What is left of a lifecycle is short. The client launches the server process. It may call `server/discover`, which every server must implement, to learn the supported versions and the server's capabilities, such as `tools`. Then it sends requests. To stop, it closes the server's standard input, waits, and escalates to `SIGTERM` and then `SIGKILL` if the server does not exit; the server should exit as soon as its input closes. If the server dies unexpectedly, the client restarts it and retries. Nothing is lost except the requests in flight, because nothing lived in the connection.
+
+The spec also asks a server that speaks only modern revisions to name its versions in any error it returns to `initialize`, because legacy clients cannot find their way forward otherwise. This server answers `initialize` with -32601 and `"supported": ["2026-07-28"]` in the data.
+
+## Run the exercise
+
+The dispatcher and `PendingCalls` are in `src/agentlab/tools/jsonrpc.py`; their tests are in `tests/test_tools_jsonrpc.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_tools_jsonrpc.py"`. The output ends with `Ran 13 tests` and `OK`. The version rules are tested in `tests/test_tools_server.py`; `uv run --frozen python -m unittest discover -s tests -p "test_tools_server.py" -k Versions` runs those four tests.
+
+To see correlation protect you, delete the line `self._waiting.remove(request_id)` in `settle`. `test_a_second_response_to_the_same_request_is_a_protocol_violation` fails, because a server could now answer the same request twice and the client would accept both answers. Restore the line afterwards.

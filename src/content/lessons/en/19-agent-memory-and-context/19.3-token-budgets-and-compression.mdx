@@ -1,0 +1,114 @@
+---
+id: "19.3-token-budgets-and-compression"
+track: "19-agent-memory-and-context"
+order: 3
+title: "Token Budgets and Compression"
+summary: "A request's context window must hold the instructions, tool schemas, retrieved text, conversation history and a reserve for the answer. When the history does not fit, compress it, and judge the compression by which commitments and negations it lost, not only by the tokens it saved."
+tier: "advanced"
+locale: "en"
+prerequisites: ["19.2-ingestion-and-retrieval", "1.4-sentencepiece-byte-level-token-counts"]
+unlocks: ["19.4-scoring-eviction-and-forgetting"]
+lab:
+  id: "context-budget"
+  kind: "calculator"
+  budgetKb: 12
+analogy: "Packing a carry-on bag with a weight limit. Some things go in first because the trip fails without them: the passport, the charger, the tickets. Space for what you buy on the way is kept empty on purpose. Clothes fill whatever is left, and when they do not fit, you fold or leave some behind. Leaving behind the only warm jacket for a trip to the mountains saves the same weight as leaving a spare shirt, so the question is never only how much you saved. The comparison stops at the scale. A bag's weight is the same on every scale, while a text's token count depends on the tokenizer that counts it."
+teachBack:
+  prompt: "Keep the worked example (32,768-token window, 4,096 reserved, 1,200 of instructions, six chunks of 800, a 21,000-token history), but the tool catalogue grows from 2,400 to 6,000 tokens of schemas. What is the new history limit, how far over is the request, what are two ways to make room besides compressing the history, and what must the compression test still measure?"
+  modelAnswer: "The input limit stays 32,768 minus 4,096, which is 28,672 tokens. The fixed parts become 1,200 plus 6,000 plus 4,800, which is 12,000. So the history may use at most 28,672 minus 12,000, which is 16,672 tokens. The request now uses 12,000 plus 21,000, which is 33,000, so it is 4,328 tokens over. One way to make room is to send only the tool schemas this step can use. Another is to retrieve fewer or shorter chunks. Compressing the history from 21,000 to 16,672 still needs a test that counts which commitments and negations survive. Saved tokens alone cannot show whether a prohibition such as do not pay PO-1003 was lost or flipped."
+quiz:
+  - question: "Keep the worked example's parts and reserve but use a 65,536-token window. How long may the conversation history be?"
+    options: ["57,136 tokens, because only the 8,400 fixed tokens come off the window", "61,440 tokens, because the reserve for output already includes the fixed parts", "53,040 tokens: 61,440 left for input, minus the 8,400 fixed tokens", "32,768 tokens, because history may take at most half of the window"]
+    correctIndex: 2
+    explanation: "The reserve comes off the top first, 65,536 − 4,096 = 61,440 for input, and the fixed parts come off that, leaving 53,040. Skipping the reserve gives 57,136, which leaves the model no room to answer. The reserve holds only the answer, and nothing in the budget caps history at half the window."
+  - question: "After drop_stopwords, the turn \"Do not pay PO-1003 until the gloves arrive.\" reads \"pay PO-1003 gloves arrive.\". How does score() report this fact?"
+    options: ["Kept, because every term of the fact still appears together in one turn", "Lost, because the turn no longer matches the original sentence word for word", "Kept with a warning, because the compressed turns stay under the budget", "Flipped: the terms survive without their negating word, so it now instructs"]
+    correctIndex: 3
+    explanation: "score finds pay, po-1003 and gloves in one turn but no not, so the prohibition has become an instruction. Counting it as kept is exactly the mistake that hides this defect. score never compares whole sentences, and fitting the budget says nothing about meaning."
+  - question: "A compressor cuts a history from 21,000 to 12,000 tokens. What must you measure before calling it better than the one you have?"
+    options: ["Which of the scored commitments and negations it keeps, loses or flips", "The tokens it saved, since a shorter history leaves room for more chunks", "The latency per call, since the model now reads fewer input tokens", "Whether its summary reads fluently, since fluent text keeps the facts"]
+    correctIndex: 0
+    explanation: "A compressor can save tokens and lose the one prohibition that matters. In the exercise, dropping stopwords keeps more turns than the plain window and still flips two negations. Tokens and latency are worth reporting next to the facts, not instead of them, and fluency is no evidence that a negation survived."
+citations:
+  - title: "Lost in the Middle: How Language Models Use Long Contexts"
+    authors: "Nelson F. Liu et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2307.03172"
+  - title: "MemGPT: Towards LLMs as Operating Systems"
+    authors: "Charles Packer et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.08560"
+updated: "2026-10-18"
+---
+
+The purchasing assistant runs on a model with a 32,768-token context window. One request carries 1,200 tokens of system instructions, 2,400 tokens of tool schemas, six retrieved chunks of 800 tokens each and a 50-turn conversation history of 21,000 tokens. You want 4,096 tokens kept free for the answer. Does the request fit, and if not, what has to give? This lesson does the arithmetic, then compresses a real 50-turn conversation and measures what the compression lost.
+
+## Where does a context window go?
+
+A *context window* is the number of tokens one model call can hold. It holds the prompt and the tokens the model generates, so a prompt that fills the window leaves no room for an answer. The first step is therefore to reserve the output:
+
+- input limit: 32,768 − 4,096 = 28,672 tokens.
+
+Some parts of the request are fixed for this step: the system instructions, the tool schemas (the descriptions of the tools the model may call) and the retrieved chunks. Together they take 1,200 + 2,400 + 6 × 800 = 8,400 tokens. The conversation history gets the rest. The request as given uses 8,400 + 21,000 = 29,400 tokens, which is 728 over the input limit. The history must shrink to at most 28,672 − 8,400 = 20,272 tokens.
+
+Change the window and the verdict changes. With 131,072 tokens the same request fits with 97,576 to spare. With 8,192 tokens the input limit is 4,096, which cannot hold even the 8,400 fixed tokens, so no amount of history compression helps; you must send fewer schemas or fewer chunks. The calculator below starts from these numbers and lets you move each part.
+
+## Counting tokens, approximately and on purpose
+
+Every number above assumes you counted with the model's own tokenizer. [Lesson 1.4](/lessons/1-text-to-tensors/1.4-sentencepiece-byte-level-token-counts/) showed why: token counts belong to a tokenizer, not to the text, and the same sentence costs different amounts in English and Portuguese. The exercise must run offline with no model, so it uses a deliberate approximation, labelled as one in the code:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/compression.py
+def approx_tokens(text: str) -> int:
+    """About four characters per token, rounded up.
+
+    shortcut: an approximation, not any model's tokenizer; real counts differ
+    by tokenizer and language (lesson 1.4). Count with the model's own
+    tokenizer before trusting a budget that is close to the limit.
+    """
+    return math.ceil(len(text) / 4)
+```
+
+A budget with a wide margin survives an approximate count. A budget 728 tokens over, or 728 under, does not: measure it with the real tokenizer.
+
+## Fitting is not the same as being used
+
+A history that fits is not a history the model will use well. Liu et al. (2023) measured multi-document question answering and key-value retrieval. Accuracy was often highest when the relevant information sat at the beginning or the end of the input and dropped when it sat in the middle, including for models built for long inputs. Input length also costs latency and inference memory; the KV cache that grows with every token is sized in [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/). Capacity, position, latency and memory are four different questions, and a bigger window answers only the first.
+
+## Compressing fifty turns, measured by lost facts
+
+The exercise's conversation is small enough to read: 50 alternating turns, 937 approximate tokens, generated by `conversation()` in `compression.py`. Six user turns state the facts that matter; the rest is routine chatter about couriers, tickets and meetings. Three facts are commitments (pay PO-1001 within 30 days, an approval limit of USD 5,000, ask the warehouse lead before accepting a partial delivery) and three are negations (never order shelving from Supplier Gamma, do not combine PO-1002 and PO-1004 on one invoice, do not pay PO-1003 until the gloves arrive). The budget is 500 tokens. The lab's numbers and the exercise's numbers are the same arithmetic at two sizes.
+
+`score` checks each fact against the compressed turns. A fact is *kept* when one turn still holds all its key terms and, for a negation, the negating word. It is *flipped* when the terms survive but the negating word does not, and *lost* otherwise. Three compressors, all within 500 tokens:
+
+| Compressor | Tokens | Turns kept | Kept | Lost | Flipped |
+|---|---|---|---|---|---|
+| `recent_window` | 497 | 25 | 2 | 4 | 0 |
+| `drop_stopwords` | 500 | 35 | 1 | 3 | 2 |
+| `pin_ledger` | 490 | 26 | 6 | 0 | 0 |
+
+`recent_window` keeps the newest turns that fit, from turn 25 on, so the four facts stated before it are lost. `drop_stopwords` deletes small words from every turn, using a stopword list that contains *not* and *never*. It packs in more turns and is the worst of the three: "Do not pay PO-1003 until the gloves arrive." becomes "pay PO-1003 gloves arrive.", a prohibition turned into an instruction. A flipped fact is worse than a lost one, because the model now reads the opposite of what the buyer said.
+
+`pin_ledger` keeps every flagged commitment verbatim and fills the rest with recent turns:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/compression.py
+    ledger = [t for t in turns if t.fact]
+    remaining = budget - total_tokens(ledger)
+    if remaining < 0:
+        raise ValueError(f"the commitments alone need {total_tokens(ledger)} tokens; the budget is {budget}")
+    recent = recent_window([t for t in turns if not t.fact], remaining)
+    return sorted(ledger + recent, key=lambda t: t.index)
+```
+
+The six flagged turns cost 85 tokens, and the call fails loudly when they alone exceed the budget instead of cutting one to fit. MemGPT (Packer et al., 2023) is one published design in the same spirit: it moves data between a limited context and external storage rather than trusting the window to hold everything.
+
+:::caveat
+The ledger works here because the controller flags a commitment when the user states it. In a real system that flag comes from an extraction step, which can itself miss a commitment, and `score` is how you would find out. A model-written summary is a fourth compressor; scoring it needs a model, so the course's CI does not run one, but you would score it with the same facts.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/memory/compression.py`; the tests are in `tests/test_memory_compression.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_memory_compression`. The output ends with `Ran 9 tests` and `OK`. One test checks the Python `context_budget` against every number in this lesson's worked example, so the prose and the calculator cannot drift apart.
+
+To see the fact checks catch a real loss, change `ledger = [t for t in turns if t.fact]` to `ledger = []`. `pin_ledger` then fills the budget with chatter only: `test_a_pinned_ledger_keeps_every_fact_within_budget` fails with all six facts lost, even though the result still fits the budget, and `test_a_ledger_larger_than_the_budget_is_an_error_not_a_silent_cut` fails because an empty ledger never exceeds anything. Restore the line before moving on.

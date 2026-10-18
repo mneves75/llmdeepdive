@@ -1,0 +1,137 @@
+---
+id: "17.5-choose-and-test-the-boundary"
+track: "17-sandboxed-agent-execution"
+order: 5
+title: "Choose and Test the Boundary"
+summary: "E2B, gVisor, WebContainers, unprivileged containers and Docker-in-Docker put the boundary in different places. Choose one by threat model, measure what the configured backend actually allows, clean up exactly the resources a run created, and record the decision in an ADR."
+tier: "advanced"
+locale: "en"
+prerequisites: ["17.4-a-python-interpreter-in-a-microvm"]
+unlocks: []
+analogy: "A laboratory chooses an enclosure for the hazard it handles, then checks the installed unit by measuring airflow at the exhaust, not by reading the brochure. When an experiment ends, staff dispose of exactly the items logged for that experiment, not everything left on bench 3, because a colleague's samples may sit beside them. Choosing, measuring and logging are three separate jobs. The comparison stops at how things fail. Lab equipment usually degrades in ways a regular measurement catches, while a software boundary can fail all at once through one unknown bug. A clean measurement shows the configuration is right; it never proves that no flaw exists."
+teachBack:
+  prompt: "For a demo, a teammate proposes WebContainers to run the model's Python report script, because \"everything is contained in a browser tab\". Using this lesson, explain what that choice would and would not give the purchasing assistant, and what you would put in the ADR instead."
+  modelAnswer: "WebContainers run Node.js inside the visitor's browser tab, on the visitor's machine. The report script is Python, and the tenant's purchase data lives with the controller on the server. Using WebContainers would mean sending that data to whoever opens the page. The boundary would also be the visitor's browser, which protects the visitor, not your data or your controller. It is a fine tool for an interactive coding page, but it is the wrong place for this job. The ADR should name the threat: untrusted Python over tenant data on the server. It should choose a backend with a kernel boundary and no guest network, such as the Firecracker reference or a managed sandbox with internet disabled. It should record measured probe results, unsupported platforms and the cleanup rule."
+quiz:
+  - question: "A teammate mounts the host's Docker socket into the guest's container, so the guest can start helper containers. What does the guest gain?"
+    options: ["Read access to container logs only, because a mounted socket is read-only unless flagged otherwise", "Nothing beyond its own container, because the daemon checks which container each request comes from", "Control of the root daemon: it can start a container with the host's / mounted and change host files", "Access to the image registry, because the socket only proxies image pulls and never container operations"]
+    correctIndex: 2
+    explanation: "Docker's security page says the daemon runs as root unless you opt into rootless mode, and that a container can be started with the host's / as a directory and alter the host filesystem without restriction. Whoever can talk to the socket can ask for exactly that. The socket carries the whole API, and the daemon does not limit a caller by the container it sits in."
+  - question: "Which statement matches gVisor's own security documentation?"
+    options: ["It is a microVM like Firecracker, using KVM to give every container its own guest kernel", "It is a seccomp profile that lists which system calls the host kernel will accept from a container", "It removes kernel vulnerabilities entirely, because its Go code cannot contain memory-safety bugs", "It is an application kernel in user space that lists Spectre-style attacks as out of its reach"]
+    correctIndex: 3
+    explanation: "gVisor describes itself as an application kernel, not a hypervisor or a system call filter, running in user space. Its page lists side-channel CPU attacks among the cases where it does not help. Go narrows one class of bugs, but the documentation never promises zero vulnerabilities, and an escape still needs flaws in both the Sentry and the host kernel."
+  - question: "probe_boundary reports reads_host_file=True for the subprocess backend. What belongs in the ADR?"
+    options: ["The measured fact that guests read host files, so this backend runs only code trusted like host code", "Nothing about files, since the probe used a test file and real host files are protected by the sandbox", "A note to lower max_file_bytes, since the read only succeeded because the probe's file was small", "A statement that the backend is isolated, since the run stayed within its limits and exited cleanly"]
+    correctIndex: 0
+    explanation: "The probe read a file the guest was never given, so any file that the same user can read is exposed, and the ADR must say so in measured terms. A test file proves the path is open; nothing makes real files special. max_file_bytes bounds what the guest writes, not what it reads, and staying within limits is the difference between bounded and isolated."
+citations:
+  - title: "Internet access (E2B documentation, read 2026-10-18)"
+    authors: "E2B"
+    year: 2026
+    url: "https://docs.e2b.dev/network/internet-access"
+  - title: "Introduction to gVisor security"
+    authors: "gVisor authors"
+    year: 2026
+    url: "https://gvisor.dev/docs/architecture_guide/intro/"
+  - title: "WebContainers: Introduction"
+    authors: "StackBlitz"
+    year: 2026
+    url: "https://webcontainers.io/guides/introduction"
+  - title: "Docker Engine security"
+    authors: "Docker"
+    year: 2026
+    url: "https://docs.docker.com/engine/security/"
+  - title: "docker container run (reference, --privileged)"
+    authors: "Docker"
+    year: 2026
+    url: "https://docs.docker.com/reference/cli/docker/container/run/"
+  - title: "Protect the Docker daemon socket"
+    authors: "Docker"
+    year: 2026
+    url: "https://docs.docker.com/engine/security/protect-access/"
+  - title: "The Firecracker jailer (docs/jailer.md at v1.17.0)"
+    authors: "Firecracker project"
+    year: 2026
+    url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/jailer.md"
+updated: "2026-10-18"
+---
+
+The team has to pick where the report generator runs. Five names keep coming up in the discussion: E2B, gVisor, WebContainers, "just a container" and Docker-in-Docker. Each is offered as "a sandbox", as if they were interchangeable. They are not. Each puts the boundary somewhere else, protects someone else, and needs a different machine. This lesson compares them against the five exposures from [lesson 17.1](/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/), then does two things no comparison table can do: it measures the backend you actually configured, and it cleans up after it.
+
+## Six options, six different boundaries
+
+The table adds the course's Firecracker reference to the five candidates. "Network" lists only what the cited documentation states.
+
+| Option | Where the guest's code runs | What stands between it and your host | Network |
+|---|---|---|---|
+| E2B | the provider's cloud | the provider's sandbox; your controller calls its API | outbound open by default |
+| gVisor (`runsc`) | your Linux host | an application kernel in user space | set by the container runtime |
+| WebContainers | the visitor's browser tab | the browser | the browser's rules |
+| Unprivileged container | your Linux host | namespaces, cgroups, seccomp; shared kernel | set by the runtime |
+| Docker-in-Docker | your Linux host | usually nothing: it runs `--privileged` | set by the runtime |
+| Firecracker reference | your Linux host with KVM | a guest kernel and a jailed VMM | none: no network device |
+
+Read across a row and the differences show. **E2B** moves the guest off your machines, which also makes the provider part of your control plane: your controller needs network access to it, and the learner's own account and consent. **gVisor** keeps the guest on your host, answering its system calls with the Sentry rather than the host kernel. It is not a VM. **WebContainers** run Node.js "entirely inside your browser tab", so they protect a visitor's machine from a coding demo and do nothing for Python next to your data. An **unprivileged container** shares the host kernel, and Docker notes that user namespaces are "available but not enabled by default". **Docker-in-Docker** is the use case the `docker run` reference gives for `--privileged`.
+
+## Configurations that remove the boundary
+
+A boundary is a configuration, and three common ones undo it:
+
+- **`--privileged`.** The `docker run` reference says it enables all capabilities, grants access to all host devices, disables the default seccomp and AppArmor profiles, and "is not a securely sandboxed process".
+- **A mounted Docker socket.** The Docker daemon "requires `root` privileges unless you opt-in to Rootless mode". Docker's page on protecting the daemon says anyone with the keys "can give any instructions to your Docker daemon", which means root on its host. A guest that can reach the socket can start a container with the host's `/` mounted, which Docker's security page says "can alter your host filesystem without any restriction".
+- **Defaults left on.** E2B's documentation, read on 2026-10-18, says "Every sandbox has outbound access to the internet by default". Allow rules "always take precedence" over deny rules, and domain filtering covers only HTTP on port 80 and TLS on port 443. An unexamined default is a decision too.
+
+None of the options is free of vulnerabilities, and none claims to be. gVisor's documentation even lists where it "does not help": attacks before the sandbox starts, Spectre-style side channels, and exploits inside the workload, where "the attacker will still have access to whatever the sandbox is configured to have access to".
+
+## Measure, do not describe
+
+A vendor page describes a product. Your configuration of it is what runs. So the project measures a backend with small probes, each a guest script whose output the controller compares with the marker that means "the guest could do this":
+
+```python
+# file: examples/agent-engineering/src/agentlab/sandbox/boundary.py
+def probe_boundary(backend: Backend) -> dict[str, bool]:
+    with tempfile.TemporaryDirectory(prefix="agentlab-probe-") as host:
+        # A file the guest was never given, outside any workspace.
+        secret = Path(host) / "host-secret.txt"
+        secret.write_text("host-only data", encoding="utf-8")
+        probes = {
+            "reads_host_file": (f"print(open({str(secret)!r}).read())", "host-only data\n"),
+            "inherits_environment": ("import os\nprint('PATH' in os.environ or 'HOME' in os.environ)", "True\n"),
+            "starts_processes": (FORK, "started\n"),
+        }
+        report = {name: _stdout(backend, name, code) == marker for name, (code, marker) in probes.items()}
+    report["output_bounded"] = len(_stdout(backend, "output", f"import sys\nsys.stdout.write('x' * {FLOOD})")) < FLOOD
+    return report
+```
+
+For the subprocess backend, run as an ordinary user, the measured report is `reads_host_file=True`, `inherits_environment=False`, `starts_processes=False` and `output_bounded=True`. Three controls hold and one boundary is absent, which is exactly what lessons 17.1 and 17.2 predicted. A positive control runs the same probes against a looser configuration and gets different answers, so the probes really can tell configurations apart. Network probes are left out on purpose: they need a destination you control and a firewall to test against, and E2B's warning that blocked connections can look open applies to them.
+
+## Clean up exactly what the run owns
+
+Every run creates resources: a workspace, a process group, and on the microVM path a jail directory and a cgroup. Cleanup removes those, named by what the run recorded when it created them. It never removes "everything that looks like ours". `rm -rf /tmp/agentlab-sandbox-*` would delete another run's workspace in the middle of its work. A `pkill python` would hit processes that belong to someone else.
+
+The project follows that rule at each layer. The workspace is the exact path `TemporaryDirectory` returned. The kill targets the process group the child leads. On the microVM path, the jailer's id names both the chroot `/srv/jailer/firecracker/<id>` and the cgroup, and the jailer documentation leaves that cleanup to you. The cleanup must also run on failure: after a timeout, and after the guest locks its own files with `chmod 0`.
+
+## Write the decision down
+
+An *architecture decision record* (ADR) is a short document that states one decision, its context and the alternatives rejected, so the next person knows why. For a sandbox, it must hold measured values, not adjectives. The template below is an illustration for you to fill in. The course's CI does not check it, because only you know your threat model and your machines:
+
+```markdown
+# ADR: Execution boundary for the report generator
+
+Status: proposed
+Context: model-written Python over one tenant's purchase CSV; the script is untrusted.
+Threat model: what the guest must never reach (files, credentials, network, other tenants).
+Decision: the backend chosen, and its exact configuration.
+Measured limits: probe_boundary output, with date, commit and host.
+Unsupported platforms: where this cannot run, and what learners there do instead.
+Failure cleanup: which resources a run creates, and how each is removed by its id.
+Rejected alternatives: each option considered, and the exposure that ruled it out.
+```
+
+## Run the exercise
+
+The module is `src/agentlab/sandbox/boundary.py`; the tests are in `tests/test_sandbox_boundary.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_sandbox_boundary -v`. Expect `Ran 5 tests` and `OK`. Run as root, the measured-report test skips, because `RLIMIT_NPROC` does not bind root.
+
+The cleanup tests place a neighbouring directory named `agentlab-sandbox-neighbour` beside the workspaces. After a normal run, a timeout and a guest that locked its files, only the neighbour remains. To see them catch a leak, add `delete=False` to the `TemporaryDirectory(...)` call in `SubprocessBackend.run`. All three cleanup tests fail, listing the workspace left behind. The probe runs, which use the system temporary directory, leave eight workspaces there as well. Restore the line, then remove exactly those eight directories by the names the failure output and your temporary directory show.

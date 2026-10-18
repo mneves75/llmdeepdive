@@ -1,0 +1,155 @@
+---
+id: "15.4-a-raw-postgres-mcp-server"
+track: "15-tool-contracts-and-mcp"
+order: 4
+title: "A Raw Local Postgres MCP Server"
+summary: "The purchasing server exposes three narrow, read-only tools over a database. Fixed SQL with bound parameters, a tenant taken from the launch environment, row and time limits, and in Postgres a restricted role with row-level security each stop a different attack."
+tier: "core"
+locale: "en"
+prerequisites: ["15.3-tools-resources-prompts-and-discovery", "14.3-checkpoints-and-serialization"]
+unlocks: ["15.5-transport-and-authorization-boundaries"]
+analogy: "A warehouse clerk serves buyers from three printed pick lists. A buyer may fill in only the blanks: an item number, a count, a word to look for on the shelf labels. Whatever the buyer writes in a blank is treated as a label to search for, never as a new instruction. The badge the clerk received at the start of the shift decides which company's aisle they may enter, and a locked cage around each aisle stops even a clerk who walks to the wrong one. The comparison stops at judgment. A clerk who notices a strange request can ask a manager, while a database runs whatever the fixed query allows, thousands of times a second, without noticing anything."
+teachBack:
+  prompt: "A product manager asks for a fourth tool, run_report, that takes a SQL string from the model, so that new questions need no code change. The server would keep the read-only role, row-level security and the statement timeout. Which protections from this lesson still hold, what do you lose, and what would you build instead?"
+  modelAnswer: "The database-side walls still hold. The read-only transaction and the role's SELECT-only grant stop writes. Row-level security still limits rows to the caller's tenant, and the timeout still cancels a slow query. What I lose is the guarantee that model text is only ever data. With run_report, the model writes the SQL itself, so an injected supplier message could choose the query. It could read every column of every table the role can see, join tables nobody meant to expose, and run expensive queries up to the timeout. The strict argument schema disappears too, because a SQL string has no enums or limits worth checking. Instead I would add one narrow tool per recurring question, with fixed SQL and bound parameters. A question that keeps changing would get a small query builder that allows only listed columns and filters."
+quiz:
+  - question: "Tenant-a has four purchase orders. The model calls list_purchase_orders with {\"limit\": 2}. What does the tool return?"
+    options: ["All four rows, because the limit only matters for tenants that have more than 50 orders", "Two rows and truncated false, because the query asked the database for exactly two rows", "Three rows, because the query asks for one row more than the limit in order to look ahead", "Two rows and truncated true, because the query fetched three rows and one was left over"]
+    correctIndex: 3
+    explanation: "_page sends LIMIT 3, gets three rows back, returns the first two and sets truncated because a third existed. The look-ahead row is never returned. MAX_ROWS caps any limit at 50, but a smaller limit applies as given."
+  - question: "A new report query on the lesson's Postgres setup forgets its WHERE tenant_id clause. What does a call made for tenant-a return?"
+    options: ["Only tenant-a's rows, because the row security policy compares each row with the tenant setting", "All six rows, because row security only applies to queries that mention the tenant_id column by name", "No rows, because Postgres refuses any SELECT without a WHERE clause once row security is on", "All six rows, because the reader role was granted SELECT on the whole purchases table"]
+    correctIndex: 0
+    explanation: "The policy tenant_rows applies to every SELECT the reader runs, whatever its WHERE clause says, and the test with an unscoped query sees only PO-1001 to PO-1004. A table grant decides which tables a role may query; row security then filters the rows. Postgres has no rule against a missing WHERE."
+  - question: "In the SQLite version of the exercise the connection is opened read-only. Why does the SQL still need its WHERE tenant_id filter?"
+    options: ["SQLite's read-only mode blocks all writes and also hides the rows that belong to other tenants", "SQLite has no row-level security, so the query's own filter is the only wall between tenants", "The progress handler stops any query that returns rows from more than one tenant at a time", "Bound parameters only work in a WHERE clause that names the tenant_id column explicitly"]
+    correctIndex: 1
+    explanation: "Read-only mode stops writes and nothing else: every row stays readable. SQLite has no row security policies, so in this version the tenant filter in the fixed query carries the whole tenant boundary. The progress handler counts work, not tenants, and parameters can go anywhere a value can."
+citations:
+  - title: "sqlite3: DB-API 2.0 interface for SQLite databases (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/sqlite3.html"
+  - title: "PostgreSQL 18 documentation: Row Security Policies"
+    authors: "The PostgreSQL Global Development Group"
+    year: 2026
+    url: "https://www.postgresql.org/docs/18/ddl-rowsecurity.html"
+  - title: "PostgreSQL 18 documentation: Client Connection Defaults (statement_timeout)"
+    authors: "The PostgreSQL Global Development Group"
+    year: 2026
+    url: "https://www.postgresql.org/docs/18/runtime-config-client.html"
+  - title: "PostgreSQL 18 documentation: System Administration Functions (set_config)"
+    authors: "The PostgreSQL Global Development Group"
+    year: 2026
+    url: "https://www.postgresql.org/docs/18/functions-admin.html"
+  - title: "Passing parameters to SQL queries (psycopg 3 documentation)"
+    authors: "Daniele Varrazzo and the psycopg team"
+    year: 2026
+    url: "https://www.psycopg.org/psycopg3/docs/basic/params.html"
+  - title: "Model Context Protocol specification 2026-07-28: Base Protocol overview"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/basic"
+updated: "2026-10-18"
+---
+
+A supplier e-mail reaches the purchasing assistant with a line hidden in it, and the model, steered by that line, calls `search_purchase_orders` with `{"item_contains": "zz') OR tenant_id LIKE ('tenant-b"}`. The text is 33 characters long, within the schema's limit of 60, and it is a string, as the schema asks. Validation from [lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) passes. What stops tenant-b's orders from leaving the database? This lesson builds the server's data layer so that several independent things do, and tests each one with an attack and a harmless control case.
+
+## Narrow tools, not a SQL console
+
+The server offers three tools: look up one order, list orders, and search item descriptions. Each one runs a fixed query written by the developer. The model chooses only which tool to call and fills in its arguments; it never writes SQL. The course calls this server *raw* because it speaks the Model Context Protocol (MCP) by hand, as the earlier lessons built it, without an MCP SDK (software development kit: a maintained library that implements the protocol). It is a learning subset, and its module docstring lists what it leaves out. The database driver and Python's standard library are still used, because the exercise is about the protocol, not about reimplementing a database client.
+
+<Figure id="mcp-trust-boundaries" />
+
+## Values travel as data: bound parameters
+
+Here is what the search would look like if it were written the tempting way, pasting the text into the SQL string. This vulnerable version is an illustration and is not in the repository. While this lesson was being written, it was planted into `queries.py` for one test run, and the injection test failed with PO-2001 and PO-2002, tenant-b's orders, in the result:
+
+```python
+# Illustration only, never write this.
+sql = f"SELECT ... WHERE tenant_id = '{principal.tenant_id}' AND lower(item) LIKE lower('%{args.item_contains}%')"
+```
+
+The quote and parenthesis in the model's text close the `LIKE` early, and `OR tenant_id LIKE ('tenant-b` becomes part of the query. Python's `sqlite3` documentation warns against exactly this: "beware of using Python's string operations to assemble queries, as they are vulnerable to SQL injection attacks." The fix is a *bound parameter*. The SQL text is fixed and contains a placeholder, and the value is sent to the database separately, so the database never parses it as SQL. The real query and function:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/queries.py
+SEARCH = f"SELECT {COLUMNS} FROM purchases WHERE tenant_id = {{p}} AND lower(item) LIKE lower({{p}}) ESCAPE '\\' ORDER BY po_id LIMIT {{p}}"
+```
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/queries.py
+def search_purchase_orders(db: ReadOnlyDatabase, principal: Principal, args: SearchPurchaseOrders) -> dict:
+    # Escape LIKE's own wildcards so "%" in the text means a percent sign, not "anything".
+    text = args.item_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return _page(db, principal, SEARCH, (principal.tenant_id, f"%{text}%"), args.limit)
+```
+
+`{p}` is where a placeholder goes. SQLite writes placeholders as `?` and psycopg as `%s`, so each database object fills in its own symbol. Only these constant templates are ever formatted, never a value. The escaping line handles a smaller problem that parameters do not solve: inside a `LIKE` pattern, `%` means "any text" and `_` means "any one character". Unescaped, a search for `%%` would match every order. With the escapes it matches only an item that really contains two percent signs, and none does.
+
+## The tenant comes from the launch, not from the model
+
+Every query's first parameter is `principal.tenant_id`. The principal is not an argument; a strict model would reject a `tenant_id` argument anyway. It is set once, when the host launches the server process, through two environment variables. The MCP specification says a stdio server should "retrieve credentials from the environment" instead of using the HTTP authorization flow, and [lesson 15.5](/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/) examines what that trusts. The server refuses to start without them:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/server.py
+    missing = [name for name in ("AGENTLAB_USER_ID", "AGENTLAB_TENANT_ID") if not os.environ.get(name)]
+    if missing:
+        # Fail closed: a server that guessed a tenant would serve someone else's data.
+        print(f"refusing to start: {', '.join(missing)} not set by the launcher", file=sys.stderr)
+        return 2
+```
+
+## Bounded rows and bounded work
+
+A tool's answer goes into the model's context, so a tool that can return 100,000 rows can flood it. Every listing asks for at most 50 rows, and asks the database for one more than it will return:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/queries.py
+def _page(db: ReadOnlyDatabase, principal: Principal, template: str, params: tuple, limit: int) -> dict:
+    """Ask for one row more than the limit, so the result can say whether it was cut."""
+    limit = min(limit, MAX_ROWS)
+    rows = db.fetch(principal, _sql(db, template), (*params, limit + 1), limit + 1)
+    return {"rows": rows[:limit], "truncated": len(rows) > limit}
+```
+
+Time needs a bound too, because even a fixed query can be slow on a large table. The SQLite version counts work instead of seconds, which keeps the test deterministic. `set_progress_handler` calls a function every 1,000 SQLite virtual-machine instructions, and the function stops the query after 1,000 calls; Python's documentation says a non-zero return "will terminate the currently executing query". The Postgres version uses `statement_timeout`, which aborts "any statement that takes more than the specified amount of time".
+
+## Postgres: a second, independent wall
+
+SQLite opens the file with `mode=ro` and sets `query_only`, so this connection cannot write. It has no row-level security, though, so in SQLite the `WHERE tenant_id` filter is the only thing between tenants. The Postgres version, in `src/agentlab/tools/postgres.py`, adds walls that do not depend on the query being right. The test logs in as a role that may `SELECT` from one table and owns nothing, and the table has a *row security policy*, a filter Postgres applies to every query that role runs:
+
+```python
+# file: examples/agent-engineering/tests_postgres/test_tools_postgres.py
+ALTER TABLE purchases ENABLE ROW LEVEL SECURITY;
+-- No tenant setting means NULL, which matches no row: the policy fails closed.
+CREATE POLICY tenant_rows ON purchases FOR SELECT USING (tenant_id = current_setting('agentlab.tenant_id', true));
+```
+
+Each query runs in its own read-only transaction that first sets the timeout and the tenant. Both are passed to `set_config` as bound parameters, and `true` makes them last only for this transaction:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/postgres.py
+    def fetch(self, principal: Principal, sql: str, params: tuple, max_rows: int) -> list[dict]:
+        try:
+            with self._conn.transaction():
+                self._conn.execute(
+                    "SELECT set_config('statement_timeout', %s, true), set_config('agentlab.tenant_id', %s, true)",
+                    (self._timeout, principal.tenant_id),
+                )
+                return self._conn.execute(sql, params).fetchmany(max_rows)
+        except psycopg.errors.QueryCanceled as error:
+            raise QueryTooExpensive("query exceeded its time budget") from error
+```
+
+:::warning
+The PostgreSQL documentation says that superusers and roles with `BYPASSRLS` "always bypass the row security system", and that table owners normally bypass it as well. Run the server as the table's owner or as a superuser and the policy does nothing. The reader must be a separate login role with only the grants it needs.
+:::
+
+## Run the exercise
+
+The SQLite tests are in `tests/test_tools_queries.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_tools_queries.py"`; the output ends with `Ran 10 tests` and `OK`. Each attack has a control: a search for `bolts` returns PO-1001 (tenant-b also bought bolts, as PO-2001, and does not appear); the injected text returns nothing; a `DROP TABLE` attempt leaves all six rows; PO-2001 is "not found" while PO-1001 is found; and a never-ending recursive query is stopped, after which a normal search still works.
+
+`tests/test_tools_interop.py` starts the real server process over stdio. It runs this course's client against it, and then a second client: a short script in the test file that shares no code with `agentlab.tools.client` and speaks only the wire format. Both list the same three tools, both read PO-1001, and the second also gets `isError: true` for PO-2001. `uv run --frozen python -m unittest discover -s tests -p "test_tools_interop.py"` ends with `Ran 5 tests` and `OK`.
+
+The Postgres suite needs a running Postgres and the `postgres` dependency group (see the project README). It creates its own database and a login role, both named `agentlab_test_` plus a random suffix, and drops them afterwards. Run `uv run --frozen python -m unittest discover -s tests_postgres`; it ends with `Ran 7 tests` and `OK`, or reports the class as skipped when no server answers at `AGENTLAB_PG_DSN`. One test runs a query with no tenant filter and still gets only PO-1001 to PO-1004. To see the core tests catch the bug from the start of this lesson, replace the body of `search_purchase_orders` with the pasted-string version: `test_an_injected_condition_is_data_not_sql` fails and lists PO-2001 and PO-2002. Restore the function afterwards.

@@ -1,0 +1,108 @@
+---
+id: "19.2-ingestion-and-retrieval"
+track: "19-agent-memory-and-context"
+order: 2
+title: "Ingestion and Retrieval"
+summary: "Ingestion turns sources into chunks that name their origin, and retrieval scores them against a query. The access rule must remove other tenants' records before ranking, because a ranking that runs first can fill every slot with data the user may not read."
+tier: "advanced"
+locale: "en"
+prerequisites: ["19.1-working-episodic-and-semantic-memory", "16.2-indirect-prompt-injection"]
+unlocks: ["19.3-token-budgets-and-compression"]
+analogy: "A library catalogue lists every book with its shelf mark and its collection, and the restricted collection has its own catalogue drawer. A reader who asks for books on bolts is shown the drawers they may open, then the best matches inside them. A librarian who first picked the three best books in the building and then removed the restricted ones would often hand back nothing at all. The comparison stops at the catalogue cards. A card states a book's subject once, while a retriever has only the words in each chunk, so it can miss a book that uses a different word for the same thing, or match one that shares a word by chance."
+teachBack:
+  prompt: "A new feature lets a tenant-a buyer share a note with one colleague, so the note has readers={\"u2\"}. A teammate writes search as: score every note of every tenant with BM25, keep the top five, then drop the ones visible() rejects. Name two concrete failures this order causes and give the fix."
+  modelAnswer: "First, results go missing. Notes from other tenants, or notes only u2 may read, can take all five slots and then be dropped, so the buyer gets fewer than five results or none, even when readable matches exist. Second, the scores depend on data the user may not see. BM25's IDF counts how many documents contain each word, so other tenants' notes change the ranking of this user's notes. If someone later forgets the filter line, the same code returns other tenants' text outright. The fix is to filter with visible() first, compute the statistics over the visible set only, and then rank and take the top five."
+quiz:
+  - question: "Tenant-a's buyer searches \"400 boxes of M8 hex bolts\" with k=1. A faulty store scores all six purchase orders first, takes the top one, then drops records from other tenants. What does the buyer get?"
+    options: ["PO-1001, because the access filter runs before the top result is chosen", "Nothing, because tenant-b's PO-2001 took the only slot and was then dropped", "PO-2001, because a filter applied after ranking never sees the final result", "PO-1001 and PO-2001, because k is applied to each tenant's records separately"]
+    correctIndex: 1
+    explanation: "Over all six orders PO-2001 scores highest, since it alone contains 400, so it wins the single slot and the filter removes it. The first option describes the correct design, not this faulty one. A filter that runs after ranking does see the result; that is why it can only remove, never refill. Nothing here splits k by tenant."
+  - question: "With the paper's IDF, log((N − n + 0.5) / (n + 0.5)), what weight does a word get when it appears in 5 of 6 documents?"
+    options: ["About 1.30, so a frequent word counts as much as a rare one in the score", "Exactly zero, because the two 0.5 terms cancel each other once n is large", "About −1.30: negative, so matching that word would lower a document score", "About 0.27, because the logarithm is applied only to words that are rare"]
+    correctIndex: 2
+    explanation: "(6 − 5 + 0.5) / (5 + 0.5) is 1.5 / 5.5, about 0.27, and its natural logarithm is about −1.30. Taking 0.27 as the answer forgets the logarithm, and 1.30 drops the sign. Nothing cancels. The negative weight is why the exercise uses the common variant with 1 + inside the logarithm."
+  - question: "In the exercise, the query \"mittens\" retrieves PO-1003 (safety gloves) with the toy vector, at score 0.213. What does that show?"
+    options: ["The toy vector captures meaning, since mittens and gloves are both worn on hands", "The match is confirmed, because BM25 and the toy vector both rank PO-1003 first", "The record is relevant, since any cosine above zero implies a shared topic", "A hash collision: \"mittens\" and \"safety\" land in the same one of the 64 slots"]
+    correctIndex: 3
+    explanation: "The toy vector counts words in 64 hashed slots, and \"mittens\" happens to hash to the slot of \"safety\". It knows nothing about hands, and \"glove\" does not even match \"gloves\". BM25 finds no shared word, so it returns nothing, and a positive cosine here only means a shared slot."
+citations:
+  - title: "The Probabilistic Relevance Framework: BM25 and Beyond"
+    authors: "Stephen Robertson and Hugo Zaragoza"
+    year: 2009
+    url: "https://doi.org/10.1561/1500000019"
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+  - title: "Data model: object.__hash__ (Python 3.13 language reference)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/reference/datamodel.html#object.__hash__"
+updated: "2026-10-18"
+---
+
+The buyer at tenant-a asks the assistant what the company pays for M8 hex bolts. Two stored records mention them. PO-1001 belongs to tenant-a: 40 boxes at USD 12.50. PO-2001 belongs to tenant-b, another customer company: 400 boxes at USD 11.90. The words match almost perfectly, so a retriever that looks only at words could hand tenant-a's buyer the other company's price. The answer would be wrong, and it would leak another customer's data. This lesson builds ingestion and retrieval so that cannot happen, and shows what a lexical scorer actually measures.
+
+## What does ingestion produce?
+
+*Ingestion* turns sources into records the retriever can search. In the project each purchase order becomes one `MemoryRecord` with `origin="system_of_record"`, and its text reads like `PO-1001: Supplier Alpha, M8 hex bolts, box of 500, quantity 40, unit price USD 12.50, status received.`
+
+Long text is split into *chunks*, pieces small enough to score and to fit in a context. `chunk_message` cuts a supplier message into windows of words with an *overlap*: the last few words of one chunk start the next, so a sentence shorter than the overlap that crosses a boundary survives whole in one chunk. Every chunk keeps `origin="external"` and names its source in `derived_from`, so the chunk can be found and deleted with its message later.
+
+*Freshness* is part of ingestion too. `created_at` dates each record, `expires_at` ends its life, and `supersedes` points at an older record a newer one replaces, such as a changed delivery address. Retrieval honours all three, as the code below shows.
+
+## How does a lexical retriever score a record?
+
+A *lexical* retriever compares words. The project's tokenizer lowercases text and keeps identifiers and prices whole, so `PO-1001` and `12.50` are single tokens. Each record is then scored with BM25, the ranking function Robertson and Zaragoza (2009) derive in their account of the probabilistic relevance framework. For each query word $i$ found in a record, BM25 adds
+
+$$
+\frac{tf_i}{k_1\left((1 - b) + b\,\frac{dl}{avdl}\right) + tf_i} \cdot \log\left(1 + \frac{N - n_i + 0.5}{n_i + 0.5}\right)
+$$
+
+The left factor grows with $tf_i$, how often the word occurs in the record, but it *saturates*: it approaches 1 however often the word repeats, so stuffing a word in many times buys little. $dl$ is the record's length and $avdl$ the average length, so a long record that mentions a word once counts for less; $b$ sets how strongly. The right factor is the *inverse document frequency* (IDF): $N$ records in total, $n_i$ of them containing the word, so rare words weigh more.
+
+A worked case over tenant-a's four orders: `m8` appears in one, so its IDF is $\log(1 + 3.5/1.5) \approx 1.20$. `supplier` appears in all four, so its IDF is $\log(1 + 0.5/4.5) \approx 0.11$. A match on the item name counts about eleven times more than a match on a word every order shares.
+
+:::caveat
+The paper's own IDF (its equation 3.3) is $\log((N - n_i + 0.5)/(n_i + 0.5))$, without the 1 inside. For a word in more than half the records it goes negative, so a match would lower the score. The exercise uses the common variant that adds 1 inside the logarithm, as in the formula above, and says so in its docstring. The paper reports $0.5 < b < 0.8$ and $1.2 < k_1 < 2$ as reasonably good in many settings and notes that the best values depend on the documents and queries. The project uses $k_1 = 1.5$ and $b = 0.75$.
+:::
+
+## Embeddings, and a toy that is not one
+
+[Lesson 1.5](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/) showed how a model represents tokens as vectors. *Dense retrieval* uses an embedding model to map whole texts to vectors and ranks records by how close their vectors are to the query's. Lewis et al. (2020) built theirs as a dense vector index of Wikipedia accessed by a pre-trained neural retriever. An embedding model can match texts that share meaning but not words.
+
+The exercise must run offline without a model, so it ships a toy instead and labels it as one. `toy_vector` hashes each word into one of 64 slots, counts, and normalises; similarity is the cosine of two such vectors. It uses `hashlib`, because Python's documentation says the built-in `hash()` of a string is salted with a random value per process, which would scramble a stored index after a restart. The toy matches shared word forms only: `glove` misses `gloves`. And `mittens` retrieves PO-1003 at a score of 0.213, because `mittens` and `safety` hash to the same slot. That is a collision, not understanding.
+
+Two common refinements are not implemented here. *Hybrid* retrieval combines a lexical and a vector score. *Reranking* re-orders the top candidates with a slower, more careful scorer. Both change which relevant records come first. Neither changes the rule in the next section.
+
+## Filter first, then rank
+
+Here is the whole decision order:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/retrieval.py
+    candidates = [r for r in records if visible(r, principal) and (r.expires_at is None or r.expires_at > now)]
+    replaced = {r.supersedes for r in candidates if r.supersedes}
+    candidates = [r for r in candidates if r.memory_id not in replaced]
+    if method == "bm25":
+        # Statistics come from the visible set only, so other tenants' words do not shape this ranking.
+        scores = bm25_scores(query, [tokens(r.text) for r in candidates])
+    else:
+        q = toy_vector(query)
+        scores = [_cosine(q, toy_vector(r.text)) for r in candidates]
+    ranked = sorted(zip(scores, candidates, strict=True), key=lambda pair: (-pair[0], pair[1].memory_id))
+```
+
+Access, expiry and supersession come first; scoring sees only what is left. Consider the query `400 boxes of M8 hex bolts` with `k=1`. Over all six orders, PO-2001 scores highest (2.071 against 1.471 for PO-1001), because only it contains `400`. A store that ranked first and filtered afterwards would put PO-2001 in the only slot, remove it, and return nothing. Forget the filter line entirely and it returns the other company's price. Filtering first returns PO-1001.
+
+The statistics matter too. IDF counts documents, so computing it over every tenant lets other customers' data shape this user's ranking. Computing it over the visible set keeps them out. Ties are broken by `memory_id`, so two runs over the same data return the same order. The principal comes from the trusted runtime: a query that names `tenant-b PO-2001` still returns only tenant-a's records.
+
+:::warning
+Retrieval decides what text reaches the context, not what that text is worth. A retrieved supplier message keeps `origin="external"`, and [lesson 19.5](/lessons/19-agent-memory-and-context/19.5-evaluate-memory/) places it in an untrusted part of the context. An instruction inside it is data, as [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) explains, however highly it ranks.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/memory/retrieval.py`; the tests are in `tests/test_memory_retrieval.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_memory_retrieval`. The output ends with `Ran 11 tests` and `OK`. `test_access_control_runs_before_ranking` has a positive control: the same query as tenant-b's buyer returns PO-2001, so the test cannot pass merely because PO-2001 is unreachable.
+
+To see the access test catch a leak, delete `visible(r, principal) and` from the first line of the excerpt. `test_access_control_runs_before_ranking` and `test_naming_another_tenant_in_the_query_grants_nothing` fail, because tenant-b's order now reaches tenant-a's buyer. Restore the line before moving on.
