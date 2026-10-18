@@ -1,0 +1,133 @@
+---
+id: "18.3-login-and-session-state"
+track: "18-computer-use-and-gui-automation"
+order: 3
+title: "Login e estado de sessão"
+summary: "Guarde a senha num cofre vinculado a uma origem, preencha o formulário pelo controlador, limpe cada evento do trace e trate uma sessão expirada ou um código de uso único como motivo para pausar. O modelo nunca segura uma credencial."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["18.2-pixels-coordinates-and-set-of-mark", "16.4-enforce-least-privilege"]
+unlocks: ["18.4-download-a-csv-from-a-legacy-portal"]
+analogy: "A recepção de um hotel entrega o cartão-chave só ao hóspede que está no balcão daquele hotel, o cartão para de funcionar no check-out, e quando ele para você volta à recepção em vez de tentar a porta de novo e de novo. Ninguém anota o código do cartão no livro de hóspedes, também. O cofre é a recepção, o cookie de sessão é o cartão, a expiração é o check-out e o trace é o livro de hóspedes. A comparação para no que pode vazar: um cartão-chave abre uma porta e descrevê-lo não entrega nada, enquanto uma senha funciona onde quer que seja digitada, então ela nunca pode passar pelo modelo nem pelo trace."
+teachBack:
+  prompt: "Para evitar execuções pausadas, um colega propõe que, sempre que classify_page devolver needs_login, a execução chame sign_in de novo e siga em frente, sem limite. Usando esta aula, diga o que pode dar errado e desenhe a regra que você aceitaria no lugar."
+  modelAnswer: "Entrar de novo sem limite esconde problemas reais e pode causar dano. Se a senha foi trocada, toda tentativa falha, e muitos portais bloqueiam a conta depois de algumas falhas. Uma execução presa num laço de login também continua agindo em páginas cujo estado ninguém conferiu. Eu deixaria o controlador permitir um novo login por execução. Ele contaria no orçamento de ações e rodaria só na origem registrada no cofre. Seguiria apenas needs_login, nunca needs_human, então um código de uso único continua indo para uma pessoa. Depois do login, a execução observaria de novo e continuaria do último passo verificado, em vez de repetir cliques anteriores. Um segundo needs_login na mesma execução escalaria para uma pessoa."
+quiz:
+  - question: "O cofre guarda a credencial de http://127.0.0.1:8123. Um link no e-mail de um fornecedor abre http://localhost:8123/login, que mostra o mesmo formulário. O que sign_in faz ali?"
+    options: ["Preenche o usuário, mas deixa a senha vazia até uma pessoa confirmar", "Lança PermissionError antes de preencher qualquer campo, pois a origem é outra", "Preenche os dois campos, porque localhost e 127.0.0.1 chegam à mesma máquina aqui", "Pergunta ao modelo se a página parece legítima e então preenche o que ele decidir"]
+    correctIndex: 1
+    explanation: "O cofre compara origens exatas: esquema, host e porta. \"localhost\" é outro texto de host, então release lança o erro antes do primeiro preenchimento. Se dois nomes chegam à mesma máquina é um fato de rede que o cofre ignora de propósito, porque uma página imitadora costuma estar numa máquina que o atacante controla. Perguntar ao modelo poria a decisão no componente mais exposto à página."
+  - question: "Depois de uma pausa de 16 minutos, o trace de fetch_report termina com gui.page para /login?expired=1 no estado needs_login, e a lista spent do orçamento é [\"observe\"]. O que aconteceu?"
+    options: ["Clicou na exportação de março, o servidor respondeu com a página de login, e a execução salvou isso", "Entrou de novo com o cofre e então parou, porque a exportação já tinha sido servida", "Olhou uma vez, viu a página de login, parou, e não clicou nem pediu exportação nenhuma", "Repetiu a exportação até o orçamento de ações acabar e então relatou needs_login"]
+    correctIndex: 2
+    explanation: "A primeira observação classifica a página, e needs_login retorna na hora, então a única ação gasta é essa observação. Um clique apareceria como \"click\" no orçamento, e entrar de novo é decisão do controlador, não algo que fetch_report faça. Repetir até o orçamento acabar deixaria várias entradas e terminaria com uma mensagem de orçamento em vez de needs_login."
+  - question: "O portal define seu cookie de sessão com HttpOnly. O que esse atributo faz?"
+    options: ["Criptografa o valor do cookie para que ninguém que observe a rede consiga lê-lo", "Impede o navegador de enviar o cookie por HTTP simples, então só por HTTPS", "Apaga o cookie assim que a aba é fechada, seja qual for o seu Max-Age", "Esconde o cookie dos scripts, mas o navegador ainda o envia nas requisições"]
+    correctIndex: 3
+    explanation: "A RFC 6265 diz que HttpOnly \"limits the scope of the cookie to HTTP requests\", limita o cookie às requisições HTTP: document.cookie não o mostra, e o navegador continua a enviá-lo. O teste de navegador confere as duas metades. Enviar só por HTTPS é o atributo Secure, que é outro; HttpOnly não criptografa nada nem muda a validade do cookie."
+citations:
+  - title: "Authentication, documentação do Playwright para Python (lida em 2026-10-18; conferida no Playwright 1.63.0)"
+    authors: "Projeto Playwright, Microsoft"
+    year: 2026
+    url: "https://playwright.dev/python/docs/auth"
+  - title: "RFC 6265: HTTP State Management Mechanism"
+    authors: "Adam Barth"
+    year: 2011
+    url: "https://www.rfc-editor.org/rfc/rfc6265"
+updated: "2026-10-18"
+---
+
+O portal de fornecedores pede um usuário e uma senha, e sua sessão dura 15 minutos. O desenho mais rápido entrega a senha ao modelo nas instruções e deixa que ele a digite como qualquer outro texto. Acompanhe uma execução desse desenho. A senha agora está no contexto do modelo, então acaba no trace da execução, o registro de cada passo, e dali num relatório de bug. No meio do caminho, o e-mail de um fornecedor leva a uma cópia da página de login em outro endereço, e o modelo digita a senha lá também. Mais tarde a sessão expira enquanto a execução espera, o clique seguinte cai na página de login, e o modelo tenta a exportação de novo, e de novo.
+
+Cada um desses passos é uma decisão de projeto. Esta aula toma cada uma de outro jeito.
+
+## Onde a senha fica
+
+Uma *credencial* é o que prova a identidade para o portal: aqui, um usuário e uma senha. A regra da [aula 16.4](/pt-br/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/) vale sem mudança: o modelo nunca segura um segredo. O controlador, o código confiável em volta do modelo, guarda as credenciais num cofre e só pede uma para a página em que está:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/session.py
+@dataclass(frozen=True)
+class CredentialVault:
+    """Credentials keyed by exact origin (scheme, host and port)."""
+
+    by_origin: dict[str, Credential] = field(repr=False)
+
+    def release(self, page_url: str) -> Credential:
+        credential = self.by_origin.get(origin_of(page_url))
+        if credential is None:
+            raise PermissionError(f"no credential for {origin_of(page_url)}")
+        return credential
+```
+
+Uma *origem* é o esquema, o host e a porta de uma URL, como `http://127.0.0.1:8123`. Comparar exatamente é o que importa. `http://localhost:8123`, `https://127.0.0.1:8123` e `http://127.0.0.1:8123.evil.invalid` não recebem nada, mesmo quando dois deles chegam à mesma máquina, porque uma página imitadora costuma estar numa máquina que o atacante controla. `repr=False` mantém a senha fora de logs e de mensagens de falha de teste, e `Credential` faz o mesmo com o próprio campo de senha.
+
+## Entrar sem o modelo
+
+O passo de login é código do controlador, não uma ferramenta que o modelo possa chamar:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/browser.py
+    credential = vault.release(page.url)
+    budget.spend("sign_in")
+    page.get_by_label("Username", exact=True).fill(credential.username)
+    trace.record("gui.fill", target="textbox:Username", value=credential.username)
+    page.get_by_label("Password", exact=True).fill(credential.password)
+    trace.record("gui.fill", target="textbox:Password", value="[secret]")
+    page.get_by_role("button", name="Sign in", exact=True).click()
+```
+
+`release` roda primeiro, então numa página imitadora um `PermissionError` é lançado antes de qualquer campo ser preenchido. Os campos são achados pelos rótulos, o caminho semântico da [aula 18.1](/pt-br/lessons/18-computer-use-and-gui-automation/18.1-observe-before-acting/). O trace registra que o campo de senha foi preenchido, nunca com o quê.
+
+## Um trace que nunca guarda um segredo
+
+Traces viajam: para painéis, conjuntos de avaliação, relatórios de bug. Por isso `Trace.record` limpa cada texto de cada evento contra os segredos da execução antes de o evento ser guardado, e o registro guardado é o `ExecutionEvent` do projeto, com um horário com fuso vindo de um relógio injetado:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/trace.py
+    def record(self, kind: str, **data: JsonValue) -> None:
+        clean = {key: scrub(value, self.secrets) for key, value in data.items()}
+        self.events.append(ExecutionEvent(run_id=self.run_id, seq=len(self.events), kind=kind, at=self.clock(), data=clean))
+```
+
+A limpeza pega um segredo que vaza por um campo que ninguém marcou, como uma URL com a senha na query string, que um teste planta de propósito. Ela só compara texto exato. Uma senha que tenha sido codificada, partida ou transformada em hash antes de chegar ao trace passaria, e é por isso que a primeira regra é nunca entregar o segredo a nada que escreva no trace. A limpeza é a última barreira.
+
+## O que é a sessão, e por que ela termina
+
+Depois de um login correto, o portal responde com um *cookie de sessão*: um token aleatório que o navegador guarda e devolve em cada requisição, para o portal saber que as requisições vêm de um usuário autenticado. O portal o marca como `HttpOnly`, que a RFC 6265 diz que "limits the scope of the cookie to HTTP requests", limita o cookie às requisições HTTP. Scripts da página não conseguem lê-lo, e o navegador continua a enviá-lo. Um teste de navegador confere as duas metades: `document.cookie` vem vazio, e o contexto guarda um cookie.
+
+Quem tem esse token está autenticado, então ele também é uma credencial. A documentação do Playwright avisa que um estado de navegador salvo "may contain sensitive cookies and headers that could be used to impersonate you or your test account", pode conter cookies e cabeçalhos sensíveis capazes de se passar por você ou pela sua conta de teste, e diz "We strongly discourage checking them into private or public repositories", desaconselhando com ênfase colocá-los em repositórios privados ou públicos. Os exercícios nunca salvam um. Cada teste entra do zero ou recebe uma sessão direto do objeto do portal.
+
+O portal encerra uma sessão 15 minutos depois de ela começar. Ele lê o tempo de um relógio injetado, então um teste adianta o relógio 16 minutos em vez de esperar, e o próximo carregamento de página redireciona para `/login?expired=1`.
+
+## Pause, não repita
+
+O momento perigoso vem depois da expiração. A página que o agente esperava agora é uma página de login, e uma execução que só repete a última ação vai clicar, falhar e clicar de novo. `classify_page` transforma cada observação num de três estados antes de qualquer clique:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/session.py
+def classify_page(url: str, snapshot: str, portal_origin: str) -> PageState:
+    """Decide from the URL and the accessibility snapshot whether the run may act on this page."""
+    if origin_of(url) != portal_origin:
+        return "needs_human"
+    text = snapshot.lower()
+    if any(challenge in text for challenge in HUMAN_CHALLENGES):
+        return "needs_human"
+    if urllib.parse.urlsplit(url).path == "/login":
+        return "needs_login"
+    return "ready"
+```
+
+`needs_login` pausa a execução e passa a decisão ao controlador, que pode entrar de novo sob uma regra que ele controla. `needs_human` cobre uma página fora do portal e qualquer desafio feito para exigir uma pessoa: um código de uso único enviado a um celular, um CAPTCHA. Nada neste curso tenta passar por eles. Eles existem para que uma pessoa, e não um script, complete esse passo. Quando uma execução precisa esperar por essa pessoa, a [aula 20.1](/pt-br/lessons/20-human-approval-and-durable-pauses/20.1-decide-when-approval-is-needed/) e o resto da trilha 20 tratam de esperar de forma durável.
+
+:::caveat
+Procurar frases como "one-time code" serve para este portal sintético. Um portal real precisa da própria lista, e um desafio não reconhecido parece um layout desconhecido, que a [aula 18.5](/pt-br/lessons/18-computer-use-and-gui-automation/18.5-recover-and-verify/) escala em vez de chutar.
+:::
+
+## Rode o exercício
+
+A partir de `examples/agent-engineering/`, os testes principais rodam com `uv run --frozen python -m unittest discover -s tests -p "test_gui_session.py"` e terminam com `Ran 11 tests` e `OK`. Eles cobrem a regra de origem exata do cofre, a limpeza e os três estados de página. Os testes de navegador rodam com `uv run --frozen python -m unittest discover -s tests_browser -p "test_gui_login.py"` e terminam com `Ran 6 tests` e `OK`.
+
+`test_the_password_is_nowhere_in_the_trace` entra, baixa o relatório de março e confere que o texto do trace não tem a senha e registra `"[secret]"` para o campo. `test_a_lookalike_login_page_gets_no_credential` inicia um segundo portal em outra porta e confere que o campo de senha fica vazio e que a cópia não abriu sessão nenhuma. `test_an_expired_session_pauses_instead_of_retrying` adianta o relógio 16 minutos, recarrega e confere que a execução devolve `needs_login` depois de uma observação, sem pedir exportação. `test_signing_in_reaches_the_reports_page` é o controle positivo.
+
+Quebre a pausa: troque a condição de `/login` em `classify_page` por `if False:` e rode o arquivo de navegador. `test_an_expired_session_pauses_instead_of_retrying` fica vermelho, porque a execução agora trata a página de login como pronta. Restaure-a. Separadamente, faça `scrub` devolver os textos sem mudança, e os dois testes de limpeza do arquivo principal ficam vermelhos.

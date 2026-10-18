@@ -1,0 +1,133 @@
+---
+id: "18.3-login-and-session-state"
+track: "18-computer-use-and-gui-automation"
+order: 3
+title: "Login and Session State"
+summary: "Keep the password in a vault bound to one origin, fill the form from the controller, scrub every trace event, and treat an expired session or a one-time code as a reason to pause. The model never holds a credential."
+tier: "advanced"
+locale: "en"
+prerequisites: ["18.2-pixels-coordinates-and-set-of-mark", "16.4-enforce-least-privilege"]
+unlocks: ["18.4-download-a-csv-from-a-legacy-portal"]
+analogy: "A hotel front desk hands a key card only to the guest standing at that hotel's desk, the card stops working at checkout, and when it stops you go back to the desk instead of trying the door again and again. Nobody writes the card's code in the guestbook either. The vault is the desk, the session cookie is the card, the expiry is checkout and the trace is the guestbook. The comparison stops at what can leak: a key card opens one door and describing it gives nothing away, while a password works wherever it is typed, so it must never pass through the model or the trace at all."
+teachBack:
+  prompt: "To avoid paused runs, a teammate proposes that whenever classify_page returns needs_login, the run calls sign_in again and carries on, with no limit. Using this lesson, say what can go wrong and design the rule you would accept instead."
+  modelAnswer: "Unlimited re-sign-in hides real problems and can do harm. If the password was rotated, every attempt fails, and many portals lock the account after a few failures. A run that loops on sign-in also keeps acting on pages whose state nobody checked. I would let the controller allow one re-sign-in per run. It would count against the action budget and run only on the vault's registered origin. It would follow only needs_login, never needs_human, so a one-time code still goes to a person. After signing in, the run would observe again and continue from its last verified step instead of replaying earlier clicks. A second needs_login in the same run would escalate to a person."
+quiz:
+  - question: "The vault holds the credential for http://127.0.0.1:8123. A link in a supplier's e-mail opens http://localhost:8123/login, which shows the same form. What does sign_in do there?"
+    options: ["It fills the username but leaves the password empty until a person confirms", "It raises PermissionError before filling anything, since the origin differs", "It fills both fields, because localhost and 127.0.0.1 reach the same machine here", "It asks the model whether the page looks genuine, then fills in what it decides"]
+    correctIndex: 1
+    explanation: "The vault compares exact origins: scheme, host and port. \"localhost\" is a different host string, so release raises before the first fill. Whether two names reach the same machine is a network fact the vault deliberately ignores, because a lookalike page is often on a machine the attacker controls. Asking the model would put the decision in the component most exposed to the page."
+  - question: "After a 16-minute pause, fetch_report's trace ends with gui.page for /login?expired=1 in state needs_login, and the budget's spent list is [\"observe\"]. What happened?"
+    options: ["It clicked March's export, the server answered with the login page, and the run saved that", "It signed in again from the vault, then stopped because the export had already been served", "It looked once, saw the login page, stopped, and made no click and requested no export", "It kept retrying the export until the action budget ran out, then reported needs_login"]
+    correctIndex: 2
+    explanation: "The first observe classifies the page, and needs_login returns at once, so the only action spent is that observe. A click would appear as \"click\" in the budget, and re-signing in is the controller's decision, not something fetch_report does. Retrying until the budget runs out would leave several entries and end with a budget message instead of needs_login."
+  - question: "The portal sets its session cookie with HttpOnly. What does that attribute do?"
+    options: ["It encrypts the cookie's value so that nobody watching the network can read it", "It stops the browser from sending the cookie over plain HTTP, so only over HTTPS", "It deletes the cookie as soon as the tab is closed, whatever its Max-Age says", "It hides the cookie from scripts, while the browser still sends it with requests"]
+    correctIndex: 3
+    explanation: "RFC 6265 says HttpOnly \"limits the scope of the cookie to HTTP requests\": document.cookie does not show it, and the browser keeps sending it. The browser test checks both halves. Sending only over HTTPS is the separate Secure attribute; HttpOnly encrypts nothing and does not change the cookie's lifetime."
+citations:
+  - title: "Authentication, Playwright for Python documentation (read 2026-10-18; checked against Playwright 1.63.0)"
+    authors: "Playwright project, Microsoft"
+    year: 2026
+    url: "https://playwright.dev/python/docs/auth"
+  - title: "RFC 6265: HTTP State Management Mechanism"
+    authors: "Adam Barth"
+    year: 2011
+    url: "https://www.rfc-editor.org/rfc/rfc6265"
+updated: "2026-10-18"
+---
+
+The supplier portal wants a username and a password, and its session lasts 15 minutes. The quickest design gives the model the password in its instructions and lets it type it like any other text. Follow one run of that design. The password is now in the model's context, so it ends up in the run's trace, the log that records every step, and from there in a bug report. Halfway through, a supplier's e-mail links to a copy of the login page on another address, and the model types the password there too. Later the session expires while the run is waiting, the next click lands on the login page, and the model tries the export again, and again.
+
+Each of those steps is a design decision. This lesson makes each one differently.
+
+## Where the password lives
+
+A *credential* is what proves identity to the portal: here a username and password. The rule from [lesson 16.4](/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/) applies unchanged: the model never holds a secret. The controller, the trusted code around the model, keeps credentials in a vault and asks for one only for the page it is on:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/session.py
+@dataclass(frozen=True)
+class CredentialVault:
+    """Credentials keyed by exact origin (scheme, host and port)."""
+
+    by_origin: dict[str, Credential] = field(repr=False)
+
+    def release(self, page_url: str) -> Credential:
+        credential = self.by_origin.get(origin_of(page_url))
+        if credential is None:
+            raise PermissionError(f"no credential for {origin_of(page_url)}")
+        return credential
+```
+
+An *origin* is the scheme, host and port of a URL, such as `http://127.0.0.1:8123`. Matching it exactly is the point. `http://localhost:8123`, `https://127.0.0.1:8123` and `http://127.0.0.1:8123.evil.invalid` all get nothing, even when two of them reach the same machine, because a lookalike page usually sits on a machine the attacker controls. `repr=False` keeps the password out of logs and test failure messages, and `Credential` does the same for its own password field.
+
+## Signing in without the model
+
+The sign-in step is controller code, not a tool the model can call:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/browser.py
+    credential = vault.release(page.url)
+    budget.spend("sign_in")
+    page.get_by_label("Username", exact=True).fill(credential.username)
+    trace.record("gui.fill", target="textbox:Username", value=credential.username)
+    page.get_by_label("Password", exact=True).fill(credential.password)
+    trace.record("gui.fill", target="textbox:Password", value="[secret]")
+    page.get_by_role("button", name="Sign in", exact=True).click()
+```
+
+`release` runs first, so on a lookalike page a `PermissionError` is raised before a single field is filled. The fields are found by their labels, the semantic route of [lesson 18.1](/lessons/18-computer-use-and-gui-automation/18.1-observe-before-acting/). The trace records that the password field was filled, never with what.
+
+## A trace that never holds a secret
+
+Traces travel: into dashboards, evaluation sets, bug reports. So `Trace.record` scrubs every string of every event against the run's secrets before the event is stored, and the stored record is the project's `ExecutionEvent` with a timezone-aware time from an injected clock:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/trace.py
+    def record(self, kind: str, **data: JsonValue) -> None:
+        clean = {key: scrub(value, self.secrets) for key, value in data.items()}
+        self.events.append(ExecutionEvent(run_id=self.run_id, seq=len(self.events), kind=kind, at=self.clock(), data=clean))
+```
+
+The scrub catches a secret that leaks through a field nobody marked, such as a URL with the password in its query string, which a test plants on purpose. It matches exact text only. A password that was encoded, split or hashed before reaching the trace would pass through, which is why the first rule is never to hand the secret to anything that writes the trace. The scrub is the backstop.
+
+## What the session is, and why it ends
+
+After a correct sign-in, the portal answers with a *session cookie*: a random token the browser stores and sends back with every request, so the portal knows the requests come from a signed-in user. The portal marks it `HttpOnly`, which RFC 6265 says "limits the scope of the cookie to HTTP requests". Scripts on the page cannot read it, while the browser still sends it. A browser test checks both halves: `document.cookie` is empty, and the context holds one cookie.
+
+Anyone who holds that token is signed in, so it is a credential too. Playwright's documentation warns that a saved browser state "may contain sensitive cookies and headers that could be used to impersonate you or your test account" and says "We strongly discourage checking them into private or public repositories." The exercises never save one. Each test signs in fresh or receives a session from the portal object directly.
+
+The portal ends a session 15 minutes after it starts. It reads time from an injected clock, so a test moves the clock forward 16 minutes instead of waiting, and the next page load redirects to `/login?expired=1`.
+
+## Pause, do not retry
+
+The dangerous moment is after expiry. The page the agent expected is now a login page, and a run that simply repeats its last action will click, fail, and click again. `classify_page` turns every observation into one of three states before anything is clicked:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/session.py
+def classify_page(url: str, snapshot: str, portal_origin: str) -> PageState:
+    """Decide from the URL and the accessibility snapshot whether the run may act on this page."""
+    if origin_of(url) != portal_origin:
+        return "needs_human"
+    text = snapshot.lower()
+    if any(challenge in text for challenge in HUMAN_CHALLENGES):
+        return "needs_human"
+    if urllib.parse.urlsplit(url).path == "/login":
+        return "needs_login"
+    return "ready"
+```
+
+`needs_login` pauses the run and hands the decision to the controller, which may sign in again under a rule it owns. `needs_human` covers a page outside the portal and any challenge built to require a person: a one-time code sent to a phone, a CAPTCHA. Nothing in this course tries to get past those. They exist so that a person, not a script, completes that step. When a run must wait for that person, [lesson 20.1](/lessons/20-human-approval-and-durable-pauses/20.1-decide-when-approval-is-needed/) and the rest of track 20 cover waiting durably.
+
+:::caveat
+Matching phrases such as "one-time code" fits this synthetic portal. A real portal needs its own list, and an unrecognised challenge looks like an unknown layout, which [lesson 18.5](/lessons/18-computer-use-and-gui-automation/18.5-recover-and-verify/) escalates instead of guessing at.
+:::
+
+## Run the exercise
+
+From `examples/agent-engineering/`, the core tests run with `uv run --frozen python -m unittest discover -s tests -p "test_gui_session.py"` and end with `Ran 11 tests` and `OK`. They cover the vault's exact-origin rule, the scrub, and the three page states. The browser tests run with `uv run --frozen python -m unittest discover -s tests_browser -p "test_gui_login.py"` and end with `Ran 6 tests` and `OK`.
+
+`test_the_password_is_nowhere_in_the_trace` signs in, downloads March's report and asserts that the trace text lacks the password and records `"[secret]"` for the field. `test_a_lookalike_login_page_gets_no_credential` starts a second portal on another port and checks that the password field stays empty and the clone opened no session. `test_an_expired_session_pauses_instead_of_retrying` moves the clock 16 minutes, reloads, and checks that the run returns `needs_login` after one observation, with no export requested. `test_signing_in_reaches_the_reports_page` is the positive control.
+
+Break the pause: replace the `/login` condition in `classify_page` with `if False:` and run the browser file. `test_an_expired_session_pauses_instead_of_retrying` goes red, because the run now treats the login page as ready. Restore it. Separately, make `scrub` return strings unchanged and the core file's two redaction tests go red.
