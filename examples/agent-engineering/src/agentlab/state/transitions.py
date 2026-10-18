@@ -14,7 +14,7 @@ from agentlab.domain import RunState
 
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 
-# Track 20 adds ``awaiting_approval``; until then no row leads to it.
+# No row leads to ``awaiting_approval``: track 20 keeps approval status on its own row (agentlab.approval.store).
 TRANSITIONS: dict[str, frozenset[str]] = {
     "received": frozenset({"checked", "cancelled", "failed"}),
     "checked": frozenset({"needs_info", "ready", "cancelled", "failed"}),

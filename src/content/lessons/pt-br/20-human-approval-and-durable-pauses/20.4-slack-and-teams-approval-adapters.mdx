@@ -1,0 +1,131 @@
+---
+id: "20.4-slack-and-teams-approval-adapters"
+track: "20-human-approval-and-durable-pauses"
+order: 4
+title: "Adaptadores de aprovação para Slack e Teams"
+summary: "Um clique num botão do Slack só chega ao store de aprovações depois que passam a assinatura v0 e a checagem de timestamp de cinco minutos. Ele é enfileirado e confirmado na hora, depois mapeado para um principal da empresa antes que uma única decisão seja registrada. O Teams usa outro contrato, um token assinado pelo serviço Bot Connector."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["20.3-durable-waits-and-callbacks", "15.5-transport-and-authorization-boundaries"]
+unlocks: ["20.5-deny-expire-revoke-and-resume"]
+analogy: "Uma agência bancária recebe por fax uma ordem de pagamento. O funcionário primeiro confere o fax com a palavra-código que só o banco e o cliente conhecem, e a hora impressa nele, recusando qualquer coisa velha. Depois arquiva o fax numa bandeja numerada e avisa o remetente que ele chegou, sem agir ainda. Mais tarde, um gerente procura quem assinou nos registros do próprio banco, não no nome digitado no fax, e age uma vez, mesmo que o mesmo fax tenha chegado duas vezes. A comparação para na palavra-código. Uma palavra-código dita em voz alta pode ser ouvida e reutilizada, enquanto o segredo do Slack nunca viaja: cada requisição leva um HMAC novo dos seus próprios bytes, e uma requisição capturada para de funcionar depois de cinco minutos."
+teachBack:
+  prompt: "Um atacante grava da rede um clique legítimo em Approve para ap-1 e reenvia a requisição idêntica, cabeçalhos e corpo, 90 segundos depois e de novo 10 minutos depois. Separadamente, um segundo aprovador clica em Deny em ap-1 um minuto depois de o primeiro aprovar. Descreva o que handle_callback e process_callbacks fazem com cada uma das quatro requisições."
+  modelAnswer: "O clique original passa nas checagens de assinatura e de timestamp, então é guardado na caixa de entrada e confirmado com 200. O reenvio de 90 segundos também passa, porque sua assinatura é válida e seu timestamp está dentro de cinco minutos. Mas o corpo é idêntico, então sua SHA-256 bate com a chave de entrega já guardada, e a caixa de entrada não o enfileira de novo. O reenvio de 10 minutos falha na checagem de timestamp, e handle_callback retorna 401. O Deny do segundo aprovador é outro clique, com outro corpo, então entra na fila. Quando o worker o processa, decide encontra o pedido já aprovado e o recusa. Assim, exatamente uma decisão é registrada: a primeira aprovação."
+quiz:
+  - question: "O X-Slack-Request-Timestamp de uma requisição é 1792400400. O adaptador a recebe com assinatura válida quando o relógio do servidor marca 1792400700, e uma cópia idêntica em 1792400701. Qual delas verify aceita?"
+    options: ["Só a primeira: 300 segundos está dentro de cinco minutos e 301 segundos não está", "As duas, porque a segunda cópia traz exatamente a mesma assinatura válida da primeira", "Nenhuma, porque o Slack exige que uma requisição chegue em até três segundos", "Só a segunda, porque a primeira é checada antes de o relógio se estabilizar"]
+    correctIndex: 0
+    explanation: "verify rejeita uma diferença de mais de cinco minutos, então 300 segundos passa e 301 falha, mesmo com assinatura válida; o timestamp faz parte do que foi assinado, mas a janela é checada à parte. Três segundos é o tempo que o Slack dá ao app para responder, não um limite para a idade da requisição."
+  - question: "Por que o adaptador calcula o HMAC sobre o corpo bruto da requisição, antes de interpretá-lo?"
+    options: ["Interpretar antes é mais lento, e o prazo de três segundos do Slack não deixa tempo para isso", "O Slack assinou exatamente esses bytes; recodificar depois de interpretar pode mudá-los", "O corpo bruto é menor que o JSON interpretado, então calcular o HMAC sai mais barato", "Interpretar um corpo não assinado só é seguro quando o payload usa o formato próprio do Slack"]
+    correctIndex: 1
+    explanation: "A documentação do Slack manda usar o corpo bruto da requisição antes de ele ser desserializado. Interpretar e serializar de novo pode reordenar chaves, mudar escapes ou espaços, e os bytes deixam de bater com o que foi assinado. O motivo não é velocidade nem tamanho; é correção."
+  - question: "Um colega propõe reutilizar verify para o Teams, usando a senha do app do bot como segredo de assinatura. O que há de errado nisso?"
+    options: ["Nada, desde que a senha fique guardada num gerenciador de segredos e não no código", "O Teams assina requisições com SHA-1 em vez de SHA-256, então só muda o nome da hash", "O Teams envia um token assinado que o bot valida: emissor, audiência, validade, chave", "Callbacks do Teams não têm como ser autenticados, então o bot precisa confiar na rede"]
+    correctIndex: 2
+    explanation: "O Bot Connector da Microsoft envia um JWT no cabeçalho Authorization, e o bot confere o emissor, a audiência contra o app id do bot, o período de validade e a assinatura com chaves do documento de metadados OpenID. Uma checagem de HMAC não provaria nada sobre uma requisição dessas. A senha autentica as chamadas do próprio bot ao connector."
+citations:
+  - title: "Verifying requests from Slack"
+    authors: "Slack"
+    year: 2026
+    url: "https://docs.slack.dev/authentication/verifying-requests-from-slack"
+  - title: "Handling user interaction in your Slack apps"
+    authors: "Slack"
+    year: 2026
+    url: "https://docs.slack.dev/interactivity/handling-user-interaction"
+  - title: "block_actions payload reference"
+    authors: "Slack"
+    year: 2026
+    url: "https://docs.slack.dev/reference/interaction-payloads/block_actions-payload"
+  - title: "Authenticate requests with the Bot Connector API"
+    authors: "Microsoft"
+    year: 2024
+    url: "https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-authentication"
+updated: "2026-10-18"
+---
+
+A aprovadora da [aula 20.3](/pt-br/lessons/20-human-approval-and-durable-pauses/20.3-durable-waits-and-callbacks/) vê uma mensagem no Slack com a linha de prévia e dois botões, Approve e Deny. Ela clica em Approve. O Slack envia uma requisição HTTP para uma URL que nosso app registrou, a *Request URL*. Essa URL está na internet pública, então qualquer um pode mandar para ela uma requisição com cara de clique. Antes que a requisição possa tocar o store de aprovações, quatro perguntas precisam de resposta. Foi o Slack que enviou? Ela é recente? Quem clicou, e essa pessoa pode aprovar? Esse clique já foi contado?
+
+Um *adaptador* é o código que traduz entre um sistema de fora e o nosso. Esta aula constrói o adaptador do Slack e o testa contra callbacks forjados, reenviados, duplicados, atrasados e não autorizados. O Teams ganha um exercício de projeto, porque responde à primeira pergunta com outro contrato.
+
+## O que o Slack envia quando alguém clica?
+
+A documentação do Slack diz que os payloads de interação chegam "in an HTTP POST request in the form application/x-www-form-urlencoded", num POST codificado como formulário, cujo corpo "will contain a `payload` parameter", um parâmetro `payload` com JSON dentro. Para um botão numa mensagem, o JSON tem `"type": "block_actions"`, um `team` (o workspace), um `user` ("the user who interacted", quem interagiu) e um array `actions`. Cada ação tem um `action_id` que nomeia o botão e um `value` que é "set by your app when you composed the blocks", definido pelo app ao montar os blocos. Nosso app põe o id da aprovação no valor, `ap-1`.
+
+O app precisa responder rápido. O Slack diz que o app "must reply to the HTTP POST request with an HTTP 200 OK response", e que "this must be sent within 3 seconds of receiving the payload", em até 3 segundos; caso contrário o usuário vê um erro. Três segundos é pouco tempo para uma transação no banco, uma consulta ao diretório e uma decisão. A figura mostra como o adaptador divide o trabalho para que a resposta venha primeiro.
+
+<Figure id="approval-callback-path" />
+
+## Esta requisição veio mesmo do Slack?
+
+Cada app do Slack tem um *signing secret*, um segredo de assinatura que só o Slack e o app conhecem. Para cada requisição, o Slack monta a string `v0:` + timestamp + `:` + corpo, calcula um HMAC-SHA256 dela com o segredo como chave e envia o resumo em hexadecimal, prefixado com `v0=`, no cabeçalho `X-Slack-Signature`; o timestamp vai em `X-Slack-Request-Timestamp`. Um *HMAC* é uma hash com chave: sem a chave, ninguém produz o resumo certo para um corpo, e qualquer mudança no corpo muda o resumo. O adaptador o recalcula:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/slack.py
+def sign(secret: str, timestamp: str, body: bytes) -> str:
+    """Slack's v0 signature: HMAC-SHA256 of ``v0:{timestamp}:{body}``, hex, prefixed ``v0=``."""
+    base = b"v0:" + timestamp.encode("ascii") + b":" + body
+    return "v0=" + hmac.new(secret.encode("utf-8"), base, hashlib.sha256).hexdigest()
+
+
+def verify(secret: str, headers: Mapping[str, str], body: bytes, now: datetime) -> bool:
+    """True only for a body Slack signed within five minutes of ``now``."""
+    lower = {name.lower(): value for name, value in headers.items()}
+    timestamp = lower.get("x-slack-request-timestamp", "")
+    signature = lower.get("x-slack-signature", "")
+    if not (timestamp.isascii() and timestamp.isdigit()):
+        return False
+    if abs(now.timestamp() - int(timestamp)) > TOLERANCE.total_seconds():
+        return False  # possibly a replay of a request someone captured earlier
+    # Constant-time comparison, so response timing does not reveal how many characters matched.
+    return hmac.compare_digest(sign(secret, timestamp, body).encode(), signature.encode("utf-8", "replace"))
+```
+
+Cada linha segue a documentação do Slack. O corpo são os bytes brutos, "without headers, before it has been deserialized", sem cabeçalhos e antes de ser desserializado, porque interpretar e recodificar pode mudar bytes que o Slack assinou. Os nomes de cabeçalho vão para minúsculas, já que "header names are meant to be case-insensitive". O timestamp não pode "differ from local time by more than five minutes", diferir do horário local em mais de cinco minutos, o que impede alguém de reenviar uma hora depois uma requisição capturada. E a comparação usa uma função de comparação de HMAC em vez de `==`, como o Slack recomenda: `==` pode retornar assim que um caractere difere, e essa diferença de tempo pode revelar quão perto um chute chegou. Os antigos *verification tokens* do Slack estão obsoletos; o guia recomenda usar "only", somente, o signing secret.
+
+Os testes usam uma constante chamada `TEST_SIGNING_SECRET`, marcada no arquivo como exclusiva de teste. Um segredo real pertence a um cofre de segredos e nunca ao código. Os testes assinam os bytes brutos codificados como formulário exatamente como o Slack faria, então uma versão que verificasse o JSON interpretado falharia neles.
+
+## Por que responder primeiro e decidir depois?
+
+O handler HTTP faz quatro coisas baratas e retorna:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/slack.py
+def handle_callback(inbox: SlackInbox, secret: str, headers: Mapping[str, str], body: bytes, now: datetime) -> int:
+    """The HTTP handler's whole job: authenticate, validate, queue, answer. No decision here."""
+    if not verify(secret, headers, body, now):
+        return 401
+    try:
+        parse(body)
+    except (UnicodeDecodeError, ValueError, ValidationError):
+        return 400
+    inbox.add(body, now)  # a duplicate is acknowledged too; it is just not queued twice
+    return 200
+```
+
+`parse` valida o payload contra um modelo Pydantic estrito: `action_id` precisa ser `approve` ou `deny`, e os ids precisam ser strings curtas. A *caixa de entrada* é uma tabela SQLite com chave na SHA-256 do corpo, gravada antes de o 200 voltar, então um clique aceito sobrevive a uma queda. Um worker, `process_callbacks`, lê a caixa de entrada depois. Essa divisão é o padrão *confirmar rápido, enfileirar o trabalho durável*: a parte lenta e sujeita a falhas nunca disputa o prazo do Slack.
+
+A chave importa porque a checagem de assinatura sozinha não impede uma duplicata. Uma requisição capturada e reenviada dentro de cinco minutos tem assinatura válida e timestamp válido. Só que o corpo é idêntico, então sua hash bate com uma chave já guardada, e a caixa de entrada não a enfileira duas vezes. Um clique *diferente* no mesmo pedido, como um segundo aprovador apertando Deny, tem outro corpo. O store da aula 20.3 cuida desse: `decide` encontra o pedido já decidido e o recusa.
+
+## Quem clicou, e pode aprovar?
+
+O payload diz que o clique veio do usuário `U0APPROVER1` no workspace `T0TEST`. Isso prova qual conta do Slack clicou, não a qual funcionário ela pertence nem o que ele pode fazer. O worker procura o par num *diretório*, uma tabela que pertence ao runtime e mapeia um workspace e um usuário do Slack para um `Principal` da empresa. Um nome de exibição ou um papel escrito dentro do payload nunca é lido. Um par desconhecido é recusado. O mesmo id de usuário em outro workspace é outra chave, então também é recusado.
+
+O `Principal` então vai para `decide`, que roda o `check_approver` da [aula 20.2](/pt-br/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/): não é quem pediu, mesmo tenant, com `invoice_approver`. A decisão é julgada pelo horário em que o clique *chegou*, guardado com a linha da caixa de entrada. Um clique recebido um minuto antes do prazo continua valendo quando o worker o alcança dois minutos depois, e um clique depois do prazo expira o pedido em vez de aprová-lo.
+
+Assim, duas camadas de confiança se encontram aqui. O adaptador autentica *quem clicou*. O store decide *a que o clique se vincula*: um pedido, uma hash de rascunho, um prazo, uma decisão.
+
+## O Teams é outro contrato
+
+Um bot do Teams construído sobre o Bot Framework da Microsoft recebe callbacks do serviço Bot Connector, e a página da Microsoft sobre autenticar essas requisições (datada de 2024-10-09, lida em 2026-10-18) descreve outro mecanismo. O connector envia um *JSON Web Token* (JWT) assinado no cabeçalho `Authorization`, com o esquema `Bearer`. O bot precisa conferir, entre outros requisitos, que o emissor do token é `https://api.botframework.com`, que sua audiência é igual ao Microsoft App ID do bot, que ele está "within its validity period", dentro do período de validade, com a tolerância de relógio padrão do setor de 5 minutos, que sua assinatura usa uma chave do documento de metadados OpenID e que sua claim `serviceUrl` bate com a da atividade. A página pede que bots atualizem as chaves de assinatura em cache "at least once every 24 hours", pelo menos uma vez a cada 24 horas.
+
+Nada disso é o HMAC do Slack, e `verify` não prova nada sobre uma requisição do Teams. A página da Microsoft também diz que um bot que usa o SDK do Bot Framework recebe essas checagens prontas. Isso bate com a regra deste curso da [aula 15.5](/pt-br/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/): nunca escrever à mão validação de token ou criptografia; usar a biblioteca mantida.
+
+O exercício de projeto é escrever o que um adaptador do Teams mantém e o que ele substitui. Ele mantém a caixa de entrada, a consulta ao diretório (com chave no id de usuário que o Teams fornece, em vez do par do Slack), `decide` e todos os testes de duplicatas, atrasos e aprovadores não autorizados. Ele substitui `verify` pela validação de token do SDK, e suas recusas seguem a página da Microsoft, que indica HTTP 403 (Forbidden) como a recusa. O curso não traz código para o Teams, e seu CI não faz nenhuma chamada ao Slack nem ao Teams. Publicar a mensagem no Slack e rodar um listener HTTP de verdade também ficam fora do que os testes rodam, porque os dois precisam de um workspace real.
+
+## Rode o exercício
+
+O código está em `src/agentlab/approval/slack.py` e os testes em `tests/test_approval_slack.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_approval_slack.py"`. A saída esperada termina com `Ran 17 tests` e `OK`.
+
+Os testes negativos enviam uma assinatura forjada, um corpo alterado depois da assinatura, um reenvio com 5 minutos e 1 segundo de idade, cabeçalhos ausentes, uma entrega duplicada, um segundo clique, um clique depois da validade, um usuário do Slack desconhecido, um usuário sem o papel, quem pediu, o mesmo id de usuário vindo de outro workspace e payloads malformados. Os controles positivos são um clique assinado do aprovador, uma entrega com exatamente 5 minutos de idade e nomes de cabeçalho em minúsculas, então um handler que recusasse tudo falharia. Agora quebre a checagem de frescor. Troque `if abs(now.timestamp() - int(timestamp)) > TOLERANCE.total_seconds():` por `if False:` e rode de novo. `test_a_replay_older_than_five_minutes_is_rejected` fica vermelho: uma requisição capturada uma hora antes seria aceita. Restaure a linha.
