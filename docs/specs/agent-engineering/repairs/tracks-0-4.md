@@ -205,3 +205,15 @@ items.
 - 4.16:101 "Qwen3.8-27B was trained as this architecture" is a training-history claim the model card does not document; not checked or changed.
 - 0.3 now links Guo et al. 2017 inline; adding it to `citations` needs a citations change outside this brief.
 - Track-table items not in this lane's dispatch remain open: 1 (API JSON vs chat-template tokens; tokenization to context budgeting), 2 (tiny-network exercise), 3 (learned recurrent state vs application-persisted state), 4 (valid JSON does not authorize an action; projection-count repetition across 4.2/4.5/4.11/4.14).
+
+## Integrator corrections after independent review (Fable 5.1, 2026-10-18)
+
+| Item | Problem | Fix |
+|---|---|---|
+| 2.2 (F40 check) | "$W_2W_1$ would be $3\times 3$": with $W_2$ of $3\times 1$ and $W_1$ of $2\times 3$ the product is undefined | "is not even defined, since $W_2$ has one column and $W_1$ has two rows", both locales |
+| 0.2 quiz 3 | The teacher-forcing distractor was defensible (it is a precondition of parallel training) | "a training trick that recurrent networks could not use" |
+| 0.8 quiz 1 | Tightening changed the claim to "no one has reproduced it" | "no independent reproduction is available" |
+| 0.8 pt-BR quiz 2 | Agreement error ("seja a") | "sejam os mesmos" |
+| 4.7 | $d$ undefined in $\theta_i=\theta^{-2i/d}$ | "where $d$ is the rotated width", both locales |
+| 2.7 quiz | Distractor 0 described a real master copy | "so it can roll back a bad step" |
+| 4.16 | The log said the training-history sentence was not changed | Fixed by the integrator: the sentence now says the checkpoint is this architecture and its training is not published |

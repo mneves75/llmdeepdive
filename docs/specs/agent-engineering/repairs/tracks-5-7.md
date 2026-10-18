@@ -22,7 +22,7 @@ file. No `id`, `track`, `order`, `title`, `tier`, `prerequisites`, `unlocks`, `l
 | F11 | 7.11 | Removed the KV-only 381,700-token recalculation; the paragraph now names the 23.3 GiB state pool (9.3) and cites 7.8's ten 32K sessions (2 GiB KV + 144 MiB DeltaNet each). "Overstates by a fifth" kept: naive 80−54 GB = 24.2 GiB ÷ 2 GiB = 12 vs 10. | 7.8 capacity paragraph and teach-back. | fixed (wave-0 still re-derived capacity) |
 | F13 | 7.13 | No change needed: both locales now read 71.9 as between 76.7 and 69.8 with the largest bpw of the three; quiz and teach-back do not repeat the old claim. | `LLAMA_CPP_QUANT_BENCH` rows Q4_K_S 76.71, Q3_K_S 69.84, Q4_K_M 71.93 / 4.8944 bpw. | checked, no change |
 | F19 (7.11) | 7.11 | Removed "rebuilds when shapes change" and the teach-back's "engine builds"; ops cost is now version pinning and revalidation when model, precision, runtime version or traffic mix change, matching 8.6. 8.6 was read, not edited. | 8.6 body: no conversion/trtllm-build step, "What you no longer do is build and maintain separate engine files". | fixed (agreement with 8.6; 8.6's own upstream claim is the track-8 lane's) |
-| pending | 5.8 | Sequence-parallel paragraph: DeltaNet layers need a rank-to-rank state handoff (forward) and gradient handoff (backward), constant size, not "no exchange". | LASP (Sun et al., arXiv 2404.02882v1) Algorithm 1: "Recv activation KV_{t−1} from rank (i − 1)", "Send activation KV_t to rank (i + 1)"; the delta rule's recurrence has the same dependency. Not cited in prose (citations are protected). | fixed |
+| pending | 5.8 | Sequence-parallel paragraph: DeltaNet layers need a rank-to-rank state handoff (forward) and gradient handoff (backward), constant size, not "no exchange". | LASP (Sun et al., arXiv 2404.02882v1) Algorithm 2 (forward, lines 12 and 17; backward in Algorithm 3): "Recv activation KV_{t−1} from rank (i − 1)", "Send activation KV_t to rank (i + 1)"; the delta rule's recurrence has the same dependency. Not cited in prose (citations are protected). | fixed |
 | pending | 6.8 | "No gradient whatsoever" → no reward gradient; the β-weighted KL term still pulls toward the reference, so the update is exactly zero only at β = 0. Same in the teach-back; 6.9 body and quiz-2 stem reworded to "no reward signal / reward-driven gradient". | DeepSeekMath (arXiv 2402.03300v3) eq. 3 objective with −β·D_KL, and eq. 20/21 gradient coefficient Â + β(π_ref/π_θ − 1). | fixed |
 | pending | 7.7 | Teach-back no longer says traffic scales with inputs/outputs; caveat now separates O(N) extra memory from Θ(N²d²/M) HBM traffic, still quadratic in N, with a thinner margin at d = 256. | Dao et al. (arXiv 2205.14135v2) Theorem 1 (O(N) additional memory) and Theorem 2 (standard Θ(Nd + N²), FlashAttention Θ(N²d²M⁻¹)). | fixed |
 
@@ -153,3 +153,11 @@ scenario conversions (6.1 q3, 7.11 q1), which keep the correct concept and index
   architecture gives you; defensible with "clean", left as is.
 - At the time of the gate run, `content:parity` failed for 4.15 pt-BR (math spans 30/31
   swapped) and for the length cue in tracks 4, 11, 12 and 13 (other lanes).
+
+## Integrator corrections after independent review (Fable 5.1, 2026-10-18)
+
+| Item | Problem | Fix |
+|---|---|---|
+| 5.13 quiz 1 | The repair moved the correct option to index 2 while `correctIndex` stayed 1, so the key marked the bf16 distractor correct | Options 1 and 2 swapped back in both locales |
+| 7.11 quiz 1 | Three "Only X must match" distractors left the inclusive option as an all-of-the-above cue | Distractor 0 is now an inclusive-but-wrong set |
+| 5.8 pt-BR quiz | "Shardear estado" | "Dividir o estado em shards" |
