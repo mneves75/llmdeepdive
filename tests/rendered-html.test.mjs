@@ -276,9 +276,12 @@ test('no page ships an unresolved template placeholder', () => {
     // divergence, so ">NaN<" is real subject matter in track 5 — the check
     // cannot distinguish a failed render from a lesson about failed training,
     // and a test that cries wolf gets disabled rather than heeded.
+    // Code blocks are source the lesson quotes: a Python f-string writes a
+    // literal brace as `{{`, which is the code, not a failed render.
+    const rendered = p.html.replace(/<pre[\s>][\s\S]*?<\/pre>/gu, '')
     for (const bad of ['{{', '>undefined<', '[object Object]']) {
       assert.equal(
-        p.html.includes(bad),
+        rendered.includes(bad),
         false,
         `${p.route} contains "${bad}" — a value failed to render`,
       )

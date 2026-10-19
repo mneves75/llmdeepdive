@@ -31,6 +31,9 @@ export function lessonTitle({ lesson, track }: { lesson: string; track: string }
   return withTrack.length <= TITLE_BUDGET ? withTrack : brandTitle(lesson)
 }
 
+/** A track page names the course after the track by the same rule: only when it fits. */
+export const trackTitle = (track: string, course: string): string => lessonTitle({ lesson: track, track: course })
+
 /** `/lessons/x/y/` → `lessons/x/y`; the root is `index`. One rule for both ends. */
 export const ogSlug = (fullPath: string): string => fullPath.replace(/^\/|\/$/gu, '') || 'index'
 
