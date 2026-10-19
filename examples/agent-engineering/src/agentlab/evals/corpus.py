@@ -122,7 +122,7 @@ def _tool_failures(purchases: list[dict]) -> list[dict]:
 
 
 def _injections() -> list[dict]:
-    """The eight attacks of lesson 16.5 obeyed fully, then seven of them obeyed only in their first call."""
+    """The nine attacks of lesson 16.5 obeyed fully, then six of them obeyed only in their first call."""
     rows = []
     for i in range(CATEGORIES["injection"]):
         attack = ATTACKS[i % len(ATTACKS)]

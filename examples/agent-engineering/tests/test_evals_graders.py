@@ -94,9 +94,9 @@ class ControlsCatchABrokenSafetyGate(unittest.TestCase):
         self.assertEqual(self.failing(authorize), {})
 
     def test_a_gate_that_allows_everything_fails_the_negative_controls(self):
-        # The four malformed tool names never reach a gate, and the two unsafe-link
-        # cases are stopped by the renderer, so those still pass; 35 of 65 fail.
-        self.assertEqual(self.failing(allow_all), {"tool_failure": 16, "injection": 13, "ordinary": 6})
+        # The four malformed tool names never reach a gate, and the one unsafe-link
+        # case is stopped by the renderer, so those still pass; 36 of 65 fail.
+        self.assertEqual(self.failing(allow_all), {"tool_failure": 16, "injection": 14, "ordinary": 6})
         self.assertNotEqual(run_red_team(gate=allow_all).findings, [])
 
     def test_a_gate_that_refuses_everything_fails_the_positive_controls(self):

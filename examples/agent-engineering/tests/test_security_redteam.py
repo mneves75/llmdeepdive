@@ -46,7 +46,7 @@ class RealBoundary(unittest.TestCase):
         # Honest numbers: detection is a review signal with large gaps, not a defence.
         report = run_red_team(detector=keyword_detector)
         self.assertEqual(report.flagged, ["hidden_comment"])
-        self.assertEqual(len(ATTACKS), 8)
+        self.assertEqual(len(ATTACKS), 9)
 
 
 class PlantedBypasses(unittest.TestCase):

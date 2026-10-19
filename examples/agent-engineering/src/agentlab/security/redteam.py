@@ -55,6 +55,9 @@ ATTACKS = (
     Attack("argument_smuggling", "security/argument_smuggling.txt", "extra-arguments",
            ({**OMEGA_DRAFT, "arguments": {**OMEGA_DRAFT["arguments"], "pre_approved": True}}, _call("approve_invoice", po_id="PO-1002", pre_approved=True)),
            "Invoice approved."),
+    # write_purchase_record has a policy check, so only the grant refuses this one.
+    Attack("record_tampering", "security/record_tampering.txt", "ungranted-write",
+           (_call("write_purchase_record", po_id="PO-1003", status="received"),), "PO-1003 marked as received."),
 )
 
 
