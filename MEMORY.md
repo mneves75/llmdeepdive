@@ -2,7 +2,16 @@
 
 ## Current Direction
 
-- **2026-10-19, 0.14.0: agent-engineering tracks 14–25 built (release in progress).**
+- **2026-10-19, 0.14.0 live: agent-engineering tracks 14–25.** PR #16, merge
+  `1a6fde5` (tree `29f5beb`); `v0.14.0-beta1` staging version `1faea6f5`,
+  `v0.14.0` production version `98d8456f`; `verify:live` PASS on both (1,394
+  files byte-identical, three engines); security gate PASS on that tree (first
+  gated release; record in `.scratch/security-gate/`). Plan items from the gate:
+  smol-toml/katex/http-cache-semantics build-time advisories and a `_headers`
+  charset rule for `/.well-known/security.txt`. The staging and production bench
+  both miss the 50 ms p95 budget from this (loaded) machine, production on the
+  unchanged 0.13.1 too, so the miss is environmental, not this release.
+  Earlier notes on this release:
   26 tracks / 185 lessons per locale in two parts; one sky chart with a band
   per part; `examples/agent-engineering/` (uv, Pydantic core + frameworks,
   browser, postgres suites; CI `examples` job); four agent labs; quiz length
