@@ -1,0 +1,100 @@
+---
+id: "24.4-model-cascades-and-budgets"
+track: "24-agent-resilience-and-fallbacks"
+order: 4
+title: "Cascatas de modelos e orçamentos"
+summary: "Pergunte primeiro a um modelo barato e pague por um caro só quando uma checagem confiável falhar. Reserve o custo de cada chamada num livro-razão compartilhado com compare-and-swap, para que workers concorrentes não estourem o orçamento, e pare num prazo ou num botão de emergência."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["24.3-api-to-browser-fallback", "9.10-cost-per-token"]
+unlocks: ["24.5-recovery-drills"]
+analogy: "Um hotel faz uma pré-autorização no seu cartão no check-in, cobra a conta real no check-out e libera o resto. Como a reserva vem primeiro, dois hotéis não conseguem gastar o mesmo limite, e um cartão bloqueado impede novas reservas enquanto deixa as contas existentes serem fechadas. A pré-autorização é uma reserva, o check-out é o settle e o cartão bloqueado é o botão de emergência. A comparação para em quem cuida das contas. O banco ordena as pré-autorizações sozinho, enquanto aqui é o livro-razão da própria execução que precisa fazer isso, e um provedor cobra o que cobrar, então o livro-razão precisa registrar o custo real mesmo quando ele passa da reserva."
+teachBack:
+  prompt: "Dez workers rodam a cascata, cada um para uma fatura diferente, contra um único orçamento compartilhado de USD 0,10, com as camadas do curso: USD 0,002 para o modelo pequeno e USD 0,03 para o grande. As dez respostas do modelo pequeno falham na checagem no mesmo instante. Diga quantas chamadas ao modelo grande podem rodar, o que os outros workers informam e o que um livro-razão de checar-e-depois-escrever teria permitido."
+  modelAnswer: "As dez chamadas pequenas comprometem USD 0,02 no total, então sobram USD 0,08. Cada chamada grande reserva USD 0,03, então duas cabem e comprometem USD 0,06, deixando USD 0,02. Os outros oito workers tentam reservar USD 0,03, encontram pouco saldo e recebem False. As cascatas deles escalam com o motivo de que o orçamento recusou a camada grande, e os modelos grandes deles nunca são chamados. Alguns recebem StaleWrite antes e leem de novo, o que não muda nada no total. Um livro-razão de checar-e-depois-escrever poderia deixar os dez verem USD 0,08 livres e começarem todos, o que dá USD 0,30 em chamadas grandes contra um orçamento de USD 0,10."
+quiz:
+  - question: "O orçamento é USD 0,05, e outro worker já reservou USD 0,03. A camada pequena da cascata (USD 0,002) responde com um total que falha na checagem. A camada grande custa USD 0,03. O que run_cascade devolve?"
+    options: ["escalated depois de gastar USD 0,002, porque os USD 0,03 da camada grande não cabem no que resta", "accepted na grande depois de gastar USD 0,032, porque as reservas só são checadas após a chamada", "escalated antes de qualquer chamada, porque USD 0,02 livres ficam abaixo do preço das duas camadas", "accepted na grande, porque fechar a chamada pequena libera a reserva dela antes da chamada grande"]
+    correctIndex: 0
+    explanation: "USD 0,05 menos 0,03 deixa 0,02. A chamada pequena reserva e fecha 0,002, sobrando 0,018, e os 0,03 da camada grande não cabem, então reserve devolve False e o modelo grande nunca é chamado. A cascata reserva camada por camada e nunca soma a cascata inteira de antemão. Fechar uma chamada troca a reserva pelo custo real; não libera dinheiro que foi gasto."
+  - question: "Os workers A e B leem o orçamento na versão 4, com USD 1,00 livre. A reserva USD 0,60 e confirma. B chama try_reserve com o próprio snapshot, para USD 0,60, e depois chama reserve. O que acontece?"
+    options: ["o try_reserve de B dá certo, porque o snapshot dele mostrava USD 1,00 livre quando foi lido", "o try_reserve de B levanta StaleWrite; reserve então lê a versão 5 e devolve False na hora", "o try_reserve de B devolve False; reserve então espera A fechar a conta e liberar o dinheiro", "o try_reserve de B levanta StaleWrite; reserve tenta de novo até a flag de parada aparecer"]
+    correctIndex: 1
+    explanation: "A confirmação de A levou a versão para 5, então o UPDATE ... WHERE version = 4 de B não encontra linha e levanta StaleWrite. reserve lê de novo, vê USD 0,40 de saldo e recusa os USD 0,60 sem escrever nada. Nada espera um fechamento, e o laço termina assim que uma leitura nova decide. Dar certo com o snapshot antigo é exatamente o estouro que o teste ingênuo mostra."
+  - question: "Por que halt soma um à versão do orçamento, em vez de só marcar halted?"
+    options: ["para o livro-razão contar quantas vezes um operador apertou o botão de emergência naquele orçamento", "porque o SQLite recusa um UPDATE que deixa as outras colunas da linha sem mudança alguma", "para que um worker com um snapshot antigo falhe no compare-and-swap e então leia a parada", "para que settle recuse registrar o custo das chamadas que já estavam rodando naquele momento"]
+    correctIndex: 2
+    explanation: "Um worker pode ter lido o orçamento um instante antes da parada. O snapshot dele ainda diz que halted é falso, então a checagem do próprio try_reserve passaria. Aumentar a versão faz o UPDATE dele não encontrar linha; ele lê de novo e vê a parada, como mostra o teste do botão de emergência. Chamadas que já estavam rodando ainda podem fechar, porque o dinheiro delas já foi gasto. O SQLite não tem regra contra um UPDATE assim."
+citations:
+  - title: "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance (arXiv:2305.05176v1)"
+    authors: "Lingjiao Chen, Matei Zaharia, James Zou"
+    year: 2023
+    url: "https://arxiv.org/abs/2305.05176"
+  - title: "Addressing Cascading Failures, in Site Reliability Engineering (B. Beyer, C. Jones, J. Petoff, N. R. Murphy, eds.), online edition: deadlines and deadline propagation"
+    authors: "Mike Ulrich, Google; O'Reilly Media"
+    year: 2017
+    url: "https://sre.google/sre-book/addressing-cascading-failures/"
+updated: "2026-10-18"
+---
+
+Dois workers do assistente de compras dividem o orçamento de uma execução, de USD 1,00. Cada um precisa de uma chamada ao modelo que pode custar até USD 0,60. Cada um lê o orçamento, vê USD 1,00 livre, conclui que há espaço e começa a chamada. Juntos eles gastam USD 1,20, e o livro-razão, que cada um atualizou a partir do total que tinha lido, registra só USD 0,60. Nada quebrou, e cada checagem passou quando rodou. Esta aula constrói um livro-razão em que isso não pode acontecer, e uma cascata de modelos que gasta a partir dele.
+
+## Primeiro o barato, o caro quando a checagem falha
+
+Uma cascata de modelos pergunta a modelos em ordem, do mais barato ao mais capaz, e para na primeira resposta boa o bastante para ser usada. O artigo FrugalGPT (Chen, Zaharia e Zou, 2023) a descreve assim: uma cascata "sends a query to a list of LLM APIs sequentially", manda a consulta a uma lista de APIs de LLM em sequência, devolve uma resposta quando ela é considerada confiável e consulta a próxima "only if the previous APIs' generations are deemed insufficiently reliable", só se as respostas anteriores forem consideradas pouco confiáveis. O artigo relata que a cascata aprendida dele consegue igualar o melhor modelo isolado "with up to 98% cost reduction", com até 98% menos custo, nos conjuntos de dados que estudou. Ele também lista os próprios limites: treinar a cascata exige exemplos rotulados vindos "the same or similar distribution", da mesma distribuição das consultas reais ou de uma parecida.
+
+O projeto inteiro depende da checagem que decide o que é "bom o bastante". O FrugalGPT aprende um modelo de pontuação para isso. O curso usa algo mais estrito para a sua única tarefa. `invoice_check` aceita uma chamada `extract_invoice` só se o total for igual a quantidade × preço unitário no registro de compra do tenant, a asserção de sucesso da [aula 14.1](/pt-br/lessons/14-agent-architecture-and-state/14.1-when-a-workflow-needs-an-agent/). A confiança do próprio modelo nunca entra nela. Uma checagem que aceita respostas erradas transforma a economia em erros, porque a cascata para no modelo barato justamente quando deveria seguir adiante.
+
+Eis um exemplo com números inventados, porque nenhuma fixture mede com que frequência um modelo pequeno real passa. A camada pequena custa USD 0,002 por chamada e a grande USD 0,03, como nos testes. Se o modelo pequeno passasse na checagem em 70% das faturas, o custo esperado por fatura seria 0,002 + 0,3 × 0,03 = USD 0,011, contra USD 0,03 só com o modelo grande. A latência vai no sentido oposto para os 30% que descem a cascata: eles esperam pelos dois modelos. A [aula 9.10](/pt-br/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) mostra de onde vêm os preços por chamada. Meça a taxa de aprovação nas suas próprias faturas separadas para teste antes de confiar em qualquer economia desse tipo.
+
+## Por que checar um total não basta
+
+O estouro da abertura é uma leitura obsoleta (*stale read*). Uma leitura obsoleta é uma decisão tomada sobre dados que mudaram depois de lidos. O arquivo de teste escreve de propósito o livro-razão ingênuo: `naive_read` lê o total comprometido, e `naive_write` o compara com o limite e escreve o novo total. O teste intercala dois workers numa ordem fixa (lê, lê, escreve, escreve), então a corrida acontece todas as vezes, e não uma vez em mil execuções. As duas escritas dão certo, USD 1,20 em chamadas são aprovados e o livro-razão mostra USD 0,60.
+
+Travar cada passo separadamente não ajuda, porque a brecha fica entre a leitura e a escrita. A própria escrita precisa dizer "só se nada mudou desde que eu li".
+
+## Reservas com compare-and-swap
+
+O livro-razão é uma tabela SQLite com uma coluna `version`, o mesmo formato dos checkpoints da [aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/). O dinheiro é guardado em micro-dólares inteiros (USD 1 vale 1.000.000), porque o SQLite não tem tipo decimal e um float não guarda USD 0,10 exatamente. Um worker reserva o preço máximo de uma chamada antes de fazê-la:
+
+```python
+# file: examples/agent-engineering/src/agentlab/resilience/budget.py
+    def try_reserve(self, seen: Snapshot, reservation_id: str, amount: int) -> bool:
+        """Hold ``amount`` if ``seen`` is still current. False: halted or over the limit. ``StaleWrite``: read again."""
+        if amount <= 0:
+            raise ValueError("a reservation must be positive")
+        if seen.halted or seen.committed + amount > seen.limit:
+            return False
+        with self._transaction():
+            cursor = self._db.execute(
+                "UPDATE budget SET committed_micros = ?, version = version + 1 WHERE budget_id = ? AND version = ?",
+                (seen.committed + amount, seen.budget_id, seen.version),
+            )
+            if cursor.rowcount != 1:
+                raise StaleWrite(f"budget {seen.budget_id} changed since version {seen.version}")
+            self._db.execute(
+                "INSERT INTO reservation (reservation_id, budget_id, held_micros, status) VALUES (?, ?, ?, 'held')",
+                (reservation_id, seen.budget_id, amount),
+            )
+        return True
+```
+
+A cláusula `WHERE ... AND version = ?` é o compare-and-swap. O update só encontra a linha se a versão ainda for a que o worker leu. Caso contrário, `StaleWrite` manda o worker ler de novo, e `reserve` faz exatamente isso num laço. Cada nova tentativa significa que outro worker confirmou alguma coisa, então o laço sempre avança. No teste, cada worker abre a própria conexão com o mesmo arquivo, como dois processos fariam. O worker A reserva USD 0,60. A tentativa do worker B com o snapshot antigo levanta `StaleWrite`, e a leitura nova dele mostra USD 0,40 de saldo, então ele é recusado. Um teste de controle com duas chamadas de USD 0,40 mostra que as duas passam: uma escrita obsoleta é repetida, não transformada em recusa.
+
+Depois da chamada, `settle` troca a reserva pelo custo real, e `release` devolve a reserva inteira quando a chamada nem rodou. Os dois funcionam uma vez só, porque tiram a reserva de `held` com uma checagem do status dela. Um provedor pode cobrar mais do que a reserva se a estimativa estiver errada. Nesse caso `settle` registra o custo real mesmo assim, porque esse dinheiro já foi, e trava o orçamento até alguém olhar.
+
+## Prazos e o botão de emergência
+
+Dinheiro é um limite, e tempo é outro. O capítulo do Google sobre falhas em cascata diz que "it's usually wise to set a deadline", em geral é prudente definir um prazo, e que "you don't get credit for late assignments with RPCs", trabalho entregue atrasado não vale nota. Cada `Tier` declara a chamada mais lenta que pode fazer. Antes de chamar uma camada, `run_cascade` verifica se a chamada poderia terminar depois do prazo da execução e escala em vez de começá-la. Com um prazo de 10 segundos, a camada pequena (2 segundos) roda e a grande (20 segundos) nunca roda.
+
+O botão de emergência (*kill switch*) é `halt`. Ele marca `halted` e também soma um à versão, o que importa para o worker que leu o orçamento um instante antes da parada. O snapshot dele ainda diz que o orçamento está aberto, mas o compare-and-swap dele falha, e a leitura nova vê a parada. O teste `test_a_halt_between_read_and_reserve_wins` confere exatamente essa intercalação. Uma chamada que já estava rodando ainda pode fechar depois da parada, porque o custo dela já existe, e o livro-razão precisa continuar verdadeiro.
+
+`run_cascade` põe as peças em ordem: checagem de prazo, reserva, chamada, fechamento, e então a checagem. Qualquer recusa escala com um motivo, e o modelo de uma camada recusada nunca é chamado. Os testes conferem isso contando as chamadas do modelo roteirizado.
+
+## Rode o exercício
+
+A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests/test_resilience_budget.py tests/test_resilience_cascade.py`. A saída termina com `Ran 18 tests` e `OK`.
+
+`test_check_then_write_lets_two_workers_overspend` é a corrida ingênua, e `test_compare_and_swap_makes_the_second_worker_read_again` é a correção. `test_a_cheap_answer_that_fails_the_check_moves_up_one_tier` gasta USD 0,032 e aceita a resposta da camada grande. `test_a_tier_the_budget_cannot_cover_is_never_called` deixa USD 0,02 para a execução e mostra o modelo grande intocado, e `test_the_kill_switch_stops_every_tier` não chama modelo nenhum.
+
+Quebre o código: em `try_reserve`, troque `WHERE budget_id = ? AND version = ?"` por `WHERE budget_id = ? AND ? IS NOT NULL"` e rode o arquivo do orçamento. Três testes falham, entre eles o do compare-and-swap, porque o snapshot antigo do worker B agora sobrescreve a reserva de A e o livro-razão aprova USD 1,20 contra USD 1,00. Restaure a linha.

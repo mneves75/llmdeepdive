@@ -1,0 +1,143 @@
+---
+id: "24.1-classify-failures-before-retrying"
+track: "24-agent-resilience-and-fallbacks"
+order: 1
+title: "Classificar falhas antes de tentar de novo"
+summary: "Uma chamada que falha pode significar um recurso que não existe, um recurso escondido, uma rota errada, um endpoint aposentado, uma recusa, um limite de taxa ou um resultado desconhecido. Primeiro dê nome à falha; depois escolha parar, tentar de novo, reconciliar ou considerar um fallback aprovado."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["23.1-define-success-and-capture-traces", "15.5-transport-and-authorization-boundaries"]
+unlocks: ["24.2-retries-and-circuit-breakers"]
+analogy: "Uma enfermeira de triagem separa os pacientes antes que alguém seja atendido: uns esperam, outros entram na hora, e alguns são mandados para outro hospital que tem o equipamento certo. Tratar todo mundo do mesmo jeito faria mal a alguém, por isso a separação vem primeiro. A comparação para no que dá para examinar. A enfermeira pode olhar o paciente, enquanto um cliente HTTP só vê um código de status, e duas causas diferentes podem produzir o mesmo código. Quando o código não consegue separá-las, a triagem segura é a que não faz mal em nenhum dos casos."
+teachBack:
+  prompt: "Hoje de manhã a API do fornecedor passa a responder 404 a GET /v1/reports/{period}. Ontem a mesma chamada funcionava, e ninguém registrou a rota como aposentada. Um colega propõe acrescentá-la às rotas aposentadas do contrato para que a execução use o portal. Diga o que classify faz hoje e o que precisa acontecer antes que essa mudança seja segura."
+  modelAnswer: "Hoje a rota está no conjunto das rotas vivas, então classify devolve stop, com o motivo de que o recurso não existe ou não está visível. Essa é a resposta certa para um 404 inesperado. Um 404 não diz se a condição é permanente. Ele pode vir de um erro de deploy, de uma mudança de permissão ou de um servidor escondendo um recurso. Registrar a rota como aposentada porque ela falhou uma vez transformaria um erro sem explicação num desvio. Primeiro o dono da API precisa confirmar a aposentadoria, por exemplo com um 410, um cabeçalho Sunset ou um anúncio. Depois uma pessoa precisa revisar um equivalente que exija a mesma permissão, que é a checagem da aula 24.3. Até lá a execução para e informa."
+quiz:
+  - question: "Uma execução do tenant-a chama GET /v2/purchase-orders/{po_id} para o PO-2001 e recebe http: status 404. A rota está no conjunto de rotas vivas do contrato. O que classify devolve?"
+    options: ["retry, porque um 404 não diz se a condição é temporária, então o pedido pode aparecer depois", "stop, porque o pedido pode não existir ou pertencer a alguém para quem o servidor não o revela", "fallback, porque a conta do portal legado talvez enxergue pedidos que o token da API não enxerga", "reconcile, porque o servidor pode ter feito a consulta e depois perdido a resposta no caminho"]
+    correctIndex: 1
+    explanation: "A RFC 9110 permite que um servidor responda 404 para um recurso que ele não quer revelar, e o PO-2001 é de fato um pedido do tenant-b. Um pedido inexistente e um pedido escondido parecem idênticos, então a única resposta segura é stop. Tentar de novo repete uma pergunta cuja resposta não vai mudar. Um fallback que enxerga mais do que a API seria um jeito de contornar a autorização. Reconcile serve para escritas; uma leitura não tem efeito a procurar."
+  - question: "Às 09:00:00 UTC uma leitura recebe http: status 503 com Retry-After: Sun, 18 Oct 2026 09:02:00 GMT. Qual wait_s o veredito carrega?"
+    options: ["None, porque retry_after_seconds aceita só a forma delay-seconds desse campo", "0.0, porque uma HTTP-date indica um momento, não um atraso, então nada é esperado", "120.0, porque a data fica dois minutos após o now injetado, e o retry espera isso", "None, e a ação é stop, porque um 503 que traz uma data anuncia uma manutenção planejada"]
+    correctIndex: 2
+    explanation: "A RFC 9110 permite que o Retry-After seja uma HTTP-date ou um número de segundos, e retry_after_seconds interpreta as duas formas. Uma data vira os segundos entre o now injetado e aquele momento, aqui 120. Uma data no passado vira 0.0, não uma espera negativa. Um 503 é um status transitório para uma leitura, então a ação é retry, seja qual for o motivo do servidor."
+  - question: "POST /v2/invoices, enviado sem chave de idempotência, termina em transport: TimeoutError. Que ação classify escolhe?"
+    options: ["retry, porque um timeout é transitório e o serviço de faturas costuma voltar em poucos segundos", "stop, porque só um operador pode decidir qualquer coisa sobre uma escrita que ficou sem resposta", "fallback, porque o formulário de faturas do portal é o equivalente revisado para essa escrita", "reconcile, porque a fatura pode já existir, então a execução precisa perguntar antes de reenviar"]
+    correctIndex: 3
+    explanation: "Um timeout quer dizer que nenhuma resposta chegou, não que nada aconteceu. Sem chave de idempotência, uma repetição poderia criar uma segunda fatura, então a execução primeiro pergunta ao serviço o que ele registrou, como na aula 14.4. Com uma chave o veredito seria retry, porque o serviço devolve o resultado que guardou para aquela chave. Uma escrita nunca é levada para outro canal, diga o contrato o que disser."
+citations:
+  - title: "RFC 9110: HTTP Semantics, sections 9.2.2, 10.2.3, 15.5.2-15.5.5, 15.5.11 and 15.6"
+    authors: "R. Fielding, M. Nottingham, J. Reschke (eds.), IETF"
+    year: 2022
+    url: "https://www.rfc-editor.org/rfc/rfc9110.html"
+  - title: "RFC 6585: Additional HTTP Status Codes, section 4 (429 Too Many Requests)"
+    authors: "M. Nottingham, R. Fielding, IETF"
+    year: 2012
+    url: "https://www.rfc-editor.org/rfc/rfc6585.html"
+updated: "2026-10-18"
+---
+
+Na segunda-feira de manhã o assistente de compras encontra quatro falhas antes das nove horas. Uma consulta ao `PO-2001` responde 404. O endpoint do relatório mensal responde 410. A criação de uma fatura estoura o tempo limite. O provedor do modelo responde 429 com `Retry-After: 120`. Um laço que tenta tudo de novo três vezes perguntaria mais três vezes pelo `PO-2001`, chamaria o endpoint de relatório que não existe mais, talvez criasse duas faturas e voltaria ao provedor antes do momento que ele pediu.
+
+Cada uma dessas falhas pede uma resposta diferente. Esta aula constrói um classificador que primeiro dá nome à falha e depois escolhe uma de quatro ações. **Stop** (parar) entrega a falha a uma pessoa ou a quem chamou, com um motivo. **Retry** (tentar de novo) repete o mesmo pedido mais tarde. **Reconcile** (reconciliar) pergunta ao outro sistema o que aconteceu antes de reenviar qualquer coisa. **Fallback** (alternativa) indica uma rota equivalente revisada como candidata, que a [aula 24.3](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.3-api-to-browser-fallback/) pode ou não permitir.
+
+## O que a mensagem de erro diz, e o que não diz
+
+O adaptador de modelo do curso, `OpenAICompatibleModel`, nunca levanta exceção numa falha de rede. Ele devolve `ModelReply.error` com um prefixo de classe: `transport:` quando nenhuma resposta chegou (um timeout, uma conexão recusada), `http:` com o código de status quando o servidor respondeu com um erro, e `protocol:` quando a resposta chegou malformada. Esse prefixo é o primeiro fato de que um classificador precisa, e é tudo o que o adaptador sabe.
+
+Faltam três fatos na mensagem. O adaptador não sabe qual rota do contrato da API ele chamou, se a chamada escreve alguma coisa, nem o que dizia o cabeçalho `Retry-After` da resposta. Ele guarda só o código de status, então o 429 dele chega sem espera. O controlador que fez a chamada conhece os dois primeiros, e um cliente de ferramenta que guarda os cabeçalhos da resposta conhece o terceiro. Por isso o classificador recebe um registro `Failure` que o controlador preenche:
+
+```python
+# file: examples/agent-engineering/src/agentlab/resilience/classify.py
+@dataclass(frozen=True)
+class Failure:
+    """One failed call, as the controller saw it."""
+
+    error: str
+    route: str
+    effect: Effect
+    idempotency_key: str | None = None
+    retry_after: str | None = None
+```
+
+`effect` vale `"read"` ou `"write"`. Uma chamada ao modelo conta aqui como leitura, porque não muda nada fora da execução, embora custe dinheiro. A [aula 24.4](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.4-model-cascades-and-budgets/) cuida do dinheiro.
+
+## Quatro 404 diferentes
+
+A RFC 9110, o padrão da semântica do HTTP, diz que um 404 significa que o servidor "did not find a current representation for the target resource or is not willing to disclose that one exists", isto é, não encontrou uma representação atual do recurso ou não está disposto a revelar que ela existe. Ela acrescenta que um 404 "does not indicate whether this lack of representation is temporary or permanent", não indica se a falta é temporária ou permanente. No 403, ela dá aos servidores permissão explícita para esconder: um servidor que quer "hide", esconder, um recurso proibido "MAY instead respond with a status code of 404", pode responder 404 no lugar. Então um único código cobre pelo menos quatro situações.
+
+- **Rota errada.** O cliente pediu `/v2/purchase-order/…` em vez de `/v2/purchase-orders/…`. É um bug no cliente, e só uma mudança de código resolve.
+- **Recurso inexistente.** O pedido não existe.
+- **Recurso escondido.** O pedido existe, mas quem chama não pode vê-lo. O `PO-2001` pertence ao tenant-b, então uma execução do tenant-a pode receber exatamente isso.
+- **Endpoint aposentado.** O dono da API removeu a rota de propósito. O 410 Gone da RFC 9110 diz que o acesso "is no longer available", não está mais disponível, e que a condição "is likely to be permanent", provavelmente é permanente, mas a RFC também deixa o servidor mandar 404 quando não sabe.
+
+O classificador separa o que consegue. Uma rota fora do contrato do cliente é uma rota errada. Uma rota que o contrato lista como aposentada é uma aposentadoria. Numa rota viva, um pedido inexistente e um pedido escondido produzem a mesma resposta, e nenhuma quantidade de novas tentativas os distingue. Os dois recebem a mesma resposta, stop, que é segura nos dois casos. Acima de tudo, um 404 nunca é motivo para tentar um canal que enxerga mais, porque é assim que um recurso escondido vaza.
+
+"Aposentada" é um fato que uma pessoa registra no contrato, nunca um palpite tirado de uma falha. O `Contract` liga cada rota aposentada ao nome de um equivalente revisado, ou a `None` quando não existe nenhum.
+
+## Credenciais, limites de taxa e falhas transitórias
+
+Um 401 significa que o pedido "lacks valid authentication credentials", não tem credenciais de autenticação válidas. A RFC deixa o cliente repetir com credenciais novas, o que é trabalho do controlador (renovar um token, entrar de novo), não de um laço de retry que reenvia o mesmo pedido. Um 403 significa que o servidor "understood the request but refuses to fulfill it", entendeu o pedido mas se recusa a atendê-lo, e o cliente "SHOULD NOT automatically repeat the request with the same credentials", não deve repetir automaticamente com as mesmas credenciais. Os dois param. A [aula 15.5](/pt-br/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/) mostrou de onde vêm esses dois códigos num servidor MCP.
+
+Algumas falhas valem uma repetição. A RFC 6585 define o 429 Too Many Requests: o usuário "has sent too many requests in a given amount of time", mandou pedidos demais num intervalo de tempo, e a resposta "MAY include a Retry-After header", pode trazer um cabeçalho Retry-After. A RFC 9110 diz que um 503 significa que o servidor "is currently unable to handle the request due to a temporary overload or scheduled maintenance", não consegue atender no momento por sobrecarga temporária ou manutenção programada, e ele também pode mandar `Retry-After`. Esse cabeçalho traz um número de segundos ou uma HTTP-date, então `retry_after_seconds` interpreta as duas formas contra um relógio injetado e ignora qualquer outra coisa. Um timeout, um 500, um 502 ou um 504 numa leitura também valem outra tentativa: a leitura não teve efeito, então repeti-la não faz mal. Com que frequência e quanto esperar é o assunto da [aula 24.2](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.2-retries-and-circuit-breakers/).
+
+Um erro `protocol:` para. O servidor respondeu, mas com algo que o cliente não consegue interpretar, e o mesmo pedido muito provavelmente receberia a mesma resposta.
+
+## Escritas de resultado desconhecido
+
+Um timeout numa escrita é o caso perigoso. A RFC 9110 explica por que alguns métodos podem ser repetidos automaticamente: um pedido idempotente "can be repeated automatically if a communication failure occurs before the client is able to read the server's response", pode ser repetido se uma falha de comunicação ocorrer antes que o cliente leia a resposta. Depois diz que um cliente "SHOULD NOT automatically retry a request with a non-idempotent method", não deve repetir automaticamente um método não idempotente, a menos que saiba que a semântica é idempotente ou consiga "detect that the original request was never applied", detectar que o pedido original nunca foi aplicado. Criar uma fatura é um POST, que por padrão não é idempotente.
+
+A [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) deu ao projeto as duas ferramentas que a RFC menciona. Uma chave de idempotência faz um pedido repetido devolver a fatura já registrada para aquela chave, então uma escrita com chave pode tentar de novo. Uma escrita sem chave precisa reconciliar: perguntar ao serviço se ele registrou a fatura, e reenviar só se não registrou. O classificador aplica a mesma regra a toda falha transitória de uma escrita, 503 e 429 incluídos, porque um classificador não deve apostar em como um servidor específico se comporta.
+
+## A tabela de decisão em código
+
+| Falha | Leitura | Escrita com chave | Escrita sem chave |
+|---|---|---|---|
+| `protocol:` | stop | stop | stop |
+| `transport:`, 408, 500, 502, 504 | retry | retry | reconcile |
+| 429, 503 | retry depois do `Retry-After` | retry depois do `Retry-After` | reconcile |
+| 401, 403 | stop | stop | stop |
+| 404, 410 numa rota viva | stop: inexistente ou escondido | stop | stop |
+| 404, 410 numa rota desconhecida | stop: rota errada | stop | stop |
+| 404, 410 numa rota aposentada | candidata a fallback, se houver equivalente | stop | stop |
+| qualquer outro status | stop | stop | stop |
+
+A função lê do mesmo jeito. Tudo o que ela não reconhece para:
+
+```python
+# file: examples/agent-engineering/src/agentlab/resilience/classify.py
+def classify(failure: Failure, contract: Contract, now: datetime) -> Verdict:
+    """Choose what to do about one failure. Anything not recognised stops."""
+    kind, _, detail = failure.error.partition(": ")
+    if kind == "protocol":
+        return Verdict("stop", f"malformed reply ({detail}); the same request would get the same reply")
+    if kind == "transport":
+        return _repeat_if_safe(failure, f"no reply arrived ({detail})", None)
+    status = re.fullmatch(r"status ([0-9]{3})", detail)
+    if kind != "http" or status is None:
+        return Verdict("stop", f"unrecognised failure {failure.error!r}")
+    code = int(status.group(1))
+    if code == 401:
+        return Verdict("stop", "credentials missing or rejected; the controller must authenticate again")
+    if code == 403:
+        return Verdict("stop", "forbidden; repeating with the same credentials will not change the answer")
+    if code in (404, 410):
+        return _not_found(failure, contract, code)
+    if code in TRANSIENT:
+        return _repeat_if_safe(failure, f"HTTP {code}", retry_after_seconds(failure.retry_after, now))
+    return Verdict("stop", f"HTTP {code} is a problem with the request, which a retry repeats")
+```
+
+As checagens de 401 e 403 vêm antes do ramo do 404, então uma recusa nunca chega ao código que procura um fallback. Todo veredito traz um motivo, que vai para o trace (o registro dos passos) da execução: a [aula 23.1](/pt-br/lessons/23-agent-evaluation-and-ci/23.1-define-success-and-capture-traces/) explica por que um trace que diz o que foi decidido, e por quê, é o que torna uma execução revisável.
+
+:::warning
+Um veredito `fallback` é só uma candidatura. Ele diz que a rota foi aposentada e que alguém revisou um equivalente. Se o equivalente pode rodar, para este principal e esta tarefa, quem decide é a checagem da aula 24.3.
+:::
+
+## Rode o exercício
+
+A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests/test_resilience_classify.py`. A saída termina com `Ran 14 tests` e `OK`.
+
+Os testes seguem a tabela. `test_a_404_on_a_live_route_stops_because_missing_and_hidden_look_the_same` pergunta pelo `PO-2001`. `test_a_retired_read_route_with_an_approved_equivalent_is_a_fallback_candidate` cobre 404 e 410 numa rota aposentada, e `test_401_and_403_stop_even_on_a_retired_route` confere que uma recusa ali continua parando. `test_an_unkeyed_write_with_an_unknown_outcome_reconciles` e seu controle, `test_a_keyed_write_may_retry_because_a_repeat_returns_the_recorded_result`, mostram o que a chave de idempotência muda.
+
+Quebre o código: em `_repeat_if_safe`, troque `if failure.effect == "write" and failure.idempotency_key is None:` por `if False:` e rode o arquivo de novo. O teste da escrita sem chave falha para o timeout, o 504 e o 503, porque agora o classificador manda a execução reenviar uma fatura que talvez já exista. Restaure a linha.
