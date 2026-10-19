@@ -5,7 +5,7 @@ Lane `tracks-0-4`, 2026-10-18. Scope: lessons 0.1–4.17 in `en` and `pt-br`
 existing-lesson repair brief; findings from
 `docs/plans/agent-engineering/lesson-review.md`. No `id`, `track`, `order`,
 `title`, `tier`, `prerequisites`, `unlocks`, `lab`, `citations` or
-`correctIndex` changed. Reviewer: none yet (needs independent review).
+`correctIndex` changed. Reviewer: independent review on a different model, 2026-10-18; corrections in the last section.
 
 ## Findings
 

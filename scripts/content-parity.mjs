@@ -158,6 +158,13 @@ try {
   if (tracksMissingInPortuguese.length) failures.push('Tracks missing in pt-br: ' + tracksMissingInPortuguese.join(', '))
   if (tracksMissingInEnglish.length) failures.push('Tracks missing in en: ' + tracksMissingInEnglish.join(', '))
 
+  // The sky draws nothing for a track without lessons, so a track JSON that
+  // lands alone would vanish from the chart while the catalogs still list it.
+  for (const [trackLocale, tracks] of tracksByLocale) {
+    const used = new Set([...(byLocale.get(trackLocale) ?? new Map()).values()].map((lesson) => stringField(lesson.frontmatter, 'track', lesson.file)))
+    for (const key of tracks.keys()) if (!used.has(key)) failures.push('track "' + key + '" has no lessons in ' + trackLocale)
+  }
+
   for (const [lessonLocale, localeLessons] of byLocale) {
     const localeTracks = tracksByLocale.get(lessonLocale) ?? new Map()
     for (const lesson of localeLessons.values()) {

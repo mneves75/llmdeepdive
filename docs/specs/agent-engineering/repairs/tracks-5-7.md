@@ -32,7 +32,7 @@ Change codes: **D** distractors rewritten, **T** correct option tightened (reaso
 to `explanation`, claim/number/conditions kept), **S** converted to a changed-scenario
 item, **Q** stem reworded. Every changed item also has an `explanation` that names why
 the tempting wrong answers fail, unless marked otherwise. Positions hold the same idea
-in both locales. Reviewer: lane `tracks-5-7` (self); independent review not yet run.
+in both locales. Reviewer: lane `tracks-5-7`, then an independent review on a different model on 2026-10-18; corrections in the last section.
 
 | Lesson | Item | Change | Misconception each new distractor tests |
 |---|---|---|---|

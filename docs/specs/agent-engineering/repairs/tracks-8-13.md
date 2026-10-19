@@ -231,7 +231,7 @@ misconception sits in the same position in both locales.
 Unchanged items (not cued, already scenario or numeric): 8.2 #3, 11.4 #3, 11.5 #2
 (names only), 12.3 #2 (numeric), 13.3 #1, 13.3 #2 (trace items).
 
-Reviewer: none yet; this log is the lane's own record for independent review.
+Reviewer: an independent review on a different model ran on 2026-10-18; its corrections are in the last section.
 
 ## Integrator corrections after independent review (Fable 5.1, 2026-10-18)
 

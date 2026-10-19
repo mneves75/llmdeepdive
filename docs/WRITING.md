@@ -116,8 +116,8 @@ Rules for an assessment repair:
   per lesson where appropriate, rather than only recognition questions.
 - Run `pnpm content:parity`, `pnpm content:stubs`, and the affected tests
   after any assessment repair. `content:parity` fails a locale where the
-  correct option is uniquely the longest in more than 35% of items, or a track
-  where it is in more than half; treat that as a floor, not a target, because
+  correct option is uniquely the longest in more than 20% of items or uniquely
+  the shortest in more than 35%, or a track over half in either direction; treat that as a floor, not a target, because
   passing it says nothing about whether the distractors teach.
 
 ## Portuguese

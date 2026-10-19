@@ -90,3 +90,20 @@ test('content parity rejects a corpus where the correct option is usually the sh
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /correct option is uniquely the shortest in 8 of 8 quiz items/u)
 })
+
+test('content parity rejects a track with no lessons', () => {
+  // The sky skips a track without lessons, so only this gate keeps one from vanishing.
+  const root = mkdtempSync(join(tmpdir(), 'llmdeepdive-empty-track-'))
+  for (const locale of ['en', 'pt-br']) {
+    const lessons = join(root, 'lessons', locale, '1-track')
+    mkdirSync(lessons, { recursive: true })
+    mkdirSync(join(root, 'tracks', locale), { recursive: true })
+    writeFileSync(join(root, 'tracks', locale, '1-track.json'), '{}\n')
+    writeFileSync(join(root, 'tracks', locale, '2-empty.json'), '{}\n')
+    writeFileSync(join(lessons, '1.1-test.mdx'), `---\nid: "1.1-test"\ntrack: "1-track"\nlocale: "${locale}"\nquiz:\n  - question: "Q?"\n    options: ["Option one", "Option two"]\n    correctIndex: 0\n    explanation: "Because."\n---\nBody.\n`)
+  }
+  const result = spawnSync(process.execPath, [resolve('scripts/content-parity.mjs')], { cwd: process.cwd(), env: { ...process.env, LLMDEEPDIVE_CONTENT_ROOT: root }, encoding: 'utf8' })
+  rmSync(root, { recursive: true, force: true })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /track "2-empty" has no lessons in en/u)
+})
