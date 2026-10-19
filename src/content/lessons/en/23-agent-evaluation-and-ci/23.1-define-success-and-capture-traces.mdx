@@ -1,0 +1,116 @@
+---
+id: "23.1-define-success-and-capture-traces"
+track: "23-agent-evaluation-and-ci"
+order: 1
+title: "Define Success and Capture Traces"
+summary: "A run succeeded when the environment ended in the right state, so grade the effects it left behind against what the case requires and allows, never its final message. Record each trial as a trace with its id, causal parents and every secret scrubbed, so a failure can be read later."
+tier: "advanced"
+locale: "en"
+prerequisites: ["14.4-replay-and-side-effects", "0.8-how-to-read-ml-paper"]
+unlocks: ["23.2-evaluate-valid-paths", "24.1-classify-failures-before-retrying"]
+analogy: "A courier app says your parcel was delivered. You believe it when the parcel is on your doorstep, when it is the parcel you ordered, and when nothing else of yours went missing. The app's message is a claim and the doorstep is the outcome. The courier's scan log is what you read when the parcel is not there, to find the step where it went wrong. The comparison stops at the door. An agent's environment holds effects you would never see from the doorstep, such as a mail that left the company or a read of another customer's order, so the grader has to look at every kind of effect, not only the one you were expecting."
+teachBack:
+  prompt: "The assistant gains a notify_buyer tool that writes one notification to the buyer after a draft is created, and the back office records notifications as a new effect kind. Case ord-001 must still pass. What do you add to its required and allowed effects, what does grade_effects report for a run that drafts correctly and sends two notifications, and why must the reply text still stay out of the grader?"
+  modelAnswer: "The case now requires one draft and one notification, so both go into required. Required effects count as allowed, so allowed needs nothing extra. A run with two notifications leaves one more than the case allows. grade_effects reports notifications: 1 not allowed, because a duplicate counts twice in the bag. The draft still matches, so no draft problem appears. The reply text stays out because a run can claim either effect without doing it. A message is evidence of what the model wrote, not of what the back office holds. Only the stored effects show whether the buyer was really notified once."
+quiz:
+  - question: "A run's last reply says \"Draft created for PO-1001: USD 500.00.\", but office.drafts is empty. What does grade_effects report for case ord-001?"
+    options: ["drafts: missing 1 required, since only the back office's drafts are compared with the case", "No problem, since the reply names the right purchase order and the right amount in USD", "drafts: 1 not allowed, since the reply claims an effect that the case never permitted", "No verdict yet, since a transcript check has to agree before the effect check is allowed to run"]
+    correctIndex: 0
+    explanation: "The grader never receives the reply; it compares the drafts the back office holds with the one draft the case requires, and finds it missing. Naming the right order and amount is exactly how a transcript grader gets fooled. \"Not allowed\" is reported for effects that exist without permission, not for claims, and no transcript check runs first."
+  - question: "Why does observe() count a lookup of another tenant's purchase order as an effect, even though the lookup writes nothing?"
+    options: ["Because every tool call costs money and has to be charged to the case's budget", "Because the read discloses another tenant's data, so a case must allow it explicitly", "Because the gate logs it as denied, and denied calls are always graded as effects", "Because a read bumps the version of the purchase record that the checkpoint store holds"]
+    correctIndex: 1
+    explanation: "Reading another tenant's order is a disclosure, which is harm even with no write, so it must appear in allowed_effects or the case fails. observe lists only calls that actually executed, so a denied call is not one. Cost is a separate measurement in lesson 23.5, and reads do not touch the checkpoint store."
+  - question: "In a trial trace with run_id ord-001.t1, event 5 is a tool.call whose parent is 4. What does the parent field tell you?"
+    options: ["That event 4 was recorded four seconds before event 5 on the trial's clock", "That the call belongs to the fourth trial of the case rather than the first one", "That event 4, the policy.allowed decision, is the event that let this call run", "That the call was retried four times before it returned the result shown here"]
+    correctIndex: 2
+    explanation: "parent holds the seq of the causing event, and trial_trace points each tool.call at the policy.allowed decision just before it. Time lives in the at field, the trial number lives in run_id (t1), and retries would appear as separate events, not as a number in parent."
+citations:
+  - title: "Demystifying evals for AI agents"
+    authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares and Jiri De Jonghe, Anthropic"
+    year: 2026
+    url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
+  - title: "τ-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains"
+    authors: "Shunyu Yao, Noah Shinn, Pedram Razavi and Karthik Narasimhan"
+    year: 2024
+    url: "https://arxiv.org/abs/2406.12045"
+updated: "2026-10-18"
+---
+
+The purchasing assistant reads the benign supplier message for PO-1001 and answers: "Draft created for PO-1001: USD 500.00." Did it work? A test that searches the reply for "draft created" says yes. The back office says no: it holds no draft at all, because the model wrote the sentence without ever calling `create_invoice_draft`. This lesson fixes the definition of success before any other part of the track builds on it, and then records each run so that a failure like this one can be read afterwards.
+
+## What does "the run succeeded" mean?
+
+An *evaluation* (eval) runs the system on a fixed input and checks the result with code. Anthropic's 2026 guide to agent evals names the parts. A *task* is one test with defined inputs and success criteria; this track calls it a *case*. Each attempt at a case is a *trial*. A *grader* is logic that scores some part of the result. The *transcript*, also called a trace or trajectory, is the full record of a trial: outputs, tool calls and intermediate results.
+
+The same guide separates the transcript from the *outcome*, "the final state in the environment at the end of the trial". Its example is a flight booking: the agent saying it booked a flight does not count, and the outcome is whether a reservation exists in the database. τ-bench (Yao et al., 2024) grades the same way: it compares the database state at the end of a conversation with an annotated goal state.
+
+For the purchasing assistant the environment is the fake back office from [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/). Its effects come in kinds: drafts, approvals, sent mail, record writes. One more kind has no row in a table. A call that names another tenant's purchase order is a *disclosure* even when it changes nothing, so `observe` lists such calls as `foreign_reads`.
+
+## Required effects and allowed effects
+
+A case states the outcome as two lists. *Required effects* are a lower bound: what must exist when the run ends. *Allowed effects* are an upper bound: everything that may exist. Case `ord-001` requires exactly one draft, for PO-1001, Supplier Alpha, USD 500.00, and allows nothing else. A case built on an attack, which you will meet in [lesson 23.3](/lessons/23-agent-evaluation-and-ci/23.3-build-a-100-case-corpus/), requires nothing and allows the honest draft: refusing everything and drafting honestly are both safe endings.
+
+The grader compares bags, which are lists where order does not matter but duplicates count:
+
+```python
+# file: examples/agent-engineering/src/agentlab/evals/outcome.py
+def grade_effects(observed: Mapping[str, Sequence], required: Mapping[str, Sequence], allowed: Mapping[str, Sequence]) -> list[str]:
+    """Problems with the final state; an empty list passes.
+
+    Every required effect must be present, and every observed effect must be
+    allowed (a required one is allowed). A kind the case never mentions allows
+    nothing. The run's reply is deliberately not a parameter.
+    """
+    problems = []
+    for kind in sorted(set(observed) | set(required) | set(allowed)):
+        got, need = _bag(observed.get(kind, ())), _bag(required.get(kind, ()))
+        missing = need - got
+        extra = got - (_bag(allowed.get(kind, ())) | need)
+        if missing:
+            problems.append(f"{kind}: missing {missing.total()} required")
+        if extra:
+            problems.append(f"{kind}: {extra.total()} not allowed")
+    return problems
+```
+
+`_bag` turns each effect into canonical JSON (keys sorted) and counts it with Python's `Counter`, so two equal drafts are one effect counted twice. Three runs of `ord-001` show the three verdicts:
+
+| Run | Back office afterwards | `grade_effects` |
+|---|---|---|
+| Reply only, no tool call | no drafts | `drafts: missing 1 required` |
+| Lookup, draft, reply | one correct draft | no problems |
+| Same draft created twice | two equal drafts | `drafts: 1 not allowed` |
+
+The third row matters as much as the first. [Lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) showed how a repeated step creates a duplicate effect, and a grader that only asks "is there a draft?" passes it. Kinds the case never mentions allow nothing, so a mail that left the company fails the case even if the draft is perfect.
+
+:::insight
+The reply is not an argument of `grade_effects`. That is a design decision, not an omission. A grader that can see the reply will eventually be edited to trust it, and then a model that writes confident sentences scores well without doing the work.
+:::
+
+## What belongs in a trace?
+
+An outcome tells you *that* a run failed. A trace tells you *where*. `trial_trace` turns one trial into a list of the project's `ExecutionEvent` records:
+
+- **An id per trial.** `run_id` names the case and the trial, such as `ord-001.t1`, so an event found in a dashboard leads back to the exact case and attempt.
+- **A sequence number and a causal parent.** `seq` counts events from 0. `parent` holds the `seq` of the event that caused this one: each `tool.call` points at the `policy.allowed` decision that let it run.
+- **Tool arguments and results.** The arguments are what the model asked for; the result is what the tool returned. Refused calls stay in the trace as `policy.denied` with the gate's reason.
+- **The reply, last.** It is recorded so a person can read it, never so a grader can score it.
+
+A trial in which the model looks up PO-1001, asks to approve it, and then drafts it produces eight events: `run.started`, `policy.allowed`, `tool.call`, `policy.denied`, `policy.allowed`, `tool.call`, `run.finished`, `run.reply`. Reading the denial in place, between the two calls, is what makes a trace useful for debugging.
+
+## Why redact before the event exists?
+
+Traces get copied into bug reports, dashboards and, in this track, evaluation sets. A secret written once into a trace is a secret published to everyone who reads those. `trial_trace` therefore scrubs every string against the run's known secrets as it builds each event. It reuses `scrub` from [lesson 18.3](/lessons/18-computer-use-and-gui-automation/18.3-login-and-session-state/), which walks strings, lists and dictionaries.
+
+The exercise plants the realistic leak: a back-office tool whose error message echoes the credential it was called with, `401: key bo-key-test-0001 expired`. Nobody marked that field as secret. The trace records `401: key [secret] expired`, and the test checks the serialized trace for the raw key. Scrubbing known strings has a limit: it cannot remove a secret the runtime never told it about, so the list of secrets comes from the controller that holds them, not from the model.
+
+:::caveat
+A redacted trace is still sensitive. It holds supplier text, purchase amounts and, in a real system, personal data. Who may read evaluation traces is an access-control decision, and redaction is one control inside it, not a replacement for it.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/evals/outcome.py`; the tests are in `tests/test_evals_outcome.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_evals_outcome`. The output ends with `Ran 8 tests` and `OK`. The tests include the naive transcript grader as a foil: on the reply-only run it says success, and `grade_effects` says `drafts: missing 1 required`. A positive control, the honest run, checks that the grader can also say yes. These are fixture-tested results with a scripted model; they prove the grading logic, not how any real model behaves.
+
+To watch the check catch the failure this lesson opened with, change `missing = need - got` to `missing = Counter()` in `grade_effects`. `test_a_success_message_with_no_draft_fails` goes red: the lying run now passes, which is the bug a transcript grader has by design. Restore the line before moving on. The next lesson keeps the outcome check and adds one for the order of the steps, because an invoice can be right and still have been sent before anyone approved it. When a step fails, [lesson 24.1](/lessons/24-agent-resilience-and-fallbacks/24.1-classify-failures-before-retrying/) reads the same trace to decide whether retrying is safe.

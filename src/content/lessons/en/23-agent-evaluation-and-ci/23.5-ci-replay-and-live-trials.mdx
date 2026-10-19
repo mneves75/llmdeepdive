@@ -1,0 +1,135 @@
+---
+id: "23.5-ci-replay-and-live-trials"
+track: "23-agent-evaluation-and-ci"
+order: 5
+title: "CI, Replay and Live Trials"
+summary: "Replaying recorded model replies is deterministic, so it can gate every change, but it proves only the control logic. Fresh trials against a real model vary, so run each case several times and report the sample size, a Wilson interval and the cost next to the success rate."
+tier: "advanced"
+locale: "en"
+prerequisites: ["23.4-calibrate-the-graders"]
+unlocks: ["24.5-recovery-drills", "25.2-a-reproducible-benchmark"]
+analogy: "An airline checks a new cockpit procedure in two ways. In the simulator, a recorded flight is replayed exactly, every time, so if anything changes in the result, the procedure changed. Then come test flights in real weather, which never repeat exactly, cost fuel, and only mean something after several of them, reported with how many were flown. The comparison stops at what the simulator knows. A flight simulator models the aircraft, while a replay here holds recorded model replies, so it cannot show what a new model, or the same model on another day, would actually do."
+teachBack:
+  prompt: "Version B of the assistant succeeds in 27 of 30 live trials, where version A succeeded in 24 of 30. The team wants to announce that B is better. What do you compute, what does it show, and what would you do before saying anything?"
+  modelAnswer: "Compute both Wilson 95% intervals. A's 24 of 30 gives about 62.7% to 90.5%. B's 27 of 30 gives about 74.4% to 96.5%. The intervals overlap over most of their width. So thirty trials each cannot show which version is better. Before announcing anything, run more trials of both on the same held-out cases. At the same rates, 300 trials each give 75.1% to 84.1% and 86.1% to 92.9%. Those no longer overlap. Also compare per case, because a few hard cases can drive the difference. Report sample sizes, intervals, cost and the model revision next to the rates."
+quiz:
+  - question: "A live trial gives 24 successes in 30 runs. Which line belongs in the report?"
+    options: ["80%, with a Wilson 95% interval of about 62.7% to 90.5%, from 30 runs", "80% exactly, since every one of the 30 runs was graded by the same checks", "80%, with a Wilson 95% interval of about 65.7% to 94.3%, from 30 runs", "80%, and since that beats a 75% target, the release target is met for sure"]
+    correctIndex: 0
+    explanation: "wilson_interval(24, 30) gives about 0.627 to 0.905. The 65.7% to 94.3% range comes from the plain rate ± 1.96·sqrt(rate·(1 − rate)/n) formula, wrongly labelled Wilson. Thirty runs leave the true rate anywhere in that interval, so a 75% target is not met for sure, and an exact percentage hides that uncertainty."
+  - question: "The CI replay passes all 64 executed development cases with ScriptedModel. What may the release notes claim?"
+    options: ["That the model completes every single case, recorded as live-model-tested evidence", "That the control logic passes every replayed case, as fixture-tested evidence", "That the held-out cases will pass too, since one generator built every case", "That pass^3 is 100%, since every replayed case passed in three runs in a row"]
+    correctIndex: 1
+    explanation: "A replay feeds recorded replies through the real controller, gate and graders, so it proves their logic and nothing about a model. Held-out cases are a different sample the code was not tuned on. Rerunning a deterministic replay three times gives the same answer three times, which is not three independent trials."
+  - question: "Per-trial success is 0.8, trials are independent, and each case runs three times. What are pass@3 and pass^3?"
+    options: ["pass@3 = 0.512 and pass^3 = 0.992, because more trials make success harder", "pass@3 = 0.8 and pass^3 = 0.8, because repeating a trial leaves its chance unchanged", "pass@3 = 0.992 and pass^3 = 0.512: at least one success, versus all three of them", "pass@3 = 2.4 and pass^3 = 0.8, because the expected successes add up over trials"]
+    correctIndex: 2
+    explanation: "pass@3 is the chance that at least one of three succeeds, 1 − 0.2³ = 0.992; pass^3 is the chance that all three do, 0.8³ = 0.512. The first option swaps them. 2.4 is the expected number of successes, not a probability, and the per-trial chance stays 0.8 while these two summaries move apart."
+citations:
+  - title: "Demystifying evals for AI agents"
+    authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares and Jiri De Jonghe, Anthropic"
+    year: 2026
+    url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
+  - title: "Probable Inference, the Law of Succession, and Statistical Inference"
+    authors: "Edwin B. Wilson"
+    year: 1927
+    url: "https://doi.org/10.1080/01621459.1927.10502953"
+  - title: "τ-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains"
+    authors: "Shunyu Yao, Noah Shinn, Pedram Razavi and Karthik Narasimhan"
+    year: 2024
+    url: "https://arxiv.org/abs/2406.12045"
+updated: "2026-10-18"
+---
+
+A change to the purchasing assistant is ready. The development cases pass. Is the change safe to merge? Later, with a new model behind it, the assistant succeeds in 24 of 30 trials. Is that good, and is it better than last month? These are two different questions, answered by two different kinds of run. This lesson separates them, then reports a success rate the way a reader can check: with its sample size, its uncertainty and its cost.
+
+## Replay and live trials answer different questions
+
+A *replay* runs the cases with recorded model replies: the `ScriptedModel` behind every case in [lesson 23.3](/lessons/23-agent-evaluation-and-ci/23.3-build-a-100-case-corpus/). The controller, the gate, the tools and the graders are the real code. Only the model's words are fixed. Nothing varies between runs, so a failure always means the code changed, and the suite can run on every commit. The course's CI runs `tests/` this way in its `examples` job.
+
+A *live trial* runs a case against a real model. Its replies differ from run to run. Anthropic's 2026 guide on agent evals gives the reason for repeats plainly: "Because model outputs vary between runs, we run multiple trials to produce more consistent results." A live trial costs money or hardware time and needs a model server, so the course's CI runs none.
+
+The two produce different kinds of evidence, which the project README keeps apart. A replay pass is *fixture-tested*: the control logic works against scripted replies. A live pass is *live-model-tested*, for the model and revision recorded. Neither substitutes for the other.
+
+## A replay that gates every change
+
+`regressions` replays every executed development case and returns one line per problem. An empty list means the change may merge:
+
+```python
+# file: examples/agent-engineering/src/agentlab/evals/trials.py
+def regressions(cases: Sequence[Case], gate: Gate = authorize) -> list[str]:
+    """Replay every executed development case; return one line per problem. Empty means the change may merge."""
+    failures = []
+    for case in cases:
+        if case.split != "dev" or not executed(case):
+            continue
+        result = run_assistant_case(case, gate=gate) if case.setup["runner"] == "assistant" else run_case(case)
+        failures += [f"{case.case_id}: {problem}" for problem in result.problems]
+    return failures
+```
+
+It runs 64 cases and never a held-out one, because held-out cases are for release candidates. The exercise injects a plausible regression: a "refactor" of the gate that checks each order against whichever tenant owns it. The unchanged suite catches it in five cases, 11 problem lines: three drafts for another tenant's order that now go through, and two exfiltration attacks whose reads of another tenant's order now succeed. The suite also accepts a valid alternative. Case `ord-001` was recorded as lookup-then-draft; a model that drafts directly passes it unchanged, because the graders of lessons [23.1](/lessons/23-agent-evaluation-and-ci/23.1-define-success-and-capture-traces/) and [23.2](/lessons/23-agent-evaluation-and-ci/23.2-evaluate-valid-paths/) check effects and rules, not one path.
+
+## Repeated trials and what to report
+
+Run a case $k$ times with per-trial success chance $p$. Two summaries from the guide answer different questions. *pass@k* is the chance that at least one of the $k$ trials succeeds; it fits a task where a person picks the one good attempt. *pass^k* is the chance that all $k$ succeed; it fits an assistant that must work every time a buyer asks. τ-bench (Yao et al., 2024) introduced pass^k to measure that consistency, and reported that even the strongest function-calling agents it tested were inconsistent, with pass^8 under 25% in its retail domain.
+
+If the trials are independent, pass@k is $1 - (1 - p)^k$ and pass^k is $p^k$. With $p = 0.8$ and $k = 3$, pass@3 is 0.992 and pass^3 is 0.512. The same agent looks nearly perfect or barely better than a coin, depending on which question you ask. Independence is an assumption: trials of one hard case tend to fail together, so report results per case as well as in total.
+
+## An interval, not a bare percentage
+
+Thirty trials with 24 successes give a rate of 80%. The true rate could be lower or higher; how much? Wilson's score interval (Wilson, 1927) answers that, and the exercise computes it in the standard library:
+
+```python
+# file: examples/agent-engineering/src/agentlab/evals/trials.py
+def wilson_interval(successes: int, n: int, z: float = 1.959964) -> tuple[float, float]:
+    """Wilson's (1927) score interval for a success rate; z = 1.959964 gives 95%.
+
+    Unlike rate ± z·sqrt(rate·(1 - rate)/n), it stays inside [0, 1] and does
+    not collapse to a zero-width interval at 0 or n successes.
+    """
+    if n <= 0 or not 0 <= successes <= n:
+        raise ValueError("need at least one trial and 0 <= successes <= n")
+    rate = successes / n
+    denominator = 1 + z * z / n
+    center = (rate + z * z / (2 * n)) / denominator
+    half = z * math.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n)) / denominator
+    return max(0.0, center - half), min(1.0, center + half)
+```
+
+For 24 of 30 it gives about 62.7% to 90.5%. These are the numbers the cost-per-success calculator of [lesson 25.2](/lessons/25-agent-capstone-and-portfolio/25.2-a-reproducible-benchmark/) uses, and a test checks the Python function against them. The simpler formula in the docstring gives about 65.7% to 94.3% for the same data and claims 30 of 30 is exactly 100% with no uncertainty; Wilson gives about 88.7% to 100%.
+
+Intervals keep comparisons honest. Version B with 27 of 30 has an interval of about 74.4% to 96.5%, which overlaps version A's over most of its width: thirty trials each cannot tell them apart. At 300 trials each, with the same rates, the intervals are 75.1% to 84.1% and 86.1% to 92.9%, and the difference is real. Overlap is a rough reading rather than a formal test, but a report that gives the intervals lets a reader see it.
+
+`run_trials` puts these together. It runs each case a chosen number of times, each from a fresh back office, and reports runs, successes, the Wilson interval, model calls, an estimated cost (calls × a price per call you supply), cost per success, the evidence label and every failure by case and trial. Cost per success counts the failed runs too, which is why it exceeds the cost of one run; lesson 25.2 adds the sandbox and review time.
+
+## Running live trials yourself
+
+A live trial swaps the scripted model for `OpenAICompatibleModel`, wrapped in `LiveAdapter`. The adapter matters: the assistant loop of [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) never sends tool definitions, so the adapter adds the JSON schemas of the two granted tools to every call. It also counts calls, keeps every `transport:`, `http:` or `protocol:` error as a failure of that trial, and records the model name the server reported, which is the server's claim and not proof of the weights behind it.
+
+The following is an illustration that the course's CI does not run, because it needs a model server you start yourself (llama-server, mlx-lm's server or a provider you choose):
+
+```python
+from decimal import Decimal
+
+from agentlab.evals.corpus import build_corpus
+from agentlab.evals.trials import run_trials
+from agentlab.model import OpenAICompatibleModel
+
+held_out = [c for c in build_corpus() if c.split == "held_out" and c.category in ("ordinary", "injection")]
+model = OpenAICompatibleModel("http://127.0.0.1:8080/v1", model="local-model")
+report = run_trials(held_out, lambda case, trial: model, trials=3, cost_per_call=Decimal("0"))
+print(report.successes, report.runs, report.low, report.high, report.evidence, report.served_by)
+```
+
+That is 9 held-out cases × 3 trials = 27 runs. The tool-failure cases stay replay-only and `run_trials` refuses them: their oracle requires the gate to refuse a scripted bad call, which a live model may never make. A report is labelled `live-model-tested` only when every trial used a served model and a server answered; one scripted trial makes it `fixture-tested`, and a run no server answered is labelled `no-model-answered`.
+
+:::warning
+A small live run is a teaching check, not a reliability estimate. Twenty-seven runs on synthetic data say little about production traffic. Report the model, its revision, the date, the hardware or provider, all outcomes and the intervals, and never fold replay passes into the live count.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/evals/trials.py`; the tests are in `tests/test_evals_trials.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_evals_trials`. The output ends with `Ran 14 tests` and `OK`. The tests check the 24-of-30 interval, pass@3 and pass^3, the replay suite and the injected regression, a valid alternative path, 30 scripted trials of which six claim success without drafting, the evidence labels, and the adapter sending tool schemas.
+
+To see why the interval formula matters, replace the line that computes `half` in `wilson_interval` with `center, half = rate, z * math.sqrt(rate * (1 - rate) / n)`. Two tests fail, `test_24_of_30_is_80_percent_between_about_62_7_and_90_5` and `test_thirty_scripted_trials_report_rate_interval_and_cost`: the lower bound becomes about 65.7%, an interval that overstates what 30 trials can show. Restore the line before moving on. [Lesson 24.5](/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/) reuses this replay to rehearse recoveries.

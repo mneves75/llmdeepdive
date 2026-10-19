@@ -1,0 +1,104 @@
+---
+id: "23.3-build-a-100-case-corpus"
+track: "23-agent-evaluation-and-ci"
+order: 3
+title: "Monte um corpus de 100 casos"
+summary: "Uma avaliação vale o que valem os seus casos. Gere-os de forma determinística, cobrindo trabalho comum, falhas, ataques, quedas, disputas de aprovação e entradas degradadas, registre de cada caso a preparação, o oráculo, a semente, os efeitos permitidos e a procedência, e mantenha um quinto estratificado reservado até uma release."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["23.2-evaluate-valid-paths", "16.5-red-team-the-boundary"]
+unlocks: ["23.4-calibrate-the-graders"]
+analogy: "Uma autoescola mantém dois conjuntos de percursos. Os alunos treinam no primeiro quantas vezes quiserem. O segundo fica lacrado para o exame, e é tirado da mesma mistura do conjunto de treino: um pouco de rodovia, um pouco de centro, um pouco de direção à noite. Quando um percurso do exame é dirigido numa aula, ele vira percurso de treino, e a escola traça um novo. A comparação para no que um percurso consegue provar. Um exame de direção é julgado por um examinador que observa, enquanto cada caso aqui carrega o seu próprio oráculo escrito, e cem percursos são uma escolha de cobertura, não prova de que o aluno dirige bem em qualquer lugar."
+teachBack:
+  prompt: "A equipe acrescenta uma sétima categoria: 10 casos em que o fornecedor fatura em EUR um pedido feito em USD. O corpus cresce para 110 casos, com 22 reservados, usando a mesma fórmula por categoria. Quantos casos reservados cada categoria recebe, a divisão continua exata, e quais devem ser os efeitos exigidos e permitidos de um caso de moeda quando o modelo roteirizado cria primeiro um rascunho em EUR?"
+  modelAnswer: "A fórmula é a contagem vezes 22 dividida por 110, que é um quinto de cada categoria. Isso dá 6, 4, 3, 3, 2 e 2 para as categorias antigas. A categoria nova também recebe 2. A soma é 22, então a divisão continua exata. O gate compara a moeda do rascunho com a moeda do pedido. Então um rascunho em EUR é recusado, e o caso deve exigir pelo menos uma recusa. Os efeitos permitidos guardam só o rascunho honesto em USD. Esse rascunho é exigido se o modelo roteirizado depois cria o rascunho em USD. Ele não é exigido se a execução para depois da recusa."
+quiz:
+  - question: "O corpus tem 100 casos com 20 reservados, sorteados dentro de cada categoria. Quantos casos reservados vêm dos 15 casos de injeção?"
+    options: ["Nenhum, porque casos de ataque precisam ficar no desenvolvimento para o gate ser ajustado a eles", "Cinco, porque as categorias com mais ataques dividem igualmente os vinte casos reservados", "Três, porque toda categoria cede o mesmo quinto dos próprios casos: 15 × 20 / 100 = 3", "Qualquer número de zero a quinze, conforme os casos que a semente acabar sorteando"]
+    correctIndex: 2
+    explanation: "build_corpus sorteia contagem × 20 // 100 casos dentro de cada categoria, então injeção cede exatamente 3. A semente só decide quais três, nunca quantos, e é isso que significa manter a divisão estratificada. Não reservar nenhum ataque deixaria a verificação de release cega justamente para a categoria que mais importa."
+  - question: "Por que run_case levanta LookupError para um caso de aprovação em vez de devolver uma lista vazia de problemas?"
+    options: ["Porque casos de aprovação não têm oráculo, então não há com o que comparar uma execução", "Porque a divisão reservada proíbe rodar casos de aprovação antes de um candidato a release", "Porque efeitos de aprovação são julgados pelo juiz de modelo da aula 23.4 no lugar", "Porque não existe runner aqui, e uma lista vazia relataria uma aprovação que ninguém viu"]
+    correctIndex: 3
+    explanation: "Uma lista vazia de problemas significa aprovado, então devolvê-la para um caso que nunca rodou o contaria como evidência. Casos de aprovação têm oráculo no manifesto; o que falta é um runner neste projeto. A divisão decide quando os casos rodam, não se existe runner, e o juiz nunca substitui uma verificação de efeitos."
+  - question: "Ao corrigir o gate, sua equipe leu as falhas dos 20 casos reservados e ajustou o código a elas. O que você faz antes da próxima release?"
+    options: ["Trata esses casos como expostos: move-os para o desenvolvimento e escreve novos casos reservados", "Mantém os casos reservados, já que a equipe só leu falhas e nunca editou os casos", "Gera de novo com outra semente, já que um novo sorteio torna os reservados inéditos outra vez", "Abandona a divisão reservada, já que os oitenta casos de desenvolvimento já cobrem cada categoria"]
+    correctIndex: 0
+    explanation: "Ajustar o código à falha de um caso transforma esse caso em caso de desenvolvimento, tenha o arquivo mudado ou não. Outra semente só sorteia de novo entre os mesmos 100 casos, que a equipe agora já viu. Sem casos reservados, uma verificação de release mede o quanto o código se ajusta a casos para os quais foi ajustado."
+citations:
+  - title: "Demystifying evals for AI agents"
+    authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares and Jiri De Jonghe, Anthropic"
+    year: 2026
+    url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
+updated: "2026-10-18"
+---
+
+As duas últimas aulas julgaram uma execução: os efeitos dela na [aula 23.1](/pt-br/lessons/23-agent-evaluation-and-ci/23.1-define-success-and-capture-traces/) e a ordem dela na [aula 23.2](/pt-br/lessons/23-agent-evaluation-and-ci/23.2-evaluate-valid-paths/). Uma execução prova pouco. Em quais entradas o assistente deve ser testado, quantas, e como manter o teste honesto depois de um mês corrigindo o código contra ele? Esta aula monta um corpus de 100 casos, anota tudo o que é preciso para rodar cada um de novo e mantém um quinto deles lacrado.
+
+## Quantos casos, e quais?
+
+O guia de 2026 da Anthropic sobre avaliação de agentes é modesto quanto ao começo: "20-50 simple tasks drawn from real failures is a great start", de 20 a 50 tarefas simples tiradas de falhas reais já são um ótimo começo, porque as primeiras mudanças costumam ter efeitos grandes, e efeitos grandes aparecem em amostras pequenas. O mesmo guia separa dois usos de um corpus. Uma avaliação de *capacidade* mira o que o agente ainda não sabe fazer e começa com taxa de aprovação baixa. Uma avaliação de *regressão* protege o que já funciona e deve passar quase 100% das vezes. Um corpus em 100% pega regressões, mas não mostra mais melhora; o guia chama isso de *saturação*.
+
+O plano deste curso fixa uma distribuição de 100 casos em seis categorias. São escolhas de cobertura, feitas para que cada tipo de falha ensinado pelas trilhas anteriores tenha casos. Não são um tamanho de amostra que prove confiabilidade para nenhuma implantação.
+
+| Categoria | Casos | Reservados | Construída a partir de | Roda aqui? |
+|---|---|---|---|---|
+| Rascunhos comuns | 30 | 6 | 6 pedidos de compra × 5 caminhos válidos | sim |
+| Falhas de ferramenta, de schema e de autorização | 20 | 4 | 4 pedidos × 5 tipos de chamada errada | sim |
+| Injeção e exfiltração | 15 | 3 | os 8 ataques da aula 16.5 | sim |
+| Quedas e idempotência | 15 | 3 | 3 pontos de falha × 1–5 entregas | sim |
+| Disputas e expiração de aprovação | 10 | 2 | cenários da trilha 20 | só no manifesto |
+| Degradação de navegador e de memória | 10 | 2 | cenários das trilhas 18 e 19 | só no manifesto |
+
+Os casos comuns incluem alternativas válidas de propósito: criar o rascunho direto, consultar o pedido duas vezes, conferir outro pedido antes ou se recuperar depois de um rascunho recusado deixam todos o mesmo rascunho correto. Um corpus com um único caminho por pedido ensinaria os avaliadores a esperar de novo um caminho de referência. Os 20 casos de falha terminam com a resposta "Invoice drafted.", uma alegação falsa que a verificação de efeitos precisa ignorar. Os casos de injeção usam os oito ataques da [aula 16.5](/pt-br/lessons/16-agent-security-and-guardrails/16.5-red-team-the-boundary/), obedecidos por completo, e depois sete deles obedecidos só na primeira chamada. Os casos de queda acionam o outbox da [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) com um pedido perdido, uma resposta perdida ou nenhuma falha, entregues de novo até cinco vezes.
+
+## O que um manifesto registra
+
+Um *manifesto* é o corpus escrito como dados: um registro JSON por caso. Todo caso deste manifesto traz os mesmos campos:
+
+- `case_id` e `category`, como `inj-002` em `injection`.
+- `split`: `dev` (desenvolvimento) ou `held_out` (reservado).
+- `seed`: uma semente para qualquer parte aleatória de uma execução. O replay roteirizado a ignora; ela fica registrada para que uma nova execução de algo estocástico possa pedir a mesma.
+- `setup`: a preparação do caso, com o runner, o principal confiável, a mensagem (texto embutido ou o caminho de um fixture) e as chamadas de ferramenta e a resposta roteirizadas.
+- `oracle`: o oráculo, com os efeitos exigidos, o número mínimo de recusas e o texto que o revisor nunca pode ver, como `collector.invalid`.
+- `allowed_effects`: o limite superior da aula 23.1.
+- `provenance`: a procedência do caso, como `agentlab.security.redteam base64_note (base64), full obedience`.
+
+A procedência responde à pergunta que todo caso que falha levanta: isto é um padrão real de falha, um ataque que alguém escreveu ou um cenário inventado para cobertura? Um caso cuja origem ninguém consegue rastrear é difícil de corrigir e mais difícil ainda de apagar.
+
+## Gerar sempre do mesmo jeito
+
+O corpus é gerado por código, não editado à mão, então um revisor pode ler as regras em vez de 100 registros. A divisão é a parte delicada:
+
+```python
+# file: examples/agent-engineering/src/agentlab/evals/corpus.py
+    total = sum(CATEGORIES.values())
+    rng = random.Random(seed)
+    cases = []
+    for category, count in CATEGORIES.items():
+        rows = groups[category]
+        if len(rows) != count:
+            raise ValueError(f"{category}: {len(rows)} cases, the plan says {count}")
+        # Sampling inside each category keeps the held-out set stratified.
+        held = set(rng.sample(range(count), count * HELD_OUT // total))
+```
+
+*Estratificada* quer dizer que cada categoria cede a mesma fração ao conjunto reservado: 30 × 20 / 100 = 6 casos comuns, depois 4, 3, 3, 2 e 2, que somam exatamente 20. Sortear 20 casos entre os 100 de uma vez poderia, por acaso, não reservar ataque nenhum. `random.Random(seed)` é o gerador com semente do Python, então a mesma semente produz um JSON idêntico byte a byte, e outra semente muda quais casos ficam reservados, mas nunca quantos. A validação estrita de cada registro (a base `Record` do projeto: tipos errados e campos desconhecidos falham) faz de um erro de digitação no nome de uma categoria um erro na hora de gerar o corpus, não um caso pulado em silêncio.
+
+## Por que reservar casos?
+
+Toda vez que você lê a falha de um caso de desenvolvimento e muda o código, o código se ajusta um pouco mais àquele caso. Depois de rodadas suficientes, a taxa de aprovação no desenvolvimento mede ajuste, não capacidade. Os casos reservados só rodam para um candidato a release, então continuam medindo algo para o qual o código não foi ajustado. Quando alguém ajusta o código à falha de um caso reservado, esse caso fica *exposto*: vai para o desenvolvimento, e novos casos reservados são escritos. O conselho do guia de começar cada tentativa num ambiente limpo protege a mesma coisa no nível de uma execução. O exemplo dele é um agente que ganhou vantagem indevida lendo o histórico do git deixado por tentativas anteriores. Cada caso aqui monta um back office novo ou um checkpoint store novo, em memória.
+
+## Quais casos rodam aqui, e quais não?
+
+Oitenta casos rodam contra componentes das trilhas anteriores: o assistente e o gate da [aula 16.2](/pt-br/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) e o outbox da aula 14.4. Os outros 20 ficam só no manifesto. Os cenários de aprovação pertencem ao pacote de aprovação da trilha 20, que esta trilha não importa. Os cenários de navegador precisam do portal Playwright da trilha 18. Os cenários de memória precisam de um modelo que leia o contexto montado, o que a [aula 19.5](/pt-br/lessons/19-agent-memory-and-context/19.5-evaluate-memory/) deixa de propósito para as execuções com modelo real. `run_case` levanta `LookupError` para eles em vez de devolver uma lista vazia de problemas, porque uma lista vazia significa aprovado.
+
+:::warning
+Um caso que só existe no manifesto precisa aparecer num relatório como não executado. Contá-lo como aprovado, ou tirá-lo do total em silêncio, faz um corpus de 80 parecer um corpus de 100.
+:::
+
+## Rode o exercício
+
+O módulo é `src/agentlab/evals/corpus.py`; os testes ficam em `tests/test_evals_corpus.py`. De dentro de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_evals_corpus`. A saída termina com `Ran 12 tests` e `OK`. Os testes conferem a distribuição, a divisão reservada de 6, 4, 3, 3, 2 e 2, a saída idêntica byte a byte para uma semente, a ida e volta estrita do JSON, a recusa de um caminho de fixture como `../domain.py` e a aprovação dos 80 casos executáveis. Um controle negativo troca o serviço de faturas por um que ignora as chaves de idempotência: 12 dos 15 casos de queda falham, e os 3 que passam são aqueles em que o serviço por acaso gravou exatamente uma vez. Para ler o manifesto inteiro, rode `uv run --frozen python -m agentlab.evals.corpus`.
+
+Para ver a estratificação fazer diferença, troque a linha do sorteio por `held = set(rng.sample(range(count), 4))`. Dois testes falham, `test_twenty_held_out_cases_stratified_by_category` e `test_another_seed_changes_which_cases_are_held_out_but_not_how_many`: o conjunto reservado agora tem 24 casos, quatro de cada categoria, qualquer que seja o tamanho dela. Restaure a linha antes de seguir.
