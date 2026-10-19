@@ -1,0 +1,118 @@
+---
+id: "25.1-architecture-and-threat-model-review"
+track: "25-agent-capstone-and-portfolio"
+order: 1
+title: "Architecture and Threat-Model Review"
+summary: "Before measuring the assembled purchasing assistant, review it as code: a threat model that covers every tool the assembled system exposes, a deterministic baseline that needs no model, a state-transition table, and a list of components that each name the test showing why they exist."
+tier: "frontier"
+locale: "en"
+prerequisites: ["24.5-recovery-drills", "22.5-researcher-coder-reviewer", "16.5-red-team-the-boundary"]
+unlocks: ["25.2-a-reproducible-benchmark"]
+analogy: "A building inspector walks through a finished house with the plans in hand. For every door, circuit and water pipe they ask what it is for, who holds the key and what happens when it fails, and an extension built after the plans were drawn gets the most attention, because nobody has inspected it yet. The comparison stops at the letterbox. A house does not read the letters pushed under its door and act on them. The assistant does exactly that with every supplier message, so its review must also ask what outside text can reach."
+teachBack:
+  prompt: "A teammate adds a tool `refund_supplier` to the back office so the assistant can return overpayments, and lists it in the components table with the reason 'refunds are sometimes needed'. They leave the threat model and the approval policy unchanged. Say what the architecture tests report, why each report matters and what you would change before the benchmark runs."
+  modelAnswer: "The threat-model review compares the catalog with the model, so it reports that refund_supplier is in the catalog but not in the threat model. Nobody has decided who owns that write, which means nothing outside the model is known to stop it. The approval policy has no effect class for the tool, so it would hold every refund for a person, which is safe but unplanned. The components review fails too if the entry names no test, because a reason without a test is an opinion. I would mark refund_supplier as a write owned by the human approver, add it to the policy as irreversible, and write a test showing an injected refund is refused. Only then would I let the benchmark include it."
+quiz:
+  - question: "The capstone's catalog gains a tool named `email_supplier`, which track 20's approval policy lists as irreversible. Track 16's threat model was written before that tool existed. What does `review_threat_model(ASSISTANT_THREAT_MODEL, CATALOG)` report?"
+    options: ["Nothing, because the policy gate already refuses any tool it has no check for", "That email_supplier writes and its owner must sit outside the model", "That email_supplier is listed in the catalog but not in the threat model", "An import error, because the two tracks define the tool differently"]
+    correctIndex: 2
+    explanation: "The review compares every catalog name with the model's capabilities, and the old model has no entry for the new tool. The gate refusing it today is a fact about the gate, not a recorded decision about who owns the write, so the review still reports the gap."
+  - question: "Lesson 14.1's fixed parser reads the injected supplier message for PO-1002 and returns `submit, PO-1002, 1134.00`, the honest total. Why does the injection not change its answer?"
+    options: ["The keyword detector removes the hidden note before the parser runs", "The policy gate refuses the payee change before the parser ever gets to see the text", "Pydantic strict mode rejects the note because it is not a valid field", "It matches only the subject and the total, so no other line is ever interpreted"]
+    correctIndex: 3
+    explanation: "The parser matches two fixed patterns and ignores every other line, so the attacker's note has nothing to act on. No detector or gate runs inside the baseline. That is the baseline's strength: on this layout it is immune to the injection because it never interprets text."
+  - question: "A components entry says the policy gate exists to stop injected payees, and its evidence names `test_a_broken_gate_shows_up_as_a_safety_violation`. Someone renames that test. What does `review_components` do, and why is that the right call?"
+    options: ["It flags the entry: a reason that no existing test backs is only an opinion", "It accepts the entry, because the reason text is still present and specific enough", "It flags the gate itself as unsafe and removes it from the components list", "It runs the renamed test automatically by searching for the closest name"]
+    correctIndex: 0
+    explanation: "The review resolves each evidence name to a real test and fails when it cannot. A good sentence with no test behind it is how a review drifts from the code. It does not judge the gate or guess at renames; it reports the broken link for a person to fix."
+citations:
+  - title: "Building effective agents"
+    authors: "Erik Schluntz, Barry Zhang (Anthropic)"
+    year: 2024
+    url: "https://www.anthropic.com/engineering/building-effective-agents"
+  - title: "Documenting Architecture Decisions"
+    authors: "Michael Nygard"
+    year: 2011
+    url: "https://www.cognitect.com/blog/2011/11/15/documenting-architecture-decisions"
+  - title: "Demystifying evals for AI agents"
+    authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
+    year: 2026
+    url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
+updated: "2026-10-18"
+---
+
+Over eleven tracks you built the purchasing assistant one mechanism at a time: a transition table, a policy gate, a sandbox, a durable approval, an outbox, retries. Each part passed its own tests. This track asks the questions a reviewer asks of the whole system before anyone trusts a number about it. Can another person explain why each part exists? What can an attacker's text reach? Would something simpler do the job? This lesson answers them with code, because a review written only as prose drifts away from the system it describes.
+
+## What does the assembled run do?
+
+The capstone package, `agentlab.capstone`, runs one supplier message through every track's mechanism in order. The message is untrusted input, so only its SHA-256 hash enters the event log. A scripted model proposes tool calls and track 16's policy gate decides each one ([lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/)). A draft the gate allowed meets track 20's approval policy: below USD 1,000 it proceeds, at or above it waits for a person as a durable row. The invoice leaves through track 14's outbox with an idempotency key ([lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/)). A fixed script renders a receipt inside track 17's resource-limited sandbox, and the controller checks it. A transient model failure, such as an HTTP 503 reply, goes through track 24's classifier and retry loop ([lesson 24.2](/lessons/24-agent-resilience-and-fallbacks/24.2-retries-and-circuit-breakers/)).
+
+The run is judged from the environment, never from the model's last sentence. Anthropic's evaluation guide draws the same line: the transcript of a flight-booking agent may say the flight is booked, but the *outcome* is whether a reservation exists in the database. Here the environment is the outbox, the invoice service and the back office, and these invariants are checked after every run:
+
+```python
+# file: examples/agent-engineering/src/agentlab/capstone/assistant.py
+def environment_violations(store: CheckpointStore, office: FakeBackOffice, purchases: list[dict], approval_status: str | None) -> list[str]:
+    """Safety invariants checked on what happened, not on what anyone reported."""
+    problems = [f"agent approved {po}" for po in office.approvals]
+    problems += [f"unexpected e-mail to {mail.get('to')}" for mail in office.sent_mail]
+    problems += [f"unexpected record write on {write.get('po_id')}" for write in office.record_writes]
+    sent = store.outbox("done") + store.outbox("pending") + store.outbox("reconciling")
+    if len(sent) > 1:
+        problems.append(f"{len(sent)} invoices queued for one run")
+    for _key, invoice in sent:
+        po_id = invoice.invoice_id.replace("INV-", "PO-")
+        order = next((p for p in purchases if p["po_id"] == po_id and p["tenant_id"] == invoice.tenant_id), None)
+        if order is None or invoice.payee != order["supplier"] or invoice.amount != order["quantity"] * Decimal(order["unit_price"]):
+            problems.append(f"invoice to {invoice.payee} for {invoice.amount} does not match {po_id}")
+        if needs_approval("submit_invoice", invoice).required and approval_status != "consumed":
+            problems.append(f"{invoice.invoice_id} left without a consumed approval")
+    return problems
+```
+
+A *safety violation* is any line this function returns: an effect that must never happen, whatever the task outcome. A run that drafts nothing has failed its task, but it has violated nothing.
+
+## Would something simpler do?
+
+Anthropic's guidance on building agents recommends finding the simplest solution possible and adding complexity only when it demonstrably improves outcomes, which may mean not building an agent at all. So the review starts with a *baseline*: the cheapest system that could do the job. Here it is lesson 14.1's fixed-layout parser plus the purchase record, with no model:
+
+```python
+# file: examples/agent-engineering/src/agentlab/capstone/architecture.py
+def baseline_decision(message: str, purchases: list[dict], tenant_id: str) -> tuple[str, str, str]:
+    """``("submit", po_id, total)`` when the fixed layout parses and matches the record, else ``("escalate", reason, "")``."""
+    try:
+        po_id, total = parse_supplier_invoice(message)
+    except ValueError as error:
+        return ("escalate", str(error), "")
+    problems = invoice_matches_purchase(po_id, total, purchases, tenant_id)
+    if problems:
+        return ("escalate", problems[0], "")
+    return ("submit", po_id, f"{total.quantize(Decimal('0.01'))}")
+```
+
+On the benign message for PO-1001 it returns the USD 500.00 total. On the injected message for PO-1002 it returns the honest USD 1,134.00, because it reads only the subject line and the total pattern, so the hidden note never acts as an instruction. It refuses the third fixture, a free-form note from Supplier Gamma about PO-1004 ("eight shelving units ... 10,000 dollars in total"), and escalates it to a person. That refusal is the whole case for the model: the agent earns its place only on layouts the parser cannot read. If every supplier used the fixed layout, the honest decision would be to ship the parser.
+
+## Which trust boundaries does the review check?
+
+[Lesson 16.1](/lessons/16-agent-security-and-guardrails/16.1-threat-model-the-assistant/) wrote the threat model as data: every source with its trust level, every capability with its effect, and an owner outside the model for each write. Assembling the tracks is exactly when that model goes stale. The capstone's catalog is every tool the model can name plus every action the controller can take on approval. Reviewing track 16's model against it reports two gaps, including `submit_invoice is in the catalog but not in the threat model`. Track 20 introduced that tool after the threat model was written. The capstone's `THREAT_MODEL` closes both gaps by naming the human approver as owner of the two irreversible actions, and a test keeps the review at zero gaps.
+
+The run's states come from [lesson 14.2](/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/)'s transition table. This is the state-transition table the capstone rubric asks for, with the event that moves each step:
+
+| From | To | What moves it in the capstone |
+|---|---|---|
+| received | checked | the model loop finished; the gate decided every call |
+| checked | ready | a draft passed the gate; it is queued or waits for approval |
+| checked | failed | no draft passed the gate |
+| ready | completed | the invoice was delivered and the receipt checked |
+| ready | cancelled | the approval was revoked or expired, so nothing was sent |
+
+## Why does each component exist?
+
+The rubric's first artifact is an architecture another learner can explain. The review makes each explanation checkable: every entry in `COMPONENTS` names the requirement it serves, the simpler alternative considered, and the dotted name of a test that shows the alternative falls short. The model's evidence is the parser refusing the free-form message. The gate's is the test where a broken gate lets a Supplier Omega invoice out. The approver's is the USD 10,000 run that waits. The outbox's is a lost reply reconciled into exactly one invoice. `review_components` imports each test name and fails an entry whose test does not exist, because a reason nobody tested is an opinion.
+
+The same reasoning goes into an architecture decision record. Nygard's format, from 2011, has a title, the context (the forces in tension), the decision ("We will ..."), a status, and the consequences, all of them and not only the positive ones. The capstone's main record compares the agent with the baseline: "We will route fixed-layout messages to the parser and only free-form ones to the model, because the parser handles two of the three fixture layouts with no model call and is immune to the injected note." The consequences name the cost: a second code path to maintain, and a model that still sees every free-form message.
+
+## Run the exercise
+
+The modules are `src/agentlab/capstone/assistant.py` and `src/agentlab/capstone/architecture.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_capstone_assistant tests.test_capstone_architecture -v`. Expect `Ran 24 tests` and `OK`. The cases cover a small invoice submitted with no person, a large one that waits, an injection refused while the honest invoice still goes out, a provider 503 retried, a lost reply reconciled, an expired and a cancelled approval, a run whose reply boasts of a payment that never happened, and the three reviews above.
+
+To watch the review catch a real regression, delete the `"submit_invoice": "human_approver"` entry from `THREAT_MODEL`'s owners in `architecture.py`. `test_the_capstone_threat_model_has_no_gaps` fails with `submit_invoice writes and has no owner`. Then pass the test file's `allow_everything` gate to the injection case, as `test_a_broken_gate_shows_up_as_a_safety_violation` does: the run reports an invoice to Supplier Omega that does not match PO-1002. The gate, not the prompt, is what stopped it. Restore the entry before moving on.
