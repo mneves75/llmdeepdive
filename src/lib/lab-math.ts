@@ -79,6 +79,27 @@ export function costComparison(input: CostInput): { managed: number; rented: num
   return { managed, rented, gpus, utilisation, verdict }
 }
 
+/** "USD 0.2352": the course writes prices with the code, never a symbol (a bare `$` breaks remark-math). */
+export function usdFormatter(locale: NumberLocale, maximumFractionDigits: number): (value: number) => string {
+  const money = new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { minimumFractionDigits: 2, maximumFractionDigits })
+  return (value) => `USD ${money.format(value)}`
+}
+
+/** "80% (63–90%)": a success rate with its interval, as whole percentages. */
+export function rateWithInterval(whole: Intl.NumberFormat, result: { rate: number; low: number; high: number }): string {
+  return `${whole.format(result.rate * 100)}% (${whole.format(result.low * 100)}–${whole.format(result.high * 100)}%)`
+}
+
+/** Exactly two decimals, in the page's convention. */
+export function twoDecimals(locale: NumberLocale): Intl.NumberFormat {
+  return new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** Fills `{name}` slots in lab copy that reaches the script through `data-*`. */
+export function fillTemplate(template: string | undefined, values: Record<string, string>): string {
+  return (template ?? '').replace(/\{(\w+)\}/gu, (_, key: string) => values[key] ?? '')
+}
+
 /** Up to one decimal place, with no trailing ".0" on whole numbers. */
 export function upToOneDecimal(locale: NumberLocale): Intl.NumberFormat {
   return new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { maximumFractionDigits: 1 })
