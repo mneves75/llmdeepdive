@@ -185,8 +185,9 @@ gap, so the whole chart is a portrait atlas plate (1000 × 1180 with two parts).
 Star size is the lesson's in-degree in the prerequisite graph; star pigment is
 its tier; within a band, constellations stand left to right in track order. Each
 band carries its part's name in its top-left corner as a small plate title that
-links to that part in the tracks index; it is hidden below a 45.5rem chart, and in
-the 3D sky it steps aside while the dome pushes a track name onto it. A graticule
+links to that part in the tracks index; it is hidden below a 45.5rem chart and while
+the 3D sky is live (the dome moves track names into the corners). The chart key
+always names both bands, so the parts stay legible at every width and in both modes. A graticule
 appears only where it locates something. Every page is complete as HTML and
 SVG before any WebGL loads, and every string is HTML.
 

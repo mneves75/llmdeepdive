@@ -53,7 +53,7 @@ function mountSkyStage(figure: HTMLElement): () => void {
   const poster = figure.querySelector<HTMLElement>('.sky__poster')
   const svg = figure.querySelector<SVGSVGElement>('.sky__chart')
   const toggle = figure.querySelector<HTMLInputElement>('[data-motion-toggle]')
-  const labels = [...figure.querySelectorAll<HTMLElement>('[data-constellation-label], [data-part-label]')]
+  const labels = [...figure.querySelectorAll<HTMLElement>('[data-constellation-label]')]
   if (!canvas || !poster || !svg) return () => {}
 
   let controller: Controller | null = null

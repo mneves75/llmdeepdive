@@ -279,7 +279,7 @@ export interface SkyOptions {
   figure: HTMLElement
   canvas: HTMLCanvasElement
   svg: SVGSVGElement
-  /** Constellation names (`li[data-constellation-label]`, centred) and part names (`li[data-part-label]`, top-left), positioned by --x/--y. */
+  /** Constellation names: `li[data-constellation-label]`, positioned by --x/--y. */
   labels: HTMLElement[]
   toggle: HTMLInputElement | null
   /** Called once, after the first frame has been drawn. */
@@ -538,13 +538,8 @@ export function mountSky(options: SkyOptions): SkyController {
       // at that edge's projected point plus its flat offset, so the stagger
       // between neighbouring names survives the dome compressing the corners.
       attachY: Number.parseFloat(label.dataset.attachY ?? '') || read('--y') * frame.height,
-      // A part name hangs from its top-left corner rather than its centre.
-      start: label.hasAttribute('data-part-label'),
       halfWidth: 0,
       halfHeight: 0,
-      /** Last placed position in pixels, for the overlap check without a layout read. */
-      px: Number.NaN,
-      py: Number.NaN,
     }
   })
   function measureLabels(): void {
@@ -565,29 +560,11 @@ export function mountSky(options: SkyOptions): SkyController {
       const pixelsPerUnit = Math.min(width / frame.width, height / frame.height)
       // Kept inside the figure by the label's own half-size: a label pushed
       // past the edge would widen the page.
-      const lowX = anchor.start ? 0 : anchor.halfWidth
-      const lowY = anchor.start ? 0 : anchor.halfHeight
-      const x = Math.min(Math.max(((point.x + 1) / 2) * width, lowX), width - anchor.halfWidth * 2 + lowX)
-      const y = Math.min(Math.max(((1 - point.y) / 2) * height + (anchor.y - anchor.attachY) * pixelsPerUnit, lowY), height - anchor.halfHeight * 2 + lowY)
-      anchor.px = x
-      anchor.py = y
+      const x = Math.min(Math.max(((point.x + 1) / 2) * width, anchor.halfWidth), width - anchor.halfWidth)
+      const y = Math.min(Math.max(((1 - point.y) / 2) * height + (anchor.y - anchor.attachY) * pixelsPerUnit, anchor.halfHeight), height - anchor.halfHeight)
       anchor.label.style.setProperty('--x', `${((x / width) * 100).toFixed(3)}%`)
       anchor.label.style.setProperty('--y', `${((y / height) * 100).toFixed(3)}%`)
       anchor.label.toggleAttribute('data-occluded', facing < 0.15)
-    }
-    // The dome pushes corner names toward the plate's corners, where the part
-    // names sit; a part name steps aside while it would cover a track name.
-    // Boxes from the numbers just written, so this reads no layout.
-    const boxOf = (anchor: (typeof anchors)[number]) => anchor.start
-      ? { left: anchor.px, right: anchor.px + anchor.halfWidth * 2, top: anchor.py, bottom: anchor.py + anchor.halfHeight * 2 }
-      : { left: anchor.px - anchor.halfWidth, right: anchor.px + anchor.halfWidth, top: anchor.py - anchor.halfHeight, bottom: anchor.py + anchor.halfHeight }
-    const names = anchors.filter((anchor) => !anchor.start && Number.isFinite(anchor.px)).map(boxOf)
-    for (const anchor of anchors) {
-      if (!anchor.start || !Number.isFinite(anchor.px)) continue
-      const own = boxOf(anchor)
-      // A graze of a few pixels against a numeral is not covering; 4px of real overlap is.
-      const covers = names.some((name) => Math.min(own.right, name.right) - Math.max(own.left, name.left) > 4 && Math.min(own.bottom, name.bottom) - Math.max(own.top, name.top) > 4)
-      anchor.label.toggleAttribute('data-covering', covers)
     }
   }
 
@@ -760,7 +737,6 @@ export function mountSky(options: SkyOptions): SkyController {
         anchor.label.style.setProperty('--x', anchor.original.x)
         anchor.label.style.setProperty('--y', anchor.original.y)
         anchor.label.removeAttribute('data-occluded')
-        anchor.label.removeAttribute('data-covering')
       }
       disposeSubtree(scene)
       renderer.dispose()
