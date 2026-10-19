@@ -52,7 +52,7 @@ class CleanReproduction(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             out = Path(empty) / "report.json"
             # -I ignores PYTHON* variables and the current directory; a different hash seed must not matter.
-            env = {"PATH": os.environ.get("PATH", ""), "PYTHONHASHSEED": "12345"}
+            env = {"PATH": os.environ.get("PATH", "")}
             subprocess.run([sys.executable, "-I", "-m", "agentlab.capstone.benchmark", str(out)], cwd=empty, env=env, check=True, capture_output=True, timeout=120)
             fresh = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(reproduces(local, fresh), [])

@@ -12,7 +12,7 @@ control. This module is a learning subset, not a compliant implementation:
 - A static bearer token, declared in the card, authenticated on every call.
 
 Not implemented: streaming, ``SubscribeToTask``, push notifications,
-``ListTasks`` (a core operation, refused here), the extended card,
+``ListTasks`` (an operation section 3 defines, refused here), the extended card,
 multi-turn input (a ``taskId`` only ever meets a terminal task), task
 history and ``historyLength``, ``url``/``raw`` parts, extensions, card
 signatures, card caching headers (section 8.6), tenants, the gRPC and
