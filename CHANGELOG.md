@@ -54,7 +54,10 @@ longer give the answer away by its length.
   result line, as lesson titles already did.
 - `content:parity` fails a locale where the correct quiz option is uniquely
   the longest in more than 20% of items or uniquely the shortest in more than
-  35%, or any track over half. Before this release the correct option was
+  35%, or any track over half in either direction, and requires a track of
+  ten or more items to put the correct option at a unique length extreme at
+  least a tenth of the time, so striking both extremes is no strategy either.
+  Before this release the correct option was
   uniquely the longest in 314 of 352 English items (89%).
 - **Every quiz in tracks 0–13 was repaired** under the assessment-repair
   procedure (`docs/WRITING.md`), which now also allows tightening a correct
