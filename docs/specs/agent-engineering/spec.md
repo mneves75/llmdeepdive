@@ -182,7 +182,7 @@ primary source keeps its caveat and is listed as unresolved.
    the examples suites pass.
 2. The quiz length-cue census: the correct option is uniquely the longest in
    at most 20% of items per locale, uniquely the shortest in at most 35%, and
-   either in at most half of any track's items (`content:parity` enforces it).
+   each direction in at most half of any track's items, and a track of ten or more items has the correct option at a unique extreme in at least a tenth of them, so "never pick the longest or the shortest" is not a strategy either (`content:parity` enforces all of it).
 3. The home page, tracks index and both locales show both parts in one chart
    without overlapping names at 320, 768, 1280 and 1440 px.
 4. Every runnable lesson snippet maps to a passing test; every other one is

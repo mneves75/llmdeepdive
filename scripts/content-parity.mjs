@@ -21,6 +21,9 @@ const STRUCTURAL_TRACK_FIELDS = ['id', 'order', 'tier', 'part']
 // ~25% each way. Longest is capped below chance because the habit it guards
 // against is the one this corpus had; shortest only at chance-plus-margin,
 // because tightening a long correct answer is how a repair can overshoot.
+// A track of ten or more items must place the correct option at a unique
+// length extreme at least this often, or "never pick an extreme" works.
+const LENGTH_CUE_FLOOR = 0.1
 const LENGTH_CUE_CAPS = {
   longest: { corpus: 0.2, track: 0.5 },
   shortest: { corpus: 0.35, track: 0.5 },
@@ -244,6 +247,12 @@ try {
 
   const cueSummary = []
   for (const [locale, tracks] of lengthCues) {
+    // The opposite habit: strike both extremes when the answer never sits at one.
+    for (const [track, counts] of tracks) {
+      if (counts.items >= 10 && counts.longest + counts.shortest < counts.items * LENGTH_CUE_FLOOR) {
+        failures.push(locale + ' track "' + track + '": the correct option is never the uniquely longest or shortest in ' + (counts.longest + counts.shortest === 0 ? counts.items : 'all but ' + (counts.longest + counts.shortest) + ' of ' + counts.items) + ' quiz items (floor ' + LENGTH_CUE_FLOOR * 100 + '%)')
+      }
+    }
     for (const [direction, caps] of Object.entries(LENGTH_CUE_CAPS)) {
       let items = 0
       let cued = 0

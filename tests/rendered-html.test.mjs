@@ -432,3 +432,25 @@ test('home and tracks index list every track under its part, in order', () => {
     }
   }
 })
+
+// A lab's worked default must pass its own input rules, or the browser blanks
+// the lab on load. 25.2 shipped data-integer="false" on decimal fields: the
+// attribute is present, so every cost was rejected before anyone typed.
+test('every lab input ships a default its own rules accept', async () => {
+  const { parseDecimal } = await import('../src/lib/lab-form.ts')
+  let checked = 0
+  for (const page of pages()) {
+    if (!page.html.includes('class="lab')) continue
+    const locale = page.route.startsWith('/pt-br/') ? 'pt-br' : 'en'
+    for (const [tag] of page.html.matchAll(/<input\b[^>]*\bdata-min="[^"]*"[^>]*>/gu)) {
+      const attr = (name) => tag.match(new RegExp(`\\s${name}(?:="([^"]*)")?(?=[\\s>/])`, 'u'))
+      const value = parseDecimal(attr('value')?.[1] ?? '', locale)
+      const label = `${page.route} input ${attr('name')?.[1]}`
+      assert.notEqual(value, null, `${label}: default does not parse`)
+      assert.ok(value >= Number(attr('data-min')?.[1]) && value <= Number(attr('data-max')?.[1] ?? Infinity), `${label}: default ${value} outside its bounds`)
+      if (attr('data-integer')) assert.ok(Number.isInteger(value), `${label}: default ${value} is not a whole number but the field requires one`)
+      checked += 1
+    }
+  }
+  assert.ok(checked > 20, `only ${checked} lab inputs found`)
+})

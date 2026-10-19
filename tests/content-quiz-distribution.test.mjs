@@ -91,6 +91,19 @@ test('content parity rejects a corpus where the correct option is usually the sh
   assert.match(result.stderr, /correct option is uniquely the shortest in 8 of 8 quiz items/u)
 })
 
+// The opposite habit: if the correct option is never the uniquely longest or
+// shortest, a learner can strike both extremes and halve the guess.
+test('content parity rejects a track whose correct option is never at a length extreme', () => {
+  // Twelve items; the correct option is always a middle length, the extremes always distractors.
+  const middleCorrect = (item, correct) => {
+    const distractors = ['Short', 'Longest of all these options', 'Medium answer']
+    return [0, 1, 2, 3].map((index) => (index === correct ? 'Medium sized' : distractors.shift()))
+  }
+  const result = runFixture([0, 1, 2, 3, 1, 2, 3, 0, 2, 3, 0, 1], middleCorrect)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /track "1-track": the correct option is never the uniquely longest or shortest in 12 quiz items/u)
+})
+
 test('content parity rejects a track with no lessons', () => {
   // The sky skips a track without lessons, so only this gate keeps one from vanishing.
   const root = mkdtempSync(join(tmpdir(), 'llmdeepdive-empty-track-'))
