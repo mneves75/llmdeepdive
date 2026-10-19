@@ -10,7 +10,8 @@ web
 ## Users
 
 Independent English- and Brazilian Portuguese-speaking learners who want to
-understand large language models from first principles. The course must work for
+understand large language models from first principles and to build
+software that acts on a model's output safely. The course must work for
 curious beginners while continuing far enough for technical practitioners who
 want mathematical, implementation, training, inference, and frontier-systems
 depth. Learners study asynchronously on their own devices and need clear
@@ -43,12 +44,20 @@ The interface supports light, dark, and operating-system themes.
 
 ## Capabilities and Constraints
 
-- 125 current lessons in each of English and pt-BR across fourteen ordered
-  tracks, with parity enforced at build time; track 10 covers video models and
-  JEPA-family world models, and tracks 11–13 cover running models on a Mac
-  Studio Ultra with MLX, on NVIDIA DGX machines with CUDA, and with llama.cpp.
-- three interactive labs (memory budget, cost per token, video tokens) that
-  server-render their defaults and stay usable without JavaScript.
+- 185 current lessons in each of English and pt-BR across 26 ordered tracks in
+  two parts, with parity enforced at build time. Part one (tracks 0–13) is how
+  a model works: track 10 covers video models and JEPA-family world models,
+  and tracks 11–13 cover running models on a Mac Studio Ultra with MLX, on
+  NVIDIA DGX machines with CUDA, and with llama.cpp. Part two (tracks 14–25) is
+  building agent systems, with a runnable Python project
+  (`examples/agent-engineering/`) whose tests CI runs and whose code the
+  lessons quote verbatim.
+- seven interactive labs (memory budget, cost per token, video tokens, context
+  budget, repair-loop budget, trajectory checker, cost per successful task)
+  that server-render their defaults and stay usable without JavaScript.
+- quizzes whose correct answer cannot be found by picking the longest or the
+  shortest option (a build gate), and lesson completion that remains a
+  participation check, not a certification of external project work.
 - a course player on every lesson: the track's syllabus with reading times and
   completion, the lesson's step list, and "continue where you left off" on the
   home and track pages, all applied from the device after render.

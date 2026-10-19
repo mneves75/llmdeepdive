@@ -5,6 +5,98 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-10-18
+
+The course gains a second part: twelve tracks on building agent systems, with
+a runnable project built across all of them. The existing lessons were
+repaired where an independent review found them wrong, and their quizzes no
+longer give the answer away by its length.
+
+### Added
+
+- **Tracks 14–25, *Building agent systems*, 60 lessons in English and
+  Portuguese:** agent architecture and durable state, tool contracts and MCP,
+  security and trust boundaries, sandboxed execution, computer use and GUI
+  automation, memory and context, human approval and durable pauses, bounded
+  self-correction, multi-agent systems and A2A, trajectory evaluation and CI,
+  resilience and graceful degradation, and a capstone. Plan and frozen
+  decisions: `docs/plans/agent-engineering/`, `docs/specs/agent-engineering/`.
+- **`examples/agent-engineering/`**, a uv-managed Python project: one
+  fictional purchasing assistant on synthetic data, a package per track, and
+  core, framework (LangGraph 1.2.12, Temporal 1.34.0), browser (Playwright
+  1.63.0) and Postgres suites. CI's new `examples` job runs all four. No suite
+  needs an API key, a model or a paid service. The Firecracker microVM
+  exercise and live Slack, Teams and E2B calls are labelled as not run by CI.
+- `pnpm content:excerpts`: a lesson code block headed
+  `# file: examples/agent-engineering/…` must match that file verbatim, so
+  quoted code cannot drift from the code the tests run.
+- Four calculator labs: context budget (19.3), repair-loop budget (21.4),
+  trajectory checker (23.2) and cost per successful task (25.2), each
+  server-rendering the lesson's worked example.
+- `content:parity` also fails a track with no lessons, and the privacy gate
+  allows fixture addresses only at the reserved `.invalid` TLD.
+
+### Changed
+
+- The course has two parts. The star chart lays each part out as its own
+  band in one plate, so 26 tracks fit without a second WebGL context; the
+  home catalog and the tracks index group tracks under their part, and the
+  home hero keeps its copy in view beside the taller chart.
+- Each band of the chart names its part in its top-left corner, linking to
+  that part in the tracks index.
+- Labs mark the field that is wrong (fractions in whole-number inputs, a
+  window below its reserve, more successes than runs) and open with a
+  visible lead; the trajectory checker explains a voided approval and lists
+  its policy above the input.
+- Light-theme code blocks use `github-light-high-contrast`, so every token
+  passes 4.5:1 on white; a test measures them.
+- Track page titles name the course only when the title still fits a search
+  result line, as lesson titles already did.
+- `content:parity` fails a locale where the correct quiz option is uniquely
+  the longest in more than 20% of items or uniquely the shortest in more than
+  35%, or any track over half. Before this release the correct option was
+  uniquely the longest in 314 of 352 English items (89%).
+- **Every quiz in tracks 0–13 was repaired** under the assessment-repair
+  procedure (`docs/WRITING.md`), which now also allows tightening a correct
+  option that carried its own explanation. Logs per lane are in
+  `docs/specs/agent-engineering/repairs/`.
+
+### Fixed
+
+Remaining findings of the 2026-10-18 lesson review, each with its source or
+counterexample in the repair logs. Among them:
+
+- 0.13.1's AdamW fix wrote 540 GB, the double count it was meant to remove;
+  the illustrative recipe is 16 bytes per parameter, 432 GB, now owned by 5.7.
+- Four pending source checks were wrong in the lessons: DeltaNet sequence
+  parallelism needs a rank-to-rank state handoff (5.8); a group with equal
+  rewards still gets a KL gradient unless β = 0 (6.8); FlashAttention's
+  memory traffic stays quadratic in sequence length although its extra
+  memory is linear (7.7); Gated DeltaNet forms a masked chunk-local
+  query–key matrix during training (4.15, 4.16).
+- TensorRT-LLM's engine backend was removed in July 2026 from v1.3.0rc21, not
+  August, and the stable 1.2 releases still include it (7.11, 8.6, 9.4).
+- 4.6's "no learned position table" now applies to the text decoder only: the
+  checkpoint has `model.visual.pos_embed.weight`.
+- 11.4's streaming-timing code no longer raises on single-chunk, multi-token
+  or usage-less responses.
+- The KV-budget and cost-per-token labs say what their 4-bit and throughput
+  inputs do not establish.
+- Independent fact reviews of the new tracks, on a different model from the
+  writers, found and fixed: a red-team corpus that could not see the policy
+  gate's allowlist removed (a ninth attack now does), a Slack adapter that
+  crashed on a 5,000-digit timestamp instead of answering 401, and a
+  calibration table that described a judge no test built. Every finding is in
+  `docs/specs/agent-engineering/fact-review/`.
+- The teach-back box lets long identifiers wrap, which widened a 320px page.
+- A handoff note published in 0.13.0 with a machine-local path was removed;
+  the privacy gate allows only the reserved `.invalid` TLD for fixture
+  addresses.
+
+## [0.13.1] — 2026-10-18
+
+Second pass of wave-0 factual repairs to existing lessons, both locales.
+
 ## [0.13.0] — 2026-10-18
 
 Agent-engineering curriculum plan (tracks 14-25) documented under `docs/plans/agent-engineering/`. Wave 0 factual repairs applied to existing lessons (F01, F02, F04, F11, F13, F20, F21, F28, F30, F40 and others) in both locales. Assessment-repair procedure added to `docs/WRITING.md`. Pilot lessons and new tracks deferred pending the sky-layout redesign for more than 14 tracks.

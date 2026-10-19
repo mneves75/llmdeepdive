@@ -2,6 +2,18 @@
 
 ## Current Direction
 
+- **2026-10-19, 0.14.0: agent-engineering tracks 14–25 built (release in progress).**
+  26 tracks / 185 lessons per locale in two parts; one sky chart with a band
+  per part; `examples/agent-engineering/` (uv, Pydantic core + frameworks,
+  browser, postgres suites; CI `examples` job); four agent labs; quiz length
+  gate (≤20% uniquely longest, ≤35% shortest, ≤50% per track) and every quiz in
+  0–13 repaired; `content:excerpts` ties quoted code to the project. Each
+  wave had an independent fact review on another model (Codex quota was
+  exhausted until 2026-10-24, so all reviews ran on Fable 5.1); findings and
+  fixes in `docs/specs/agent-engineering/fact-review/` and `repairs/`. Not
+  done and stated in the lessons: learner pilot, live-model trials, a KVM
+  microVM run, real Slack/Teams/E2B calls. Spec: `docs/specs/agent-engineering/spec.md`.
+
 - **2026-10-18, 0.13.0 / 0.13.1 live: agent-engineering plan and wave-0 repairs.**
   The plan, lesson review and coverage ledger live under
   `docs/plans/agent-engineering/`. 0.13.0 and 0.13.1 shipped wave-0 factual
