@@ -27,6 +27,8 @@ export const SKY_WIDTH = 1000
 export const BAND_HEIGHT = 560
 /** Clear sky between bands: the lower names of one band and the upper names of the next, as number-only names on a phone (~90 units tall), must not meet. */
 const BAND_GAP = 60
+/** A part's name sits this far in from its band's top-left corner, clear of the neatline's 9-unit ticks. */
+export const PART_LABEL_INSET = 10
 
 export interface SkyTrackInput {
   id: string
@@ -71,9 +73,17 @@ export interface SkyConstellation {
   label: { x: number; y: number; anchor: 'above' | 'below' }
 }
 
+export interface SkyBand {
+  part: string
+  /** The band's top edge in sky units. */
+  top: number
+}
+
 export interface Sky {
   width: number
   height: number
+  /** One per part, top to bottom. */
+  bands: SkyBand[]
   constellations: SkyConstellation[]
   stars: SkyStar[]
 }
@@ -121,7 +131,8 @@ export function buildSky(tracks: readonly SkyTrackInput[], lessons: readonly Sky
     band * (BAND_HEIGHT + BAND_GAP),
   ))
   const height = Math.max(parts.length, 1) * BAND_HEIGHT + Math.max(parts.length - 1, 0) * BAND_GAP
-  return { width: SKY_WIDTH, height, constellations, stars: constellations.flatMap((item) => item.stars) }
+  const bands = parts.map((part, band) => ({ part, top: band * (BAND_HEIGHT + BAND_GAP) }))
+  return { width: SKY_WIDTH, height, bands, constellations, stars: constellations.flatMap((item) => item.stars) }
 }
 
 /** One band: the layout every chart used before the course had parts, shifted down by `bandTop`. */

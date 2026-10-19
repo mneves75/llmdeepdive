@@ -24,8 +24,15 @@ const copy = isPt
       unknown: 'passo {at}: {action} não é uma ação permitida.',
       missing: '{action} nunca acontece.',
       order: 'passo {at}: {after} acontece antes de {before}.',
+      orderVoided: 'passo {at}: {after} precisa de {before}, mas {cause} no passo {voidedAt} anulou o do passo {beforeAt}.',
       repeated: 'passo {at}: {action} se repete, um efeito externo duplicado.',
-      note: 'Política: read_request antes de lookup_po, lookup_po antes de draft_invoice, draft_invoice antes de request_approval, request_approval antes de approval_granted, approval_granted antes de send_invoice; read_supplier_message é opcional; send_invoice no máximo uma vez; um novo draft_invoice anula o pedido e a aprovação anteriores. Nada do que você digita sai do navegador.',
+      policy: 'A política. Cada ação à direita só pode acontecer depois da que está à esquerda:',
+      then: 'antes de',
+      optional: '{action} é opcional.',
+      once: '{action} no máximo uma vez.',
+      voids: 'Um novo {cause} anula {voided} anteriores.',
+      and: ' e ',
+      note: 'Nada do que você digita sai do navegador.',
     }
   : {
       legend: 'Trajectory checker',
@@ -37,8 +44,15 @@ const copy = isPt
       unknown: 'step {at}: {action} is not an allowed action.',
       missing: '{action} never happens.',
       order: 'step {at}: {after} happens before {before}.',
+      orderVoided: 'step {at}: {after} needs {before}, but {cause} at step {voidedAt} voided the one at step {beforeAt}.',
       repeated: 'step {at}: {action} repeats, a duplicated external effect.',
-      note: 'Policy: read_request before lookup_po, lookup_po before draft_invoice, draft_invoice before request_approval, request_approval before approval_granted, approval_granted before send_invoice; read_supplier_message is optional; send_invoice at most once; a new draft_invoice voids the earlier request and approval. Nothing you type leaves the browser.',
+      policy: 'The policy. Each action on the right may happen only after the one on its left:',
+      then: 'before',
+      optional: '{action} is optional.',
+      once: '{action} at most once.',
+      voids: 'A new {cause} voids any earlier {voided}.',
+      and: ' and ',
+      note: 'Nothing you type leaves the browser.',
     }
 
 const presets = {
@@ -49,15 +63,50 @@ const presets = {
   twice: ['read_request', 'lookup_po', 'draft_invoice', 'request_approval', 'approval_granted', 'send_invoice', 'send_invoice'],
 } as const
 const initial = checkTrace(presets.a, TRACE_POLICY)
-const describe = (violation: TraceViolation): string => {
-  const fill = (template: string, values: Record<string, string>): string => template.replace(/\{(\w+)\}/gu, (_, key: string) => values[key] ?? '')
+const fill = (template: string, values: Record<string, string>): string => template.replace(/\{(\w+)\}/gu, (_, key: string) => values[key] ?? '')
+const describe = (violation: TraceViolation, trace: readonly string[]): string => {
   if (violation.kind === 'missing') return fill(copy.missing, { action: violation.action })
-  if (violation.kind === 'order') return fill(copy.order, { at: String(violation.at + 1), before: violation.before, after: violation.after })
+  if (violation.kind === 'order') {
+    const values = { at: String(violation.at + 1), before: violation.before, after: violation.after }
+    return violation.voidedAt !== undefined && violation.beforeAt !== undefined
+      ? fill(copy.orderVoided, { ...values, cause: trace[violation.voidedAt] ?? '', voidedAt: String(violation.voidedAt + 1), beforeAt: String(violation.beforeAt + 1) })
+      : fill(copy.order, values)
+  }
   return fill(copy[violation.kind], { at: String(violation.at + 1), action: violation.action })
 }
+
+// The policy as the reader sees it, derived from the one the checker runs.
+// Each {name} in a template becomes its identifiers, set as code.
+const parts = (template: string, values: Record<string, readonly string[]>): Array<{ text: string; code: boolean }> =>
+  template.split(/(\{\w+\})/u).filter(Boolean).flatMap((part) => {
+    const key = /^\{(\w+)\}$/u.exec(part)?.[1]
+    if (key === undefined) return [{ text: part, code: false }]
+    return (values[key] ?? []).flatMap((name, index) => [...(index > 0 ? [{ text: copy.and, code: false }] : []), { text: name, code: true }])
+  })
+const required = new Set<string>(TRACE_POLICY.required)
+const voidsByCause = new Map<string, string[]>()
+for (const [cause, voided] of TRACE_POLICY.invalidates) voidsByCause.set(cause, [...(voidsByCause.get(cause) ?? []), voided])
+const rules = [
+  ...TRACE_POLICY.allowed.filter((action) => !required.has(action)).map((action) => parts(copy.optional, { action: [action] })),
+  ...TRACE_POLICY.once.map((action) => parts(copy.once, { action: [action] })),
+  ...[...voidsByCause].map(([cause, voided]) => parts(copy.voids, { cause: [cause], voided })),
+]
 ---
 
 <form class="lab" data-lab="trace-check" aria-label={copy.legend}>
+  <p class="lab__lead">{copy.legend}</p>
+  <div class="lab__policy">
+    <p>{copy.policy}</p>
+    {/* role="list": WebKit drops list semantics from an unmarked list. */}
+    <ol role="list">
+      {TRACE_POLICY.before.map(([before, after]) => (
+        <li><code>{before}</code> <span aria-hidden="true">→</span><span class="visually-hidden">{copy.then}</span> <code>{after}</code></li>
+      ))}
+    </ol>
+    <ul role="list">
+      {rules.map((rule) => <li>{rule.map((part) => part.code ? <code>{part.text}</code> : part.text)}</li>)}
+    </ul>
+  </div>
   <div class="lab__controls">
     <label>
       <span>{copy.preset}</span>
@@ -73,8 +122,8 @@ const describe = (violation: TraceViolation): string => {
 
   <output class="lab__trace-out" aria-live="polite">
     <p class="lab__verdict" data-out="verdict" data-pass={copy.pass} data-fail={copy.fail}>{initial.violations.length === 0 ? copy.pass : copy.fail}</p>
-    <ul class="lab__violations" data-out-list="violations" data-unknown={copy.unknown} data-missing={copy.missing} data-order={copy.order} data-repeated={copy.repeated}>
-      {initial.violations.map((violation) => <li>{describe(violation)}</li>)}
+    <ul class="lab__violations" data-out-list="violations" data-unknown={copy.unknown} data-missing={copy.missing} data-order={copy.order} data-order-voided={copy.orderVoided} data-repeated={copy.repeated}>
+      {initial.violations.map((violation) => <li>{describe(violation, presets.a)}</li>)}
     </ul>
   </output>
   <p class="lab__note">{copy.note}</p>
@@ -102,7 +151,16 @@ const describe = (violation: TraceViolation): string => {
         item.textContent = violation.kind === 'missing'
           ? fill(messages.missing, { action: violation.action })
           : violation.kind === 'order'
-            ? fill(messages.order, { at: String(violation.at + 1), before: violation.before, after: violation.after })
+            ? violation.voidedAt !== undefined && violation.beforeAt !== undefined
+              ? fill(messages.orderVoided, {
+                  at: String(violation.at + 1),
+                  before: violation.before,
+                  after: violation.after,
+                  cause: actions[violation.voidedAt] ?? '',
+                  voidedAt: String(violation.voidedAt + 1),
+                  beforeAt: String(violation.beforeAt + 1),
+                })
+              : fill(messages.order, { at: String(violation.at + 1), before: violation.before, after: violation.after })
             : fill(messages[violation.kind], { at: String(violation.at + 1), action: violation.action })
         return item
       }))

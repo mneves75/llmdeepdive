@@ -242,7 +242,8 @@ export type TracePolicy = {
 export type TraceViolation =
   | { kind: 'unknown'; action: string; at: number }
   | { kind: 'missing'; action: string }
-  | { kind: 'order'; before: string; after: string; at: number }
+  /** With `voidedAt`, `before` did happen (at `beforeAt`) but the action at `voidedAt` voided it. */
+  | { kind: 'order'; before: string; after: string; at: number; voidedAt?: number; beforeAt?: number }
   | { kind: 'repeated'; action: string; at: number }
 
 /**
@@ -253,17 +254,26 @@ export type TraceViolation =
  */
 export function checkTrace(trace: readonly string[], policy: TracePolicy): { violations: TraceViolation[] } {
   const violations: TraceViolation[] = []
-  // `seen` is what still counts; `happened` is everything that ever ran.
-  const seen = new Set<string>()
+  // `seen` is what still counts (action → its step); `voids` is what a later
+  // action voided; `happened` is everything that ever ran.
+  const seen = new Map<string, number>()
+  const voids = new Map<string, { beforeAt: number; voidedAt: number }>()
   const happened = new Set<string>()
   for (const [at, action] of trace.entries()) {
     if (!policy.allowed.includes(action)) violations.push({ kind: 'unknown', action, at })
     if (policy.once.includes(action) && happened.has(action)) violations.push({ kind: 'repeated', action, at })
     for (const [before, after] of policy.before) {
-      if (action === after && !seen.has(before)) violations.push({ kind: 'order', before, after, at })
+      if (action === after && !seen.has(before)) violations.push({ kind: 'order', before, after, at, ...voids.get(before) })
     }
-    for (const [cause, voided] of policy.invalidates) if (action === cause) seen.delete(voided)
-    seen.add(action)
+    for (const [cause, voided] of policy.invalidates) {
+      const beforeAt = seen.get(voided)
+      if (action === cause && beforeAt !== undefined) {
+        voids.set(voided, { beforeAt, voidedAt: at })
+        seen.delete(voided)
+      }
+    }
+    seen.set(action, at)
+    voids.delete(action)
     happened.add(action)
   }
   for (const action of policy.required) if (!happened.has(action)) violations.push({ kind: 'missing', action })

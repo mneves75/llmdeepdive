@@ -66,8 +66,9 @@ export function pageLocale(element: Element): NumberLocale {
 
 /**
  * Read one lab control. Selects hold trusted option values; text inputs are
- * parsed with `parseDecimal` and bounded by `data-min`/`data-max`, and an
- * input that yields no number is marked `aria-invalid`.
+ * parsed with `parseDecimal`, bounded by `data-min`/`data-max` and, with
+ * `data-integer`, held to whole numbers; an input that yields no number is
+ * marked `aria-invalid`.
  */
 export function readLabControl(form: HTMLFormElement, name: string, locale: NumberLocale): number | null {
   const control = form.elements.namedItem(name)
@@ -82,9 +83,19 @@ export function readLabControl(form: HTMLFormElement, name: string, locale: Numb
   const min = Number(input.dataset.min ?? Number.NEGATIVE_INFINITY)
   const max = Number(input.dataset.max ?? Number.POSITIVE_INFINITY)
   if (value !== null && (value < min || value > max)) value = null
+  if (value !== null && 'integer' in input.dataset && !Number.isInteger(value)) value = null
   if (value === null) input.setAttribute('aria-invalid', 'true')
   else input.removeAttribute('aria-invalid')
   return value
+}
+
+/**
+ * Mark a control that is valid on its own but fails a rule across fields
+ * (a window no larger than its reserve). The next `readLabControl` clears it.
+ */
+export function markLabControl(form: HTMLFormElement, name: string): void {
+  const control = form.elements.namedItem(name)
+  if (control !== null && 'setAttribute' in control) control.setAttribute('aria-invalid', 'true')
 }
 
 /**

@@ -94,3 +94,15 @@ test('trace check: redrafting after approval voids that approval', () => {
   // Asking again after the redraft makes it safe.
   assert.deepEqual(checkTrace([...trace.slice(0, 6), 'request_approval', 'approval_granted', 'send_invoice'], TRACE_POLICY).violations, [])
 })
+
+test('trace check: an order violation caused by a void names the voiding step and the voided one', () => {
+  const trace = ['read_request', 'lookup_po', 'draft_invoice', 'request_approval', 'approval_granted', 'draft_invoice', 'send_invoice']
+  const [violation] = checkTrace(trace, TRACE_POLICY).violations
+  assert.equal(violation.kind, 'order')
+  assert.equal(violation.at, 6)
+  assert.equal(violation.voidedAt, 5)
+  assert.equal(violation.beforeAt, 4)
+  // A plain order violation (the approval never happened before) carries no void.
+  const early = checkTrace(['read_request', 'lookup_po', 'draft_invoice', 'request_approval', 'send_invoice', 'approval_granted'], TRACE_POLICY).violations
+  assert.equal(early[0].voidedAt, undefined)
+})

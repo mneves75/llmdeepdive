@@ -240,8 +240,21 @@ test('the stylesheet switches code blocks with light-dark()', () => {
   assert.match(css, /light-dark\(var\(--shiki-light-bg\),\s*var\(--plate-raised\)\)/u)
 })
 
-// The field edition only. The desk theme (github-light) is not measured here:
-// its #e36209 is 3.49:1 on white, a defect older than this test.
+// The desk edition draws code on the theme's own ground (prose.css).
+// github-light's #e36209 was 3.49:1 on white; github-light-high-contrast holds.
+test('every desk-edition code token colour holds 4.5:1 on its code ground', () => {
+  const colours = new Set()
+  const grounds = new Set()
+  for (const p of pages()) {
+    for (const [, hex] of p.html.matchAll(/--shiki-light:(#[0-9a-fA-F]{6})\b/gu)) colours.add(hex)
+    for (const [, hex] of p.html.matchAll(/--shiki-light-bg:(#[0-9a-fA-F]{6})\b/gu)) grounds.add(hex)
+  }
+  assert.ok(colours.size > 3, 'expected several token colours')
+  assert.equal(grounds.size, 1, 'expected one desk code ground')
+  const [ground] = grounds
+  assert.deepEqual([...colours].filter((hex) => ratio(hex, ground) < 4.5).map((hex) => `${hex} ${ratio(hex, ground).toFixed(2)}:1`), [])
+})
+
 test('every field-edition code token colour holds 4.5:1 on the raised plate', () => {
   const colours = new Set()
   for (const p of pages()) {

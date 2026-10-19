@@ -10,7 +10,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildSky, SKY_WIDTH } from '../src/lib/sky.ts'
+import { BAND_HEIGHT, buildSky, PART_LABEL_INSET, SKY_WIDTH } from '../src/lib/sky.ts'
 
 function corpus(locale) {
   const tracksDir = join('src/content/tracks', locale)
@@ -35,6 +35,9 @@ function corpus(locale) {
   }
   return { tracks, lessons }
 }
+
+// The largest part name (see the band test below), in sky units.
+const PART_BOX = { w: 115, h: 66 }
 
 const { tracks, lessons } = corpus('en')
 const sky = buildSky(tracks, lessons)
@@ -137,6 +140,26 @@ for (const [catalog, { tracks, lessons, sky }] of layouts) {
     }
   })
 
+  test(`${catalog}: each part's name sits on the plate at its band's top-left, clear of every track name`, () => {
+    // The part name is a block in the band's top-left corner (SkyChart.astro,
+    // .sky__parts). Its width is capped at 11.5cqi, 115 sky units at any size;
+    // its height is pt-BR "Como os modelos de linguagem funcionam" on four
+    // lines just above the 45.5rem container query that hides it, where the
+    // minimum font is largest relative to the plate (~61 units measured in
+    // Chromium at a 736px chart).
+    const parts = [...new Set([...tracks].sort((a, b) => a.order - b.order).map((track) => track.part))]
+    assert.deepEqual(sky.bands.map((band) => band.part), parts)
+    const names = sky.constellations.map((item) => ({ id: item.id, x: item.label.x - 100, y: item.label.y - 20, w: 200, h: 40 }))
+    for (const band of sky.bands) {
+      const box = { x: PART_LABEL_INSET, y: band.top + PART_LABEL_INSET, ...PART_BOX }
+      assert.ok(box.x + box.w <= SKY_WIDTH && box.y + box.h <= band.top + BAND_HEIGHT && box.y + box.h <= sky.height, `${band.part} name leaves its band`)
+      for (const name of names) {
+        const overlap = box.x < name.x + name.w && name.x < box.x + box.w && box.y < name.y + name.h && name.y < box.y + box.h
+        assert.ok(!overlap, `the ${band.part} part name overlaps the name of ${name.id}`)
+      }
+    }
+  })
+
   test(`${catalog}: no star sits on the plate border`, () => {
     // `r` alone lets a star touch the neatline; the chart needs air at its edges.
     const MARGIN = 14
@@ -195,4 +218,14 @@ test('a track with no lessons yet draws nothing instead of breaking the chart', 
   assert.equal(empty.constellations.some((item) => item.id === '99-empty'), false)
   assert.deepEqual(empty.stars, sky.stars)
   assert.equal(empty.height, sky.height)
+})
+
+test('part names are not drawn on a chart too narrow for their corner', () => {
+  // The corner block's height budget holds only above 45.5rem; below it, and
+  // on a phone where track names are 84-112 by 90 sky units, a part name
+  // would land on them. The tracks index heads each part with the same title.
+  const css = readFileSync('src/components/SkyChart.astro', 'utf8')
+  const narrow = css.match(/@container \(max-width: 45\.5rem\) \{([\s\S]*?)\n  \}/u)?.[1] ?? ''
+  assert.match(narrow, /\.sky__parts \{[^}]*display: none/u)
+  assert.match(css, /\.sky__parts a \{[^}]*max-width: 11\.5cqi/u, 'the corner block is capped at PART_BOX.w')
 })
