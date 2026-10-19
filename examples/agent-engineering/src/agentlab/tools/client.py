@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -53,7 +54,9 @@ class StdioTransport:
     """Launches the server as a child process and exchanges one JSON message per line."""
 
     def __init__(self, argv: list[str], env: Mapping[str, str] | None = None) -> None:
-        self.process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8", env=env)
+        # The server gets only what the caller passes; by default just PATH, never the caller's tokens.
+        child_env = dict(env) if env is not None else {"PATH": os.environ.get("PATH", "")}
+        self.process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8", env=child_env)
         self._lines: queue.Queue[str | None] = queue.Queue()
         # A reader thread lets receive() wait with a timeout instead of blocking forever on readline.
         threading.Thread(target=self._read, daemon=True).start()

@@ -35,6 +35,8 @@ longer give the answer away by its length.
   server-rendering the lesson's worked example.
 - `content:parity` also fails a track with no lessons, and the privacy gate
   allows fixture addresses only at the reserved `.invalid` TLD.
+- `SECURITY.md` and `/.well-known/security.txt` (RFC 9116) publish how to
+  report a vulnerability; a test fails before the file's `Expires` date lapses.
 
 ### Changed
 

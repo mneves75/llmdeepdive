@@ -433,6 +433,17 @@ test('home and tracks index list every track under its part, in order', () => {
   }
 })
 
+// RFC 9116: security.txt needs Contact and an Expires under a year away. An
+// expired file tells researchers the contact may be dead, so this fails in
+// time to renew it.
+test('security.txt publishes a contact and has not expired', () => {
+  const text = readFileSync(join(DIST, '.well-known', 'security.txt'), 'utf8')
+  assert.match(text, /^Contact: mailto:contato@mvneves\.dev$/mu)
+  const expires = Date.parse(text.match(/^Expires: (\S+)$/mu)?.[1] ?? '')
+  const days = (expires - Date.now()) / 86_400_000
+  assert.ok(days > 0 && days <= 366, `security.txt Expires is ${Math.round(days)} days away`)
+})
+
 // A lab's worked default must pass its own input rules, or the browser blanks
 // the lab on load. 25.2 shipped data-integer="false" on decimal fields: the
 // attribute is present, so every cost was rejected before anyone typed.

@@ -372,6 +372,11 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
   redirect needs. A byte-comparison canary against `www` now follows one
   redirect.
 
+**`/.well-known/security.txt` expires.** RFC 9116 requires an `Expires` under a
+year away; `tests/rendered-html.test.mjs` fails once it is past or more than a
+year out. Renew the date in `public/.well-known/security.txt` when it does.
+`SECURITY.md` holds the disclosure policy and the leaked-credential runbook.
+
 ## Static-only architecture
 
 There is no API, no database and no server-side state. This is a decision, not
