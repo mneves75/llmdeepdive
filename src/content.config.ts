@@ -1,7 +1,7 @@
 import { defineCollection } from 'astro:content'
 import { glob } from 'astro/loaders'
 import { z } from 'astro/zod'
-import { TIERS } from '~/lib/content'
+import { PARTS, TIERS } from '~/lib/content'
 
 const locale = z.enum(['en', 'pt-br'])
 const tier = z.enum(TIERS)
@@ -14,6 +14,7 @@ const tracks = defineCollection({
     title: z.string().trim().min(1),
     summary: z.string().trim().min(1),
     tier,
+    part: z.enum(PARTS),
     locale,
   }),
 })

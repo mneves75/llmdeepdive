@@ -1,0 +1,122 @@
+---
+id: "20.1-decide-when-approval-is-needed"
+track: "20-human-approval-and-durable-pauses"
+order: 1
+title: "Decide When Approval Is Needed"
+summary: "An approval policy holds an action for a person when it cannot be undone and its amount reaches a limit, and lets reads and reversible drafts run alone. Anything the policy does not recognise waits for a person by default."
+tier: "advanced"
+locale: "en"
+prerequisites: ["14.4-replay-and-side-effects", "16.4-enforce-least-privilege"]
+unlocks: ["20.2-bind-approval-to-one-operation"]
+analogy: "A shop lets any cashier ring up a sale, but a refund above a set amount needs the manager's key. The rule is written down in advance: it depends on what the action does and how much it moves, not on how confident the cashier feels that day, and a new kind of transaction the rule does not mention goes to the manager until someone updates the rule. The comparison stops at who can see the till. A manager glancing at a till sees the actual sale; an approver of an agent's action sees only the preview the software chose to show, so the preview has to list every field the approval will cover."
+teachBack:
+  prompt: "Finance asks for two changes: invoices in EUR should run alone below EUR 900.00, and a new tool, refund_supplier, should be added. Its MCP server describes the tool as read-only. Walk through what needs_approval returns for a EUR 500.00 submission and for any refund_supplier call today, and what you would change in policy.py."
+  modelAnswer: "Today a EUR 500.00 submission is held, because AUTO_LIMITS has no EUR entry and a currency without a limit waits for a person. A refund_supplier call is also held, because EFFECTS has no entry for it, and an unknown tool waits by default. I would add EUR with Decimal(\"900.00\") to AUTO_LIMITS. Then the EUR 500.00 submission runs alone, and EUR 900.00 or more is held. For the refund, I would ignore the server's read-only description. The MCP specification says clients must treat tool annotations as untrusted unless the server is trusted. A refund moves money and cannot be recalled, so I would add refund_supplier to EFFECTS as irreversible. Large refunds then wait for a person, and small ones run alone below the limit."
+quiz:
+  - question: "Under the course's policy, which of these actions runs without waiting for a person?"
+    options: ["submit_invoice for USD 1,000.00, because it equals the limit rather than exceeding it", "create_invoice_draft for USD 10,000.00, as a draft can still be deleted", "submit_invoice for EUR 10.00, because ten euros is far below a thousand dollars", "email_supplier with no amount, because a message has no money attached to it"]
+    correctIndex: 1
+    explanation: "A draft is a reversible write, so it runs alone whatever its amount. The limit check uses >=, so USD 1,000.00 is held. EUR has no configured limit, and the policy holds a currency it has no limit for instead of converting it. An irreversible action with no amount to bound it is held too."
+  - question: "A tool server adds archive_po and describes it as read-only. The assistant asks to call it. What does needs_approval return, and why?"
+    options: ["Not required, because the server's description says the tool only reads data", "Not required, because the call carries no draft and so no amount to compare", "Required, because EFFECTS has no entry for it and an unknown tool is held", "Required, because every tool from an MCP server needs a person's approval"]
+    correctIndex: 2
+    explanation: "The effect class comes from the company's own table, never from the server. The MCP specification tells clients to treat tool annotations as untrusted unless the server is trusted. A tool missing from the table is held until someone classifies it. MCP does not require approval for every call; it says a person should be able to deny invocations."
+  - question: "Why does the course run the policy gate of lesson 16.2 before the approval policy, instead of letting approval replace the gate?"
+    options: ["Approval is slower, so the gate runs first only to save the approver's time", "The gate needs the approver's identity, which only exists after an approval", "A person reviews every field anyway, so the gate would only repeat that check", "Approval confirms what the gate already allows; it cannot fix a wrong payee"]
+    correctIndex: 3
+    explanation: "The gate decides whether an action is allowed at all, from records the model cannot change. Approval adds a person's confirmation on top of an allowed action. A tired approver can miss a wrong payee, so the gate never hands that check to a person. The gate needs only the trusted Principal of the run, not an approver."
+citations:
+  - title: "Model Context Protocol specification, revision 2026-07-28: Tools"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/server/tools"
+  - title: "LLM06:2025 Excessive Agency"
+    authors: "OWASP GenAI Security Project"
+    year: 2025
+    url: "https://genai.owasp.org/llmrisk/llm062025-excessive-agency/"
+updated: "2026-10-19"
+---
+
+The purchasing assistant has drafted invoice INV-0042 for purchase order PO-1004: eight industrial shelving units at USD 1,250.00 each, USD 10,000.00 payable to Supplier Gamma. The policy gate of [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) checked the draft against the purchase record and allowed it. Should the assistant now submit the invoice to accounts payable on its own? And a minute earlier, when it looked up PO-1004, should it have asked someone first?
+
+Most people answer yes to the first question and no to the second, and they are right. This lesson turns that intuition into a rule a program can apply, and a test that fails if the rule drifts. The rule is an *approval policy*: a function that decides, before an action runs, whether a person must confirm it. The person who confirms is the *approver*.
+
+## What makes an action worth a person's attention?
+
+Asking a person costs something. The run stops, and someone has to read a request and decide. A request for every lookup would also bury the few that matter among many that do not. So approval belongs where a mistake would be expensive and hard to repair. Two properties of an action capture most of that.
+
+The first is whether the action can be undone. A *reversible* action can be reversed by the system itself, with no one outside the company noticing: deleting a draft, for example. An *irreversible* action leaves the company and cannot be called back: an invoice sent to accounts payable gets scheduled for payment, and a sent e-mail stays in the supplier's inbox. A read changes nothing at all.
+
+The second is size. Submitting a USD 12.00 invoice that matches its purchase order is not worth interrupting anyone. Submitting USD 10,000.00 is. A threshold amount, below which an irreversible action may run alone, expresses that.
+
+Two cases need a decision in advance. A tool the policy has never heard of, and a currency with no configured threshold, both get *held*: the action waits for a person. A rule that lets unknown things through fails open the first time someone adds a tool and forgets the policy. Saltzer and Schroeder's fail-safe default, from [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/), applies here too.
+
+## The policy, as a table and a function
+
+The exercise writes the policy in `src/agentlab/approval/policy.py`. The effect of each tool is a table the company owns, and the thresholds are a second table:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/policy.py
+EFFECTS: dict[str, Effect] = {
+    "lookup_po": "read",
+    "create_invoice_draft": "reversible",  # a draft can be deleted; nothing has left the company
+    "submit_invoice": "irreversible",  # accounts payable schedules the payment
+    "email_supplier": "irreversible",  # a sent message cannot be recalled
+}
+
+# Irreversible actions below these amounts proceed without a person.
+AUTO_LIMITS: dict[str, Decimal] = {"USD": Decimal("1000.00")}
+```
+
+The function reads those two tables and the draft:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/policy.py
+def needs_approval(tool: str, draft: InvoiceDraft | None = None) -> Need:
+    """Hold an action for a person unless it is known to be safe to run alone."""
+    effect = EFFECTS.get(tool)
+    if effect is None:
+        return Need(True, f"{tool} has no effect class, so it is held for a person")
+    if effect == "read":
+        return Need(False, "a read changes nothing")
+    if effect == "reversible":
+        return Need(False, "a reversible write can be undone")
+    if draft is None:
+        return Need(True, f"{tool} cannot be undone and has no amount to bound it")
+    limit = AUTO_LIMITS.get(draft.currency)
+    if limit is None:
+        return Need(True, f"no automatic limit is set for {draft.currency}")
+    if draft.amount >= limit:
+        return Need(True, f"{draft.amount} {draft.currency} is at or above the {limit} {draft.currency} limit")
+    return Need(False, f"below the {limit} {draft.currency} limit")
+```
+
+Walk the opening case through it. `lookup_po` is a read, so it runs. `create_invoice_draft` for USD 10,000.00 is reversible, so it runs too. `submit_invoice` for the same draft is irreversible, USD has a limit of 1,000.00, and 10,000.00 is at or above it, so it is held. A USD 999.99 submission would run alone. Every answer carries a reason, which ends up in the request a person reads and in the audit log.
+
+The amount is a `Decimal`, never a float, for the reason [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) gave: binary floats round money. The comparison is `>=`, so the limit itself needs a person. Which side of the boundary the limit falls on is a business decision, and the test pins it so nobody changes it by accident.
+
+The EUR case shows a trap in the other direction. Converting EUR to USD at today's rate would seem helpful. But it would make the policy depend on an exchange rate feed, which is one more input that can be wrong or stale. Holding the action until someone configures a EUR limit is slower and cannot fail open.
+
+## Where the effect class comes from
+
+The model never tells the policy what an action does. Neither does the tool's server. The Model Context Protocol (MCP) lets a server attach *annotations* to a tool, hints such as a description of its behaviour. The specification, revision 2026-07-28, says clients "MUST consider tool annotations to be untrusted unless they come from trusted servers". A server that wants a refund tool to slip through would only need to describe it as harmless. In our policy, a tool missing from `EFFECTS` is held, whatever its server says, until a person at the company classifies it.
+
+The same specification says that "there SHOULD always be a human in the loop with the ability to deny tool invocations", and that clients should "Prompt for user confirmation on sensitive operations". It leaves the choice of *which* operations are sensitive to the application. That choice is what `needs_approval` writes down. OWASP's guidance on *excessive agency*, an LLM application that can do more than its task needs, gives the same advice: "Utilise human-in-the-loop control to require a human to approve high-impact actions before they are taken."
+
+## Approval adds to the gate, never replaces it
+
+The policy runs after the gate of lesson 16.2, and the order matters. The gate decides whether an action is allowed at all: the right tenant, the payee and amount from the purchase record, a tool in the agent's grant ([lesson 16.4](/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/)). Approval decides whether an allowed action also needs a person's confirmation. A draft payable to the wrong company never reaches an approver, because the gate already refused it.
+
+Putting the person first and the gate second would be tempting, since a human is the stronger judge. But approvers get tired and skim. OWASP's list states the principle as complete mediation: "Implement authorization in downstream systems rather than relying on an LLM to decide if an action is allowed or not." The same holds for relying on a busy person. Each check does a different job.
+
+:::insight
+An approval is only as good as what the approver sees. The policy's other function, `preview`, builds the one line an approver reads: `Submit INV-0042 version 1 to Supplier Gamma for 10000.00 USD`. Every field in it is a field the approval will be bound to in [lesson 20.2](/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/). A preview that showed "Supplier Gamma invoice" without the amount would ask a person to approve a number they never saw.
+:::
+
+Responsibility needs a name as well. The policy says *that* a person must confirm; the next lesson says *who*: someone holding the `invoice_approver` role, in the same tenant, who is not the person who asked.
+
+## Run the exercise
+
+The code is in `src/agentlab/approval/policy.py` and the tests in `tests/test_approval_policy.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_approval_policy.py"`. Expected output ends with `Ran 9 tests` and `OK`.
+
+The tests cover each rule and its boundary: a local read and a reversible draft run alone; a USD 10,000.00 submission is held; USD 1,000.00 exactly is held; EUR, an e-mail with no amount and an unknown `pay_invoice` tool are all held. One test is the positive control: a USD 999.99 submission runs alone, so a policy that held everything would fail. Now break the boundary. Change `if draft.amount >= limit:` to `if draft.amount > limit:` and run again. `test_the_limit_itself_needs_approval` goes red, because a USD 1,000.00 submission would now run alone. Restore the line.

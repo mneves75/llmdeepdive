@@ -47,6 +47,9 @@ const ALLOWED_EMAILS = new Set([
 // alias. The login is already public in the repository URL; the numeric id is
 // matched by shape so it is never written into the repository.
 const OWNER_NOREPLY = /^\d+\+mneves75@users\.noreply\.github\.com$/u
+// RFC 2606 reserves the .invalid TLD: an address there belongs to no one, which
+// is why exercise fixtures that need an address use it.
+const RESERVED_TLD = /\.invalid$/u
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/gu
 
 // A citation URL can contain `/home/` as an ordinary path segment — Shannon's
@@ -101,7 +104,7 @@ export function scanText(text, rules = STRUCTURAL_RULES) {
     }
   }
   for (const address of new Set(text.match(EMAIL) ?? [])) {
-    if (ALLOWED_EMAILS.has(address.toLowerCase()) || OWNER_NOREPLY.test(address.toLowerCase())) continue
+    if (ALLOWED_EMAILS.has(address.toLowerCase()) || OWNER_NOREPLY.test(address.toLowerCase()) || RESERVED_TLD.test(address.toLowerCase())) continue
     findings.push({
       rule: 'unknown-email',
       hit: address,

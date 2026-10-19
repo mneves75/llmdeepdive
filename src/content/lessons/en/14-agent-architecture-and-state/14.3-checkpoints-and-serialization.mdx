@@ -1,0 +1,144 @@
+---
+id: "14.3-checkpoints-and-serialization"
+track: "14-agent-architecture-and-state"
+order: 3
+title: "Checkpoints and Serialization"
+summary: "A checkpoint is the run's state written to durable storage after a step. Serialize it with a schema version, commit it in a transaction, and use a version column so a stale writer is rejected instead of overwriting newer work."
+tier: "core"
+locale: "en"
+prerequisites: ["14.2-states-dags-branches-and-loops"]
+unlocks: ["14.4-replay-and-side-effects", "15.4-a-raw-postgres-mcp-server", "19.1-working-episodic-and-semantic-memory"]
+analogy: "A ship's logbook is written in ink at the end of each watch, and every page is numbered. If the officer on watch falls ill, the next one opens the book and continues from the last signed entry, not from what the first officer remembered. Two officers cannot both write page 13: whoever finds page 13 already filled must read it before writing page 14. The logbook stops being a good comparison at the moment of writing. Ink on paper can be half written when a hand slips, while a database transaction is designed so that a crash leaves either the whole entry or none of it."
+teachBack:
+  prompt: "Your store keeps the run's state in a Python dictionary inside the worker process, and saves it to SQLite only when the run completes. A deploy restarts the worker between checked and ready, and at the same moment a second worker picks up the same run. What does each worker see, and which two changes from this lesson fix it?"
+  modelAnswer: "The dictionary dies with the process, so the restarted worker sees nothing. It would start the run again from received. The second worker also finds no saved row, so it starts from received as well. Now two workers are running the same run, and neither knows about the other. The first fix is to commit a checkpoint after every step, inside a transaction. Then a restart resumes from the last committed status, checked. The second fix is the version column with compare-and-swap. Each write says which version it read. When the second worker tries to save on top of a version that has already moved on, the update matches no row and raises StaleWrite. That worker must reload the state and decide again, rather than overwrite the first worker's progress."
+quiz:
+  - question: "A teammate opens the store with sqlite3.connect(\":memory:\") to make the tests faster. After a worker restart, what does load(\"run-1\") return?"
+    options: ["The last committed state, because SQLite writes every committed transaction to its journal", "The state after the last step, because Pydantic keeps validated records between processes", "An error, because the stored schema version no longer matches once the process restarts", "None, because an in-memory database disappears together with the process that opened it"]
+    correctIndex: 3
+    explanation: "A \":memory:\" database exists only inside the connection that created it, so a new process starts empty. The journal argument applies to a database file, not to memory. Pydantic keeps nothing across processes, and the schema check never runs because there is no row to read."
+  - question: "Workers A and B both load run-1 at version 3. A saves first. B then calls save with expected_version=3. What happens?"
+    options: ["Both saves succeed and the row keeps B's state, because the last write wins", "B gets StaleWrite, because no row still has version 3 when B's update runs", "B waits for A's transaction to finish and then writes version 5 on top of it", "A gets StaleWrite, because B read the row first and still holds a lock on it"]
+    correctIndex: 1
+    explanation: "A's commit moved the row to version 4, so B's UPDATE ... WHERE version = 3 matches nothing and the store raises. Last-write-wins is exactly the lost update the version column prevents. Reading takes no lock here, so the first reader gains nothing, and nobody writes a version that skips a number."
+  - question: "A process dies after save has run the UPDATE and inserted the first outbox row, but before COMMIT. A new worker opens the same file. What does it find?"
+    options: ["The new state without its outbox row, so the invoice is never sent", "The outbox row with the old state, so the step runs again and repeats it", "Both changes, because SQLite wrote each statement to the database file as it ran", "Neither change, because SQLite rolls back a transaction that never committed"]
+    correctIndex: 3
+    explanation: "SQLite makes a transaction atomic: when a process dies mid-transaction, the next open finds the old state and no outbox row, as the course's subprocess test shows. The two half-written outcomes are the failures the single transaction exists to prevent, and statements inside an open transaction are not yet the committed database."
+citations:
+  - title: "Atomic Commit In SQLite"
+    authors: "SQLite"
+    year: 2026
+    url: "https://www.sqlite.org/atomiccommit.html"
+  - title: "Transaction (SQL language reference)"
+    authors: "SQLite"
+    year: 2026
+    url: "https://www.sqlite.org/lang_transaction.html"
+  - title: "sqlite3: DB-API 2.0 interface for SQLite databases (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/sqlite3.html"
+  - title: "pickle: Python object serialization (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/pickle.html"
+  - title: "On optimistic methods for concurrency control"
+    authors: "H. T. Kung and John T. Robinson"
+    year: 1981
+    url: "https://doi.org/10.1145/319566.319567"
+  - title: "LangGraph persistence"
+    authors: "LangChain"
+    year: 2026
+    url: "https://docs.langchain.com/oss/python/langgraph/persistence"
+updated: "2026-10-18"
+---
+
+A worker process is running the purchasing assistant on PO-1001. It has checked the invoice, so the run's status is `checked`. Then a deploy restarts the worker. When the new process starts, what does it know about run-1? If the answer is "whatever was in the old process's memory", it knows nothing. It will start the run again from `received`, and nothing will tell it that the check already happened. This lesson makes the state survive the restart. Then it handles the harder case: two workers that both think they own the run.
+
+## Is a snapshot in memory a checkpoint?
+
+A *snapshot* is a copy of the state at one moment. Where it lives decides what it survives. A Python object, or a SQLite database opened as `":memory:"`, lives inside one process and disappears with it. LangGraph's own documentation says the same of its in-memory savers: "When the process restarts, all checkpoints are lost."
+
+A *checkpoint*, in this course, is a snapshot written to *durable storage*: a file or a database that outlives the process and can be read by the next one. The project's `CheckpointStore` keeps one row per run in a SQLite file. SQLite is a database engine in Python's standard library that stores a whole database in one file.
+
+## Serialization: the state as text
+
+*Serialization* turns an object into bytes you can store or send. *Deserialization* turns them back. The project serializes `RunState` to JSON with Pydantic's `model_dump_json`. Here is the row the exercise stores after the first step:
+
+```json
+{"schema_version":1,"run_id":"run-1","principal":{"user_id":"u1","tenant_id":"tenant-a","roles":[]},"status":"checked","step":1,"max_steps":12,"version":1,"evidence":[]}
+```
+
+Why JSON? It is plain text, so you can open the database and read a stuck run's state with your own eyes. Any language can parse it. Loading it also cannot execute code. Python's `pickle` format could store the object as well, but its documentation warns that unpickling untrusted data can run arbitrary code. A checkpoint is read back by a later process, possibly after an attacker has touched the file, so that risk matters here.
+
+Two fields exist because of storage. `schema_version` says which shape of record this is. When a later release changes the shape, old rows still say `1`, and the loader can refuse a version it does not understand. Guessing would be worse. `load` turns that refusal into a clear error:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/checkpoints.py
+    def load(self, run_id: str) -> RunState | None:
+        """The last committed state, or None. An unknown schema raises instead of being guessed."""
+        row = self._db.execute("SELECT body FROM run_state WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return RunState.model_validate_json(row[0])
+        except ValidationError as error:
+            raise ValueError(f"stored state for {run_id} does not match schema version 1") from error
+```
+
+The other field, `version`, counts committed writes. It is the key to the last two sections.
+
+## Transactions: all of it or none of it
+
+A *transaction* is a group of database changes that succeed or fail as one unit. SQLite's documentation describes atomic commit as "either all database changes within a single transaction occur or none of them occur". It also says transactions "appear to be atomic even if the transaction is interrupted by an operating system crash or power failure". `BEGIN IMMEDIATE` opens a transaction that takes the write lock at once. `COMMIT` makes its changes permanent, and `ROLLBACK` throws them away.
+
+The store opens its connection with `isolation_level=None`, which tells Python's `sqlite3` module not to open transactions on its own. Every transaction in `save(state, expected_version, effects=())` is then visible in its body, which commits `state` as version `expected_version + 1` or raises `StaleWrite`:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/checkpoints.py
+        new = RunState.model_validate({**state.model_dump(), "version": expected_version + 1})
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            if expected_version == 0:
+                cursor = self._db.execute(
+                    "INSERT INTO run_state (run_id, version, body) VALUES (?, 1, ?) ON CONFLICT (run_id) DO NOTHING",
+                    (new.run_id, new.model_dump_json()),
+                )
+            else:
+                cursor = self._db.execute(
+                    "UPDATE run_state SET version = ?, body = ? WHERE run_id = ? AND version = ?",
+                    (new.version, new.model_dump_json(), new.run_id, expected_version),
+                )
+            if cursor.rowcount != 1:
+                raise StaleWrite(f"{new.run_id} is no longer at version {expected_version}")
+            for key, draft in effects:
+                self._db.execute(
+                    "INSERT INTO outbox (idempotency_key, run_id, payload, status) VALUES (?, ?, ?, 'pending')",
+                    (key, new.run_id, draft.model_dump_json()),
+                )
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        return new
+```
+
+Ignore `effects` for now; [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) explains them. The transaction already does one job here. One test starts a real child process that calls `save` and kills itself with `os._exit(1)` after the `UPDATE` and the first outbox insert, before `COMMIT`. When the parent reopens the file, the run is still at version 1 in `checked`, and the outbox is empty. A crash mid-step leaves the last committed checkpoint and nothing half-written.
+
+## Two writers, one run: compare-and-swap
+
+Durability creates a new problem. Suppose workers A and B both load run-1 at version 3. A decides `ready` and saves. B, still holding version 3, decides `needs_info` and saves. If B's write replaces the row, A's decision is lost without any error. This failure is called a *lost update*.
+
+*Compare-and-swap* (CAS) prevents it: write the new value only if the stored value is still the one you read. Here the compared value is the version number. The `UPDATE` carries `WHERE run_id = ? AND version = ?`, so it changes a row only if nobody committed since this writer loaded the state. `cursor.rowcount` reports how many rows matched. Zero means someone else got there first, and the store raises `StaleWrite`. B must then reload version 4 and decide again from what A did.
+
+This style is called *optimistic concurrency control*, after Kung and Robinson's 1981 paper "On optimistic methods for concurrency control". Workers do their work without holding locks, and conflicts are detected at commit time. It suits runs where two writers on the same run are rare but possible.
+
+:::caveat
+CAS rejects the stale write. It does not decide what B should do next. Reloading and re-deciding is usually right for a state machine. If B had already sent an e-mail before its save failed, though, that e-mail is out in the world, and no rollback can recall it. Effects outside the database are the subject of the next lesson.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/state/checkpoints.py`; the tests are in `tests/test_state_checkpoints.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_state_checkpoints.py"`.
+
+Expected output ends with `Ran 7 tests` and `OK`. The restart test closes the store and opens a new `CheckpointStore` over the same file. It finds the committed `checked` state, not the `ready` state that existed only in memory. To see the stale-write test catch a real bug, change `AND version = ?` to `AND version >= ?` in the `UPDATE`. `test_a_stale_write_is_rejected` fails, because B's outdated write now overwrites A's newer one. Restore the line before moving on.

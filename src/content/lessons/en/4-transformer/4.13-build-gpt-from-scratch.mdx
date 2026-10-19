@@ -14,15 +14,15 @@ teachBack:
   modelAnswer: "Integer IDs index token and position embeddings, producing B×T×C states. Each identical block applies normalized causal multi-head attention and a feed-forward update through residual connections. A final norm and vocabulary projection produce B×T×V logits. Flattened logits against shifted targets give next-token cross-entropy. Generation reuses the same forward pass, sampling from the last position. Qwen3.8-27B departs by using RMSNorm instead of LayerNorm, rotary positions instead of a learned position table, a SiLU-gated FFN instead of an ungated GELU one, and grouped-query attention with non-square projections. Most structurally, it replaces attention with Gated DeltaNet in 48 of its 64 layers, so the stack is not uniform at all."
 quiz:
   - question: "Why is the triangular mask registered as a buffer?"
-    options: ["It becomes an optimizer parameter", "It follows the module across devices but is not trainable", "It stores generated text", "It replaces position embeddings"]
+    options: ["It becomes a parameter, so the optimizer can refine the mask during training", "It follows the module across devices but is not trainable", "It stores generated text", "It replaces position embeddings"]
     correctIndex: 1
-    explanation: "Buffers are saved with module state and move with the module, while gradients and optimizer updates are not computed for them."
+    explanation: "Buffers are saved with module state and move with the module, while gradients and optimizer updates are not computed for them. A trainable mask could drift and let positions read the future."
   - question: "Using the last lesson's five axes, how is the minimal GPT classified?"
-    options: ["Encoder–decoder with cross-attention, dense, hybrid", "Decoder-only mixture-of-experts, multimodal", "Decoder-only, next-token objective, dense, uniform attention mixer, text-only", "Encoder-only with a corruption objective"]
+    options: ["Decoder-only, next-token, dense, hybrid attention and DeltaNet, text-only", "Decoder-only, next-token, mixture-of-experts, uniform attention, text-only", "Decoder-only, next-token, dense, uniform attention, text-only", "Encoder-only with a corruption objective"]
     correctIndex: 2
-    explanation: "It has one causal stack trained on next-token prediction, every token pays every FFN, every layer uses the same attention mixer, and it reads only text — the uniform baseline on every axis."
+    explanation: "It has one causal stack trained on next-token prediction, every token pays every FFN, every layer uses the same attention mixer, and it reads only text — the uniform baseline on every axis. The hybrid mixer belongs to Qwen3.8-27B, not to this toy."
   - question: "At the 27B end of the parameter ladder, which component holds the most parameters?"
-    options: ["The token embedding table alone", "The causal masks", "The optimizer's learning-rate schedule", "The gated FFNs, roughly 17B across the 64 layers"]
+    options: ["Embeddings plus lm_head, about 2.54B", "The causal masks", "The optimizer's learning-rate schedule", "The gated FFNs, roughly 17B across the 64 layers"]
     correctIndex: 3
     explanation: "At about 267M per layer times 64 layers, the FFNs hold roughly 17B of the ~27B; the untied embedding and lm_head add about 1.271B each."
 citations:
@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 ## What you are about to build
@@ -203,6 +203,16 @@ class MiniGPT(nn.Module):
 model = MiniGPT().to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
 
+
+@torch.no_grad()
+def estimate_loss(source: torch.Tensor, batches: int = 20) -> float:
+    """Average loss on fresh batches from one split, without gradients."""
+    model.eval()
+    losses = [model(*get_batch(source))[1].item() for _ in range(batches)]
+    model.train()
+    return sum(losses) / len(losses)
+
+
 for step in range(301):
     inputs, targets = get_batch(train_data)
     _, loss = model(inputs, targets)
@@ -212,7 +222,10 @@ for step in range(301):
     loss.backward()
     optimizer.step()
     if step % 100 == 0:
-        print(f"step {step}: train loss {loss.item():.4f}")
+        print(
+            f"step {step}: train loss {loss.item():.4f}, "
+            f"validation loss {estimate_loss(validation_data):.4f}"
+        )
 
 seed = torch.zeros((1, 1), dtype=torch.long, device=device)
 generated = model.generate(seed, new_tokens=160)[0].tolist()
@@ -231,6 +244,8 @@ Read it by following shapes. Four letters do the bookkeeping: $B$ is the batch s
 Every residual addition therefore has matching shape.
 
 Training compares predictions with the truth. The target is the input shifted by one position. Cross-entropy compares vocabulary logits (raw scores, one per character) at each position with the actual next character. AdamW, the optimizer of [lesson 2.7](/lessons/2-neural-network-fundamentals/2.7-optimizers/), updates the parameters, while the causal mask, registered as a **buffer** (a tensor saved and moved with the model but never trained), stays fixed. Generation uses the same forward pass without targets, sampling from the final position's logits and cropping to the context limit.
+
+Every hundred steps the loop also measures the loss on `validation_data`, the last 10 percent of the text, which the model never trains on. `estimate_loss` switches the model to evaluation mode, turns off gradient tracking with `torch.no_grad`, and averages 20 fresh batches. One CPU run with PyTorch 2.14.1 printed a training loss of 0.0470 and a validation loss of 0.0576 at step 300. Read that pair with care. This corpus is one sentence repeated 200 times, so the held-out slice is the same sentence again, and a low validation loss shows only that the model reproduces it. Whether a model generalizes to new text can be measured only on held-out text that differs from what it trained on.
 
 One incidental detail is worth flagging: `language_head` is a separate matrix from `token_embedding`. This toy does not tie its output head to its embedding table (tying would reuse one matrix for both). Neither does Qwen3.8-27B, at vastly greater expense. Hold that thought for the ladder below and for [lesson 4.14](/lessons/4-transformer/4.14-reading-real-weights/), where the two untied matrices appear in the checkpoint as separate tensors.
 

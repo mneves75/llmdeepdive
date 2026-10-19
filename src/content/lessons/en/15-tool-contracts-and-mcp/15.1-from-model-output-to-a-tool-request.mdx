@@ -1,0 +1,132 @@
+---
+id: "15.1-from-model-output-to-a-tool-request"
+track: "15-tool-contracts-and-mcp"
+order: 1
+title: "From Model Output to a Tool Request"
+summary: "A model's tool call is untrusted JSON. Validate it against a strict schema that rejects wrong types, unknown fields and out-of-range numbers, then check separately whether this caller may touch the record it names."
+tier: "core"
+locale: "en"
+prerequisites: ["14.1-when-a-workflow-needs-an-agent", "1.4-sentencepiece-byte-level-token-counts"]
+unlocks: ["15.2-json-rpc-and-protocol-lifecycle", "16.1-threat-model-the-assistant", "22.2-typed-handoffs"]
+analogy: "A warehouse takes orders only on a typed form. Every box has a fixed format, and a form with a handwritten extra line goes back to the sender. The clerk who checks the form catches a missing part number or a quantity of minus three. The form cannot tell the clerk whether the buyer may ship from this warehouse: that is a second check, against the list of authorized buyers, and a perfectly filled form from the wrong company is still refused. The comparison stops at who fills in the form. A buyer knows what they want, while a language model produces text that only looks like an order, and that text may have been steered by whatever the model read last."
+teachBack:
+  prompt: "A new tool, approve_invoice, takes {\"invoice_id\": \"INV-0042\", \"approved_by\": \"u7\"}. Its argument model is strict and forbids extra fields, and in testing the model always filled approved_by with the current user's id. A reviewer says the strict schema makes the tool safe. What is wrong with that claim, and what would you change?"
+  modelAnswer: "The schema proves only the shape of the request. approved_by is an identity field, and here the model writes it. A prompt injection or a plain mistake could put another user's id there, and the request would still validate. Identity must come from the trusted Principal that the controller built. So I would remove approved_by from the arguments, and the tool would read the approver from the principal. Then a separate check decides whether that principal may approve this invoice. It must be the same tenant and the right role. The approver should also not be the person who requested the invoice. The invoice id needs the tenant check too, with the same not-found answer for a missing invoice and another tenant's. I would keep strict typing, because it still rejects malformed ids before any lookup runs."
+quiz:
+  - question: "The model calls list_purchase_orders with {\"limit\": \"20\"}. What does this lesson's strict ListPurchaseOrders model do, and what would a default Pydantic model have done?"
+    options: ["Strict mode rejects the string; a default model would have converted it to 20 and run the query", "Both accept it, because the text \"20\" is valid JSON that every parser reads as a number", "Strict mode converts it to 20, because strictness only blocks numbers outside the allowed range", "Both reject it, because a limit of 20 is larger than the maximum the published schema allows"]
+    correctIndex: 0
+    explanation: "Pydantic's default (lax) mode coerces \"20\" to 20; strict mode answers int_type instead, as the course's test shows for \"5\", 5.0 and True. A quoted number is a JSON string, not a number. Strictness concerns types, and the range check is separate: 20 is inside 1 to 50."
+  - question: "In a run whose principal belongs to tenant-a, the model sends lookup_purchase_order with {\"po_id\": \"PO-2001\"}. PO-2001 belongs to tenant-b. What happens?"
+    options: ["Validation fails, because the argument model knows which tenant owns each order number", "Validation passes, then the authorization check answers not found, as for a missing order", "Validation passes and the record comes back, because the order number matches the pattern", "The authorization check answers forbidden, which tells the model the order exists elsewhere"]
+    correctIndex: 1
+    explanation: "The model checks only shape, and PO-2001 is a well-formed number. authorize_record compares the record's tenant with the principal's and answers \"not found\", the same words as for PO-9999. Answering \"forbidden\" would confirm that another tenant's order exists, which is information the caller should not get."
+  - question: "A teammate proposes extra=\"ignore\" so that a model which adds a harmless field still works. Why does this course use extra=\"forbid\"?"
+    options: ["An ignored field is kept on the model and any later code that asks for it can still read it", "Pydantic's strict mode refuses to build a model unless extra is also set to forbid", "A dropped field hides what the model tried to do, while an error names it so it can be corrected", "Forbidding extra fields speeds up validation, because Pydantic stops at the first unknown key"]
+    correctIndex: 2
+    explanation: "With ignore, {\"po_id\": \"PO-1001\", \"tenant_id\": \"tenant-b\"} validates and tenant_id disappears without a word, so nobody learns that the model tried to choose a tenant. Ignore drops the field rather than keeping it. Strict and extra are independent settings, and speed is not the reason for either."
+citations:
+  - title: "Strict Mode (Pydantic 2.13 documentation)"
+    authors: "Pydantic"
+    year: 2026
+    url: "https://pydantic.dev/docs/validation/2.13/concepts/strict_mode/"
+  - title: "Models: extra data (Pydantic 2.13 documentation)"
+    authors: "Pydantic"
+    year: 2026
+    url: "https://pydantic.dev/docs/validation/2.13/concepts/models/"
+  - title: "JSON Schema Validation: A Vocabulary for Structural Validation of JSON (draft 2020-12)"
+    authors: "A. Wright, H. Andrews and B. Hutton (eds.)"
+    year: 2022
+    url: "https://json-schema.org/draft/2020-12/json-schema-validation"
+  - title: "Model Context Protocol specification 2026-07-28: Tools"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/server/tools"
+updated: "2026-10-19"
+---
+
+The purchasing assistant is answering a buyer at tenant-a, one of the two fictional companies in the course's data. The model replies with a tool call: run `lookup_purchase_order` with the arguments `{"po_id": "PO-2001"}`. The order number looks fine. It is also tenant-b's order. Should the code run it? Answering takes three separate questions. Is the request well formed? Does it name a real tool? May this caller see this record? This lesson turns the first two into a strict schema and keeps the third one apart, because no schema can answer it.
+
+## What does a model actually hand you?
+
+A *tool call* is a model's request to run a function: a tool name plus an object of arguments. The model produces it as generated text. The course's `OpenAICompatibleModel` adapter parses that text and returns it as `ModelReply.tool_call`, a Python dictionary. If the text is not valid JSON, the adapter returns an error that starts with `protocol:` instead of guessing what was meant.
+
+The model learned the tool's shape from its *definition*: a name, a description and a schema, sent along with the prompt. Those definitions are text that the model reads, so they cost tokens like any other part of the prompt ([lesson 1.4](/lessons/1-text-to-tensors/1.4-sentencepiece-byte-level-token-counts/)). Reading a schema does not bind the model to it. The model can still send a string where a number belongs, invent a field, or copy an order number out of an untrusted supplier e-mail. The specification of the Model Context Protocol (MCP), the protocol of the next lessons, puts it plainly: servers "MUST validate all tool inputs".
+
+## Shape: a strict argument model
+
+*JSON Schema* is a standard JSON document that describes which JSON values are allowed: the types, which fields are required, the allowed range of a number. MCP publishes every tool's arguments as a JSON Schema called `inputSchema`. The project writes each schema once, as a Pydantic model, and lets Pydantic generate the JSON Schema from it:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/contracts.py
+class Arguments(BaseModel):
+    # Strict: "5" is not 5. Forbid: an extra field is an error, not ignored.
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+
+class LookupPurchaseOrder(Arguments):
+    po_id: str = Field(pattern=r"^PO-[0-9]{4}$", description="Purchase order number, for example PO-1001.")
+
+
+class ListPurchaseOrders(Arguments):
+    status: Literal["open", "received"] | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+```
+
+`Literal["open", "received"]` is an *enum*, a field that allows only a fixed list of values. `ge=1, le=50` bounds the number from both sides. Printing `ListPurchaseOrders.model_json_schema()` shows what the model is told:
+
+```json
+{"additionalProperties": false, "properties": {"status": {"anyOf": [{"enum": ["open", "received"], "type": "string"}, {"type": "null"}], "default": null, "title": "Status"}, "limit": {"default": 10, "maximum": 50, "minimum": 1, "title": "Limit", "type": "integer"}}, "title": "ListPurchaseOrders", "type": "object"}
+```
+
+The published contract and the enforced one come from the same class, so they cannot drift apart. A test asserts that the schema says `"additionalProperties": false` and a limit from 1 to 50.
+
+## Why strict mode matters
+
+By default Pydantic tries to *coerce* a value, that is, convert it to the declared type when it can. Its documentation gives the example of the string `'123'` becoming the integer 123. That is convenient for a web form and wrong for a model's output, because a model that sends `"20"` has misread the contract, and silently fixing it hides the mistake. Strict mode makes Pydantic "error if the data is not of the correct type". Here is what Pydantic 2.13.5 did with the `limit` field when this lesson was written; the strict column is what the tests assert:
+
+| Input | Default (lax) mode | Strict mode |
+|---|---|---|
+| `"5"` | accepted as 5 | rejected: not a valid integer |
+| `5.0` | accepted as 5 | rejected: not a valid integer |
+| `true` | accepted as 1 | rejected: not a valid integer |
+| `51` | rejected: above 50 | rejected: above 50 |
+
+The boolean row is the surprising one. In Python, `True` is a subclass of `int` with the value 1, so lax validation lets it through.
+
+## Why an unknown field is an error
+
+The second setting is `extra`. Pydantic's documentation says that by default a model ignores extra data, and `extra="forbid"` makes it an error instead. Picture the model sending `{"po_id": "PO-1001", "tenant_id": "tenant-b"}`. Ignoring the extra field happens to be safe here, because the tool never reads it. It also means nobody learns that the model tried to pick a tenant. Forbidding it turns the attempt into a visible rejection, `tenant_id: Extra inputs are not permitted`, that a test, a log or a reviewer can see.
+
+Choosing a tenant is not the model's job at all. In the project's shared records (`domain.py`), every `RunState` carries a `Principal`: the user and tenant that the controller built from authenticated input, never from model output. No argument model in this track has a tenant field, so there is nowhere for a model to put one.
+
+## Valid is not authorized
+
+Now back to the opening question. `PO-2001` matches `^PO-[0-9]{4}$`, so validation passes. *Authorization*, the decision whether this caller may act on this record, needs facts the schema does not have: who the caller is and who owns the record. That check is a separate function:
+
+```python
+# file: examples/agent-engineering/src/agentlab/tools/contracts.py
+def authorize_record(principal: Principal, record: dict | None, po_id: str) -> dict:
+    """Allow a record only if it belongs to the caller's tenant.
+
+    Missing and forbidden get the same answer: saying "forbidden" would tell
+    the caller that another tenant's order exists.
+    """
+    if record is None or record["tenant_id"] != principal.tenant_id:
+        raise ToolRejected(f"purchase order {po_id} not found")
+    return record
+```
+
+The identical message matters. If PO-9999 answered "not found" and PO-2001 answered "forbidden", a model or an attacker could map out which order numbers exist at other companies just by asking. [Lesson 15.4](/lessons/15-tool-contracts-and-mcp/15.4-a-raw-postgres-mcp-server/) moves this same rule into the database query, so that another tenant's rows never leave the database at all.
+
+:::caveat
+Neither check makes a request correct. A tenant-a buyer can still ask for the wrong one of tenant-a's own orders, and both checks will pass. Whether the action fits the user's intent is a question for approval (track 20) and evaluation (track 23).
+:::
+
+A rejection is not the end of the run: the model gets an error and may try again. That error is itself text entering the model's context, so the project keeps it short. It lists field names and reasons, never the rejected value, because the value may be 5,000 characters long or carry an injected instruction. `ToolRejected` messages are capped at 300 characters, and one test sends a hostile order number to check that its text does not come back.
+
+## Run the exercise
+
+The module is `src/agentlab/tools/contracts.py` and the tests are in `tests/test_tools_contracts.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_tools_contracts.py"`. The output ends with `Ran 12 tests` and `OK`. The tests cover a scripted model's tool call becoming a validated request, each row of the table above, an exact enum, the bounded error, and the PO-2001 case: it passes validation and is refused by `authorize_record` with the same words as a missing order.
+
+To watch a test catch a real weakening, change `extra="forbid"` to `extra="ignore"` in `Arguments`. `test_an_unknown_field_is_rejected_even_a_helpful_one` fails, because the `tenant_id` field now disappears without an error. `test_the_published_schema_states_what_is_enforced` errors too, because the generated schema no longer carries `additionalProperties`. Restore the line before moving on.

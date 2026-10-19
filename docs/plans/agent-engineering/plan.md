@@ -118,7 +118,7 @@ Requested stage 2. Slug: `15-tool-contracts-and-mcp`. Depends on track 14.
 | Lesson | Mechanism and worked case | Observable evidence |
 |---|---|---|
 | 15.1 From model output to a tool request | JSON Schema and strict Pydantic, unknown fields, enums, numeric limits, semantic validation | Wrong types, extra fields, and a structurally valid unauthorized invoice ID are rejected |
-| 15.2 JSON-RPC and protocol lifecycle | Request IDs, results, errors, notifications, initialization, capability/version negotiation | A hand-written dispatcher correlates responses and handles malformed or unsupported messages |
+| 15.2 JSON-RPC and protocol lifecycle | Request IDs, results, errors, notifications; under MCP `2026-07-28` there is no initialize handshake: each request states its version and capabilities in `_meta`, and the server answers `server/discover` (corrected 2026-10-18 against the pinned revision) | A hand-written dispatcher correlates responses and handles malformed or unsupported messages |
 | 15.3 Tools, resources, prompts, discovery | MCP host/client/server roles; list/call tools, pagination, changing catalogs, untrusted descriptions | Client handles a catalog change without granting new capabilities automatically |
 | 15.4 A raw local Postgres MCP server | Narrow read-only business tools, parameterized queries, restricted DB role, bounded rows/time, synthetic tenants | A second client interoperates; injection and cross-tenant requests fail with no forbidden SQL effect |
 | 15.5 Transport and authorization boundaries | stdio process identity versus remote HTTP authorization, token audience/scopes, consent, cancellation and transport errors | Revoked/expired/wrong-audience credentials fail in the remote fixture; raw-server subset is documented |
@@ -339,7 +339,7 @@ URLs were consulted during planning; exact release pins and runnable snippets ar
 | Architecture | [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents): complexity selection |
 | State | [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence): durable versus in-memory state |
 | Durable approvals | [Temporal message passing](https://docs.temporal.io/encyclopedia/workflow-message-passing): wait/resume concepts |
-| MCP | [Specification](https://modelcontextprotocol.io/specification/latest) and [security practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices): protocol and authorization boundaries |
+| MCP | [Specification, revision 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28) and [security practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices): protocol and authorization boundaries |
 | Schemas | [Pydantic strict mode](https://docs.pydantic.dev/latest/concepts/strict_mode/): validation behavior |
 | Browser automation | [Playwright locators](https://playwright.dev/docs/locators): semantic targeting |
 | Isolation | [gVisor architecture](https://gvisor.dev/docs/architecture_guide/intro/) and [E2B network controls](https://docs.e2b.dev/network/internet-access): distinct mechanisms and actual egress behavior |

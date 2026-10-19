@@ -1,0 +1,130 @@
+---
+id: "20.5-deny-expire-revoke-and-resume"
+track: "20-human-approval-and-durable-pauses"
+order: 5
+title: "Negar, expirar, revogar e retomar"
+summary: "Uma espera pode terminar em negação, expiração, revogação ou num único uso. Checar a aprovação no momento do uso, dentro da transação que enfileira o efeito, faz com que aprovação e cancelamento disputando a vez gerem no máximo uma fatura, em qualquer ordem."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["20.4-slack-and-teams-approval-adapters"]
+unlocks: []
+analogy: "Um cheque pode ser sustado até o banco pagá-lo. O banco consulta a lista de sustações no caixa, no momento de pagar, não quando o cheque foi emitido nem quando o cliente entrou na agência, então uma sustação que chega um minuto antes do pagamento vence e uma que chega um minuto depois chega tarde: o dinheiro saiu, e reavê-lo é um pedido novo a quem recebeu. A comparação para no caixa. Um caixa atende um cliente por vez, enquanto dois dos nossos workers podem chegar à mesma aprovação ao mesmo tempo, então a checagem e o pagamento precisam acontecer numa só transação que nenhum outro worker consiga dividir."
+teachBack:
+  prompt: "Um colega propõe um execute mais rápido: ler o status com status() e, se disser approved, chamar um método separado que marca a linha como consumed e insere a linha do outbox na sua própria transação. Usando a ordem aprovar, worker A lê o status, comprador revoga, worker A faz a escrita, descreva o que acontece nesse projeto e no execute do curso."
+  modelAnswer: "No projeto do colega, o worker A lê approved e decide seguir. O comprador então revoga, e a linha vira revoked. A escrita do worker A roda sem olhar de novo. Se ela atualizar a linha sem condição, marca como consumed uma aprovação revogada e enfileira a fatura. É um efeito que o negócio tinha cancelado: uma corrida entre o momento da checagem e o momento do uso. No execute do curso, a leitura e a escrita acontecem numa só transação BEGIN IMMEDIATE. O worker A relê a linha dentro dela e encontra revoked, então retorna cannot execute: revoked e não enfileira nada. O status que o worker A viu antes é só uma pista; a decisão é tomada onde o efeito é enfileirado."
+quiz:
+  - question: "O teste de corrida roda a ordem approve, execute_a, revoke, execute_b. Quantas faturas acabam no outbox, e o que os dois últimos passos retornam?"
+    options: ["Nenhuma, porque a revogação cancela o efeito que execute_a tinha enfileirado logo antes", "Uma; revoke é recusado porque a aprovação já foi consumida, e execute_b também falha", "Duas, porque cada worker executa uma vez e cada um vê uma aprovação quando começa", "Uma; revoke tem sucesso e marca a fatura enfileirada como cancelada antes da entrega"]
+    correctIndex: 1
+    explanation: "execute_a consome a aprovação e enfileira a fatura numa só transação. revoke então encontra consumed e retorna ok=False, porque um efeito enfileirado não pode ser retirado mudando a linha da aprovação. execute_b também encontra consumed. A invariante do teste espera exatamente um efeito sempre que um execute vem depois de approve e antes de revoke."
+  - question: "Por que execute relê a aprovação dentro da própria transação em vez de confiar no status que o worker leu um instante antes?"
+    options: ["O SQLite não consegue manter válido o resultado de uma leitura entre duas chamadas de função Python na mesma conexão", "Ler duas vezes torna idempotente a inserção no outbox, então uma chamada repetida nunca acrescenta outra linha", "O status pode mudar entre a checagem e o uso, então só vale a checagem feita no lugar onde o efeito é enfileirado", "A hash da aprovação precisa ser recalculada a cada vez, porque valores Decimal podem variar no armazenamento"]
+    correctIndex: 2
+    explanation: "É a fraqueza de momento da checagem e momento do uso que a MITRE cataloga como CWE-367: um recurso muda entre a checagem e o seu uso. Fazer a checagem e a escrita numa só transação de escrita não deixa intervalo. Idempotência é trabalho da chave do outbox, e valores Decimal não variam."
+  - question: "A fatura foi enviada uma hora atrás. O aprovador agora descobre que o fornecedor estava errado e clica em Revoke. O que o sistema deveria fazer?"
+    options: ["Revogar a aprovação e apagar a linha do outbox, para o envio nunca ter acontecido", "Revogar a aprovação, o que faz o contas a pagar rejeitar a fatura automaticamente", "Recusar o revoke em silêncio, pois uma aprovação consumida não pode mudar de status", "Informar que o efeito já aconteceu e então abrir uma correção separada, com aprovação"]
+    correctIndex: 3
+    explanation: "Depois de consumida, a fatura saiu pelo outbox, e apagar uma linha local não a tira do contas a pagar. revoke retorna ok=False com status consumed, e essa resposta precisa chegar a uma pessoa, não sumir. Desfazer o efeito, por exemplo com uma nota de crédito, é uma ação nova que passa pela política e pela sua própria aprovação."
+citations:
+  - title: "CWE-367: Time-of-check Time-of-use (TOCTOU) Race Condition"
+    authors: "MITRE"
+    year: 2026
+    url: "https://cwe.mitre.org/data/definitions/367.html"
+  - title: "SQLite: BEGIN TRANSACTION"
+    authors: "SQLite"
+    year: 2026
+    url: "https://www.sqlite.org/lang_transaction.html"
+  - title: "Workflow message passing"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://docs.temporal.io/encyclopedia/workflow-message-passing"
+updated: "2026-10-19"
+---
+
+O aprovador aprova a INV-0042 às 10:00 de quarta-feira. Às 10:00 e alguns milissegundos, o comprador cancela a compra, porque o fornecedor retirou a oferta. Quase no mesmo instante, um worker que leu a aprovação como `approved` começa a enviar a fatura. Quem vence? A resposta de que o negócio precisa é simples de enunciar: qualquer que seja a ordem, no máximo uma fatura, e nenhuma se o cancelamento veio primeiro.
+
+Esta aula termina a espera da [aula 20.3](/pt-br/lessons/20-human-approval-and-durable-pauses/20.3-durable-waits-and-callbacks/). Ela cobre todos os jeitos como uma espera pode terminar, a corrida entre aprovação e cancelamento e como uma execução continua depois de uma recusa.
+
+## Como uma espera pode terminar?
+
+Um pedido começa `pending`. Dali, uma pessoa pode *negá-lo*, o prazo pode *expirá-lo*, o negócio pode *revogá-lo* (cancelar o pedido ou retirar uma aprovação), ou o aprovador pode aprová-lo. Um pedido aprovado tem três futuros possíveis: é *consumido* pelo seu único uso, expira sem uso ou é revogado antes de ser usado. A docstring do store lista as transições:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/store.py
+    pending  -> approved | denied | expired | revoked
+    approved -> consumed | expired | revoked
+```
+
+`denied`, `expired`, `revoked` e `consumed` são terminais: nenhuma transição sai deles. Um pedido recusado nunca vira aprovado depois por acidente. Um pedido aprovado que ficou sem uso além do prazo também não pode ser usado, porque uma aprovação de três dias atrás reflete o que se sabia três dias atrás.
+
+## Momento da checagem, momento do uso
+
+O momento perigoso é o intervalo entre olhar e agir. O catálogo de fraquezas de software da MITRE o registra como CWE-367, a corrida *time-of-check time-of-use* (TOCTOU), momento da checagem e momento do uso: "The product checks the state of a resource before using that resource", o produto checa o estado de um recurso antes de usá-lo, e o recurso pode mudar no meio. No nosso caso, um worker lê `approved`, o comprador revoga, e o worker envia mesmo assim.
+
+O store fecha esse intervalo fazendo da checagem e do uso uma única transação. `execute` é o único caminho de uma aprovação até um efeito:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/store.py
+    def execute(self, approval_id: str, draft: InvoiceDraft, now: datetime) -> Outcome:
+        """Time of use: re-check status, draft and deadline, then consume and queue the effect atomically."""
+        with self._transaction():
+            found = self._read(approval_id)
+            if found is None:
+                return Outcome(False, "unknown", f"no approval {approval_id}")
+            request, status, run_id = found
+            if status != "approved":
+                return Outcome(False, status, f"cannot execute: {status}")
+            check = covers(request, draft, now)
+            if not check.allowed:
+                if now >= request.expires_at:
+                    self._move(approval_id, "approved", "expired", now)
+                    return Outcome(False, "expired", check.reason)
+                return Outcome(False, status, check.reason)
+            self._move(approval_id, "approved", "consumed", now)
+            self._db.execute(
+                "INSERT INTO outbox (idempotency_key, run_id, payload, status) VALUES (?, ?, ?, 'pending')",
+                (request.operation_id, run_id, draft.model_dump_json()),
+            )
+            return Outcome(True, "consumed", "effect queued in the outbox")
+```
+
+Dentro de uma transação `BEGIN IMMEDIATE`, `execute` relê a linha, checa o status, roda o `covers` da [aula 20.2](/pt-br/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/) (prazo e hash), marca a aprovação como consumida e insere a fatura no outbox da trilha 14. Ou tudo isso é gravado, ou nada é. A linha do outbox usa o id de operação como chave de idempotência, então o `deliver_pending` da [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) a envia, e `reconcile` resolve uma resposta perdida perguntando ao sistema de contas o que ele registrou sob essa chave.
+
+<Figure id="approval-race" />
+
+## Aprovação contra cancelamento
+
+O teste de corrida pega quatro operações sobre um pedido: `approve`, `revoke` e `execute` de dois workers, A e B, cada um com sua própria conexão ao mesmo arquivo. Ele roda as 24 ordens possíveis, cada uma contra um banco novo:
+
+```python
+# file: examples/agent-engineering/tests/test_approval_lifecycle.py
+    def test_every_interleaving_yields_at_most_one_permitted_effect(self):
+        for order in itertools.permutations(["approve", "revoke", "execute_a", "execute_b"]):
+            with self.subTest(order=order):
+                effects, won = self.run_order(order)
+                position = {step: i for i, step in enumerate(order)}
+                # An effect is permitted iff some execute comes after approve and before revoke.
+                permitted = any(position["approve"] < position[e] < position["revoke"] for e in ("execute_a", "execute_b"))
+                self.assertEqual(effects, 1 if permitted else 0)
+                self.assertLessEqual(sum(step.startswith("execute") for step in won), 1)
+```
+
+A *invariante*, a propriedade que precisa valer em toda ordem, é enunciada antes de o código rodar, não tirada dos resultados. Exatamente uma fatura quando algum execute cai entre a aprovação e a revogação, nenhuma caso contrário, e nunca dois executes que tenham sucesso. Um teste separado encena passo a passo o caso do começo da aula: o worker A lê `approved`, um segundo worker revoga, o worker A executa e é recusado, e o outbox continua vazio.
+
+:::caveat
+Este teste é determinístico: ele enumera ordens de operações *inteiras*, sem threads e sem sleeps, então dá a mesma resposta em toda execução. Ele não roda duas transações literalmente no mesmo instante. Esse caso é trabalho do SQLite: só uma transação de escrita pode estar ativa, então um segundo `BEGIN IMMEDIATE` espera o primeiro ou falha com `SQLITE_BUSY`, e nunca se intercala. A guarda `WHERE status = ?` em `_move` é uma segunda linha de defesa. Tire-a e todos os testes continuam passando, porque a trava de escrita já serializa operações inteiras. Ela fica porque não custa nada e mantém o store correto se alguém enfraquecer a transação no futuro.
+:::
+
+## Revogar depois do efeito, e retomar depois de uma recusa
+
+Revogar uma aprovação consumida falha. `revoke` retorna `ok=False` com status `consumed`, e o outbox continua com uma fatura. Mudar uma linha no nosso banco não tem como trazer de volta uma fatura que pode já estar no contas a pagar. A resposta honesta é avisar uma pessoa de que o efeito aconteceu e então começar uma ação nova, como uma nota de crédito. Essa ação passa pela política da [aula 20.1](/pt-br/lessons/20-human-approval-and-durable-pauses/20.1-decide-when-approval-is-needed/) e ganha sua própria aprovação, como qualquer outra escrita irreversível.
+
+Uma execução continua depois de uma negação ou de uma expiração pedindo de novo, nunca reaproveitando a resposta antiga. Em `test_a_denied_run_resumes_with_a_new_request`, o aprovador nega a versão 1. O rascunho corrigido é a versão 2, de USD 9.500,00. A aprovação antiga não o cobre, porque a hash é outra, e o store o recusa. A execução abre um pedido novo, `ap-2`, o aprovador o aprova, e `execute` enfileira exatamente uma fatura. Retomar depois de uma queda não exige código especial: um processo novo chama `waiting()` e encontra todo pedido ainda pendente, como na aula 20.3.
+
+A versão do Temporal desses desfechos usa as mesmas ideias. O cancelamento seria mais uma mensagem para o workflow, um Signal ou um Update, como descreve a documentação de troca de mensagens do Temporal. A checagem do workflow antes de enviar ficaria no mesmo código determinístico que roda a activity. Esta aula testa só a versão em SQLite.
+
+## Rode o exercício
+
+O código está em `src/agentlab/approval/store.py` e os testes em `tests/test_approval_lifecycle.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_approval_lifecycle.py"`. A saída esperada termina com `Ran 9 tests` e `OK`. O teste de corrida conta como um teste com 24 subtestes.
+
+Os outros testes cobrem o uso único (um segundo execute é recusado), um pedido pendente que não pode rodar, um rascunho editado, uma aprovação que vence sem uso, um pedido revogado que não pode ser aprovado, uma revogação depois da execução, a revogação entre checagem e uso e a retomada depois da negação. O primeiro teste é também o controle positivo: um rascunho aprovado e inalterado produz exatamente uma chamada ao sistema de contas falso, então um store que recusasse tudo falharia. Agora quebre a checagem do momento do uso. Em `execute`, troque `if status != "approved":` por `if status not in ("approved", "consumed"):` e rode de novo. A execução mostra cinco erros: `test_an_approved_draft_is_executed_once_through_the_outbox` e quatro ordens do teste de corrida. Em cada uma, um segundo execute passa pela checagem de status, e só o compare-and-swap em `_move`, levantando `StaleWrite`, impede uma segunda fatura. Restaure a linha.

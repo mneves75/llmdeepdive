@@ -14,13 +14,13 @@ teachBack:
   modelAnswer: "The vLLM engine runs a Python orchestration layer (scheduler, paged KV allocator, continuous batching) on top of PyTorch and a set of hand-written CUDA and Triton kernels. Performance improvements there mean writing or tuning kernels, and each vendor's backend is largely a separate effort. MAX inverts the arrangement. The model is expressed as a computation graph, and an ahead-of-time compiler owns fusion, scheduling, and memory layout. The same graph is retargeted across NVIDIA and AMD hardware without vendor-specific rewrites, with an OpenAI-compatible server on top. Mojo is the language the kernels themselves are written in: a Python-family systems language with static types, ownership, and explicit SIMD and tiling primitives. Mojo compiles through MLIR, so the compiler still has structure to reason about at the innermost level. Before committing this model I would verify four things. First, that the hybrid architecture with Gated DeltaNet layers is actually implemented in the graph library for the release I have, not merely that 'transformers are supported'. Second, that my quantization format is among the supported ones. Third, that a like-for-like benchmark against vLLM favours MAX on my workload rather than on a vendor's, at identical precision, decoding preset, sequence lengths, and concurrency. Fourth, that my team can absorb an ecosystem whose APIs are still moving."
 quiz:
   - question: "Where should a compiler-first stack most plausibly beat a hand-tuned kernel stack, and where should it most plausibly lose?"
-    options: ["Win everywhere, because compilation is strictly better than hand-written code","Win only at very large batch sizes and lose at small ones","Win where launch overhead and unfused small operations dominate, such as low-batch decode; lose where a vendor kernel already saturates memory bandwidth at high batch","Win on quality of generated text and lose on throughput"]
+    options: ["Win everywhere, because a compiler sees the whole graph and can always match a hand-written kernel", "Win at large batch, where it can fuse the big matrix multiplies into fewer kernels, and lose at batch one, where Python orchestration dominates", "Win where launch overhead and small unfused ops dominate (low-batch decode); lose where a tuned vendor kernel already nears the hardware limit", "Win on output quality, because fused kernels round fewer times, and lose on throughput to vendor kernels"]
     correctIndex: 2
-    explanation: "Fusion and ahead-of-time scheduling remove per-operation overhead, which matters most when the hardware is idle between small kernels; when a hand-tuned kernel is already bandwidth-bound there is little left for a compiler to reclaim."
+    explanation: "Fusion and ahead-of-time scheduling remove per-operation overhead, which matters most when the hardware is idle between small kernels. When a hand-tuned kernel already runs near the limit that binds its workload, bandwidth or compute depending on measured arithmetic intensity, there is little left for a compiler to reclaim. The batch-size option has the direction reversed."
   - question: "Recalling lesson 8.4, which job of coordinating many concurrent requests does a serving stack still have to do even if a compiler handles kernel fusion?"
-    options: ["Tokenization of the input string","Choosing the sampling temperature","Downloading weights from the model hub","Continuous batching and paged KV-cache allocation across concurrent requests"]
+    options: ["Fusing the attention and FFN kernels of different requests into a single launch per step", "Picking a sampling temperature per request so that concurrent replies cannot collide", "Splitting each request's weights across GPUs so that requests never share one copy", "Continuous batching and paged KV-cache allocation across concurrent requests"]
     correctIndex: 3
-    explanation: "Scheduling and KV memory management are serving-layer concerns, not kernel concerns; a graph compiler that fuses operations perfectly still needs a scheduler deciding which sequences run in each step."
+    explanation: "Scheduling and KV memory management are serving-layer concerns, not kernel concerns; a graph compiler that fuses operations perfectly still needs a scheduler deciding which sequences run in each step. Fusion is the compiler's part, and all requests share one copy of the weights."
 citations:
   - title: "MAX Documentation"
     authors: "Modular"
@@ -30,7 +30,7 @@ citations:
     authors: "Modular"
     year: 2026
     url: "https://docs.modular.com/mojo/"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 You have Qwen3.8-27B running under vLLM on NVIDIA hardware, and your infrastructure team announces that half the next cluster will be AMD. Nothing about the model changes. What changes is that every hand-written CUDA kernel in your serving path now has a counterpart that someone else maintains at a different pace, and your performance profile becomes two profiles. This is the problem Modular's stack is aimed at, and it is worth understanding on its merits before deciding whether the trade is one you want.
@@ -64,7 +64,7 @@ The third is **maturity of the surface**. APIs, CLI flags, and configuration for
 ## Where a compiler can win, and where it cannot
 
 :::warning
-"Compiler-based" does not mean "faster". A compiler wins where per-operation overhead and unfused work dominate: many small kernels, low batch sizes, launch-bound decode. That is exactly the situation [lesson 8.3](/lessons/8-building-and-serving-stacks/8.3-torch-compile-and-cuda-graphs/) attacked with graph capture. It has much less to reclaim where a hand-tuned vendor kernel already saturates memory bandwidth, as in large-batch prefill and well-optimised attention. Any claim of a uniform speedup across both situations deserves suspicion, whichever direction it points.
+"Compiler-based" does not mean "faster". A compiler wins where per-operation overhead and unfused work dominate: many small kernels, low batch sizes, launch-bound decode. That is exactly the situation [lesson 8.3](/lessons/8-building-and-serving-stacks/8.3-torch-compile-and-cuda-graphs/) attacked with graph capture. It has much less to reclaim where a hand-tuned vendor kernel already runs near the hardware's limit for that work. Which limit applies depends on the workload's measured arithmetic intensity: memory bandwidth for low-intensity steps such as small-batch decode, tensor-core compute for large-batch prefill, which [lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) shows is usually compute-bound, and either for well-optimised attention depending on its shape. Any claim of a uniform speedup across both situations deserves suspicion, whichever direction it points.
 :::
 
 ## How to evaluate MAX for this model

@@ -96,8 +96,11 @@ must be recorded as such.
 
 Rules for an assessment repair:
 
-- The correct concept and the intended correct answer do not change. Only
-  distractors are rewritten, to be plausible and comparable in detail.
+- The correct concept and the intended correct answer do not change.
+  Distractors are rewritten to be plausible and comparable in detail. The
+  correct option may be tightened when it carries its own explanation (a
+  "because" clause that belongs in `explanation`), provided its claim, number
+  and conditions stay the same.
 - Do not mechanically pad wrong answers or impose a universal character
   ratio. A distractor is acceptable when a learner could reasonably choose it
   for a stated reason.
@@ -112,8 +115,10 @@ Rules for an assessment repair:
 - Add at least one changed-scenario, trace-reading, or numerical-reasoning item
   per lesson where appropriate, rather than only recognition questions.
 - Run `pnpm content:parity`, `pnpm content:stubs`, and the affected tests
-  after any assessment repair, and re-check the answer-length census so it does
-  not become a new cue.
+  after any assessment repair. `content:parity` fails a locale where the
+  correct option is uniquely the longest in more than 20% of items or uniquely
+  the shortest in more than 35%, or a track over half in either direction; treat that as a floor, not a target, because
+  passing it says nothing about whether the distractors teach.
 
 ## Portuguese
 

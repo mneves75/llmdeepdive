@@ -1,0 +1,137 @@
+---
+id: "14.4-replay-and-side-effects"
+track: "14-agent-architecture-and-state"
+order: 4
+title: "Replay, idempotência e efeitos colaterais"
+summary: "Retomar de um checkpoint repete o passo que foi interrompido, e uma resposta perdida deixa você sem saber se uma escrita aconteceu. Uma chave de idempotência, um outbox e uma etapa de reconciliação fazem uma entrega repetida produzir uma única fatura."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["14.3-checkpoints-and-serialization"]
+unlocks: ["14.5-langgraph-and-temporal", "20.1-decide-when-approval-is-needed", "22.3-supervisor-and-peer-topologies", "23.1-define-success-and-capture-traces"]
+analogy: "Você manda pelo correio um cheque assinado e passa uma semana sem notícia. Fazer um segundo cheque para a mesma conta arrisca pagar duas vezes; não fazer nada arrisca nunca pagar. Quem paga com cuidado escreve o número da fatura no cheque e, antes de fazer outro, liga para o fornecedor e pergunta se chegou um cheque com aquele número. O número da fatura é a chave de idempotência, a ligação é a reconciliação, e a anotação no seu próprio livro de que um cheque foi enviado é o outbox. A comparação falha no tempo: um fornecedor ao telefone pode dizer que o cheque ainda está no correio, enquanto o sistema de contas falso deste exercício só responde sim ou não para uma chave que registrou ou não."
+teachBack:
+  prompt: "Seu provedor de contas a pagar esquece as chaves de idempotência 24 horas depois de vê-las pela primeira vez. Uma indisponibilidade deixa uma das linhas do seu outbox em reconciling por três dias. Quando o serviço volta, reconcile chama find com a chave da linha. O que pode dar errado, e o que você conferiria antes de enviar de novo?"
+  modelAnswer: "Depois de três dias o provedor já esqueceu a chave. Então find não devolve nada, mesmo que a fatura tenha sido criada antes da indisponibilidade. Nosso código de reconcile lê esse nada como nunca aconteceu. Ele leva a linha de volta para pending, e a próxima entrega cria uma segunda fatura. A chave expirada quebra tanto a deduplicação quanto a consulta. Antes de reenviar, eu buscaria no provedor por um campo que não expira. Nosso próprio id de fatura, INV-0001, enviado dentro do payload, é um desses campos. Se o provedor não permite buscar por ele, uma pessoa precisa conferir antes de qualquer reenvio. A regra geral é que uma chave só protege enquanto o receptor ainda se lembra dela. Então a reconciliação precisa terminar dentro da janela de retenção do receptor, ou usar uma referência duradoura."
+quiz:
+  - question: "O serviço falso registra a fatura e então perde a resposta. O entregador envia a mesma requisição de novo com a mesma chave. O que FakeInvoiceService.create devolve da segunda vez?"
+    options: ["O número que registrou da primeira vez, então continua havendo uma fatura lógica", "Um número novo, porque a segunda requisição chegou depois de a primeira terminar", "Um erro, porque o mesmo chamador só pode usar uma chave de idempotência uma vez", "Nada, porque uma resposta perdida significa que a primeira escrita foi desfeita"]
+    correctIndex: 0
+    explanation: "create procura a chave primeiro e devolve o número já guardado para ela, então a repetição é inofensiva. Levantar um erro deixaria quem envia sem como saber o resultado, e a escrita aconteceu: perder a resposta na volta não desfaz uma escrita no serviço."
+  - question: "Por que idempotency_key monta a chave a partir de run_id e do nome da operação, em vez de um id aleatório novo criado na hora do envio?"
+    options: ["Ids aleatórios podem colidir, enquanto duas execuções diferentes nunca compartilham operação", "O sistema de contas rejeita qualquer chave que uma pessoa não consiga ler, como um id aleatório", "Um passo repetido precisa produzir a mesma chave, senão o serviço o vê como uma requisição nova", "Um id aleatório revelaria ao serviço externo qual execução enviou a requisição"]
+    correctIndex: 2
+    explanation: "A deduplicação só funciona se a nova tentativa levar a mesma chave da primeira. Uma chave criada na hora do envio muda a cada tentativa, então o serviço cria uma segunda fatura. Colisões entre ids aleatórios bem feitos não são o problema, e duas execuções compartilham, sim, nomes de operação; quem as separa é o id da execução."
+  - question: "Uma entrega falha antes de a requisição chegar ao serviço, então a linha está em reconciling. O que reconcile faz com ela?"
+    options: ["Não encontra registro para a chave e leva a linha de volta para pending, para ser enviada de novo", "Marca a linha como done, porque um timeout quer dizer que o serviço vai tentar de novo do lado dele", "Envia de novo na hora, porque uma linha em reconciling sempre pode ser repetida diretamente", "Apaga a linha, porque um efeito sem registro no serviço nunca existiu"]
+    correctIndex: 0
+    explanation: "reconcile pergunta ao serviço primeiro; sem registro para a chave, enviar de novo é seguro, então a linha volta para pending. Um serviço não tenta de novo uma requisição que nunca recebeu, e apagar a linha descartaria uma fatura que a execução decidiu criar. Enviar sem perguntar é o que a reconciliação existe para evitar."
+citations:
+  - title: "RFC 9110: HTTP Semantics, seção 9.2.2 Idempotent Methods"
+    authors: "R. Fielding, M. Nottingham e J. Reschke (eds.), IETF"
+    year: 2022
+    url: "https://www.rfc-editor.org/rfc/rfc9110.html#name-idempotent-methods"
+  - title: "The Idempotency-Key HTTP Header Field (draft-ietf-httpapi-idempotency-key-header-07, Internet-Draft expirado)"
+    authors: "J. Jena e S. Dalal, grupo de trabalho HTTPAPI do IETF"
+    year: 2025
+    url: "https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.html"
+  - title: "Activity Definition: idempotency"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://docs.temporal.io/activity-definition"
+  - title: "LangGraph checkpointers"
+    authors: "LangChain"
+    year: 2026
+    url: "https://docs.langchain.com/oss/python/langgraph/checkpointers"
+updated: "2026-10-18"
+---
+
+A execução do PO-1001 chegou a `ready`, e o próximo passo cria a fatura no sistema de contas a pagar, o serviço que registra o que a empresa deve. O worker envia a requisição. Trinta segundos passam sem resposta, e a conexão estoura o tempo limite. A fatura foi criada? O worker não tem como saber. Se enviar de novo e a primeira requisição tiver dado certo, a empresa passa a dever os mesmos USD 500,00 duas vezes. Se não fizer nada e a primeira requisição tiver se perdido, o fornecedor nunca recebe. Esta aula dá à execução uma saída desse dilema que não depende de chute.
+
+## Entrega não é efeito
+
+Um *efeito colateral* é qualquer mudança que um passo faz fora do próprio estado: uma linha em outro sistema, um e-mail, um pagamento. Dois eventos se confundem fácil aqui. A *entrega* é a requisição chegar ao serviço. O *efeito* é o serviço agir sobre ela. Entre os dois fica a resposta, e a resposta pode se perder mesmo quando o efeito aconteceu.
+
+A RFC 9110, a especificação do HTTP, chama um método de *idempotente* se "the intended effect on the server of multiple identical requests with that method is the same as the effect for a single such request" (o efeito pretendido no servidor de várias requisições idênticas com esse método é o mesmo de uma única). `PUT` e `DELETE` são idempotentes, então um cliente pode repeti-los depois de uma conexão quebrada. `POST`, o jeito habitual de criar algo, não é. A RFC diz que um cliente "SHOULD NOT automatically retry" (não deve repetir automaticamente) uma requisição não idempotente, a menos que tenha algum meio de saber que repeti-la é seguro.
+
+## Por que um replay repete trabalho?
+
+A [aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/) fez um reinício retomar do último checkpoint confirmado. É exatamente por isso que o trabalho se repete. O checkpoint é gravado *depois* de um passo, então uma queda no meio de um passo faz o passo rodar de novo desde o início. Qualquer efeito causado antes da queda acontece uma segunda vez, a menos que algo o impeça. A documentação de checkpointers do LangGraph afirma o mesmo limite: "you can only resume execution from a checkpoint (i.e., a super-step boundary)" (só dá para retomar a execução de um checkpoint, isto é, da fronteira de um super-step).
+
+As chamadas ao modelo acrescentam um segundo motivo. Um modelo pode responder ao mesmo prompt de jeitos diferentes em duas chamadas. Então um replay nunca deve *perguntar de novo* ao modelo por uma decisão que ele já tomou. Deve ler a decisão do checkpoint. É por isso que o status da execução é guardado, e não recalculado.
+
+## Chaves de idempotência
+
+Uma *chave de idempotência* é um valor enviado com uma requisição para que o receptor reconheça uma repetição. O receptor guarda o resultado sob a chave. Quando a mesma chave chega de novo, ele devolve o resultado guardado em vez de agir duas vezes. Um rascunho do IETF para o cabeçalho HTTP `Idempotency-Key` descreve esse comportamento: o servidor "SHOULD respond with the result of the previously completed operation" (deve responder com o resultado da operação já concluída). Sua última revisão (outubro de 2025) expirou em abril de 2026 sem virar padrão, então trate-o como descrição da ideia, não como regra que um servidor precise seguir. O sistema de contas falso do projeto implementa isso:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/outbox.py
+    def create(self, key: str, draft: InvoiceDraft) -> str:
+        self.create_calls += 1
+        failure, self.fail_next = self.fail_next, None
+        if failure == "before_write":
+            raise OutcomeUnknown("request lost")
+        number = self.invoices.setdefault(key, f"AP-{len(self.invoices) + 1:04d}")
+        if failure == "after_write":
+            raise OutcomeUnknown("reply lost")
+        return number
+```
+
+`setdefault` só guarda um número novo quando a chave é nova. `fail_next` injeta uma falha: `before_write` perde a requisição, e `after_write` registra a fatura e depois perde a resposta.
+
+A chave precisa ser a mesma em toda tentativa, então quem envia a deriva de identificadores duráveis:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/outbox.py
+def idempotency_key(run_id: str, operation: str) -> str:
+    """Derived from durable identifiers, so a replayed step produces the same key."""
+    return f"{run_id}:{operation}"
+```
+
+Um id aleatório gerado na hora do envio seria diferente na nova tentativa, e o serviço a trataria como requisição nova. A documentação do Temporal faz a mesma recomendação para suas activities. Ela sugere uma chave formada pelo id da execução do workflow e pelo id da activity, porque esse par continua o mesmo entre tentativas.
+
+## O outbox: decidir num lugar, agir em outro
+
+De onde a requisição é enviada? Se um passo confirma o novo estado e *depois* chama o serviço, uma queda entre os dois perde o efeito. Se chama o serviço e depois confirma, uma queda entre eles repete o efeito sem registro. O *outbox* (caixa de saída) fecha essa lacuna. O passo grava sua intenção, a chave e o rascunho da fatura, como uma linha na tabela `outbox`, na mesma transação do novo estado. É o argumento `effects` do `save` da aula 14.3. Um entregador separado então envia cada linha pendente:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/outbox.py
+def deliver_pending(store: CheckpointStore, service: InvoiceService) -> None:
+    """Send every pending effect once; record the result or the uncertainty."""
+    for key, draft in store.outbox("pending"):
+        try:
+            number = service.create(key, draft)
+        except OutcomeUnknown:
+            store.mark(key, "reconciling")
+            continue
+        store.mark(key, "done", number)
+```
+
+Assim a entrega acontece *pelo menos uma vez*. A linha fica pendente até um resultado ser registrado, e a chave transforma as repetições numa única fatura lógica.
+
+## Resultados desconhecidos e reconciliação
+
+Quando o entregador não consegue saber o que aconteceu, ele não chuta. Leva a linha para `reconciling`. A *reconciliação* pergunta ao serviço o que ele registrou para a chave e age conforme a resposta:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/outbox.py
+def reconcile(store: CheckpointStore, service: InvoiceService) -> None:
+    """Resolve each uncertain effect by asking the service what it recorded."""
+    for key, _draft in store.outbox("reconciling"):
+        number = service.find(key)
+        if number is None:
+            store.mark(key, "pending")  # it never happened: safe to send again
+        else:
+            store.mark(key, "done", number)
+```
+
+<Figure id="outbox-lost-reply" />
+
+:::caveat
+Uma chave só protege enquanto o receptor se lembra dela. O rascunho do IETF permite que um servidor expire chaves e pede que ele publique a política. Uma linha que fica em `reconciling` além dessa janela pode não encontrar nada e ser enviada de novo. Confira o período de retenção do seu provedor antes de confiar neste desenho.
+:::
+
+## Rode o exercício
+
+O módulo é `src/agentlab/state/outbox.py`; os testes estão em `tests/test_state_outbox.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_state_outbox.py"`.
+
+A saída esperada termina com `Ran 6 tests` e `OK`. O teste central perde uma resposta depois da escrita, envia de novo com a mesma chave e afirma que o serviço guarda exatamente uma fatura. Seu controle envia duas chaves *diferentes* e espera duas faturas, então o teste não pode passar com um serviço que só guarda uma. Para vê-lo pegar um bug, faça `create` guardar cada requisição numa entrada nova em vez de usar `setdefault`. Dois testes falham: a entrega repetida agora deixa duas faturas, e a reconciliação não encontra mais a primeira pela chave. A [aula 14.5](/pt-br/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/) mostra a mesma mecânica dentro do LangGraph e do Temporal.

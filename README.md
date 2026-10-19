@@ -1,7 +1,9 @@
 # [llmdeepdive.com](https://llmdeepdive.com/)
 
 A free, open-source, bilingual course on how large language models actually
-work — from *what is a parameter?* through efficient inference.
+work — from *what is a parameter?* through efficient inference — and on how to
+build agent systems around them that hold up: durable state, tool protocols,
+security, isolation, memory, human approval, evaluation and recovery.
 
 **English and Brazilian Portuguese. No accounts, no paywall, no tracking.**
 
@@ -100,8 +102,9 @@ site deliberately does not use, are in `AGENTS.md` under **Search metadata**.
 
 ## Current scale
 
-250 lessons live (125 English, 125 Portuguese) across tracks 0–13, with full
-parity enforced by the build. Tracks 0–7 carry the model from first principles
+370 lessons live (185 English, 185 Portuguese) across 26 tracks in two parts,
+with full parity enforced by the build. Part one, tracks 0–13, is how a model
+works. Tracks 0–7 carry the model from first principles
 to efficient inference; track 8 covers the serving stacks that run it (PyTorch,
 Transformers, vLLM, SGLang, TensorRT-LLM, llama.cpp, Ollama, MLX, Modular MAX)
 and track 9 the silicon underneath (NVIDIA, AMD, Apple, Qualcomm, Cerebras).
@@ -116,6 +119,19 @@ DGX Spark and DGX Station with the CUDA programming model and stack; and
 llama.cpp in depth (ggml backends, making a GGUF, `llama-server`, `llama-bench`,
 speculative decoding and RPC). Every command was run against a pinned release
 where the hardware allowed; CUDA code is checked against NVIDIA's guides.
+
+Part two, tracks 14–25, is building agent systems: when a workflow needs an
+agent, durable state and replay, tool contracts and a bounded raw MCP
+implementation, security and trust boundaries, sandboxed execution, computer
+use against a synthetic legacy portal, memory and context, human approval and
+durable pauses, bounded self-correction, multi-agent systems and A2A,
+trajectory evaluation, resilience, and a capstone. One fictional purchasing
+assistant is built across all twelve tracks in
+[`examples/agent-engineering/`](examples/agent-engineering/), a Python project
+whose tests CI runs on every change: every code block a lesson calls runnable
+is checked against that project by `pnpm content:excerpts`. Nothing there
+needs an API key, a model or a paid service; commands that need KVM, a Slack
+workspace or a cloud account are labelled as not run by CI.
 
 Each lesson is a course player: the track's syllabus with reading times and
 completion stars, a step list for the lesson's loop, a reading gauge, and a

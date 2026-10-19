@@ -1,0 +1,137 @@
+---
+id: "14.4-replay-and-side-effects"
+track: "14-agent-architecture-and-state"
+order: 4
+title: "Replay, Idempotency and Side Effects"
+summary: "Resuming from a checkpoint repeats the step that was interrupted, and a lost reply leaves you unsure whether a write happened. An idempotency key, an outbox and a reconciliation step make a repeated delivery produce one invoice."
+tier: "core"
+locale: "en"
+prerequisites: ["14.3-checkpoints-and-serialization"]
+unlocks: ["14.5-langgraph-and-temporal", "20.1-decide-when-approval-is-needed", "22.3-supervisor-and-peer-topologies", "23.1-define-success-and-capture-traces"]
+analogy: "You post a signed cheque and hear nothing for a week. Writing a second cheque for the same bill risks paying twice; doing nothing risks never paying. A careful payer writes the invoice number on the cheque, and before writing another one phones the supplier and asks whether a cheque for that invoice number arrived. The invoice number is the idempotency key, the phone call is reconciliation, and the note in your own ledger that a cheque was posted is the outbox. The comparison breaks down on timing: a supplier on the phone can say a cheque is still in the post, while the fake accounts system in this exercise answers only yes or no for a key it has or has not recorded."
+teachBack:
+  prompt: "Your accounts-payable provider forgets idempotency keys 24 hours after it first sees them. An outage leaves one of your outbox rows in reconciling for three days. When the outage ends, reconcile calls find with the row's key. What can go wrong, and what would you check before sending again?"
+  modelAnswer: "After three days the provider has forgotten the key. So find returns nothing even if the invoice was created before the outage. Our reconcile code reads nothing as never happened. It moves the row back to pending, and the next delivery creates a second invoice. The expired key breaks both the deduplication and the lookup. Before resending, I would search the provider by a field that does not expire. Our own invoice id, INV-0001, sent inside the payload, is one such field. If the provider cannot search by it, a person should check before anything is resent. The general rule is that a key only protects you while the receiver still remembers it. So reconciliation must finish within the receiver's retention window, or use a lasting reference."
+quiz:
+  - question: "The fake service records the invoice and then loses its reply. The deliverer sends the same request again with the same key. What does FakeInvoiceService.create return the second time?"
+    options: ["The number it recorded the first time, so there is still one logical invoice", "A new number, because the second request arrived after the first had completed", "An error, because the same caller may use an idempotency key only once", "Nothing, because a lost reply means the first write was rolled back"]
+    correctIndex: 0
+    explanation: "create looks the key up first and returns the number already stored for it, so the repeat is harmless. Raising an error would leave the sender unable to learn the result, and the write did happen: losing the reply on the way back does not undo a write on the service."
+  - question: "Why does idempotency_key build the key from run_id and the operation name instead of a fresh random id made at send time?"
+    options: ["Random ids can collide, while two different runs never share an operation name", "The accounts system rejects any key a person cannot read, such as a random id string", "A replayed step must produce the same key, or the service sees it as a new request", "A random id would reveal which run sent the request to the external service"]
+    correctIndex: 2
+    explanation: "Deduplication only works if the retry carries the same key as the first attempt. A key generated at send time changes on every retry, so the service creates a second invoice. Collisions between well-made random ids are not the issue, and two runs do share operation names; the run id is what separates them."
+  - question: "A delivery fails before the request reaches the service, so the row is reconciling. What does reconcile do with it?"
+    options: ["It finds no record for the key and moves the row back to pending, to be sent again", "It marks the row done, because a timeout means the service will retry on its own side", "It sends again at once, because a reconciling row is always safe to repeat directly", "It deletes the row, because an effect with no record on the service never existed"]
+    correctIndex: 0
+    explanation: "reconcile asks the service first; with no record for the key, sending again is safe, so the row returns to pending. A service does not retry a request it never received, and deleting the row would drop an invoice the run decided to create. Sending without asking is what reconciliation exists to avoid."
+citations:
+  - title: "RFC 9110: HTTP Semantics, section 9.2.2 Idempotent Methods"
+    authors: "R. Fielding, M. Nottingham and J. Reschke (eds.), IETF"
+    year: 2022
+    url: "https://www.rfc-editor.org/rfc/rfc9110.html#name-idempotent-methods"
+  - title: "The Idempotency-Key HTTP Header Field (draft-ietf-httpapi-idempotency-key-header-07, expired Internet-Draft)"
+    authors: "J. Jena and S. Dalal, IETF HTTPAPI working group"
+    year: 2025
+    url: "https://www.ietf.org/archive/id/draft-ietf-httpapi-idempotency-key-header-07.html"
+  - title: "Activity Definition: idempotency"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://docs.temporal.io/activity-definition"
+  - title: "LangGraph checkpointers"
+    authors: "LangChain"
+    year: 2026
+    url: "https://docs.langchain.com/oss/python/langgraph/checkpointers"
+updated: "2026-10-18"
+---
+
+The run for PO-1001 has reached `ready`, and its next step creates the invoice in the accounts-payable system, the service that records what the company owes. The worker sends the request. Thirty seconds pass with no reply, and the connection times out. Was the invoice created? The worker cannot know. If it sends again and the first request succeeded, the company owes the same USD 500.00 twice. If it does nothing and the first request was lost, the supplier is never paid. This lesson gives the run a way out of that dilemma that does not depend on guessing.
+
+## Delivery is not effect
+
+A *side effect* is any change a step makes outside its own state: a row in another system, an e-mail, a payment. Two events are easy to confuse here. *Delivery* is the request reaching the service. The *effect* is the service acting on it. Between them sits the reply, and the reply can be lost even when the effect happened.
+
+RFC 9110, the HTTP specification, calls a method *idempotent* if "the intended effect on the server of multiple identical requests with that method is the same as the effect for a single such request". `PUT` and `DELETE` are idempotent, so a client may retry them after a broken connection. `POST`, the usual way to create something, is not. The RFC says a client "SHOULD NOT automatically retry" a non-idempotent request unless it has some means to know the request is safe to repeat.
+
+## Why does a replay repeat work?
+
+[Lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/) made a restart resume from the last committed checkpoint. That is exactly why work repeats. The checkpoint is written *after* a step, so a crash in the middle of a step means the step runs again from its start. Any effect it caused before the crash happens a second time, unless something stops it. LangGraph's checkpointer documentation states the same boundary: "you can only resume execution from a checkpoint (i.e., a super-step boundary)".
+
+Model calls add a second reason. A model can answer the same prompt differently on two calls. So a replay must never *re-ask* the model for a decision it already made. It must read the decision from the checkpoint. That is why the run's status is stored, and not recomputed.
+
+## Idempotency keys
+
+An *idempotency key* is a value sent with a request so the receiver can recognise a repeat. The receiver stores the result under the key. When the same key arrives again, it returns the stored result instead of acting twice. An IETF draft for an `Idempotency-Key` HTTP header describes this behaviour: the server "SHOULD respond with the result of the previously completed operation". Its last revision (October 2025) expired in April 2026 without becoming a standard, so treat it as a description of the idea, not as a rule a server must follow. The project's fake accounts system implements it:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/outbox.py
+    def create(self, key: str, draft: InvoiceDraft) -> str:
+        self.create_calls += 1
+        failure, self.fail_next = self.fail_next, None
+        if failure == "before_write":
+            raise OutcomeUnknown("request lost")
+        number = self.invoices.setdefault(key, f"AP-{len(self.invoices) + 1:04d}")
+        if failure == "after_write":
+            raise OutcomeUnknown("reply lost")
+        return number
+```
+
+`setdefault` stores a new number only when the key is new. `fail_next` injects one failure: `before_write` loses the request, and `after_write` records the invoice and then loses the reply.
+
+The key must be the same on every attempt, so the sender derives it from durable identifiers:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/outbox.py
+def idempotency_key(run_id: str, operation: str) -> str:
+    """Derived from durable identifiers, so a replayed step produces the same key."""
+    return f"{run_id}:{operation}"
+```
+
+A random id generated at send time would be different on the retry, and the service would treat it as a new request. Temporal's documentation makes the same recommendation for its activities. It suggests a key built from the workflow run's id and the activity's id, because that pair stays the same across retries.
+
+## The outbox: decide in one place, act in another
+
+Where does the request get sent from? If a step commits its new state and *then* calls the service, a crash between the two loses the effect. If it calls the service and then commits, a crash between them repeats the effect without a record. The *outbox* removes that gap. The step writes its intent, the key and the invoice draft, as a row in an `outbox` table, in the same transaction as the new state. That is the `effects` argument of `save` from lesson 14.3. A separate deliverer then sends each pending row:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/outbox.py
+def deliver_pending(store: CheckpointStore, service: InvoiceService) -> None:
+    """Send every pending effect once; record the result or the uncertainty."""
+    for key, draft in store.outbox("pending"):
+        try:
+            number = service.create(key, draft)
+        except OutcomeUnknown:
+            store.mark(key, "reconciling")
+            continue
+        store.mark(key, "done", number)
+```
+
+So delivery happens *at least once*. The row stays pending until a result is recorded, and the key turns repeats into one logical invoice.
+
+## Unknown outcomes and reconciliation
+
+When the deliverer cannot tell what happened, it does not guess. It moves the row to `reconciling`. *Reconciliation* asks the service what it recorded for the key, then acts on the answer:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/outbox.py
+def reconcile(store: CheckpointStore, service: InvoiceService) -> None:
+    """Resolve each uncertain effect by asking the service what it recorded."""
+    for key, _draft in store.outbox("reconciling"):
+        number = service.find(key)
+        if number is None:
+            store.mark(key, "pending")  # it never happened: safe to send again
+        else:
+            store.mark(key, "done", number)
+```
+
+<Figure id="outbox-lost-reply" />
+
+:::caveat
+A key protects you only while the receiver remembers it. The IETF draft lets a server expire keys and asks it to publish the policy. A row left in `reconciling` longer than that window can find nothing and be sent again. Check your provider's retention period before trusting this design.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/state/outbox.py`; the tests are in `tests/test_state_outbox.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_state_outbox.py"`.
+
+Expected output ends with `Ran 6 tests` and `OK`. The central test loses a reply after the write, sends again with the same key and asserts that the service holds exactly one invoice. Its control sends two *different* keys and expects two invoices, so the test cannot pass by a service that only ever stores one. To watch it catch a bug, make `create` store every request under a new entry instead of using `setdefault`. Two tests fail: the repeated delivery now leaves two invoices, and reconciliation can no longer find the first one by its key. [Lesson 14.5](/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/) shows the same mechanics inside LangGraph and Temporal.

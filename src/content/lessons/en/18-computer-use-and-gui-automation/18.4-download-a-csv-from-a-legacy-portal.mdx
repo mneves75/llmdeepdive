@@ -1,0 +1,133 @@
+---
+id: "18.4-download-a-csv-from-a-legacy-portal"
+track: "18-computer-use-and-gui-automation"
+order: 4
+title: "Download a CSV from a Legacy Portal"
+summary: "A success banner proves nothing about a download. Wait for the file itself, check where it came from, choose where it lands, and accept it only when its type, columns and rows are the report that was asked for."
+tier: "advanced"
+locale: "en"
+prerequisites: ["18.3-login-and-session-state"]
+unlocks: ["18.5-recover-and-verify"]
+analogy: "A courier's text saying \"your parcel has been delivered\" is not the parcel. You check that it is at your own door and not a neighbour's, that the sender is the shop you ordered from, and that the box holds what you ordered before you sign anything off. The banner is the text message, the download event is the parcel arriving, the destination check is your door and the content checks are opening the box. The comparison stops at what can be wrong inside: a parcel either holds the item or not, while a CSV can be perfectly formed and still be last month's report, so the check has to compare it with what was asked for, not only with what a CSV looks like."
+teachBack:
+  prompt: "The portal starts sending each report as report-2026-03.zip containing one CSV. Using this lesson, say which checks change, which new risks the archive brings, and which checks stay exactly as they are."
+  modelAnswer: "The name check must accept .zip instead of .csv, and the destination rule stays: the name is still untrusted and must land inside the run's folder. The archive adds risks of its own. The names of the files inside are also untrusted, so each must be checked the same way before extracting, or one could write outside the folder. The archive could also expand to something huge, so I would cap the uncompressed size. I would expect exactly one entry with a .csv name. After extracting, the CSV goes through the same type, column and row checks against the requested period. The banner still means nothing, and the origin check and the download deadline stay the same."
+quiz:
+  - question: "The run presses April's export with a 1,500 ms deadline. The banner says \"Export complete. Your download has started.\" but the server answered 500 and no download began. What does download_report return?"
+    options: ["Outcome done with zero rows, because the click succeeded and the banner confirmed it", "Nothing; PlaywrightTimeout reaches the caller, which must decide what the banner means", "Outcome failed, saying no download started and quoting the banner it saw", "Outcome failed only after the banner is gone, because the banner may still be accurate"]
+    correctIndex: 2
+    explanation: "expect_download times out, download_report catches the timeout and returns a failed Outcome that quotes the banner, so the trace shows the contradiction. A done result needs a file that passed validation, and there is no file. The timeout does not escape: turning it into an Outcome is the function's job. The banner never changes; it was written by the page's script at click time."
+  - question: "July's export arrives with Content-Disposition filename \"../../report-2026-07.csv\". What happens in download_report?"
+    options: ["The last path segment is kept, so the file is saved as report-2026-07.csv", "Playwright cleans the name, so the file is saved two folders above the run's own folder", "Playwright cancels the download, because browsers never accept names with slashes in them", "safe_destination rejects the name before any path is built, and the Outcome is failed"]
+    correctIndex: 3
+    explanation: "safe_destination accepts only a plain name ending in .csv, so the slashes fail the pattern before any path is built. Keeping the last segment is a strategy RFC 6266 mentions; this exercise rejects instead, because a portal that sends such a name is misbehaving. Nothing is written above the folder, which the test checks, and the browser did download the file into its own temporary folder; the controller simply never copies it out."
+  - question: "May's export answers 200 with filename report-2026-05.csv, but the body is an HTML error page. download.failure() returns None. Which check rejects the file, and why is failure() no help?"
+    options: ["validate_report's HTML check, as the transfer completed and failure() saw no error", "check_download_url, because error pages are always served from a different origin", "safe_destination, because it opens the file and refuses a .csv name with HTML in it", "None of them; failure() would have flagged it if the content type did not match"]
+    correctIndex: 0
+    explanation: "failure() reports whether the transfer failed or was cancelled, and this one completed. Only reading the bytes shows they are HTML. The error page came from the portal itself, so the origin check passes. safe_destination looks at the name, never the content. The column check would also reject the file, but with a less useful reason."
+citations:
+  - title: "Downloads, Playwright for Python documentation (read 2026-10-18; checked against Playwright 1.63.0)"
+    authors: "Playwright project, Microsoft"
+    year: 2026
+    url: "https://playwright.dev/python/docs/downloads"
+  - title: "class Download, Playwright for Python API reference (read 2026-10-18; checked against Playwright 1.63.0)"
+    authors: "Playwright project, Microsoft"
+    year: 2026
+    url: "https://playwright.dev/python/docs/api/class-download"
+  - title: "RFC 6266: Use of the Content-Disposition Header Field in the Hypertext Transfer Protocol (HTTP)"
+    authors: "Julian Reschke"
+    year: 2011
+    url: "https://www.rfc-editor.org/rfc/rfc6266"
+updated: "2026-10-19"
+---
+
+The run presses "Download April 2026 CSV". At once a banner appears: "Export complete. Your download has started." A run that trusts the page reports success and moves on. No file ever arrived. The portal's server answered with an error, and the banner had been written by the page's own script the moment the button was clicked, before the server said anything.
+
+This lesson turns "the download worked" into checks a program can run.
+
+## What "the download worked" has to mean
+
+For the purchasing assistant, a finished download means all of these hold:
+
+1. A download actually started within a deadline.
+2. It came from the portal's own origin.
+3. It was saved inside the run's own folder, under a name the controller accepted.
+4. The file is CSV text, not an HTML page wearing a `.csv` name.
+5. Its columns are exactly the report's columns.
+6. Every row belongs to the requested period and has sane values.
+
+The exercise portal fails each of these on purpose. March is the only good export. April fails on the server, May sends an HTML error page as `report-2026-05.csv`, June sends a well-formed file holding March's rows, and July names its file `../../report-2026-07.csv`. Every export also arrives 400 milliseconds after the banner claims it has started.
+
+## Waiting for the file, not the banner
+
+Playwright reports a download as an event. `page.expect_download()` waits for it while the click runs, and gives up with a timeout error after a deadline. Its documentation adds two facts that shape the code: "All these attachments are downloaded into a temporary folder", and "Downloaded files are deleted when the browser context that produced them is closed." So the controller must copy the file somewhere it owns before the run ends. `Download.failure()` "returns download error if any" and waits for the download to finish first.
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/browser.py
+    try:
+        with page.expect_download(timeout=timeout_ms) as started:
+            press()
+    except PlaywrightTimeout:
+        banner = page.get_by_role("status").first.inner_text()
+        trace.record("gui.download", ok=False, banner=banner)
+        return Outcome("failed", f"no download started within {timeout_ms:.0f} ms, although the page says {banner!r}")
+```
+
+`press` is whatever starts the export: a semantic click, or a click by coordinates. When nothing arrives, the outcome quotes the banner, so the trace keeps the contradiction for whoever reads it later. The 400-millisecond delay is why the code waits on the event: a run that checked the folder right after the click would find it empty even for March.
+
+Why not wait a fixed time instead? A pause long enough for the slowest export wastes that time on every fast one, and a pause tuned to today's speed fails on the day the server is slow. Waiting on the event ends as soon as the file starts, and the deadline states how long the run is willing to wait before it reports a failure. The tests use 3,000 ms for exports that should work and 1,500 ms for April's, which never will.
+
+## The name comes from the server
+
+The file name arrives in the response's `Content-Disposition` header, written by the server. RFC 6266 tells recipients to treat it "as advisory only" and says that "Recipients MUST NOT be able to write into any location other than one to which they are specifically entitled." One strategy it mentions is keeping only the last path segment. The exercise is stricter and refuses the name, because a portal that sends `../../report-2026-07.csv` is misbehaving:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/report.py
+def safe_destination(folder: Path, suggested_name: str) -> Path:
+    """Where to save a download. The name comes from the server's header, so it is untrusted input."""
+    if not CSV_NAME.match(suggested_name):
+        raise ReportRejected(f"refusing file name {suggested_name!r}")
+    target = (folder / suggested_name).resolve()
+    if target.parent != folder.resolve():
+        raise ReportRejected(f"{suggested_name!r} would land outside {folder}")
+    if target.exists():
+        raise ReportRejected(f"{target.name} already exists; a download never overwrites a file")
+    return target
+```
+
+`CSV_NAME` allows letters, digits, dots, hyphens and underscores, ending in `.csv`, so slashes never reach the path check. The `resolve()` comparison is a second, independent guard. A download also never overwrites an earlier file, which could be a report someone already checked.
+
+## Checking what the file holds
+
+Only now does the controller look inside. `validate_report` reads the bytes and refuses, with a reason, anything that is not the requested report:
+
+```python
+# file: examples/agent-engineering/src/agentlab/gui/report.py
+    if raw.lstrip()[:1] == b"<":
+        raise ReportRejected("the file is HTML, not CSV (an error or login page saved under a .csv name)")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ReportRejected("the file is not UTF-8 text") from error
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    if tuple(reader.fieldnames or ()) != REPORT_COLUMNS:
+        raise ReportRejected(f"unexpected columns {reader.fieldnames}")
+```
+
+After the columns, each row must carry the requested period, a purchase-order id of the form `PO-` plus four digits, a positive quantity and a positive unit price. If any check fails, `download_report` deletes the saved copy, so a rejected file can never be mistaken for a result later. For March, the accepted rows are exactly the four tenant-a purchase records in the project's fixtures, which a test compares.
+
+:::insight
+`failure()` and these checks answer different questions. `failure()` says whether bytes arrived. The checks say whether the bytes are the report. May's error page arrives completely, so `failure()` returns `None`, and only reading the file shows it is HTML.
+:::
+
+## Screenshot mode, same checks
+
+The track keeps one exercise in screenshot-only mode, the way an agent works on a remote desktop. A scripted vision model answers with an image pixel on a device-scale screenshot, `click_point` from [lesson 18.2](/lessons/18-computer-use-and-gui-automation/18.2-pixels-coordinates-and-set-of-mark/) converts and clicks it, and the same `download_report` decides whether the run is done. The vision route changes how the click happens, never what counts as finished.
+
+## Run the exercise
+
+From `examples/agent-engineering/`, run the core checks with `uv run --frozen python -m unittest discover -s tests -p "test_gui_report.py"`; the output ends with `Ran 12 tests` and `OK`. The browser tests run with `uv run --frozen python -m unittest discover -s tests_browser -p "test_gui_download.py"` and end with `Ran 5 tests` and `OK`. Each test downloads into a fresh temporary folder that is removed afterwards.
+
+`test_the_delayed_march_export_matches_the_fixture` waits through the delay and compares the rows with the fixture. `test_a_failed_export_is_caught_although_the_banner_says_complete` asserts both the failed outcome and the banner's text. `test_an_html_page_named_csv_is_refused_and_removed` and `test_a_file_name_that_climbs_out_of_the_folder_is_refused` check that nothing stays in the folder or lands above it. `test_screenshot_only_the_same_checks_apply` downloads March by coordinates.
+
+To see two checks overlap, delete the HTML check in `validate_report`. `test_an_html_page_saved_as_csv_is_refused` goes red, yet the file is still refused, now by the column check with a less useful reason. The test pins which check names the problem. Restore the line. June's well-formed file with the wrong period is the case [lesson 18.5](/lessons/18-computer-use-and-gui-automation/18.5-recover-and-verify/) starts from.

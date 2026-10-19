@@ -1,0 +1,131 @@
+---
+id: "14.2-states-dags-branches-and-loops"
+track: "14-agent-architecture-and-state"
+order: 2
+title: "States, DAGs, Branches and Loops"
+summary: "A DAG, a directed graph with a cycle and a finite-state transition system are three different things. The purchasing run is the third kind, written as a table that rejects illegal moves and a step budget that ends every loop."
+tier: "core"
+locale: "en"
+prerequisites: ["14.1-when-a-workflow-needs-an-agent"]
+unlocks: ["14.3-checkpoints-and-serialization", "16.1-threat-model-the-assistant", "21.1-what-counts-as-corrective-feedback", "23.2-evaluate-valid-paths"]
+analogy: "A railway signal box holds a chart of legal routes. A signaller can send a train from platform 2 to the goods yard only if the chart lists that route, and the levers are interlocked so a forbidden route cannot be set at all. A train may circle the loop line, but the timetable allows only so many circuits before it must leave. The transition table is the chart, and the step budget is the limit on circuits. The comparison stops at what the chart knows: it records which moves are legal, never whether a train actually arrived. A run that reaches completed in the table has not thereby sent a correct invoice; that proof comes from the outcome check of lesson 14.1."
+teachBack:
+  prompt: "Your team adds a status called disputed: from checked, a run may move to disputed, and from disputed back to checked once the supplier sends a corrected invoice. A supplier disputes every correction forever. Which rows change in the table, is the run's graph still free of cycles, and what stops this run?"
+  modelAnswer: "The checked row gains disputed, and a new disputed row lists checked, cancelled and failed. The graph now has two cycles: checked to needs_info and back, and checked to disputed and back. So it was not a DAG before, and it is still not one. That is fine for an execution graph, which may loop. The course prerequisite graph is a different graph and must stay acyclic. The endless dispute is stopped by the step budget, not by the table. Each move adds one step. The move that would use the last step without reaching a terminal status ends the run in failed instead. So the run stops after max_steps moves at most, however the supplier behaves."
+quiz:
+  - question: "Which statement about the graphs in this lesson is correct?"
+    options: ["The run's graph is a DAG, because every arrow points from an earlier status to a later one", "The course prerequisite graph may contain a cycle, as long as each lesson in it is short", "The run's graph has a cycle through needs_info, so it is a directed graph but not a DAG", "A DAG and a finite-state machine are one idea drawn two ways, so the names are interchangeable"]
+    correctIndex: 2
+    explanation: "checked → needs_info → checked is a path that returns to its start, which is exactly what a DAG forbids. The prerequisite graph is a different graph and must stay acyclic, or some lesson could never be reached. A DAG orders work items, while a finite-state machine says which state may follow which; they are not interchangeable."
+  - question: "A run starts in received with max_steps=4. The model always proposes checked when the run is received or needs_info, and needs_info when the run is checked. Where does run_until_terminal leave it?"
+    options: ["In failed at step 4, because the fourth move would not finish the run", "In needs_info at step 4, where the run pauses until the supplier answers", "In checked at step 5, because only moves into needs_info count toward the budget", "With an IllegalTransition at step 4, because the needs_info row has no exit"]
+    correctIndex: 0
+    explanation: "Moves 1 to 3 go to checked, needs_info and checked. The fourth proposal is needs_info, which is not terminal, and step 4 reaches max_steps, so advance records failed instead. Every move counts, and the needs_info row does list exits, including failed, so nothing raises."
+  - question: "The run is in checked and the scripted model replies \"completed\". What does run_until_terminal do with that reply?"
+    options: ["It completes the run, since completed is one of the statuses the record allows", "It ignores the reply and asks again, which uses up one step of the budget", "advance raises IllegalTransition, because the checked row does not list completed", "It moves the run to failed, since any unexpected reply counts as spending the budget"]
+    correctIndex: 2
+    explanation: "Being a valid status of RunState is not enough: the move must appear in the row for the current status, and checked lists needs_info, ready, cancelled and failed. The loop neither retries nor converts the reply into failed; the illegal proposal stops the run with an error a developer will see."
+citations:
+  - title: "directed acyclic graph, in Dictionary of Algorithms and Data Structures"
+    authors: "Paul E. Black (ed.), NIST"
+    year: 2004
+    url: "https://xlinux.nist.gov/dads/HTML/directAcycGraph.html"
+  - title: "finite state machine, in Dictionary of Algorithms and Data Structures"
+    authors: "Paul E. Black (ed.), NIST"
+    year: 2024
+    url: "https://xlinux.nist.gov/dads/HTML/finiteStateMachine.html"
+  - title: "Building effective agents"
+    authors: "Erik Schluntz and Barry Zhang, Anthropic"
+    year: 2024
+    url: "https://www.anthropic.com/engineering/building-effective-agents"
+updated: "2026-10-18"
+---
+
+Purchase order PO-1003 is for 25 packs of safety gloves. The supplier's invoice arrives without a quantity, so the assistant asks for it, the supplier replies, the invoice is checked again and this time it passes. That run went `received → checked → needs_info → checked → ready → completed`. The question for this lesson is how to write those moves down so that code can refuse a move that makes no sense and stop a loop that never settles. The word you will hear for this is "graph", and it hides three different ideas.
+
+## Which kind of graph is a run?
+
+A *directed graph* is a set of nodes joined by arrows. It allows any arrows, including ones that lead back to where you started.
+
+A *DAG* (directed acyclic graph) is a directed graph "with no path that starts and ends at the same vertex", in the words of NIST's Dictionary of Algorithms and Data Structures. This course's lessons form one: each lesson lists its prerequisites, and the repository's `content:graph` check, which runs in CI, fails if those links ever form a cycle. A cycle there would mean some lesson could never be reached.
+
+The run above is not a DAG. The path `checked → needs_info → checked` returns to its start. That is a *cycle*, and it is fine: an execution graph may loop, while the prerequisite graph must not. Keep the two apart: calling a looping workflow a "DAG" hides the one property you most need to control.
+
+The third idea is the one the run uses. A *finite-state machine* is, in NIST's definition, a model with "a set of states, a start state, an input alphabet, and a transition function". Here the states are the run's statuses, the start state is `received`, and the transition function is a table that says which status may follow which. A DAG's nodes are usually separate pieces of work, each done once. A state machine's nodes are the conditions of one run, and a run may visit the same one many times.
+
+## The run's transition table
+
+The project writes the table as a dictionary from each status to the set of statuses allowed next:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/transitions.py
+TERMINAL = frozenset({"completed", "failed", "cancelled"})
+
+# No row leads to ``awaiting_approval``: track 20 keeps approval status on its own row (agentlab.approval.store).
+TRANSITIONS: dict[str, frozenset[str]] = {
+    "received": frozenset({"checked", "cancelled", "failed"}),
+    "checked": frozenset({"needs_info", "ready", "cancelled", "failed"}),
+    "needs_info": frozenset({"checked", "cancelled", "failed"}),
+    "ready": frozenset({"completed", "cancelled", "failed"}),
+    "completed": frozenset(),
+    "failed": frozenset(),
+    "cancelled": frozenset(),
+}
+```
+
+Four features are visible in it. The *branch* is the `checked` row: the run goes to `needs_info` or to `ready`. The *loop* is `needs_info`, whose row leads back to `checked`. The *pause* is `needs_info` too, because the run waits there for the supplier. The *terminal states* have empty rows, so nothing ever leaves `completed`, `failed` or `cancelled`. Every live status can also move to `cancelled`, for a person who stops the run, or to `failed`, for an error.
+
+Why a table and not a chain of `if` statements spread through the code? Because the table is data you can read in one screen. A reviewer can see every legal move at once, and a change to the rules shows up as a one-line difference in review. A test can also walk every row, which is much harder when the rules hide inside the functions that do the work. Later tracks build on the same idea. Track 23, for example, judges a run by whether its path was a permitted one, rather than by whether it matched one fixed "golden" sequence of steps.
+
+## Why does a loop need a budget?
+
+A loop with an exit is sound code. The risk is a loop whose exit depends on something outside your control, such as a supplier who never answers or a model that keeps proposing `needs_info`. Anthropic's guidance notes that agents commonly include "stopping conditions (such as a maximum number of iterations) to maintain control". The project's `RunState` record carries a `step` counter and a `max_steps` limit, and `advance` enforces both:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/transitions.py
+def advance(state: RunState, to: str) -> RunState:
+    """Return the next state, or raise ``IllegalTransition``.
+
+    The new record is validated again, because ``model_copy`` would accept a
+    status the record does not allow.
+    """
+    if to not in TRANSITIONS.get(state.status, frozenset()):
+        raise IllegalTransition(f"{state.status} -> {to} is not in the table")
+    step = state.step + 1
+    if step >= state.max_steps and to not in TERMINAL:
+        to = "failed"  # the budget is spent and the run has not finished
+    return RunState.model_validate({**state.model_dump(), "status": to, "step": step})
+```
+
+Read the budget rule as: the move that would use the last step without finishing the run ends it in `failed` instead. With `max_steps=5` and a supplier who never answers, moves 1 to 4 go `checked`, `needs_info`, `checked`, `needs_info`. Move 5 proposes `checked`, but the run cannot finish on that move, so it fails at step 5.
+
+<Figure id="agent-run-paths" />
+
+:::warning
+Writing a run as a state machine does not by itself make it reliable. A bounded loop is as correct as a state machine; what decides whether a run survives a crash is whether its state is persisted, how a replay treats side effects, and whether two workers can overwrite each other. Those are the next two lessons.
+:::
+
+## The model proposes and the table decides
+
+In an agent, the model chooses the next status. In this project it never sets the status directly. The driver loop asks for a proposal and passes it through `advance`:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/transitions.py
+def run_until_terminal(state: RunState, decide: Callable[[RunState], str]) -> RunState:
+    """Ask ``decide`` for each next status until the run reaches a terminal state.
+
+    The loop always ends: every move adds a step, and the budget turns the
+    last one into ``failed``.
+    """
+    while state.status not in TERMINAL:
+        state = advance(state, decide(state))
+    return state
+```
+
+In the tests, `decide` reads the reply of a `ScriptedModel`, the project's offline model that replays fixed answers. When the script answers `completed` while the run is `checked`, `advance` raises `IllegalTransition`. The table cannot judge whether `ready` is a *wise* choice when information is missing. It only guarantees that the run moves along routes someone wrote down and reviewed.
+
+## Run the exercise
+
+The module is `src/agentlab/state/transitions.py`; the tests are in `tests/test_state_transitions.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_state_transitions.py"`.
+
+Expected output ends with `Ran 6 tests` and `OK`. The failure case to try: in `advance`, replace `to = "failed"` with `pass`. The test `test_a_loop_that_never_settles_stops_at_the_budget` now errors with `ScriptExhausted`. The loop ran past its budget until the scripted model had no replies left. With a live model nothing would run out, and the run would keep going. Restore the line, then continue to [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/), where this state has to survive a restart.

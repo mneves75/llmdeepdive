@@ -1,0 +1,172 @@
+---
+import { checkTrace, fillTemplate, TRACE_POLICY, type TraceViolation } from '../../lib/lab-math'
+/**
+ * Lesson 23.2 — grade a trajectory by its safety relations, not by one golden
+ * path. The reader edits a trace (one action per line) or picks a preset, and
+ * the lab lists every violated relation. Two different safe orders pass; an
+ * unsafe order fails even when every step is present.
+ *
+ * The trace is typed by the reader and only ever written back as text
+ * (`textContent`), never as markup.
+ */
+interface Props { locale: 'en' | 'pt-br' }
+const { locale } = Astro.props
+const isPt = locale === 'pt-br'
+
+const copy = isPt
+  ? {
+      legend: 'Verificador de trajetória',
+      preset: 'Exemplo',
+      trace: 'Trajetória (uma ação por linha)',
+      presets: { a: 'Caminho seguro A', b: 'Caminho seguro B (outra ordem)', early: 'Envia antes da aprovação', redraft: 'Refaz o rascunho depois da aprovação', twice: 'Envia duas vezes' },
+      pass: 'Passa: todas as relações obrigatórias foram respeitadas.',
+      fail: 'Falha:',
+      unknown: 'passo {at}: {action} não é uma ação permitida.',
+      missing: '{action} nunca acontece.',
+      order: 'passo {at}: {after} acontece antes de {before}.',
+      orderVoided: 'passo {at}: {after} precisa de {before}, mas {cause} no passo {voidedAt} anulou o do passo {beforeAt}.',
+      repeated: 'passo {at}: {action} se repete, um efeito externo duplicado.',
+      policy: 'A política. Cada ação à direita só pode acontecer depois da que está à esquerda:',
+      then: 'antes de',
+      optional: '{action} é opcional.',
+      once: '{action} no máximo uma vez.',
+      voids: 'Um novo {cause} anula {voided} anteriores.',
+      and: ' e ',
+      note: 'Nada do que você digita sai do navegador.',
+    }
+  : {
+      legend: 'Trajectory checker',
+      preset: 'Example',
+      trace: 'Trajectory (one action per line)',
+      presets: { a: 'Safe path A', b: 'Safe path B (another order)', early: 'Sends before approval', redraft: 'Redrafts after approval', twice: 'Sends twice' },
+      pass: 'Passes: every required relation holds.',
+      fail: 'Fails:',
+      unknown: 'step {at}: {action} is not an allowed action.',
+      missing: '{action} never happens.',
+      order: 'step {at}: {after} happens before {before}.',
+      orderVoided: 'step {at}: {after} needs {before}, but {cause} at step {voidedAt} voided the one at step {beforeAt}.',
+      repeated: 'step {at}: {action} repeats, a duplicated external effect.',
+      policy: 'The policy. Each action on the right may happen only after the one on its left:',
+      then: 'before',
+      optional: '{action} is optional.',
+      once: '{action} at most once.',
+      voids: 'A new {cause} voids any earlier {voided}.',
+      and: ' and ',
+      note: 'Nothing you type leaves the browser.',
+    }
+
+const presets = {
+  a: ['read_request', 'lookup_po', 'read_supplier_message', 'draft_invoice', 'request_approval', 'approval_granted', 'send_invoice'],
+  b: ['read_request', 'read_supplier_message', 'lookup_po', 'draft_invoice', 'request_approval', 'approval_granted', 'send_invoice'],
+  early: ['read_request', 'lookup_po', 'read_supplier_message', 'draft_invoice', 'request_approval', 'send_invoice', 'approval_granted'],
+  redraft: ['read_request', 'lookup_po', 'draft_invoice', 'request_approval', 'approval_granted', 'draft_invoice', 'send_invoice'],
+  twice: ['read_request', 'lookup_po', 'draft_invoice', 'request_approval', 'approval_granted', 'send_invoice', 'send_invoice'],
+} as const
+const initial = checkTrace(presets.a, TRACE_POLICY)
+const describe = (violation: TraceViolation, trace: readonly string[]): string => {
+  if (violation.kind === 'missing') return fillTemplate(copy.missing, { action: violation.action })
+  if (violation.kind === 'order') {
+    const values = { at: String(violation.at + 1), before: violation.before, after: violation.after }
+    return violation.voidedAt !== undefined && violation.beforeAt !== undefined
+      ? fillTemplate(copy.orderVoided, { ...values, cause: trace[violation.voidedAt] ?? '', voidedAt: String(violation.voidedAt + 1), beforeAt: String(violation.beforeAt + 1) })
+      : fillTemplate(copy.order, values)
+  }
+  return fillTemplate(copy[violation.kind], { at: String(violation.at + 1), action: violation.action })
+}
+
+// The policy as the reader sees it, derived from the one the checker runs.
+// Each {name} in a template becomes its identifiers, set as code.
+const parts = (template: string, values: Record<string, readonly string[]>): Array<{ text: string; code: boolean }> =>
+  template.split(/(\{\w+\})/u).filter(Boolean).flatMap((part) => {
+    const key = /^\{(\w+)\}$/u.exec(part)?.[1]
+    if (key === undefined) return [{ text: part, code: false }]
+    return (values[key] ?? []).flatMap((name, index) => [...(index > 0 ? [{ text: copy.and, code: false }] : []), { text: name, code: true }])
+  })
+const required = new Set<string>(TRACE_POLICY.required)
+const voidsByCause = new Map<string, string[]>()
+for (const [cause, voided] of TRACE_POLICY.invalidates) voidsByCause.set(cause, [...(voidsByCause.get(cause) ?? []), voided])
+const rules = [
+  ...TRACE_POLICY.allowed.filter((action) => !required.has(action)).map((action) => parts(copy.optional, { action: [action] })),
+  ...TRACE_POLICY.once.map((action) => parts(copy.once, { action: [action] })),
+  ...[...voidsByCause].map(([cause, voided]) => parts(copy.voids, { cause: [cause], voided })),
+]
+---
+
+<form class="lab" data-lab="trace-check" aria-label={copy.legend}>
+  <p class="lab__lead">{copy.legend}</p>
+  <div class="lab__policy">
+    <p>{copy.policy}</p>
+    {/* role="list": WebKit drops list semantics from an unmarked list. */}
+    <ol role="list">
+      {TRACE_POLICY.before.map(([before, after]) => (
+        <li><code>{before}</code> <span aria-hidden="true">→</span><span class="visually-hidden">{copy.then}</span> <code>{after}</code></li>
+      ))}
+    </ol>
+    <ul role="list">
+      {rules.map((rule) => <li>{rule.map((part) => part.code ? <code>{part.text}</code> : part.text)}</li>)}
+    </ul>
+  </div>
+  <div class="lab__controls">
+    <label>
+      <span>{copy.preset}</span>
+      <select name="preset">
+        {Object.entries(presets).map(([key, actions]) => <option value={actions.join(' ')}>{copy.presets[key as keyof typeof presets]}</option>)}
+      </select>
+    </label>
+  </div>
+  <label class="lab__trace">
+    <span>{copy.trace}</span>
+    <textarea name="trace" rows="8" autocomplete="off" spellcheck="false">{presets.a.join('\n')}</textarea>
+  </label>
+
+  <output class="lab__trace-out" aria-live="polite">
+    <p class="lab__verdict" data-out="verdict" data-pass={copy.pass} data-fail={copy.fail}>{initial.violations.length === 0 ? copy.pass : copy.fail}</p>
+    <ul class="lab__violations" data-out-list="violations" data-unknown={copy.unknown} data-missing={copy.missing} data-order={copy.order} data-order-voided={copy.orderVoided} data-repeated={copy.repeated}>
+      {initial.violations.map((violation) => <li>{describe(violation, presets.a)}</li>)}
+    </ul>
+  </output>
+  <p class="lab__note">{copy.note}</p>
+</form>
+
+<script>
+  import { checkTrace, fillTemplate, TRACE_POLICY } from '../../lib/lab-math'
+
+  for (const form of document.querySelectorAll<HTMLFormElement>('[data-lab="trace-check"]')) {
+    const preset = form.elements.namedItem('preset')
+    const trace = form.elements.namedItem('trace')
+    const verdict = form.querySelector<HTMLElement>('[data-out="verdict"]')
+    const list = form.querySelector<HTMLUListElement>('[data-out-list="violations"]')
+    if (!(preset instanceof HTMLSelectElement) || !(trace instanceof HTMLTextAreaElement) || !verdict || !list) continue
+    const messages = list.dataset
+
+    const update = (): void => {
+      // At most 64 steps of 64 characters: the trace is the reader's own text.
+      const actions = trace.value.split('\n').map((line) => line.trim().slice(0, 64)).filter(Boolean).slice(0, 64)
+      const { violations } = checkTrace(actions, TRACE_POLICY)
+      verdict.textContent = (violations.length === 0 ? verdict.dataset.pass : verdict.dataset.fail) ?? ''
+      list.replaceChildren(...violations.map((violation) => {
+        const item = document.createElement('li')
+        item.textContent = violation.kind === 'missing'
+          ? fillTemplate(messages.missing, { action: violation.action })
+          : violation.kind === 'order'
+            ? violation.voidedAt !== undefined && violation.beforeAt !== undefined
+              ? fillTemplate(messages.orderVoided, {
+                  at: String(violation.at + 1),
+                  before: violation.before,
+                  after: violation.after,
+                  cause: actions[violation.voidedAt] ?? '',
+                  voidedAt: String(violation.voidedAt + 1),
+                  beforeAt: String(violation.beforeAt + 1),
+                })
+              : fillTemplate(messages.order, { at: String(violation.at + 1), before: violation.before, after: violation.after })
+            : fillTemplate(messages[violation.kind], { at: String(violation.at + 1), action: violation.action })
+        return item
+      }))
+    }
+
+    preset.addEventListener('change', () => { trace.value = preset.value.split(' ').join('\n'); update() })
+    trace.addEventListener('input', update)
+    form.addEventListener('submit', (event) => { event.preventDefault(); update() })
+    update()
+  }
+</script>

@@ -13,7 +13,27 @@ const TRACK_EXTENSIONS = new Set(['.json'])
 // its own date — and citation titles and authors are translated prose.
 const STRUCTURAL_SCALARS = ['order', 'tier']
 const STRUCTURAL_ARRAYS = ['prerequisites', 'unlocks']
-const STRUCTURAL_TRACK_FIELDS = ['id', 'order', 'tier']
+const STRUCTURAL_TRACK_FIELDS = ['id', 'order', 'tier', 'part']
+
+// A learner who always picks the longest option, or the shortest, should not
+// pass. When the review of 2026-10-18 counted, the correct option was uniquely
+// the longest in ~89% of items; random placement among four options gives
+// ~25% each way. Longest is capped below chance because the habit it guards
+// against is the one this corpus had; shortest only at chance-plus-margin,
+// because tightening a long correct answer is how a repair can overshoot.
+// A track of ten or more items must place the correct option at a unique
+// length extreme at least this often, or "never pick an extreme" works.
+const LENGTH_CUE_FLOOR = 0.1
+const LENGTH_CUE_CAPS = {
+  longest: { corpus: 0.2, track: 0.5 },
+  shortest: { corpus: 0.35, track: 0.5 },
+}
+
+function correctIsUniquely(direction, options, correctIndex) {
+  const lengths = options.map((option) => String(option).length)
+  const correct = lengths[correctIndex]
+  return lengths.every((length, index) => index === correctIndex || (direction === 'longest' ? length < correct : length > correct))
+}
 
 function same(left, right) {
   return JSON.stringify(left) === JSON.stringify(right)
@@ -70,6 +90,7 @@ try {
   const failures = []
   const byLocale = new Map([['en', new Map()], ['pt-br', new Map()]])
   const quizPositions = new Map([['en', new Map()], ['pt-br', new Map()]])
+  const lengthCues = new Map([['en', new Map()], ['pt-br', new Map()]])
 
   for (const lesson of lessons) {
     if (!byLocale.has(lesson.locale)) {
@@ -140,6 +161,13 @@ try {
   if (tracksMissingInPortuguese.length) failures.push('Tracks missing in pt-br: ' + tracksMissingInPortuguese.join(', '))
   if (tracksMissingInEnglish.length) failures.push('Tracks missing in en: ' + tracksMissingInEnglish.join(', '))
 
+  // The sky draws nothing for a track without lessons, so a track JSON that
+  // lands alone would vanish from the chart while the catalogs still list it.
+  for (const [trackLocale, tracks] of tracksByLocale) {
+    const used = new Set([...(byLocale.get(trackLocale) ?? new Map()).values()].map((lesson) => stringField(lesson.frontmatter, 'track', lesson.file)))
+    for (const key of tracks.keys()) if (!used.has(key)) failures.push('track "' + key + '" has no lessons in ' + trackLocale)
+  }
+
   for (const [lessonLocale, localeLessons] of byLocale) {
     const localeTracks = tracksByLocale.get(lessonLocale) ?? new Map()
     for (const lesson of localeLessons.values()) {
@@ -166,6 +194,14 @@ try {
         const ordinalPositions = trackPositions.get(quizIndex) ?? []
         trackPositions.set(quizIndex, ordinalPositions)
         ordinalPositions.push(correctIndex)
+        const localeCues = lengthCues.get(lessonLocale)
+        if (track && localeCues) {
+          const counts = localeCues.get(track) ?? { items: 0, longest: 0, shortest: 0 }
+          localeCues.set(track, counts)
+          counts.items += 1
+          if (correctIsUniquely('longest', options, correctIndex)) counts.longest += 1
+          if (correctIsUniquely('shortest', options, correctIndex)) counts.shortest += 1
+        }
       }
     }
   }
@@ -209,11 +245,36 @@ try {
     }
   }
 
+  const cueSummary = []
+  for (const [locale, tracks] of lengthCues) {
+    // The opposite habit: strike both extremes when the answer never sits at one.
+    for (const [track, counts] of tracks) {
+      if (counts.items >= 10 && counts.longest + counts.shortest < counts.items * LENGTH_CUE_FLOOR) {
+        failures.push(locale + ' track "' + track + '": the correct option is never the uniquely longest or shortest in ' + (counts.longest + counts.shortest === 0 ? counts.items : 'all but ' + (counts.longest + counts.shortest) + ' of ' + counts.items) + ' quiz items (floor ' + LENGTH_CUE_FLOOR * 100 + '%)')
+      }
+    }
+    for (const [direction, caps] of Object.entries(LENGTH_CUE_CAPS)) {
+      let items = 0
+      let cued = 0
+      for (const [track, counts] of tracks) {
+        items += counts.items
+        cued += counts[direction]
+        if (counts[direction] > counts.items * caps.track) {
+          failures.push(locale + ' track "' + track + '": the correct option is uniquely the ' + direction + ' in ' + counts[direction] + ' of ' + counts.items + ' quiz items (cap ' + caps.track * 100 + '%)')
+        }
+      }
+      if (items > 0 && cued > items * caps.corpus) {
+        failures.push(locale + ': the correct option is uniquely the ' + direction + ' in ' + cued + ' of ' + items + ' quiz items (cap ' + caps.corpus * 100 + '%)')
+      }
+      cueSummary.push(locale + ' ' + direction + ' ' + cued + '/' + items)
+    }
+  }
+
   finish(
     'content:parity',
     failures,
     'en: ' + english.size + ' lessons/' + englishTracks.size + ' tracks; pt-br: '
-      + portuguese.size + ' lessons/' + portugueseTracks.size + ' tracks',
+      + portuguese.size + ' lessons/' + portugueseTracks.size + ' tracks; correct option uniquely ' + cueSummary.join(', '),
   )
 } catch (error) {
   console.error('content:parity FAIL — ' + (error instanceof Error ? error.message : String(error)))

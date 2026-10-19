@@ -1,0 +1,139 @@
+---
+id: "16.1-threat-model-the-assistant"
+track: "16-agent-security-and-guardrails"
+order: 1
+title: "Threat-Model the Assistant"
+summary: "Before writing a defence, list what the purchasing assistant protects, who it acts for, which text an attacker controls and which component outside the model enforces each boundary. A test then keeps that list honest as tools are added."
+tier: "advanced"
+locale: "en"
+prerequisites: ["15.1-from-model-output-to-a-tool-request", "14.2-states-dags-branches-and-loops"]
+unlocks: ["16.2-indirect-prompt-injection", "17.1-what-isolation-protects"]
+analogy: "An accounts office receives letters every day. A letter is evidence submitted to the office, not a new company policy: a supplier can write \"pay us at a new bank account\" and the clerk files it, but only the finance manager can change where money goes, by a procedure no letter can alter. A threat model is the office's written list of what is valuable, who may sign for what, and which papers arrive from outside. The comparison stops at reading. A clerk tells a letter from an internal memo by its envelope and letterhead, while a language model receives the letter, the instructions and the tool results as one stream of tokens, so the separation has to be enforced by code around the model."
+teachBack:
+  prompt: "The company adds two things to the assistant: PDFs that buyers attach from a shared drive any employee can edit, and a tool pay_invoice that moves money once an invoice is approved. How would you change ASSISTANT_THREAT_MODEL, and which component would own each new boundary?"
+  modelAnswer: "First I would ask who can write each new input. Any employee can edit the shared drive, so its PDFs are attacker-controlled content even though they come from inside. I would add them as an untrusted source, owned by the untrusted boundary like the supplier message. Then I would add pay_invoice as a write capability. Moving money is the asset an attacker wants most, so its owner must be a person or a payment control outside the model. I would never let the system prompt own it, because that is only a request to the model. I would also add pay_invoice to the catalog, so review_threat_model fails until the entry exists. Finally I would check the confused-deputy risk. The payment tool runs with the company's authority, so the payee and amount must come from the approved invoice, never from text in a PDF."
+quiz:
+  - question: "A teammate adds a refund_supplier tool to the back office and to the tool catalog, but forgets ASSISTANT_THREAT_MODEL. What does review_threat_model return?"
+    options: ["An empty list, because the review only inspects tools already listed as writes in the threat model", "A problem saying refund_supplier is in the catalog but not in the threat model", "A problem saying refund_supplier writes and has no owner, as new tools default to writes", "A ValueError, because the catalog and the threat model must list the same number of tools"]
+    correctIndex: 1
+    explanation: "The first line of the review walks the catalog and reports every tool the model does not mention, so a forgotten tool fails the test instead of slipping in. The review does not guess an effect for an unknown tool, and it never compares counts: it compares names."
+  - question: "The system prompt tells the model \"Never approve an invoice.\" Why does review_threat_model still reject system_prompt as the owner of approve_invoice?"
+    options: ["System prompts are shown to end users, so an attacker could read the rule and plan around it", "Models forget instructions placed early in a long context, so the rule fades over a run", "It is a request to the model, which reads the attacker's text through the same channel", "A system prompt can carry only one rule, and approval needs several separate checks"]
+    correctIndex: 2
+    explanation: "An instruction in the prompt is input the model weighs against all its other input, including the supplier's text; Greshake and colleagues describe this as blurring the line between data and instructions. An owner must enforce the rule whatever the model does. Visibility and forgetting are real concerns, but neither is why the prompt cannot own a boundary."
+  - question: "The back office's lookup_po returns any tenant's order to whoever calls it. A tenant-a run asks for PO-2001, a tenant-b order, because a supplier message named it. If the order comes back, what went wrong in Hardy's terms?"
+    options: ["The supplier had no password, so authentication failed at the supplier's mail server", "The tool name was misspelled, so the back office served the wrong order by mistake", "The run exceeded its step budget, so it kept reading orders it did not need", "The assistant used the service's authority on a name chosen by someone without it"]
+    correctIndex: 3
+    explanation: "Hardy's compiler wrote the billing file because a user named it and the compiler held its own license to write there: authority from two sources. Here the service's authority to read every tenant met a name from the supplier. Authentication of the supplier is irrelevant, the tool name was correct, and a step budget limits length, not authority."
+citations:
+  - title: "The Confused Deputy (or why capabilities might have been invented), ACM SIGOPS Operating Systems Review 22(4)"
+    authors: "Norm Hardy"
+    year: 1988
+    url: "https://css.csail.mit.edu/6.5660/2011/readings/confused-deputy.html"
+  - title: "The Protection of Information in Computer Systems, Proceedings of the IEEE 63(9)"
+    authors: "Jerome H. Saltzer and Michael D. Schroeder"
+    year: 1975
+    url: "https://web.mit.edu/Saltzer/www/publications/protection/"
+  - title: "Not what you've signed up for: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection"
+    authors: "Kai Greshake, Sahar Abdelnabi, Shailesh Mishra, Christoph Endres, Thorsten Holz and Mario Fritz"
+    year: 2023
+    url: "https://arxiv.org/abs/2302.12173"
+  - title: "Model Context Protocol: Security Best Practices (revision 2026-07-28)"
+    authors: "Model Context Protocol project"
+    year: 2026
+    url: "https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices"
+  - title: "LLM01:2025 Prompt Injection, OWASP Top 10 for LLM Applications"
+    authors: "OWASP Gen AI Security Project"
+    year: 2025
+    url: "https://genai.owasp.org/llmrisk/llm01-prompt-injection/"
+updated: "2026-10-19"
+---
+
+A supplier e-mails an invoice for purchase order PO-1002: six torque wrenches, USD 1,134.00. Hidden in an HTML comment, the same message tells "the AI assistant" to pay a different company, raise the amount to USD 11,340.00, mark the invoice approved and say nothing. The purchasing assistant from tracks 14 and 15 will read that message, because reading supplier mail is its job. Before you write a single defence, you need answers to four questions. What could this message damage? Whom does the assistant act for? Which text did the attacker write? And which piece of code, outside the model, stops the damage? Those answers are a *threat model*, and this lesson writes one down as data a test can check.
+
+## What are we protecting, and from whom?
+
+An *asset* is anything whose loss or change would hurt someone. For the assistant there are five:
+
+| Asset | What an attacker wants |
+|---|---|
+| Where money goes (payee, amount) | Pay their account, or pay more |
+| Purchase records | Change an order's status to hide a short delivery |
+| Other tenants' data | Read another customer's orders |
+| Credentials | Steal the key the back office accepts |
+| The reviewer's screen | Show a link that leaks data when it loads |
+
+A *principal* is the party a run acts for and whose permissions it uses. In the exercise project it is a `Principal` record (`user_id`, `tenant_id`, `roles`) that the controller builds from the authenticated session, for example user `buyer-7` of `tenant-a`. A model never writes it. A *tenant*, as in [lesson 14.1](/lessons/14-agent-architecture-and-state/14.1-when-a-workflow-needs-an-agent/), is one customer whose data must stay apart from every other customer's.
+
+*Attacker-controlled content* is any text a non-principal can write: the supplier's message, a document a search retrieves, the output of a tool, a screenshot of a web portal (track 18). OWASP's Top 10 for LLM applications calls an attack through such content *indirect prompt injection*: the model "accepts input from external sources, such as websites or files". The supplier is not malicious in most messages, but the assistant cannot tell an honest supplier from one whose mailbox was taken over.
+
+## The confused deputy
+
+Norm Hardy described an early version of this problem in 1988, from an incident he dated "about eleven years ago". A compiler at a timesharing company was allowed to write files in its own directory, so it could update a usage-statistics file. Users could also name a file to receive the compiler's debugging output. One user named the company's billing file. The operating system saw that the compiler had permission to write in that directory and let it overwrite the bills. Hardy's diagnosis: "the compiler runs with authority stemming from two sources". It served two masters and carried authority from each.
+
+The assistant is in the same position. It reaches the back office with the *service's* authority, which can read and draft for every tenant, while the names it acts on (a payee, a purchase order, a recipient) can come from the supplier's text. The exercise's `FakeBackOffice.lookup_po` returns any tenant's order to any caller on purpose, so you can watch the deputy problem happen. Every later control in this track checks a request against the principal's authority, not the service's.
+
+:::note
+The Model Context Protocol (MCP) security guide describes one modern instance in detail: an MCP proxy server that uses a single static client ID with a third-party authorization server can let an attacker obtain authorization codes without the user's consent. Its required fix is per-client consent before forwarding. That is OAuth-specific; Hardy's idea is the general pattern behind it.
+:::
+
+## Read and write capabilities
+
+A *capability* here is one tool and what it can do. Classify each as a read or a write. A write changes the world: `create_invoice_draft`, `approve_invoice`, `send_email`, `write_purchase_record`. A read only returns data: `lookup_po`. Reads are not harmless. A read of another tenant's order leaks data, and a read followed by `send_email` is how data leaves the company. So every capability, read or write, gets a check against the principal.
+
+Saltzer and Schroeder's 1975 design principles give two rules this track uses throughout. *Least privilege*: "every program and every user of the system should operate using the least set of privileges necessary to complete the job." *Complete mediation*: "every access to every object must be checked for authority." The assistant drafts invoices, so it gets no approval or payment tool at all, and every call it makes passes one checkpoint.
+
+## Who owns each boundary?
+
+A *trust boundary* is a place where data crosses from a party you do not trust to one you do, or where a proposal turns into an action. Each boundary needs an *owner*: the component that enforces the rule there, whatever the model does.
+
+The tempting owner is the system prompt: "Never approve an invoice." But that sentence is a request to the model, delivered in the same stream as the supplier's text. Greshake and colleagues, who demonstrated indirect injection against deployed systems such as Bing's GPT-4-powered chat, argue that such applications "blur the line between data and instructions", and that processing retrieved prompts "can act as arbitrary code execution" over what the application does. An owner must sit where the model's output is checked, not where its input is written.
+
+<Figure id="assistant-trust-boundaries" />
+
+## The threat model as data
+
+A diagram on a wiki drifts away from the code within weeks. The exercise writes the same model down as data and reviews it in a test:
+
+```python
+# file: examples/agent-engineering/src/agentlab/security/threats.py
+# Components that live inside the model's context. An instruction there is a
+# request to the model, so none of them can enforce a boundary.
+MODEL_SIDE = frozenset({"model", "system_prompt"})
+
+
+@dataclass(frozen=True)
+class ThreatModel:
+    sources: Mapping[str, Trust]
+    capabilities: Mapping[str, Effect]
+    owners: Mapping[str, str]
+
+
+def review_threat_model(model: ThreatModel, catalog: Iterable[str]) -> list[str]:
+    """Return every gap a reviewer must close; an empty list means none was found."""
+    problems = [f"{tool} is in the catalog but not in the threat model" for tool in catalog if tool not in model.capabilities]
+    for tool, effect in model.capabilities.items():
+        owner = model.owners.get(tool)
+        if effect == "write" and owner is None:
+            problems.append(f"{tool} writes and has no owner")
+        elif effect == "write" and owner in MODEL_SIDE:
+            problems.append(f"{tool} writes, so its owner must sit outside the model, not {owner}")
+    for source, trust in model.sources.items():
+        if trust == "untrusted" and model.owners.get(source) in (None, *MODEL_SIDE):
+            problems.append(f"{source} is untrusted and has no owner outside the model")
+    return problems
+```
+
+`ASSISTANT_THREAT_MODEL` in the same file lists six sources (the principal and the buyer's request are trusted; the supplier message, retrieved documents, tool results and portal screenshots are not), the five capabilities above, and an owner for each boundary. The untrusted sources belong to `untrusted_boundary`, the reads and the drafting writes to `policy_gate`, and `approve_invoice` to `human_approver`, the person track 20 brings in.
+
+The review finds three kinds of gap: a tool in the catalog that the model never mentions, a write with no owner or a model-side owner, and an untrusted source nobody owns. It cannot tell you whether an owner actually enforces anything. That is the job of the next four lessons, each of which builds one owner and tests it.
+
+:::caveat
+A threat model is only as complete as the questions you asked. This one omits availability (an attacker who makes every run fail) and the supply chain of the tools themselves; lesson 16.3 covers the second.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/security/threats.py` and its tests are in `tests/test_security_threats.py`, inside `examples/agent-engineering/`. From that directory, run `uv run --frozen python -m unittest discover -s tests -p "test_security_threats.py"`.
+
+Expected output ends with `Ran 4 tests` and `OK`. The test that matters most replaces the owner of `approve_invoice` with `system_prompt` and expects exactly one problem: "approve_invoice writes, so its owner must sit outside the model, not system_prompt". Change `elif effect == "write" and owner in MODEL_SIDE:` to `elif False:` and that test goes red: a prompt sentence would pass as a security control. Restore the line, then continue to [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/), which builds the policy gate and runs the injected message against it. [Lesson 17.1](/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/) applies the same questions to code the assistant runs.

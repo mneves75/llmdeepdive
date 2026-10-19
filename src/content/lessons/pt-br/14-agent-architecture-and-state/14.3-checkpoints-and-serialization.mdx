@@ -1,0 +1,144 @@
+---
+id: "14.3-checkpoints-and-serialization"
+track: "14-agent-architecture-and-state"
+order: 3
+title: "Checkpoints e serialização"
+summary: "Um checkpoint é o estado da execução gravado em armazenamento durável depois de um passo. Serialize-o com uma versão de schema, grave-o numa transação e use uma coluna de versão para que um escritor desatualizado seja rejeitado em vez de sobrescrever trabalho mais novo."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["14.2-states-dags-branches-and-loops"]
+unlocks: ["14.4-replay-and-side-effects", "15.4-a-raw-postgres-mcp-server", "19.1-working-episodic-and-semantic-memory"]
+analogy: "O diário de bordo de um navio é escrito a tinta no fim de cada turno, e toda página é numerada. Se o oficial de turno adoece, o próximo abre o livro e continua da última anotação assinada, não do que o primeiro oficial lembrava. Dois oficiais não podem escrever ambos a página 13: quem encontra a página 13 já preenchida precisa lê-la antes de escrever a 14. O diário deixa de ser uma boa comparação no momento da escrita. Tinta no papel pode ficar pela metade quando a mão escorrega, enquanto uma transação de banco de dados é projetada para que uma queda deixe a anotação inteira ou nada dela."
+teachBack:
+  prompt: "Seu store guarda o estado da execução num dicionário Python dentro do processo do worker e só o salva no SQLite quando a execução termina. Um deploy reinicia o worker entre checked e ready e, no mesmo instante, um segundo worker pega a mesma execução. O que cada worker vê, e quais duas mudanças desta aula resolvem isso?"
+  modelAnswer: "O dicionário morre com o processo, então o worker reiniciado não vê nada. Ele recomeçaria a execução em received. O segundo worker também não encontra nenhuma linha salva, então também começa em received. Agora dois workers rodam a mesma execução, e nenhum sabe do outro. A primeira correção é gravar um checkpoint depois de cada passo, dentro de uma transação. Assim um reinício retoma do último status gravado, checked. A segunda correção é a coluna de versão com compare-and-swap. Cada escrita diz qual versão leu. Quando o segundo worker tenta salvar sobre uma versão que já avançou, o update não casa com nenhuma linha e levanta StaleWrite. Esse worker precisa recarregar o estado e decidir de novo, em vez de sobrescrever o progresso do primeiro."
+quiz:
+  - question: "Um colega abre o store com sqlite3.connect(\":memory:\") para deixar os testes mais rápidos. Depois de um reinício do worker, o que load(\"run-1\") devolve?"
+    options: ["O último estado gravado, porque o SQLite escreve cada transação confirmada no seu journal", "O estado depois do último passo, porque o Pydantic guarda registros validados entre processos", "Um erro, porque a versão de schema guardada deixa de bater depois que o processo reinicia", "None, porque um banco em memória desaparece junto com o processo que o abriu"]
+    correctIndex: 3
+    explanation: "Um banco \":memory:\" só existe dentro da conexão que o criou, então um processo novo começa vazio. O argumento do journal vale para um arquivo de banco, não para a memória. O Pydantic não guarda nada entre processos, e a verificação de schema nem roda, porque não há linha para ler."
+  - question: "Os workers A e B carregam run-1 na versão 3. A salva primeiro. B então chama save com expected_version=3. O que acontece?"
+    options: ["As duas gravações dão certo e a linha fica com o estado de B, porque vence a última escrita", "B recebe StaleWrite, porque nenhuma linha está mais na versão 3 quando o update de B roda", "B espera a transação de A terminar e então grava a versão 5 por cima dela", "A recebe StaleWrite, porque B leu a linha primeiro e ainda mantém um lock sobre ela"]
+    correctIndex: 1
+    explanation: "O commit de A levou a linha para a versão 4, então o UPDATE ... WHERE version = 3 de B não casa com nada e o store levanta erro. Vencer a última escrita é justamente a atualização perdida que a coluna de versão impede. Ler não trava nada aqui, então quem leu primeiro não ganha nada, e ninguém grava uma versão que pula um número."
+  - question: "Um processo morre depois que save rodou o UPDATE e inseriu a primeira linha do outbox, mas antes do COMMIT. Um worker novo abre o mesmo arquivo. O que ele encontra?"
+    options: ["O estado novo sem a linha do outbox, então a fatura nunca é enviada", "A linha do outbox com o estado antigo, então o passo roda de novo e se repete", "As duas mudanças, porque o SQLite gravou cada comando no arquivo do banco ao executá-lo", "Nenhuma das mudanças, porque o SQLite desfaz uma transação que não foi confirmada"]
+    correctIndex: 3
+    explanation: "O SQLite torna a transação atômica: quando um processo morre no meio dela, a próxima abertura encontra o estado antigo e nenhuma linha no outbox, como mostra o teste com subprocesso do curso. Os dois resultados pela metade são as falhas que a transação única existe para impedir, e comandos dentro de uma transação aberta ainda não são o banco confirmado."
+citations:
+  - title: "Atomic Commit In SQLite"
+    authors: "SQLite"
+    year: 2026
+    url: "https://www.sqlite.org/atomiccommit.html"
+  - title: "Transaction (referência da linguagem SQL)"
+    authors: "SQLite"
+    year: 2026
+    url: "https://www.sqlite.org/lang_transaction.html"
+  - title: "sqlite3: interface DB-API 2.0 para bancos SQLite (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/sqlite3.html"
+  - title: "pickle: serialização de objetos Python (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/pickle.html"
+  - title: "On optimistic methods for concurrency control"
+    authors: "H. T. Kung e John T. Robinson"
+    year: 1981
+    url: "https://doi.org/10.1145/319566.319567"
+  - title: "LangGraph persistence"
+    authors: "LangChain"
+    year: 2026
+    url: "https://docs.langchain.com/oss/python/langgraph/persistence"
+updated: "2026-10-18"
+---
+
+Um processo worker está rodando o assistente de compras no PO-1001. Ele já conferiu a fatura, então o status da execução é `checked`. Aí um deploy reinicia o worker. Quando o processo novo sobe, o que ele sabe sobre run-1? Se a resposta é "o que estava na memória do processo antigo", ele não sabe nada. Vai recomeçar a execução em `received`, e nada vai avisá-lo de que a conferência já aconteceu. Esta aula faz o estado sobreviver ao reinício. Depois trata o caso mais difícil: dois workers que acham, cada um, que são donos da execução.
+
+## Um snapshot em memória é um checkpoint?
+
+Um *snapshot* é uma cópia do estado num momento. Onde ele mora decide ao que ele sobrevive. Um objeto Python, ou um banco SQLite aberto como `":memory:"`, vive dentro de um processo e some com ele. A própria documentação do LangGraph diz o mesmo dos seus savers em memória: "When the process restarts, all checkpoints are lost" (quando o processo reinicia, todos os checkpoints se perdem).
+
+Um *checkpoint*, neste curso, é um snapshot gravado em *armazenamento durável*: um arquivo ou banco de dados que dura mais que o processo e pode ser lido pelo próximo. O `CheckpointStore` do projeto guarda uma linha por execução num arquivo SQLite. O SQLite é um motor de banco de dados da biblioteca padrão do Python que guarda um banco inteiro num único arquivo.
+
+## Serialização: o estado como texto
+
+*Serialização* transforma um objeto em bytes que você pode guardar ou enviar. *Desserialização* faz o caminho de volta. O projeto serializa o `RunState` em JSON com o `model_dump_json` do Pydantic. Esta é a linha que o exercício grava depois do primeiro passo:
+
+```json
+{"schema_version":1,"run_id":"run-1","principal":{"user_id":"u1","tenant_id":"tenant-a","roles":[]},"status":"checked","step":1,"max_steps":12,"version":1,"evidence":[]}
+```
+
+Por que JSON? É texto puro, então você pode abrir o banco e ler com os próprios olhos o estado de uma execução travada. Qualquer linguagem o interpreta. Carregá-lo também não executa código. O formato `pickle` do Python também guardaria o objeto, mas sua documentação avisa que fazer unpickling de dados não confiáveis pode executar código arbitrário. Um checkpoint é lido de volta por um processo posterior, talvez depois de alguém mal-intencionado ter mexido no arquivo, então esse risco importa aqui.
+
+Dois campos existem por causa do armazenamento. `schema_version` diz qual formato de registro é este. Quando uma versão futura do código mudar o formato, as linhas antigas ainda dirão `1`, e o carregador pode recusar uma versão que não entende. Chutar seria pior. O `load` transforma essa recusa num erro claro:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/checkpoints.py
+    def load(self, run_id: str) -> RunState | None:
+        """The last committed state, or None. An unknown schema raises instead of being guessed."""
+        row = self._db.execute("SELECT body FROM run_state WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return RunState.model_validate_json(row[0])
+        except ValidationError as error:
+            raise ValueError(f"stored state for {run_id} does not match schema version 1") from error
+```
+
+O outro campo, `version`, conta as escritas confirmadas. Ele é a chave das duas últimas seções.
+
+## Transações: tudo ou nada
+
+Uma *transação* é um grupo de mudanças no banco que dá certo ou falha como uma unidade. A documentação do SQLite descreve o commit atômico como "either all database changes within a single transaction occur or none of them occur" (ou todas as mudanças de uma transação acontecem, ou nenhuma). Ela também diz que as transações "appear to be atomic even if the transaction is interrupted by an operating system crash or power failure" (parecem atômicas mesmo se interrompidas por uma queda do sistema operacional ou de energia). `BEGIN IMMEDIATE` abre uma transação que pega o lock de escrita na hora. `COMMIT` torna as mudanças permanentes, e `ROLLBACK` as descarta.
+
+O store abre a conexão com `isolation_level=None`, o que diz ao módulo `sqlite3` do Python para não abrir transações por conta própria. Toda transação de `save(state, expected_version, effects=())` fica então visível no seu corpo, que grava `state` como versão `expected_version + 1` ou levanta `StaleWrite`:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/checkpoints.py
+        new = RunState.model_validate({**state.model_dump(), "version": expected_version + 1})
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            if expected_version == 0:
+                cursor = self._db.execute(
+                    "INSERT INTO run_state (run_id, version, body) VALUES (?, 1, ?) ON CONFLICT (run_id) DO NOTHING",
+                    (new.run_id, new.model_dump_json()),
+                )
+            else:
+                cursor = self._db.execute(
+                    "UPDATE run_state SET version = ?, body = ? WHERE run_id = ? AND version = ?",
+                    (new.version, new.model_dump_json(), new.run_id, expected_version),
+                )
+            if cursor.rowcount != 1:
+                raise StaleWrite(f"{new.run_id} is no longer at version {expected_version}")
+            for key, draft in effects:
+                self._db.execute(
+                    "INSERT INTO outbox (idempotency_key, run_id, payload, status) VALUES (?, ?, ?, 'pending')",
+                    (key, new.run_id, draft.model_dump_json()),
+                )
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        return new
+```
+
+Ignore `effects` por enquanto; a [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) explica. A transação já faz um trabalho aqui. Um teste inicia um processo filho de verdade que chama `save` e se mata com `os._exit(1)` depois do `UPDATE` e da primeira inserção no outbox, antes do `COMMIT`. Quando o processo pai reabre o arquivo, a execução continua na versão 1, em `checked`, e o outbox está vazio. Uma queda no meio de um passo deixa o último checkpoint confirmado e nada escrito pela metade.
+
+## Dois escritores, uma execução: compare-and-swap
+
+A durabilidade cria um problema novo. Suponha que os workers A e B carreguem run-1 na versão 3. A decide `ready` e salva. B, ainda com a versão 3, decide `needs_info` e salva. Se a escrita de B substituir a linha, a decisão de A se perde sem erro nenhum. Essa falha se chama *atualização perdida*.
+
+O *compare-and-swap* (CAS, comparar e trocar) evita isso: grave o valor novo só se o valor guardado ainda for o que você leu. Aqui o valor comparado é o número da versão. O `UPDATE` leva `WHERE run_id = ? AND version = ?`, então só muda uma linha se ninguém confirmou nada desde que este escritor carregou o estado. `cursor.rowcount` informa quantas linhas casaram. Zero quer dizer que alguém chegou antes, e o store levanta `StaleWrite`. B precisa então recarregar a versão 4 e decidir de novo a partir do que A fez.
+
+Esse estilo se chama *controle de concorrência otimista*, a partir do artigo de 1981 de Kung e Robinson, "On optimistic methods for concurrency control". Os workers fazem o trabalho sem segurar locks, e os conflitos são detectados na hora do commit. Ele serve para execuções em que dois escritores na mesma execução são raros, mas possíveis.
+
+:::caveat
+O CAS rejeita a escrita desatualizada. Ele não decide o que B deve fazer depois. Recarregar e decidir de novo costuma ser o certo para uma máquina de estados. Se B já tivesse enviado um e-mail antes de a gravação falhar, porém, esse e-mail já está no mundo, e nenhum rollback o traz de volta. Efeitos fora do banco são o assunto da próxima aula.
+:::
+
+## Rode o exercício
+
+O módulo é `src/agentlab/state/checkpoints.py`; os testes estão em `tests/test_state_checkpoints.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_state_checkpoints.py"`.
+
+A saída esperada termina com `Ran 7 tests` e `OK`. O teste de reinício fecha o store e abre um `CheckpointStore` novo sobre o mesmo arquivo. Ele encontra o estado `checked` confirmado, não o estado `ready` que só existia na memória. Para ver o teste de escrita desatualizada pegar um bug de verdade, troque `AND version = ?` por `AND version >= ?` no `UPDATE`. `test_a_stale_write_is_rejected` falha, porque a escrita velha de B agora sobrescreve a mais nova de A. Restaure a linha antes de seguir.

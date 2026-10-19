@@ -1,0 +1,100 @@
+---
+id: "24.4-model-cascades-and-budgets"
+track: "24-agent-resilience-and-fallbacks"
+order: 4
+title: "Model Cascades and Budgets"
+summary: "Ask a cheap model first and pay for an expensive one only when a trusted check fails. Reserve each call's cost in a shared ledger with compare-and-swap, so concurrent workers cannot overspend, and stop at a deadline or a kill switch."
+tier: "advanced"
+locale: "en"
+prerequisites: ["24.3-api-to-browser-fallback", "9.10-cost-per-token"]
+unlocks: ["24.5-recovery-drills"]
+analogy: "A hotel puts a hold on your card at check-in, charges the real bill at check-out and releases the rest. Because the hold is taken first, two hotels cannot both spend the same credit, and a frozen card stops new holds while letting existing bills settle. The hold is a reservation, the check-out is settle and the frozen card is the kill switch. The comparison stops at who keeps the books. The bank serializes card holds itself, while here the run's own ledger must do it, and a provider bills whatever it bills, so the ledger has to record the real cost even when it exceeds the hold."
+teachBack:
+  prompt: "Ten workers each run the cascade for a different invoice against one shared budget of USD 0.10, with the course's tiers: USD 0.002 for the small model and USD 0.03 for the large one. All ten small-model answers fail the check at the same moment. Say how many large-model calls can run, what the other workers report, and what a check-then-write ledger would have allowed."
+  modelAnswer: "The ten small calls commit USD 0.02 in total, so USD 0.08 remain. Each large call reserves USD 0.03, so two fit and commit USD 0.06, leaving USD 0.02. The other eight workers try to reserve USD 0.03, find too little left and get False. Their cascades escalate with the reason that the budget refused the large tier, and their large models are never called. Some of them hit StaleWrite first and read again, which changes nothing about the total. A check-then-write ledger could let all ten see USD 0.08 free and all start, which is USD 0.30 of large calls against a USD 0.10 budget."
+quiz:
+  - question: "The budget is USD 0.05 and another worker already holds USD 0.03. The cascade's small tier (USD 0.002) answers with a total that fails the check. The large tier costs USD 0.03. What does run_cascade return?"
+    options: ["escalated after spending USD 0.002, because the large tier's USD 0.03 no longer fits the rest", "accepted at large after spending USD 0.032, because reservations are checked only after a call", "escalated before any call, because USD 0.02 free is below the price of both tiers together", "accepted at large, because settling the small call frees its reservation before the large one"]
+    correctIndex: 0
+    explanation: "USD 0.05 minus 0.03 leaves 0.02. The small call reserves and settles 0.002, leaving 0.018, and the large tier's 0.03 does not fit, so reserve returns False and the large model is never called. The cascade reserves tier by tier and never adds up the whole cascade in advance. Settling replaces a hold with the real cost; it does not free money that was spent."
+  - question: "Workers A and B both read the budget at version 4 with USD 1.00 free. A reserves USD 0.60 and commits. B calls try_reserve with its own snapshot for USD 0.60, then calls reserve. What happens?"
+    options: ["B's try_reserve succeeds, because its snapshot showed USD 1.00 free when it was read", "B's try_reserve raises StaleWrite; reserve then reads version 5 and returns False", "B's try_reserve returns False; reserve then waits for A to settle and free the money", "B's try_reserve raises StaleWrite; reserve keeps retrying until the halt flag is set"]
+    correctIndex: 1
+    explanation: "A's commit moved the version to 5, so B's UPDATE ... WHERE version = 4 matches no row and raises StaleWrite. reserve reads again, sees USD 0.40 left and refuses the USD 0.60 without writing. Nothing waits for a settle, and the loop ends as soon as a fresh read decides. Succeeding on the old snapshot is exactly the overspend the naive test shows."
+  - question: "Why does halt add one to the budget's version instead of only setting halted?"
+    options: ["so the ledger can count how many times an operator pressed the kill switch on that budget", "because SQLite refuses an UPDATE statement that leaves a row's other columns unchanged", "so a worker holding an older snapshot fails its compare-and-swap and then reads the halt", "so settle refuses to record the cost of calls that were already running when it happened"]
+    correctIndex: 2
+    explanation: "A worker may have read the budget just before the halt. Its snapshot still says halted is false, so try_reserve's own check would pass. Bumping the version makes its UPDATE match no row, it reads again and sees the halt, as the kill-switch test shows. Calls already running can still settle, because their money is already spent. SQLite has no rule against such an UPDATE."
+citations:
+  - title: "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance (arXiv:2305.05176v1)"
+    authors: "Lingjiao Chen, Matei Zaharia, James Zou"
+    year: 2023
+    url: "https://arxiv.org/abs/2305.05176"
+  - title: "Addressing Cascading Failures, in Site Reliability Engineering (B. Beyer, C. Jones, J. Petoff, N. R. Murphy, eds.), online edition: deadlines and deadline propagation"
+    authors: "Mike Ulrich, Google; O'Reilly Media"
+    year: 2017
+    url: "https://sre.google/sre-book/addressing-cascading-failures/"
+updated: "2026-10-19"
+---
+
+Two workers of the purchasing assistant share one run's budget of USD 1.00. Each needs a model call that may cost up to USD 0.60. Each reads the budget, sees USD 1.00 free, decides there is room and starts its call. Together they spend USD 1.20, and the ledger, which each updated from the total it had read, records only USD 0.60. Nothing crashed, and every check passed when it ran. This lesson builds a ledger where that cannot happen, and a model cascade that spends from it.
+
+## Cheap first, expensive when the check fails
+
+A model cascade asks models in order, from cheapest to most capable, and stops at the first answer good enough to use. The FrugalGPT paper (Chen, Zaharia and Zou, 2023) describes it this way: a cascade "sends a query to a list of LLM APIs sequentially", returns a response once it is judged reliable, and queries the next one "only if the previous APIs' generations are deemed insufficiently reliable". The paper reports that its learned cascade can match the best single model "with up to 98% cost reduction" on the datasets it studied. It also lists its limits: training the cascade needs labelled examples from "the same or similar distribution" as the real queries.
+
+The whole design depends on the check that decides "good enough". FrugalGPT learns a scoring model for it. The course uses something stricter for its one task. `invoice_check` accepts an `extract_invoice` call only if its total equals quantity × unit price in the tenant's purchase record, the success assertion from [lesson 14.1](/lessons/14-agent-architecture-and-state/14.1-when-a-workflow-needs-an-agent/). The model's own confidence never enters it. A check that accepts wrong answers turns the savings into errors, because the cascade then stops at the cheap model exactly when it should have gone on.
+
+Here is a worked example with made-up numbers, because no fixture measures how often a real small model passes. The small tier costs USD 0.002 a call and the large tier USD 0.03, as in the tests. If the small model passed the check on 70% of invoices, the expected cost per invoice would be 0.002 + 0.3 × 0.03 = USD 0.011, against USD 0.03 for the large model alone. Latency moves the other way for the 30% that fall through: they wait for both models. [Lesson 9.10](/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) shows where per-call prices come from. Measure the pass rate on your own held-out invoices before trusting any such saving.
+
+## Why checking a total is not enough
+
+The opening's overspend is a stale read. A stale read is a decision based on data that changed after it was read. The test file writes the naive ledger out on purpose: `naive_read` reads the committed total, and `naive_write` checks it against the limit and writes the new total. The test interleaves two workers in a fixed order (read, read, write, write), so the race happens every time instead of once in a thousand runs. Both writes succeed, USD 1.20 of calls are approved and the ledger shows USD 0.60.
+
+Locking each step separately does not help, because the gap is between the read and the write. The write itself has to say "only if nothing changed since I read".
+
+## Reservations with compare-and-swap
+
+The ledger is a SQLite table with a `version` column, the same shape as [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/)'s checkpoints. Money is stored as whole micro-dollars (USD 1 is 1,000,000), because SQLite has no decimal type and a float cannot hold USD 0.10 exactly. A worker reserves a call's worst-case price before the call:
+
+```python
+# file: examples/agent-engineering/src/agentlab/resilience/budget.py
+    def try_reserve(self, seen: Snapshot, reservation_id: str, amount: int) -> bool:
+        """Hold ``amount`` if ``seen`` is still current. False: halted or over the limit. ``StaleWrite``: read again."""
+        if amount <= 0:
+            raise ValueError("a reservation must be positive")
+        if seen.halted or seen.committed + amount > seen.limit:
+            return False
+        with self._transaction():
+            cursor = self._db.execute(
+                "UPDATE budget SET committed_micros = ?, version = version + 1 WHERE budget_id = ? AND version = ?",
+                (seen.committed + amount, seen.budget_id, seen.version),
+            )
+            if cursor.rowcount != 1:
+                raise StaleWrite(f"budget {seen.budget_id} changed since version {seen.version}")
+            self._db.execute(
+                "INSERT INTO reservation (reservation_id, budget_id, held_micros, status) VALUES (?, ?, ?, 'held')",
+                (reservation_id, seen.budget_id, amount),
+            )
+        return True
+```
+
+The `WHERE ... AND version = ?` clause is the compare-and-swap. The update matches a row only if the version is still the one the worker read. Otherwise `StaleWrite` tells the worker to read again, and `reserve` does exactly that in a loop. Each retry means another worker committed something, so the loop always makes progress. In the test both workers open their own connection to the same file, as two processes would. Worker A reserves USD 0.60. Worker B's attempt with its old snapshot raises `StaleWrite`, and its fresh read shows USD 0.40 left, so it is refused. A control test with two USD 0.40 calls shows that both get through: a stale write is retried, not turned into a refusal.
+
+After the call, `settle` replaces the hold with the real cost, and `release` gives the whole hold back when the call never ran. Both work once, because they move the reservation from `held` with a check on its status. A provider can bill more than the hold if the estimate was wrong. `settle` then records the real cost anyway, since that money is gone, and halts the budget until a person looks.
+
+## Deadlines and the kill switch
+
+Money is one limit and time is another. Google's chapter on cascading failures says "it's usually wise to set a deadline", and that "you don't get credit for late assignments with RPCs". Each `Tier` declares the slowest call it may take. Before calling a tier, `run_cascade` checks whether the call could end after the run's deadline and escalates instead of starting it. With a 10-second deadline, the small tier (2 seconds) runs and the large tier (20 seconds) never does.
+
+The kill switch is `halt`. It sets `halted` and also adds one to the version, which matters for the worker that read the budget a moment before the halt. Its snapshot still says the budget is open, but its compare-and-swap fails, and its fresh read sees the halt. The test `test_a_halt_between_read_and_reserve_wins` checks exactly that interleaving. A call already running can still settle after a halt, because its cost has been incurred, and the ledger has to stay true.
+
+`run_cascade` puts the pieces in order: deadline check, reservation, call, settle, then the check. Any refusal escalates with a reason, and the model of a tier that was refused is never called. The tests assert that by counting the scripted model's calls.
+
+## Run the exercise
+
+From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests/test_resilience_budget.py tests/test_resilience_cascade.py`. The output ends with `Ran 18 tests` and `OK`.
+
+`test_check_then_write_lets_two_workers_overspend` is the naive race and `test_compare_and_swap_makes_the_second_worker_read_again` its fix. `test_a_cheap_answer_that_fails_the_check_moves_up_one_tier` spends USD 0.032 and accepts the large tier's answer. `test_a_tier_the_budget_cannot_cover_is_never_called` leaves USD 0.02 for the run and shows the large model untouched, and `test_the_kill_switch_stops_every_tier` calls no model at all.
+
+Break it: in `try_reserve`, replace `WHERE budget_id = ? AND version = ?"` with `WHERE budget_id = ? AND ? IS NOT NULL"` and run the budget file. Three tests fail, among them the compare-and-swap test, because worker B's old snapshot now overwrites A's reservation and the ledger approves USD 1.20 against USD 1.00. Restore the line.

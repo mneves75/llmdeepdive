@@ -1,0 +1,118 @@
+---
+id: "17.1-what-isolation-protects"
+track: "17-sandboxed-agent-execution"
+order: 1
+title: "What Isolation Protects"
+summary: "Code a model writes is untrusted, and running it touches five things: files, credentials, network, machine resources and the host kernel. Processes, containers, gVisor and microVMs each answer a different subset, and resource limits answer none of the first three."
+tier: "advanced"
+locale: "en"
+prerequisites: ["16.1-threat-model-the-assistant"]
+unlocks: ["17.2-resource-and-filesystem-limits", "18.1-observe-before-acting"]
+analogy: "A laboratory that handles a dangerous sample does not rely on a locked door. The enclosure has its own power circuit, so a fault inside cannot black out the building, and its own filtered exhaust, so what is inside cannot leave through the air the rest of the building breathes. Each control closes a different way out, and each is checked on its own: a perfect lock says nothing about the exhaust. A sandbox needs the same separate answers for files, credentials, network, resources and the kernel. The comparison stops at intent. A sample does not search for gaps, while hostile code probes every one of them, and a software boundary can have a flaw that nobody has found yet."
+teachBack:
+  prompt: "A colleague proposes running the model's report script inside the worker itself with exec(), wrapped in try/except, with signal.alarm(5) as a time limit. Walk through the five things this lesson lists. Which of them does the proposal protect, and which does it leave open?"
+  modelAnswer: "The alarm bounds wall-clock time, and only partly: the script can cancel the alarm or catch the signal, because it runs in the same interpreter. Everything else is open. The script shares the worker's memory, so it can read the worker's variables, including any API key or database connection. It can open any file the worker's user can read, such as the checkpoint database. It can open sockets to any address, including a cloud metadata endpoint. It can allocate memory or start processes until the machine suffers. Its system calls reach the host kernel directly. A separate process with limits would at least separate memory and bound resources. It would still share files, network and kernel, so hostile code needs a VM-style boundary on top."
+quiz:
+  - question: "The controller runs the model's script with subprocess.run([\"python\", \"report.py\"]) from a worker whose environment holds MODEL_API_KEY. What can the script read?"
+    options: ["Only the files in its working directory, since a child process is confined to the directory it starts in", "Nothing outside its own memory, because the operating system gives every process a separate address space", "The API key, inherited through the environment, and every file the worker's user can read", "Only its environment variables, since opening a file needs a permission the parent never handed over"]
+    correctIndex: 2
+    explanation: "A child process inherits the parent's environment by default and runs as the same user, so it reads the key and every file that user can read. The working directory is only where relative paths start, not a wall. Separate address spaces protect memory, not files or environment variables, and no extra file permission exists for a parent to grant."
+  - question: "A team starts the guest in a Docker container with --privileged, so that it can build images inside. What did they get?"
+    options: ["A gVisor-style sandbox, because Docker replaces the guest's kernel with its own for privileged containers", "A full virtual machine, because privileged mode adds hardware virtualization around the container", "The isolation of a default container, plus write access to /sys and nothing more", "A process Docker's documentation calls not securely sandboxed, able to get a root shell on the host"]
+    correctIndex: 3
+    explanation: "The docker run reference says --privileged enables all capabilities, grants access to all host devices and disables the default seccomp and AppArmor profiles, and that such a container is not a securely sandboxed process. Docker never swaps in another kernel or adds virtualization, and a writable /sys is only one of the protections removed."
+  - question: "Which statement about the control plane and the guest workload is right?"
+    options: ["The controller keeps the credentials and decides what runs; the guest gets neither, even on one host", "The guest should keep the API key, so that the controller never handles a secret the model could misuse", "They can share one process if a try/except around exec() catches every error the guest raises", "A microVM makes the controller unnecessary, because the VM itself decides which results are safe to keep"]
+    correctIndex: 0
+    explanation: "The control plane is the trusted side: it holds secrets, enforces limits, validates results and destroys sandboxes, while the guest is untrusted. Giving the guest the key hands it to the code you trust least. A try/except catches errors, not reads of memory or files. A VM only contains the guest, and something trusted must still judge what comes out."
+citations:
+  - title: "Firecracker design (docs/design.md at v1.17.0)"
+    authors: "Firecracker project"
+    year: 2026
+    url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/design.md"
+  - title: "Introduction to gVisor security"
+    authors: "gVisor authors"
+    year: 2026
+    url: "https://gvisor.dev/docs/architecture_guide/intro/"
+  - title: "Docker Engine security"
+    authors: "Docker"
+    year: 2026
+    url: "https://docs.docker.com/engine/security/"
+  - title: "docker container run (reference, --privileged)"
+    authors: "Docker"
+    year: 2026
+    url: "https://docs.docker.com/reference/cli/docker/container/run/"
+  - title: "WebContainers: Introduction"
+    authors: "StackBlitz"
+    year: 2026
+    url: "https://webcontainers.io/guides/introduction"
+updated: "2026-10-19"
+---
+
+The purchasing assistant can produce a small report. The model writes a Python script that totals tenant-a's purchases by supplier, and the controller runs it. On the way, the model read the supplier message, and in [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) that message carried instructions for it. So the script is *untrusted code*: nobody reviewed it, and an attacker may have shaped it. This track answers one question in five parts. When that script runs, what can it reach, and what stops it?
+
+## What can a script you did not write reach?
+
+Run it the way the simplest controller would: `subprocess.run(["python", "report.py"])` from the worker process. The child process starts with everything its parent has, minus the parent's memory:
+
+- **Files.** It runs as the same operating-system user, so it can open every file that user can read: the checkpoint database from [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/), a private key in the home directory, the other tenant's records.
+- **Credentials.** A child inherits its parent's *environment variables* by default. If the worker holds `MODEL_API_KEY`, so does the script.
+- **Network.** It can open a connection to any address the host can reach. On a cloud machine, that includes the metadata service at `169.254.169.254`, which can hand out the machine's own credentials ([lesson 17.3](/lessons/17-sandboxed-agent-execution/17.3-network-egress-and-secrets/)).
+- **Resources.** It can spin the CPU, allocate memory, fill the disk and start processes until the machine struggles.
+- **The kernel.** The *kernel* is the core of the operating system: every file open, socket and new process is a *system call*, a request the program makes to the kernel. The script's system calls go to the same kernel that runs everything else on the host, so a bug in that kernel is a way out.
+
+Those are five separate exposures. A sandbox is only as good as its answer to each of them, and different sandboxes answer different subsets.
+
+## Who is trusted: the control plane and the guest
+
+Two roles appear in every design in this track. The *control plane* is the trusted code around the sandbox: it decides what runs, holds credentials, sets limits, receives and validates results, and destroys the sandbox afterwards. The *guest workload* is the untrusted code inside. Firecracker's design document takes the strictest view of the guest: all its virtual CPU threads "are considered to be running malicious code as soon as they have been started".
+
+Keeping the roles apart prevents a common confusion. The controller may need the network, to call the model or a sandbox provider's API, while the guest needs none. "No network" is a property of the guest, not of the whole system. The same holds for secrets: the controller holds the API key, and the guest must never receive it.
+
+## Four boundaries, four different answers
+
+A *boundary* is the mechanism that stands between the guest and what it must not reach. Four kinds are common, and the figure below stacks each one between the script and the host.
+
+<Figure id="isolation-layers" />
+
+A **process with resource limits** bounds how much the script uses. Lesson 17.2 builds one. It changes nothing about what the script can reach: same user, same files, same network, same kernel.
+
+A **container** adds *namespaces*, which give the process its own view of files, processes and network interfaces. It also adds *cgroups*, which set quotas on CPU, memory and process count. The system calls still go to the shared host kernel. Docker's security documentation warns that the default capabilities and mounts "may provide incomplete isolation", alone or "in combination with kernel vulnerabilities".
+
+A **userspace kernel** puts a program between the guest and the host kernel. gVisor's documentation calls it "an application kernel, not a virtual machine hypervisor or a system call filter". Its Sentry component reimplements Linux in Go and runs in user space, and "gVisor never passes through any system call to the host". It is not a microVM.
+
+A **virtual machine** gives the guest a kernel of its own, running on emulated hardware. A *microVM* is a virtual machine with a deliberately small set of emulated devices, so it starts fast and exposes less code to the guest. Firecracker builds microVMs on KVM, the Linux kernel's virtualization module.
+
+| Boundary | The guest's system calls reach | Still needs separate controls for |
+|---|---|---|
+| Process with limits | the host kernel | files, network, secrets, the kernel |
+| Container | the host kernel, filtered | network policy, secrets, kernel bugs |
+| gVisor | the Sentry | network policy, secrets |
+| MicroVM | its own guest kernel | egress filtering on the host, cleanup |
+
+The last column never empties. Even a microVM leaves network filtering to the host: Firecracker's design document says it "does not perform any network traffic filtering". That is the laboratory point from the analogy. A strong wall does not filter the air.
+
+:::warning
+A configuration can remove a boundary entirely. The `docker run` reference says a container started with `--privileged` "is not a securely sandboxed process" and that such containers "can get a root shell on the host". Lesson 17.5 covers this and a mounted Docker socket, which has the same effect.
+:::
+
+## A browser runtime is a different place, not a smaller VM
+
+WebContainers, from StackBlitz, run Node.js applications "entirely inside your browser tab". The code runs on the visitor's machine, inside their browser, and never on your server. That is useful for an interactive coding page, but it answers a different question. It does not run a CPython interpreter next to your controller and your data, so it is not a substitute for a Python microVM. Lesson 17.5 compares it with the others.
+
+## Run the exercise: limits are not isolation
+
+The module is `src/agentlab/sandbox/process.py`, which [lesson 17.2](/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/) explains line by line. Here you only use it. The test creates a file outside the script's working directory and never passes it in:
+
+```python
+# file: examples/agent-engineering/tests/test_sandbox_isolation.py
+    def test_the_same_process_reads_a_host_file_it_was_never_given(self):
+        # The file lives outside the working directory; nobody passed it in.
+        code = f"print(open({str(self.secret)!r}).read(), end='')"
+        result = run_python(code, Path(self.workdir.name))
+        self.assertEqual(result.stdout, b"host-only data\n")
+```
+
+From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_sandbox_isolation -v`. Expect `Ran 3 tests` and `OK`. The three tests hold together. `test_the_limits_are_applied` shows that a busy loop is killed by the CPU limit, not by the wall clock. The host-file test shows that the same process still reads a file it was never given. The positive control shows that a missing path really fails, so the read above found the real file.
+
+To see the first test catch a regression, delete the line that sets `RLIMIT_CPU` in the bootstrap inside `process.py`. The loop then runs until the wall-clock timeout, `result.timed_out` becomes true, and the test fails. Restore the line. The host-file test has no fix inside this module: closing that exposure needs a different boundary, which lessons 17.4 and 17.5 build and measure.

@@ -1,0 +1,120 @@
+---
+id: "20.2-bind-approval-to-one-operation"
+track: "20-human-approval-and-durable-pauses"
+order: 2
+title: "Vincular a aprovação a uma única operação"
+summary: "Uma aprovação cobre um rascunho exato: id da fatura, versão, beneficiário, valor e moeda, fixados por uma hash SHA-256, mais um prazo e um único uso. Quem aprova é outra pessoa com o papel certo, nunca quem pediu e nunca o modelo."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["20.1-decide-when-approval-is-needed"]
+unlocks: ["20.3-durable-waits-and-callbacks", "24.3-api-to-browser-fallback"]
+analogy: "Uma assinatura num contrato autoriza aquele contrato, tal como estava impresso no dia em que foi assinado. Se alguém depois muda o valor na página dois, a assinatura não se estica para cobrir o novo número; o contrato precisa ser assinado de novo. Uma assinatura também não pode vir de quem redigiu o contrato quando a regra exige uma segunda parte. A comparação para em como uma mudança é percebida. No papel, um leitor precisa notar a página alterada a olho; aqui, uma hash do conteúdo exato muda por completo quando qualquer campo muda, então o código compara duas strings curtas e pega toda edição."
+teachBack:
+  prompt: "O aprovador aprova a INV-0042 versão 1 de USD 10.000,00 às 09:00, com validade de três dias. Às 10:00 o assistente reformata o rascunho: mesmos valores, mas monta o JSON com as chaves em outra ordem e põe espaços depois dos dois-pontos. Depois, no quarto dia, tenta enviar. Descreva o que covers retorna às 10:00 e no quarto dia, e por quê."
+  modelAnswer: "Às 10:00, covers permite o envio. content_sha256 não calcula a hash do JSON que o assistente escreveu. Ela extrai os campos do rascunho e os escreve com chaves ordenadas e sem espaços. A ordem das chaves e os espaços não mudam a hash, então ela continua batendo com o pedido. No quarto dia, covers recusa, porque now já passou de expires_at. O rascunho ainda é o aprovado, mas a aprovação valia só por três dias. O assistente precisa de um novo pedido de aprovação, e uma pessoa precisa aprová-lo de novo. Se o assistente tivesse mudado um valor em vez da formatação, a hash seria outra, e covers recusaria já às 10:00."
+quiz:
+  - question: "O aprovador aprovou a INV-0042 versão 1. O modelo então troca o beneficiário para Supplier Omega, mas mantém a versão 1 e o mesmo valor. O que covers retorna?"
+    options: ["Permite, porque o id da fatura e a versão são os mesmos de quando ela foi aprovada", "Permite, porque o valor não mudou, e o valor é o que a política de aprovação limita", "Recusa, porque o beneficiário faz parte do JSON canônico, então a hash não bate mais", "Recusa, porque toda mudança num rascunho precisa antes aumentar a versão para ser aceita"]
+    correctIndex: 2
+    explanation: "A hash cobre todos os campos, então trocar só o beneficiário produz outro resumo. O id e a versão sozinhos não pegariam uma edição que esqueceu de aumentar a versão, e é por isso que o vínculo usa o conteúdo, não rótulos. covers nunca checa se a versão aumentou; ela compara hashes."
+  - question: "u-buyer pediu a aprovação e também tem o papel invoice_approver no mesmo tenant. u-buyer clica em Approve. O que check_approver retorna?"
+    options: ["Permite, porque u-buyer tem o papel e pertence ao tenant da fatura", "Permite, porque checar o papel basta depois que a pessoa entrou no Slack", "Recusa, porque uma pessoa não pode ter ao mesmo tempo o papel de buyer e de aprovador", "Recusa, porque quem aprova é o mesmo usuário que pediu esta aprovação"]
+    correctIndex: 3
+    explanation: "A primeira checagem compara o user_id do aprovador com requested_by, antes de olhar o papel ou o tenant. Ter os dois papéis é permitido; aprovar o próprio pedido não é. Essa regra impede que uma única pessoa, ou o modelo agindo sob a identidade dela, complete o fluxo inteiro sozinha."
+  - question: "Por que o curso guarda o status de uso único no store em vez de acrescentar um campo used ao ApprovalRequest?"
+    options: ["O uso é uma mudança no tempo; o pedido congelado é conteúdo, então o store registra o uso atomicamente", "Um registro Pydantic congelado não comporta campo booleano, então a marca de uso tem de ficar em outro lugar", "A hash mudaria quando a marca virasse, o que faria a aprovação cobrir um rascunho novo", "O Slack guarda a marca do lado dele, então o pedido só precisa apontar para o registro do Slack"]
+    correctIndex: 0
+    explanation: "O pedido é conteúdo imutável: o que foi pedido, sobre qual rascunho, até quando. Se ele foi usado é estado, que muda uma vez, e dois workers não podem mudá-lo os dois; por isso o store faz isso com um compare-and-swap. Registros congelados comportam booleanos, e a hash cobre só o rascunho, não os outros campos do pedido."
+citations:
+  - title: "LLM06:2025 Excessive Agency"
+    authors: "OWASP GenAI Security Project"
+    year: 2025
+    url: "https://genai.owasp.org/llmrisk/llm062025-excessive-agency/"
+  - title: "Model Context Protocol specification, revision 2026-07-28: Tools"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/server/tools"
+updated: "2026-10-18"
+---
+
+Às 09:00 o aprovador abre o pedido da [aula 20.1](/pt-br/lessons/20-human-approval-and-durable-pauses/20.1-decide-when-approval-is-needed/), lê `Submit INV-0042 version 1 to Supplier Gamma for 10000.00 USD` e clica em Approve. Às 09:05 o assistente lê a mensagem injetada do fornecedor da [aula 16.2](/pt-br/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) e troca o beneficiário para Supplier Omega. Ele ainda tem uma aprovação. O que essa aprovação cobre?
+
+Se a resposta for "a fatura INV-0042", o atacante venceu: a aprovação acompanha a fatura em toda edição posterior. A resposta que esta aula constrói é mais estreita. Uma aprovação cobre uma *operação*: um rascunho exato, aprovado por uma pessoa que não é quem pediu, antes de um prazo, usado uma vez.
+
+## O que exatamente uma pessoa aprova?
+
+Liste o que o aprovador viu: id da fatura, versão, beneficiário, valor e moeda, mais o tenant a que a fatura pertence. Cada um desses campos faz parte da decisão, então cada um precisa fazer parte do vínculo. Mais cinco fatos o completam:
+
+- um *id de operação*, que nomeia o efeito que a aprovação permite (aqui `run-1:submit_invoice`, montado do jeito que a [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) monta chaves de idempotência);
+- o id de usuário de quem *pediu*, o principal confiável em nome de quem a execução pediu;
+- uma *validade*, um momento depois do qual a aprovação perde o efeito;
+- o *aprovador*, registrado quando a decisão chega;
+- se a aprovação já foi *usada*.
+
+O registro compartilhado `ApprovalRequest`, em `agentlab/domain.py`, guarda o primeiro grupo: o id de operação, o rascunho, uma hash do conteúdo, `requested_by` e `expires_at`. Seu `expires_at` é um datetime com fuso horário, então compará-lo com "agora" compara dois instantes, não dois relógios de parede em fusos diferentes. O aprovador e o status de uso ficam de fora de propósito. Os dois chegam depois e mudam com o tempo, então moram no store da [aula 20.3](/pt-br/lessons/20-human-approval-and-durable-pauses/20.3-durable-waits-and-callbacks/).
+
+## Por que uma hash em vez do id da fatura?
+
+Uma *hash* como a SHA-256 transforma qualquer entrada num resumo de 64 caracteres que muda por completo quando um byte da entrada muda; a [aula 15.3](/pt-br/lessons/15-tool-contracts-and-mcp/15.3-tools-resources-prompts-and-discovery/) usou uma para fixar definições de ferramentas. Calcular a hash do rascunho transforma "este ainda é o documento que a pessoa aprovou?" numa comparação de duas strings curtas.
+
+Por que não comparar id da fatura e versão? Porque rótulos podem continuar iguais enquanto o conteúdo muda. Um bug, ou a mensagem injetada, poderia editar o beneficiário sem aumentar a versão. A hash percebe mesmo assim. A versão continua dentro da hash, para o caso oposto: se um rascunho corrigido voltar por acaso ao valor antigo, sua versão é outra, então uma aprovação antiga não o cobre por coincidência.
+
+Uma hash só serve se rascunhos iguais sempre produzirem os mesmos bytes. O JSON permite escrever o mesmo objeto de muitos jeitos: chaves em qualquer ordem, com espaços ou sem. Por isso o exercício primeiro escreve o rascunho numa forma *canônica*, chaves ordenadas e sem espaços, e calcula a hash disso:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/binding.py
+def content_sha256(draft: InvoiceDraft) -> str:
+    """Hash of the draft as sorted, compact JSON, so equal drafts always hash equal."""
+    canonical = json.dumps(draft.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+```
+
+`model_dump(mode="json")` escreve o valor `Decimal` como string, `"10000.00"`, então nenhum arredondamento de float entra na hash. Essa forma canônica é uma convenção do próprio projeto. Dois sistemas escritos em linguagens diferentes precisariam de uma forma que ambos implementem de modo idêntico, e isso é um contrato a combinar, não algo que chaves ordenadas garantem sozinhas.
+
+## Quem pode aprovar?
+
+O aprovador precisa ser outra pessoa, do mesmo tenant, com o papel de aprovador:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/binding.py
+def check_approver(request: ApprovalRequest, approver: Principal) -> Decision:
+    """Someone else, in the same tenant, holding the approver role."""
+    if approver.user_id == request.requested_by:
+        return Decision(False, f"{approver.user_id} requested this approval and cannot grant it")
+    if approver.tenant_id != request.invoice.tenant_id:
+        return Decision(False, f"{approver.user_id} belongs to another tenant")
+    if APPROVER_ROLE not in approver.roles:
+        return Decision(False, f"{approver.user_id} does not hold {APPROVER_ROLE}")
+    return Decision(True, f"{approver.user_id} may approve")
+```
+
+A primeira checagem é a *separação de funções*: quem pede não pode também conceder. Ela roda antes da checagem do papel de propósito, para que um comprador que também tenha `invoice_approver` continue sem poder aprovar a própria fatura.
+
+O modelo não consegue se autoaprovar, por dois motivos independentes. Primeiro, o aprovador é um `Principal`, um registro que o runtime monta a partir de um callback autenticado (a [aula 20.4](/pt-br/lessons/20-human-approval-and-durable-pauses/20.4-slack-and-teams-approval-adapters/) o monta a partir de um clique no Slack). O principal da própria execução é quem pediu, então uma decisão tomada sob a identidade da execução falha na primeira checagem. Segundo, não há onde a saída do modelo colocar um aprovador. `ApprovalRequest` é estrito e proíbe campos desconhecidos, então um JSON com `"approved_by": "u-approver"` falha na validação; um teste checa exatamente isso. E nenhuma concessão de agente da [aula 16.4](/pt-br/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/) contém uma ferramenta de aprovação. A orientação da OWASP sobre *excessive agency* pede o mesmo formato: ações feitas em nome de um usuário rodam "in the context of that specific user", no contexto daquele usuário específico, com uma pessoa aprovando as de alto impacto.
+
+## A aprovação ainda cobre o que está para rodar?
+
+Logo antes do efeito, uma função responde a isso:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/binding.py
+def covers(request: ApprovalRequest, draft: InvoiceDraft, now: datetime) -> Decision:
+    """Does the approval still cover the draft about to be executed?"""
+    if now >= request.expires_at:
+        return Decision(False, f"the approval expired at {request.expires_at.isoformat()}")
+    if content_sha256(draft) != request.content_sha256:
+        return Decision(False, "the draft changed after it was approved")
+    return Decision(True, "the approved draft, unchanged and in time")
+```
+
+De volta às 09:05. O rascunho agora nomeia o Supplier Omega, seu JSON canônico é outro, sua hash é outra, e `covers` recusa. O assistente precisaria de um novo pedido, e uma pessoa leria o novo beneficiário na prévia. Repare que `now` é um parâmetro. A função nunca lê o relógio, então um teste pode perguntar o que acontece três dias depois sem esperar três dias.
+
+:::caveat
+`covers` não tem como saber se a aprovação já foi usada. Isso é estado, e uma função pura não tem memória. O store da aula 20.3 registra cada uso com um compare-and-swap, e a [aula 20.5](/pt-br/lessons/20-human-approval-and-durable-pauses/20.5-deny-expire-revoke-and-resume/) mostra por que `covers` precisa rodar de novo dentro da mesma transação que enfileira o efeito.
+:::
+
+## Rode o exercício
+
+O código está em `src/agentlab/approval/binding.py` e os testes em `tests/test_approval_binding.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_approval_binding.py"`. A saída esperada termina com `Ran 11 tests` e `OK`.
+
+Os testes editam o valor, o beneficiário e a versão separadamente e esperam que cada edição anule a aprovação. Eles tentam quem pediu como aprovador (com o papel também), um colega sem o papel e um aprovador de outro tenant. Os controles positivos são o rascunho exato antes da validade e um aprovador diferente com o papel; sem eles, uma função que recusasse tudo passaria. Agora quebre o vínculo. Troque `if content_sha256(draft) != request.content_sha256:` por `if False:` e rode de novo. Três testes ficam vermelhos, entre eles `test_editing_the_payee_voids_the_approval`: uma aprovação acompanharia a fatura até o Supplier Omega. Restaure a linha.

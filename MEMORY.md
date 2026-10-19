@@ -2,15 +2,26 @@
 
 ## Current Direction
 
-- **2026-10-18, 0.13.0: agent-engineering curriculum plan implemented (wave 0 + pilot).**
-  Added tracks 14-16 (agent architecture/state, tool contracts/MCP, agent security)
-  with pilot lessons 14.2, 15.4, 16.2 in both locales. Applied P1 factual repairs
-  to existing lessons (F01, F02, F04, F13, F20, F21, F28, F30, F40, F11, F19
-  partial). Added assessment-repair procedure to docs/WRITING.md. Plan, review and
-  coverage ledger live under docs/plans/agent-engineering/. Remaining P1/P2 repairs
-  and tracks 17-25 are follow-up waves.
+- **2026-10-19, 0.14.0: agent-engineering tracks 14–25 built (release in progress).**
+  26 tracks / 185 lessons per locale in two parts; one sky chart with a band
+  per part; `examples/agent-engineering/` (uv, Pydantic core + frameworks,
+  browser, postgres suites; CI `examples` job); four agent labs; quiz length
+  gate (≤20% uniquely longest, ≤35% shortest, ≤50% per track) and every quiz in
+  0–13 repaired; `content:excerpts` ties quoted code to the project. Each
+  wave had an independent fact review on another model (Codex quota was
+  exhausted until 2026-10-24, so all reviews ran on Fable 5.1); findings and
+  fixes in `docs/specs/agent-engineering/fact-review/` and `repairs/`. Not
+  done and stated in the lessons: learner pilot, live-model trials, a KVM
+  microVM run, real Slack/Teams/E2B calls. Spec: `docs/specs/agent-engineering/spec.md`.
 
-## Current Direction
+- **2026-10-18, 0.13.0 / 0.13.1 live: agent-engineering plan and wave-0 repairs.**
+  The plan, lesson review and coverage ledger live under
+  `docs/plans/agent-engineering/`. 0.13.0 and 0.13.1 shipped wave-0 factual
+  repairs to existing lessons and the assessment-repair procedure in
+  `docs/WRITING.md`. No agent track shipped in 0.13.x (an earlier version of
+  this entry said tracks 14–16 and pilot lessons were added; they were not).
+  The 0.14 work found one 0.13 repair wrong: F07 wrote a 540 GB AdamW budget,
+  the double count it was meant to remove (432 GB is right).
 
 - **2026-10-14, 0.12.0 live: every lesson reviewed for a junior developer.**
   All 250 lesson files (tracks 0–13, EN and pt-BR) were rewritten to explain

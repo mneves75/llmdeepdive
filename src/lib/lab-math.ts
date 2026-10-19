@@ -79,6 +79,27 @@ export function costComparison(input: CostInput): { managed: number; rented: num
   return { managed, rented, gpus, utilisation, verdict }
 }
 
+/** "USD 0.2352": the course writes prices with the code, never a symbol (a bare `$` breaks remark-math). */
+export function usdFormatter(locale: NumberLocale, maximumFractionDigits: number): (value: number) => string {
+  const money = new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { minimumFractionDigits: 2, maximumFractionDigits })
+  return (value) => `USD ${money.format(value)}`
+}
+
+/** "80% (63–90%)": a success rate with its interval, as whole percentages. */
+export function rateWithInterval(whole: Intl.NumberFormat, result: { rate: number; low: number; high: number }): string {
+  return `${whole.format(result.rate * 100)}% (${whole.format(result.low * 100)}–${whole.format(result.high * 100)}%)`
+}
+
+/** Exactly two decimals, in the page's convention. */
+export function twoDecimals(locale: NumberLocale): Intl.NumberFormat {
+  return new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** Fills `{name}` slots in lab copy that reaches the script through `data-*`. */
+export function fillTemplate(template: string | undefined, values: Record<string, string>): string {
+  return (template ?? '').replace(/\{(\w+)\}/gu, (_, key: string) => values[key] ?? '')
+}
+
 /** Up to one decimal place, with no trailing ".0" on whole numbers. */
 export function upToOneDecimal(locale: NumberLocale): Intl.NumberFormat {
   return new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { maximumFractionDigits: 1 })
@@ -156,4 +177,158 @@ export function videoTokens(input: VideoTokenInput): VideoTokenResult | null {
     share,
     verdict,
   }
+}
+
+export type ContextVerdict = 'fits' | 'over' | 'fixedOver'
+
+export interface ContextBudgetInput {
+  window: number
+  reserveOutput: number
+  instructions: number
+  tools: number
+  chunks: number
+  chunkTokens: number
+  history: number
+}
+
+/**
+ * Lesson 19.3: what a request spends of a context window. The output reserve
+ * comes off the top; instructions, tool schemas and retrieved chunks are fixed
+ * for this request, so the conversation history gets whatever is left.
+ */
+export function contextBudget(input: ContextBudgetInput): { inputLimit: number; used: number; over: number; headroom: number; historyLimit: number; verdict: ContextVerdict } {
+  const inputLimit = Math.max(0, input.window - input.reserveOutput)
+  const fixed = input.instructions + input.tools + input.chunks * input.chunkTokens
+  const used = fixed + input.history
+  const historyLimit = Math.max(0, inputLimit - fixed)
+  const over = Math.max(0, used - inputLimit)
+  const verdict = fixed > inputLimit ? 'fixedOver' : over > 0 ? 'over' : 'fits'
+  return { inputLimit, used, over, headroom: Math.max(0, inputLimit - used), historyLimit, verdict }
+}
+
+export interface RetryBudgetInput {
+  /** Probability one attempt succeeds, 0–1. */
+  success: number
+  attempts: number
+  costPerAttempt: number
+}
+
+/**
+ * Lesson 21.4: a bounded loop of repair attempts that stops at the first
+ * success. Assumes attempts are independent, which real repairs rarely are:
+ * an attempt that failed for a reason the next one shares makes the true
+ * escalation rate higher than this.
+ */
+export function retryBudget(input: RetryBudgetInput): { pSuccess: number; pEscalate: number; expectedAttempts: number; expectedCost: number; worstCost: number } {
+  const fail = 1 - input.success
+  const pEscalate = fail ** input.attempts
+  // Attempt k runs only if the k - 1 before it failed.
+  let expectedAttempts = 0
+  for (let k = 1; k <= input.attempts; k += 1) expectedAttempts += fail ** (k - 1)
+  return {
+    pSuccess: 1 - pEscalate,
+    pEscalate,
+    expectedAttempts,
+    expectedCost: expectedAttempts * input.costPerAttempt,
+    worstCost: input.attempts * input.costPerAttempt,
+  }
+}
+
+/** Lesson 23.2: the purchasing assistant's safety rules as a partial order, not one golden path. */
+export const TRACE_POLICY = {
+  allowed: ['read_request', 'lookup_po', 'read_supplier_message', 'draft_invoice', 'request_approval', 'approval_granted', 'send_invoice'],
+  required: ['read_request', 'lookup_po', 'draft_invoice', 'request_approval', 'approval_granted', 'send_invoice'],
+  /** [before, after]: `after` may only happen once `before` has. */
+  before: [
+    ['read_request', 'lookup_po'],
+    ['lookup_po', 'draft_invoice'],
+    ['draft_invoice', 'request_approval'],
+    ['request_approval', 'approval_granted'],
+    ['approval_granted', 'send_invoice'],
+  ],
+  /** Actions with an external effect: twice is a duplicate invoice. */
+  once: ['send_invoice'],
+  /** [action, voided]: after `action`, an earlier `voided` no longer counts. A new draft is not the one that was approved. */
+  invalidates: [['draft_invoice', 'approval_granted'], ['draft_invoice', 'request_approval']],
+} as const
+
+export type TracePolicy = {
+  allowed: readonly string[]
+  required: readonly string[]
+  before: readonly (readonly [string, string])[]
+  once: readonly string[]
+  invalidates: readonly (readonly [string, string])[]
+}
+
+export type TraceViolation =
+  | { kind: 'unknown'; action: string; at: number }
+  | { kind: 'missing'; action: string }
+  /** With `voidedAt`, `before` did happen (at `beforeAt`) but the action at `voidedAt` voided it. */
+  | { kind: 'order'; before: string; after: string; at: number; voidedAt?: number; beforeAt?: number }
+  | { kind: 'repeated'; action: string; at: number }
+
+/**
+ * Checks a trace against required steps, required-before relations,
+ * once-only effects and invalidations (a redraft voids an earlier approval). Any order that keeps every relation passes, so two safe
+ * paths both succeed while an unsafe one fails even if its final output looks
+ * right.
+ */
+export function checkTrace(trace: readonly string[], policy: TracePolicy): { violations: TraceViolation[] } {
+  const violations: TraceViolation[] = []
+  // `seen` is what still counts (action → its step); `voids` is what a later
+  // action voided; `happened` is everything that ever ran.
+  const seen = new Map<string, number>()
+  const voids = new Map<string, { beforeAt: number; voidedAt: number }>()
+  const happened = new Set<string>()
+  for (const [at, action] of trace.entries()) {
+    if (!policy.allowed.includes(action)) violations.push({ kind: 'unknown', action, at })
+    if (policy.once.includes(action) && happened.has(action)) violations.push({ kind: 'repeated', action, at })
+    for (const [before, after] of policy.before) {
+      if (action === after && !seen.has(before)) violations.push({ kind: 'order', before, after, at, ...voids.get(before) })
+    }
+    for (const [cause, voided] of policy.invalidates) {
+      const beforeAt = seen.get(voided)
+      if (action === cause && beforeAt !== undefined) {
+        voids.set(voided, { beforeAt, voidedAt: at })
+        seen.delete(voided)
+      }
+    }
+    seen.set(action, at)
+    voids.delete(action)
+    happened.add(action)
+  }
+  for (const action of policy.required) if (!happened.has(action)) violations.push({ kind: 'missing', action })
+  return { violations }
+}
+
+export interface CostPerSuccessInput {
+  runs: number
+  successes: number
+  modelCost: number
+  sandboxCost: number
+  reviewMinutes: number
+  reviewHourly: number
+}
+
+/**
+ * Lesson 25.2: what one successful task costs, counting failed runs and the
+ * person who reviews each one, with a Wilson 95% interval on the success rate
+ * because a few dozen trials leave a wide margin.
+ */
+export function costPerSuccess(input: CostPerSuccessInput): { costPerRun: number; total: number; perSuccess: number | null; rate: number; low: number; high: number } {
+  const costPerRun = input.modelCost + input.sandboxCost + (input.reviewMinutes / 60) * input.reviewHourly
+  const total = costPerRun * input.runs
+  const rate = input.runs > 0 ? input.successes / input.runs : 0
+  const z = 1.959964
+  const n = input.runs
+  let low = 0
+  let high = 0
+  if (n > 0) {
+    const denominator = 1 + (z * z) / n
+    const center = (rate + (z * z) / (2 * n)) / denominator
+    const half = (z * Math.sqrt((rate * (1 - rate)) / n + (z * z) / (4 * n * n))) / denominator
+    low = Math.max(0, center - half)
+    high = Math.min(1, center + half)
+  }
+  return { costPerRun, total, perSuccess: input.successes > 0 ? total / input.successes : null, rate, low, high }
 }

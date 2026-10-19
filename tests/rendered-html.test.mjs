@@ -240,8 +240,21 @@ test('the stylesheet switches code blocks with light-dark()', () => {
   assert.match(css, /light-dark\(var\(--shiki-light-bg\),\s*var\(--plate-raised\)\)/u)
 })
 
-// The field edition only. The desk theme (github-light) is not measured here:
-// its #e36209 is 3.49:1 on white, a defect older than this test.
+// The desk edition draws code on the theme's own ground (prose.css).
+// github-light's #e36209 was 3.49:1 on white; github-light-high-contrast holds.
+test('every desk-edition code token colour holds 4.5:1 on its code ground', () => {
+  const colours = new Set()
+  const grounds = new Set()
+  for (const p of pages()) {
+    for (const [, hex] of p.html.matchAll(/--shiki-light:(#[0-9a-fA-F]{6})\b/gu)) colours.add(hex)
+    for (const [, hex] of p.html.matchAll(/--shiki-light-bg:(#[0-9a-fA-F]{6})\b/gu)) grounds.add(hex)
+  }
+  assert.ok(colours.size > 3, 'expected several token colours')
+  assert.equal(grounds.size, 1, 'expected one desk code ground')
+  const [ground] = grounds
+  assert.deepEqual([...colours].filter((hex) => ratio(hex, ground) < 4.5).map((hex) => `${hex} ${ratio(hex, ground).toFixed(2)}:1`), [])
+})
+
 test('every field-edition code token colour holds 4.5:1 on the raised plate', () => {
   const colours = new Set()
   for (const p of pages()) {
@@ -276,9 +289,12 @@ test('no page ships an unresolved template placeholder', () => {
     // divergence, so ">NaN<" is real subject matter in track 5 — the check
     // cannot distinguish a failed render from a lesson about failed training,
     // and a test that cries wolf gets disabled rather than heeded.
+    // Code blocks are source the lesson quotes: a Python f-string writes a
+    // literal brace as `{{`, which is the code, not a failed render.
+    const rendered = p.html.replace(/<pre[\s>][\s\S]*?<\/pre>/gu, '')
     for (const bad of ['{{', '>undefined<', '[object Object]']) {
       assert.equal(
-        p.html.includes(bad),
+        rendered.includes(bad),
         false,
         `${p.route} contains "${bad}" — a value failed to render`,
       )
@@ -388,4 +404,64 @@ test('a lesson renders the date its frontmatter states, independent of build tim
         'format the date in UTC, not in the build machine’s zone',
     )
   }
+})
+
+// From 0.14 the course has two parts. The home catalog and the tracks index
+// group every track under its part's heading, in course order, so a reader
+// sees where model internals end and agent systems begin.
+test('home and tracks index list every track under its part, in order', () => {
+  const parts = {}
+  for (const locale of ['en', 'pt-br']) {
+    const dir = join('src/content/tracks', locale)
+    for (const name of readdirSync(dir)) {
+      const track = JSON.parse(readFileSync(join(dir, name), 'utf8'))
+      ;(parts[locale] ??= {})[track.id] = track
+    }
+  }
+  for (const [route, locale] of [['/', 'en'], ['/tracks/', 'en'], ['/pt-br/', 'pt-br'], ['/pt-br/tracks/', 'pt-br']]) {
+    const html = pages().find((page) => page.route === route)?.html ?? ''
+    const main = html.slice(0, html.indexOf('</main>'))
+    const sections = main.split(/data-part="/u).slice(1).map((chunk) => [null, chunk.slice(0, chunk.indexOf('"')), chunk])
+    const order = Object.values(parts[locale]).sort((a, b) => a.order - b.order)
+    const expectedParts = [...new Set(order.map((track) => track.part))]
+    assert.deepEqual(sections.map((match) => match[1]), expectedParts, `${route}: one section per part, in order`)
+    for (const [, part, body] of sections) {
+      const listed = [...body.matchAll(/href="(?:\/pt-br)?\/tracks\/([^/"]+)\/"/gu)].map((match) => match[1])
+      const expected = order.filter((track) => track.part === part).map((track) => track.id)
+      assert.deepEqual([...new Set(listed)], expected, `${route}: ${part} lists its tracks in order`)
+    }
+  }
+})
+
+// RFC 9116: security.txt needs Contact and an Expires under a year away. An
+// expired file tells researchers the contact may be dead, so this fails in
+// time to renew it.
+test('security.txt publishes a contact and has not expired', () => {
+  const text = readFileSync(join(DIST, '.well-known', 'security.txt'), 'utf8')
+  assert.match(text, /^Contact: mailto:contato@mvneves\.dev$/mu)
+  const expires = Date.parse(text.match(/^Expires: (\S+)$/mu)?.[1] ?? '')
+  const days = (expires - Date.now()) / 86_400_000
+  assert.ok(days > 0 && days <= 366, `security.txt Expires is ${Math.round(days)} days away`)
+})
+
+// A lab's worked default must pass its own input rules, or the browser blanks
+// the lab on load. 25.2 shipped data-integer="false" on decimal fields: the
+// attribute is present, so every cost was rejected before anyone typed.
+test('every lab input ships a default its own rules accept', async () => {
+  const { parseDecimal } = await import('../src/lib/lab-form.ts')
+  let checked = 0
+  for (const page of pages()) {
+    if (!page.html.includes('class="lab')) continue
+    const locale = page.route.startsWith('/pt-br/') ? 'pt-br' : 'en'
+    for (const [tag] of page.html.matchAll(/<input\b[^>]*\bdata-min="[^"]*"[^>]*>/gu)) {
+      const attr = (name) => tag.match(new RegExp(`\\s${name}(?:="([^"]*)")?(?=[\\s>/])`, 'u'))
+      const value = parseDecimal(attr('value')?.[1] ?? '', locale)
+      const label = `${page.route} input ${attr('name')?.[1]}`
+      assert.notEqual(value, null, `${label}: default does not parse`)
+      assert.ok(value >= Number(attr('data-min')?.[1]) && value <= Number(attr('data-max')?.[1] ?? Infinity), `${label}: default ${value} outside its bounds`)
+      if (attr('data-integer')) assert.ok(Number.isInteger(value), `${label}: default ${value} is not a whole number but the field requires one`)
+      checked += 1
+    }
+  }
+  assert.ok(checked > 20, `only ${checked} lab inputs found`)
 })

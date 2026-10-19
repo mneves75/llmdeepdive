@@ -14,17 +14,17 @@ teachBack:
   modelAnswer: "Inputs and targets are tensors with deliberate shapes. The forward pass computes predictions and reduces them to a scalar loss while autograd records each differentiable operation. Calling optimizer.zero_grad clears gradients left from the previous step, because PyTorch accumulates rather than overwrites them. Calling loss.backward walks the recorded graph and fills each parameter's grad field. Calling optimizer.step consumes those gradients to update parameters; it does not compute them. For architectural constants, load the model's own configuration with AutoConfig.from_pretrained and read hidden_size, num_hidden_layers, and vocab_size directly. For Qwen3.8-27B those are 5120, 64, and 248320. Every capacity and cost calculation in this course starts from numbers obtained that way rather than from memory."
 quiz:
   - question: "Reading Qwen3.8-27B's configuration gives vocab_size 248320. What does that number describe exactly?"
-    options: ["The number of tokens the model can process at once","The number of parameters in the output layer","The number of distinct words the model knows","The number of rows in the embedding matrix, which may be padded above the tokenizer's live vocabulary"]
+    options: ["Tokens the model can read in one request, which is its context length", "Ids the tokenizer can emit, every one of them mapped to a string of text", "Distinct words the model knows, one row per word", "Rows of the embedding matrix, which can exceed the tokenizer's mapped ids"]
     correctIndex: 3
-    explanation: "vocab_size sizes the embedding and output matrices. Vocabularies are commonly padded to a convenient multiple, so the count of tokens the tokenizer can actually emit can be smaller; lesson 1.2 works through the consequence."
+    explanation: "vocab_size sizes the embedding and output matrices. Vocabularies are commonly padded to a convenient multiple, so the count of ids the tokenizer actually maps can be smaller: 248,077 here, which is why reading it as the tokenizer's id count is wrong. Lesson 1.2 works through the consequence."
   - question: "Why is optimizer.zero_grad normally called before backward?"
-    options: ["PyTorch accumulates gradients into the grad fields rather than replacing them","It moves tensors to the GPU","It selects the loss function","It deletes the model parameters"]
+    options: ["Backward adds into .grad instead of overwriting it", "It resets the optimizer's momentum so each step starts fresh", "It frees the computation graph from the last step, which backward needs cleared", "It deletes the model parameters"]
     correctIndex: 0
-    explanation: "Accumulation is deliberate, since it enables techniques like gradient accumulation across micro-batches, but an ordinary independent step must clear the previous step's values first."
+    explanation: "Accumulation is deliberate, since it enables techniques like gradient accumulation across micro-batches, but an ordinary independent step must clear the previous step's values first. zero_grad touches only the .grad fields; any momentum the optimizer keeps survives it. The graph is freed by backward itself; zero_grad only resets the stored gradients."
   - question: "Lesson 0.6 showed that a learning rate of 1.1 on L(w) = w squared makes the parameter diverge. If you saw that behavior in a real training loop, which of these would autograd have told you?"
-    options: ["It would automatically reduce the learning rate","Nothing; autograd computes correct gradients for a diverging run exactly as it does for a converging one","It would report the gradient as not-a-number immediately","It would raise an exception on the second step"]
+    options: ["It would lower the learning rate, since autograd tracks the loss trend", "Nothing: it computes correct gradients for a diverging run too", "It would flag the gradient as not-a-number from the first step", "It would raise an error once the loss stopped decreasing"]
     correctIndex: 1
-    explanation: "Automatic differentiation reports sensitivity, not judgement. A loop that computes perfect gradients and takes ruinous steps is fully valid Python and fully valid autograd."
+    explanation: "Automatic differentiation reports sensitivity, not judgement. It neither watches the loss trend nor raises an error when it rises, and the gradients stay finite numbers for a while. A loop that computes perfect gradients and takes ruinous steps is fully valid Python and fully valid autograd."
 citations:
   - title: "Array programming with NumPy"
     authors: "Charles R. Harris et al."
@@ -42,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Four lessons of this track have leaned on three numbers: hidden size 5120, 64 layers, and an output width of 248,320. You should not take them on trust from a course, and you certainly should not take them from a blog post. Every published model ships a configuration file stating them, and reading it yourself takes about ten seconds.
@@ -64,14 +64,42 @@ PyTorch tensors offer the same array operations plus two additions: devices and 
 - A **device** is where a tensor lives: the CPU or a particular GPU. Tensors in one operation generally need compatible dtypes and the same device, and moving a model to a GPU does not drag every related object along with it.
 - **Autograd**, PyTorch's automatic differentiation, records operations on tensors that require gradients. When you call `backward` on a scalar loss, it applies the chain rule from [lesson 0.6](/lessons/0-orientation-and-foundations/0.6-derivatives-gradients/) backwards through that recorded graph.
 
-The training loop has a fixed rhythm: clear accumulated gradients, run the forward pass, reduce to a scalar loss, call `backward`, then call the optimizer's `step`. In code, one step looks like this:
+The training loop has a fixed rhythm: clear accumulated gradients, run the forward pass, reduce to a scalar loss, call `backward`, then call the optimizer's `step`. Here is a complete program that runs those four lines on a CPU. It builds targets from a known rule, then repeats one training step 100 times until a three-feature linear model recovers that rule. Save it as `train_step.py` and run `uv run --with numpy --with torch python train_step.py` (or install `torch` and `numpy` with pip and run `python train_step.py`):
 
 ```python
-optimizer.zero_grad()        # clear gradients left from the previous step
-loss = loss_fn(model(x), y)  # forward pass, reduced to one number
-loss.backward()              # fill each parameter's .grad
-optimizer.step()             # update the parameters
+import torch
+
+torch.manual_seed(0)                          # same random numbers on every run
+x = torch.randn(64, 3)                        # 64 examples, 3 features each
+true_w = torch.tensor([[2.0], [-1.0], [0.5]]) # the rule the model must find
+y = x @ true_w + 0.1                          # targets, shape (64, 1)
+
+model = torch.nn.Linear(3, 1)                 # learns a 3x1 weight and a bias
+loss_fn = torch.nn.MSELoss()                  # mean squared error
+optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+
+for step in range(100):
+    optimizer.zero_grad()        # clear gradients left from the previous step
+    loss = loss_fn(model(x), y)  # forward pass, reduced to one number
+    loss.backward()              # fill each parameter's .grad
+    optimizer.step()             # update the parameters
+    if step in (0, 99):
+        print(f"step {step}: loss {loss.item():.4f}")
+
+print("weight", [round(w, 2) for w in model.weight.flatten().tolist()])
+print("bias", round(model.bias.item(), 2))
 ```
+
+With PyTorch 2.14.1, NumPy 2.5.4 and Python 3.13.11 on a CPU, it printed:
+
+```text
+step 0: loss 6.2754
+step 99: loss 0.0000
+weight [2.0, -1.0, 0.5]
+bias 0.1
+```
+
+The step-0 loss depends on the random starting weights, so another PyTorch version may print different digits there. The recovered weights and bias should still match the rule the targets were built from.
 
 Keeping those responsibilities separate is what makes a broken loop debuggable. `backward` computes gradients and never changes parameters; `step` changes parameters and never computes gradients.
 

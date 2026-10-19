@@ -14,13 +14,13 @@ teachBack:
   modelAnswer: "Numa GPU discreta, a capacidade utilizável do acelerador é a VRAM atrás do PCIe. Já o Apple silicon expõe um pool físico único para CPU e GPU. O artefato de texto Q4_K_M fixado tem 17,1 GB (15,93 GiB), então pode residir num pool unificado de 64 GB. Dividir o número de fabricante do M3 Ultra, 800 GB/s, por 17,1 GB dá cerca de 46,8 tok/s. Esse número é apenas uma heurística pelo tamanho do artefato. O arquivo inclui metadados e tensors que não necessariamente são lidos em cada passo de decode de texto. Além disso, cache, estado, kernels, comportamento térmico e a bandwidth que o chip não chega a atingir acrescentam custo. Um roofline rígido exige bytes ativos reais por token."
 quiz:
   - question: "Aplicando o raciocínio de roofline da aula 9.1, o que uma grande capacidade de unified memory por si só garante sobre a velocidade de geração?"
-    options: ["A velocidade escala linearmente com a RAM instalada","Garante que o modelo roda pelo menos tão rápido quanto numa GPU discreta de mesma capacidade","Remove por completo a leitura de pesos por token","Nada — a capacidade decide se o modelo carrega, a bandwidth dividida pelos bytes lidos por token decide o teto de velocidade"]
+    options: ["A velocidade escala com a RAM instalada, porque um pool maior deixa mais bytes de peso fluírem de uma vez", "Garante que o modelo roda pelo menos tão rápido quanto rodaria numa GPU discreta de mesma capacidade", "Remove a leitura de pesos por token, já que os pesos já estão onde a GPU os endereça", "Nada: a capacidade decide se ele carrega; a bandwidth sobre os bytes por token fixa o teto de velocidade"]
     correctIndex: 3
-    explanation: "A aula 9.1 separou os dois eixos: bytes movidos por token dividindo a bandwidth dão o teto em batch 1, e a capacidade instalada não aparece em lugar nenhum nesse quociente."
-  - question: "Por que uma máquina Apple silicon de 64 GB comporta um modelo que uma GPU discreta de 24 GB não comporta, mesmo quando ambas as máquinas têm 64 GB de RAM instalados?"
-    options: ["O pool utilizável da GPU é a VRAM dela, atrás de uma fronteira PCIe; na unified memory a GPU endereça o mesmo pool físico que a CPU","O Apple silicon comprime pesos automaticamente","A GPU discreta não consegue ler formatos de 4 bits","A unified memory armazena pesos em precisão mais baixa"]
+    explanation: "A aula 9.1 separou os dois eixos: bytes movidos por token dividindo a bandwidth dão o teto em batch 1, e a capacidade instalada não aparece em lugar nenhum nesse quociente. Pesos endereçáveis continuam tendo de ser lidos a cada passo."
+  - question: "Por que uma máquina Apple silicon de 64 GB consegue manter um modelo inteiro em memória endereçável pela GPU quando uma GPU discreta de 24 GB não consegue mantê-lo totalmente residente, mesmo com as duas máquinas tendo 64 GB de RAM instalados?"
+    options: ["O pool residente da GPU discreta é a VRAM dela, atrás do PCIe; na unified memory a GPU endereça o pool da CPU", "O Apple silicon comprime pesos automaticamente no carregamento, então o mesmo arquivo ocupa menos espaço", "A GPU discreta não consegue ler formatos de 4 bits, então precisa expandir os pesos para bf16 dentro da VRAM", "Ela não consegue: o offload do llama.cpp faz a placa de 24 GB manter o mesmo modelo tão residente na GPU quanto"]
     correctIndex: 0
-    explanation: "A restrição na placa discreta não é a RAM da máquina, e sim a memória ligada ao acelerador; a unified memory apaga essa distinção, que é o ponto arquitetural inteiro desta aula."
+    explanation: "A restrição na placa discreta não é a RAM da máquina, e sim a memória ligada ao acelerador; a unified memory apaga essa distinção, que é o ponto arquitetural inteiro desta aula. O offload para a CPU deixa a máquina discreta rodar um modelo maior, mas as camadas descarregadas vivem na RAM do sistema, não na GPU, e rodam na velocidade dela."
 citations:
   - title: "Metal — Apple Developer"
     authors: "Apple Inc."
@@ -38,14 +38,14 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 A [aula 7.12](/pt-br/lessons/7-inference-and-efficiency/7.12-running-models-locally/) deixou uma ponta solta. Ela dimensionou um build de 4 bits do Qwen3.8-27B em cerca de 17,1 GB e observou que máquinas de unified memory (memória unificada) "jogam acima da classe aparente", mas não disse por quê, nem até onde. Esta aula responde a isso. A resposta se divide em duas perguntas que iniciantes rotineiramente fundem numa só: o modelo carrega, e quão rápido ele roda?
 
 ## O modelo carrega? A fronteira que a unified memory remove
 
-A pergunta do carregamento é de arquitetura. Uma workstation convencional tem uma **GPU discreta**: uma placa separada com sua própria memória, chamada **VRAM**, ligada ao resto da máquina pelo **PCIe** (o barramento de expansão padrão). O arquivo do modelo é lido primeiro para a RAM do host, a memória principal da máquina, e depois copiado pelo PCIe para a VRAM da placa. Os pesos que a GPU usa precisam estar nessa VRAM, e não na memória da máquina. Então uma máquina com 128 GB de RAM e uma placa de 24 GB é, para este fim, uma máquina de 24 GB.
+A pergunta do carregamento é de arquitetura. Uma workstation convencional tem uma **GPU discreta**: uma placa separada com sua própria memória, chamada **VRAM**, ligada ao resto da máquina pelo **PCIe** (o barramento de expansão padrão). O arquivo do modelo é lido primeiro para a RAM do host, a memória principal da máquina, e depois copiado pelo PCIe para a VRAM da placa. Para operação totalmente residente na GPU, os pesos que a GPU usa precisam estar nessa VRAM, e não na memória da máquina. Runtimes como o llama.cpp conseguem descarregar algumas camadas para a CPU e a RAM do sistema ([aula 8.7](/pt-br/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/)), então um modelo maior ainda roda, mas essas camadas passam a andar na velocidade da memória do sistema, o que costuma custar desempenho interativo. Então uma máquina com 128 GB de RAM e uma placa de 24 GB é, para serving totalmente residente na GPU, uma máquina de 24 GB.
 
 O Apple silicon remove a fronteira. A CPU, a GPU e o Neural Engine (o acelerador de machine learning dentro do chip da Apple) endereçam um único pool físico, e um tensor produzido por um é visível aos outros sem cópia. Pense em duas threads de um mesmo processo compartilhando uma variável, em vez de dois processos trocando uma mensagem: nada é serializado nem enviado.
 
@@ -98,4 +98,4 @@ Segundo, os aproximadamente 144 MiB de estado recorrente float32 de referência 
 Todo número de hardware nesta aula é informado pelo fabricante, não medido aqui. Os quocientes de 46,8 e 14,8 tok/s são heurísticas pelo tamanho do artefato/checkpoint; não são limites rígidos de roofline. Registre runtime, quantização, contexto, contadores de bytes ativos e estado térmico antes de citar throughput.
 :::
 
-O ponto para guardar é que o Apple silicon não revogou a barreira de bandwidth da aula 9.1; ele removeu uma barreira diferente. A fronteira de transferência PCIe, que faz da capacidade de uma GPU discreta um penhasco rígido, não existe mais, então a pergunta "cabe?" recebe uma resposta generosa em hardware de consumo. A pergunta "quão rápido?" é respondida exatamente pela mesma divisão que em todo outro chip desta trilha, e a [aula 9.10](/pt-br/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) transforma as duas respostas numa conta mensal.
+O ponto para guardar é que o Apple silicon não revogou a barreira de bandwidth da aula 9.1; ele removeu uma barreira diferente. A fronteira de transferência PCIe, que faz da capacidade de uma GPU discreta um penhasco para serving totalmente residente na GPU (o offload para a CPU passa dele, devagar), não existe mais, então a pergunta "cabe?" recebe uma resposta generosa em hardware de consumo. A pergunta "quão rápido?" é respondida exatamente pela mesma divisão que em todo outro chip desta trilha, e a [aula 9.10](/pt-br/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) transforma as duas respostas numa conta mensal.

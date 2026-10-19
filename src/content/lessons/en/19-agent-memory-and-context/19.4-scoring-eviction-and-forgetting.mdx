@@ -1,0 +1,108 @@
+---
+id: "19.4-scoring-eviction-and-forgetting"
+track: "19-agent-memory-and-context"
+order: 4
+title: "Scoring, Eviction and Forgetting"
+summary: "Records leave memory for different reasons: they expire, they are evicted to save space, a newer version replaces them, or someone asks for them to be forgotten. Eviction may keep a summary of what it removed; deletion must also remove every summary, fact and index copy made from the deleted source."
+tier: "advanced"
+locale: "en"
+prerequisites: ["19.3-token-budgets-and-compression"]
+unlocks: ["19.5-evaluate-memory"]
+analogy: "An office archive has three ways to lose a file. Files past their retention date go to the shredder on schedule. When the room fills up, the oldest files nobody has asked for go to a box in the basement, but the one-page summary in the index binder stays. When a client exercises a right to have their file destroyed, the clerk shreds the file and also every photocopy, summary page and index card made from it. The comparison stops at the photocopies. A clerk can walk the building and find them; software can find a copy only if every copy recorded which file it came from."
+teachBack:
+  prompt: "The buyer asks to forget the phone number in turn-12. sum-1 holds that number and also the dock rule from turn-13, which the buyer wants kept. forget(\"turn-12\") removes sum-1 and fact-1. What should the system do next so the dock rule is not lost, and which two shortcuts must it avoid?"
+  modelAnswer: "The dock rule still exists in turn-13, which nobody asked to forget. The system should build a new summary from turn-13 alone, with derived_from set to turn-13, and check that the number does not appear in it. One shortcut is to edit sum-1 in place, deleting the number but keeping the record. Its derived_from would still name turn-12, and the text may have been copied elsewhere, such as an index copy or another summary. The other shortcut is to skip the vector index. Its own copy of sum-1 would keep the number searchable. The test for the change is the same as before: after forget, a search for the number returns nothing."
+quiz:
+  - question: "With a seven-day half-life, record A is 21 days old and was retrieved twice; record B is 7 days old and was never retrieved. Neither is pinned. Which one does evict(capacity=1) remove?"
+    options: ["B, because a record nobody retrieved always goes before one that was used", "Neither, because both are younger than the store's default expiry period", "B, because B's score of 0.5 × 1 is lower than A's score of 0.125 × 3", "A, because 0.5³ × 3 = 0.375 is lower than B's score of 0.5¹ × 1 = 0.5"]
+    correctIndex: 3
+    explanation: "A has halved three times, 0.125, and its two retrievals multiply that by 3, giving 0.375; B has halved once, 0.5, with no retrievals. The lower score goes. Use does not always win: age can outweigh it. There is no default expiry in this store, and 0.5 is not lower than 0.375."
+  - question: "The buyer asks to forget turn-12. sum-1 was made from turn-12 and turn-13. What does forget(\"turn-12\") do with sum-1 and turn-13?"
+    options: ["Removes sum-1, which derives from turn-12, and keeps turn-13, which derives from nothing", "Keeps sum-1, because it also derives from turn-13 and nobody asked to forget that one", "Removes both, because turn-13 shares a summary with the turn that is being forgotten", "Keeps sum-1 but blanks the phone number in its text, so the rest of the summary survives"]
+    correctIndex: 0
+    explanation: "forget follows derived_from links from the deleted record outward: anything made from turn-12 goes, and nothing else does. Keeping sum-1 would keep the number. turn-13 is a source, not a copy of turn-12. Editing text in place is not what forget does, and it would leave a record whose lineage still names deleted data."
+  - question: "Your vector index is a Faiss IndexFlat, and your code remembers each record by its position in the index. You call remove_ids for the vector at position 10. What breaks?"
+    options: ["Nothing: removal leaves position 10 empty and keeps every other position as it was", "Vectors above position 10 shift down, so stored positions point at other records", "The call fails, because IndexFlat does not support removing any vector at all", "Only searches for the deleted text, because removal waits until the next rebuild"]
+    correctIndex: 1
+    explanation: "Faiss's documentation says removal from sequential indexes such as IndexFlat shifts the ids of the vectors above the removed one. IndexFlat does support remove_ids, and nothing is left as a gap. A position map is then wrong for every later record, so keep your own stable ids and test retrieval after deletion."
+citations:
+  - title: "Special operations on indexes (Faiss wiki)"
+    authors: "Meta AI Research (Faiss)"
+    year: 2026
+    url: "https://github.com/facebookresearch/faiss/wiki/Special-operations-on-indexes"
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+updated: "2026-10-18"
+---
+
+In turn 12 of a conversation, the buyer gave the assistant a mobile number, 555-0142, for late-delivery calls. A week later the buyer asks the assistant to forget it. The store holds the turn itself, `turn-12`. It also holds `sum-1`, a summary a model wrote of turns 12 and 13, and `fact-1`, a fact extracted from that summary. The vector index keeps its own copy of all three. Delete only `turn-12` and a search for the number still finds it twice. This lesson separates the reasons a record leaves memory and gives each its own rule.
+
+## Why do records leave memory?
+
+Four different events remove a record, or stop it from being used.
+
+- **Expiry.** A *TTL* (time to live) ends a record's useful life at a fixed instant, `expires_at`. A one-time dock code should not be offered next month. Retrieval ignores an expired record even before anything deletes it.
+- **Supersession.** A newer record replaces an older one: "Deliver to dock 5" has `supersedes="addr-1"`, the record that said dock 2. The old record stays as history, but retrieval no longer returns it.
+- **Eviction.** The store is full, so something must go to make room.
+- **Deletion.** Someone with the right to ask wants the data gone.
+
+The first two are rules about truth over time. The last two are about space and about rights, and they differ in what happens to derived records.
+
+## Scoring what to keep: recency and use
+
+Eviction needs a score that does not depend on a query, because no query is running when space runs out. *Relevance* in the retrieval sense belongs to a query, so this store uses a stand-in: how often a record was retrieved in the past. The score mixes that with *recency*, how recently the record was created:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/store.py
+    def retention_score(self, record: MemoryRecord) -> float:
+        """Halves every ``half_life`` of age, times one plus the number of past retrievals."""
+        age = self._now() - record.created_at
+        return 0.5 ** (age / self._half_life) * (1 + self._hits[record.memory_id])
+```
+
+A *half-life* is the time after which the recency part halves. With a seven-day half-life, a ten-day-old record nobody retrieved scores $0.5^{10/7} \approx 0.37$. The same record retrieved three times scores about $4 \times 0.37 \approx 1.49$. A two-day-old record nobody retrieved scores $0.5^{2/7} \approx 0.82$. So the often-used old record outlives the fresh unused one, and without use, recency decides. The clock is injected (`now`), so tests can move time without sleeping.
+
+Two limits come with this choice. A use count rewards whatever was retrieved, including a record retrieved by mistake. And a commitment can be rarely retrieved and still essential, so the store lets you *pin* a record: pinned records are never evicted for space. Expiry still applies to them, because an expired one-time code is wrong whether or not it was pinned.
+
+## Eviction is not deletion
+
+Eviction frees space. If it removes `turn-3` but keeps `sum-1`, the summary of it, that is the point of summarising: the short version stays. Deletion honours a request to forget, so it must also remove every record made from the deleted one, directly or through another derived record:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/store.py
+        doomed = [memory_id]
+        changed = True
+        while changed:
+            changed = False
+            for record in self._records.values():
+                if record.memory_id not in doomed and any(source in doomed for source in record.derived_from):
+                    doomed.append(record.memory_id)
+                    changed = True
+        for doomed_id in doomed:
+            self._remove(doomed_id)
+        return doomed
+```
+
+The loop repeats until a pass adds nothing, so `fact-1`, made from `sum-1`, goes along with `sum-1`, made from `turn-12`. `turn-13` and a summary of `turn-20` stay: they were not made from the deleted turn. Before deleting anything, `forget` checks `visible(record, principal)`, so another tenant cannot delete this buyer's records.
+
+<Figure id="memory-deletion-lineage" />
+
+The rule works only because every derived record lists its sources. That is why [lesson 19.1](/lessons/19-agent-memory-and-context/19.1-working-episodic-and-semantic-memory/) required `derived_from` and [lesson 19.2](/lessons/19-agent-memory-and-context/19.2-ingestion-and-retrieval/)'s chunks name their message. A summary written without its lineage cannot be found by a deletion request later.
+
+## Deletion in a real vector index
+
+The project's store keeps a separate index copy of each record, standing in for a vector database that stores text or metadata beside each vector. `_remove` deletes both, and one test checks that vector search cannot reach a forgotten record. A real index makes this harder, so read the deletion documentation of the one you use. Faiss's wiki, for example, says `remove_ids` scans the whole database, so it is efficient only when many vectors are removed at once. It lists `IndexFlat`, `IndexIVFFlat` and `IDMap` as supporting it. It also says removal from sequential indexes such as `IndexFlat` shifts the ids of the vectors above the removed one, so code that maps memory ids to positions points at the wrong records afterwards.
+
+Weights are harder still. Lewis et al. (2020) describe updating the knowledge stored in a model's parameters as an open problem and present retrieval from an external index as one way around it. A record you can delete is much easier to forget than something trained into weights.
+
+:::caveat
+This exercise's retention policy covers the store's records and its index. It does not cover backups, logs, traces, caches or copies sent to a model provider. Each of those needs its own rule and its own test, so never claim deletion beyond what you tested.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/memory/store.py`; the tests are in `tests/test_memory_store.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests.test_memory_store`. The output ends with `Ran 10 tests` and `OK`. The deletion test first proves that a search for 555-0142 finds `turn-12`, `sum-1` and `fact-1`, then that it finds nothing after `forget`, and the next test proves that records from other sources survive.
+
+To see the index copy matter, delete the line `del self._vector_index[memory_id]` in `_remove`. `test_forgetting_a_source_removes_every_record_derived_from_it` and `test_vector_search_cannot_reach_a_forgotten_record` fail: the record is gone from the store, but vector search still returns its text. Restore the line before moving on.

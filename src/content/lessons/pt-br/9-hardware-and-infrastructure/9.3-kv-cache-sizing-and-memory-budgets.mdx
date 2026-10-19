@@ -18,17 +18,17 @@ teachBack:
   modelAnswer: "Uma peça de 80 GB reporta aproximadamente 79,6 GiB utilizáveis. Os pesos em bf16 são cerca de 54 GB, ou 50,3 GiB. Uma reserva de runtime de 6 GiB então deixa cerca de 23,3 GiB, ou 23.859 MiB, como pool de estado. A aula 7.2 derivou 64 KiB por token, então uma conversa de 8.192 tokens guarda 512 MiB de cache. O estado matricial DeltaNet da referência em float32 acrescenta 144 MiB, dando 656 MiB por sequência e 36 conversas concorrentes. Uma sequência completa de 262.144 tokens precisa de 16.384 MiB de cache mais 144 MiB, então só cabe uma. Agora refaça a conta com pesos em FP8, de cerca de 27 GB, e cache em FP8 a 32 KiB por token. O pool cresce para 49.613 MiB, e cada sequência de 8.192 tokens custa 256 mais 144, ou 400 MiB. Isso dá 124 conversas concorrentes e cinco sequências de contexto completo."
 quiz:
   - question: "Num acelerador de 80 GB rodando o Qwen3.8-27B em bf16, por que a estimativa ingênua de 48 conversas concorrentes de 8.192 tokens supera o resultado calculado de 36?"
-    options: ["Ela conta 80 GB como totalmente utilizáveis, ignora a reserva de runtime e omite os 144 MiB de estado matricial DeltaNet em float32 que cada sequência carrega na referência","Ela usa o número errado de KV heads","Ela assume pesos em FP8","Ela esquece que só 16 camadas fazem cache"]
+    options: ["Ela trata 80 GB como utilizáveis e omite a reserva de runtime e os 144 MiB de estado DeltaNet de referência por sequência", "Ela conta as 64 camadas como fazendo cache, então o número de cache por token que ela usa é quatro vezes maior do que deveria ser", "Ela assume pesos em FP8, o que liberaria cerca de 25 GB da placa para o cache que os pesos em bf16 de fato ocupam", "Ela deixa de fora os pesos da torre de visão, que em bf16 tomam os vários gibibytes com que o pool de cache contava"]
     correctIndex: 0
-    explanation: "Capacidade de folheto não é capacidade utilizável, o runtime precisa de vários gibibytes antes de qualquer cache ser alocado, e o estado recorrente constante por sequência é memória real que a aritmética de KV sozinha nunca mostra."
+    explanation: "Capacidade de folheto não é capacidade utilizável, o runtime precisa de vários gibibytes antes de qualquer cache ser alocado, e o estado recorrente constante por sequência é memória real que a aritmética de KV sozinha nunca mostra. Um cache quatro vezes maior empurraria a contagem para baixo de 36, não para cima."
   - question: "A aula 7.2 derivou o cache do Qwen3.8-27B como 64 KiB por token em vez de 256 KiB. Qual fato arquitetural produz o número menor?"
-    options: ["O cache é armazenado em FP8 por padrão","Só as 16 camadas de full attention fazem cache de keys e values; as outras 48 camadas de Gated DeltaNet mantêm estado de tamanho fixo","A grouped-query attention remove os tensores de value","A torre de visão compartilha o cache"]
+    options: ["O cache é armazenado em FP8 por padrão, um quarto dos bytes em float32 que a estimativa maior assumia", "Só as 16 camadas de full attention fazem cache de keys e values; as 48 DeltaNet mantêm estado fixo", "A grouped-query attention faz 4 KV heads servirem as 24 query heads, o que divide o cache por token por quatro", "Só uma camada em quatro é camada de decoder de texto; as outras três pertencem à torre de visão"]
     correctIndex: 1
-    explanation: "Assumir que todas as 64 camadas fazem cache quadruplica a estimativa; o layout híbrido significa que três quartos da profundidade não contribuem com cache por token algum."
+    explanation: "Assumir que todas as 64 camadas fazem cache quadruplica a estimativa; o layout híbrido significa que três quartos da profundidade não contribuem com cache por token algum. O número de 256 KiB já usava 4 KV heads em bf16, então nem a grouped-query attention nem uma troca de dtype explicam o fator."
   - question: "Mudar para pesos em FP8 e cache em FP8 eleva a concorrência de 36 para 124 sequências. O que acontece com a fatia do orçamento tomada pelo estado do DeltaNet?"
-    options: ["Ela cai, porque o FP8 também reduz o estado à metade","Ela permanece a mesma fração","Ela sobe, porque os 144 MiB constantes da referência permanecem fixos enquanto tudo à volta encolhe","Ela vai a zero"]
+    options: ["Ela cai, porque a mudança para FP8 corta pela metade o estado de 144 MiB junto com os pesos e o cache", "Ela permanece a mesma fração, já que todo termo do orçamento escala com o número de sequências", "Ela sobe: os 144 MiB constantes da referência permanecem fixos enquanto tudo à volta encolhe", "Ela some, porque engines de serving em FP8 mantêm o estado do DeltaNet na CPU em vez da GPU"]
     correctIndex: 2
-    explanation: "Ignorar o estado superestima a concorrência em bf16 em cerca de 28 por cento, mas a concorrência em FP8 em cerca de 56 por cento; um termo constante ganha importância relativa conforme os termos variáveis encolhem."
+    explanation: "Ignorar o estado superestima a concorrência em bf16 em cerca de 28 por cento, mas a concorrência em FP8 em cerca de 56 por cento; um termo constante ganha importância relativa conforme os termos variáveis encolhem. Os pesos são quantizados; o estado da referência continua com 144 MiB por sequência."
 citations:
   - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
     authors: "Woosuk Kwon et al."
@@ -42,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Você tem um acelerador de 80 GB e um requisito de produto: servir o Qwen3.8-27B ao maior número de conversas simultâneas que a placa permitir, cada uma com janela de 8.192 tokens. Alguém subtrai 54 dos pesos de 80, divide o restante pelos 64 KiB por token da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) (o tamanho do cache de key-value que cada token acrescenta) e reporta 48 usuários. O resultado calculado é 36. A estimativa ingênua fica um terço acima, e o jeito como ela falha é um crash por falta de memória sob carga. Esta aula faz o orçamento linha a linha, porque toda aula posterior que precifica serving se apoia nele.

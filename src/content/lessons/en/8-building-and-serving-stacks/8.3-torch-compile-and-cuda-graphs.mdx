@@ -14,17 +14,17 @@ teachBack:
   modelAnswer: "Each operation in eager mode pays a Python frame, a dispatch, and a kernel launch on the CPU side. A 64-layer model issues on the order of a couple of thousand launches to produce one token. At single-digit microseconds each, that is milliseconds of host work per token. That host time is a ceiling that stands even with an infinitely fast GPU. The launch ceiling matters because lesson 7.3 already showed decode is not compute-bound. The GPU work per token is small, so the two ceilings land within a small factor of each other. The moment quantization raises the bandwidth ceiling, the launch ceiling becomes the one that limits speed. The torch.compile function traces the model into a graph and generates fused kernels, cutting both memory traffic and the number of launches. CUDA graph capture records the remaining launch sequence once and replays it as a single submission. That removes almost all per-launch host cost, at the price of requiring static shapes and static memory addresses."
 quiz:
   - question: "From lesson 7.3, why is the decode phase the natural target for graph capture while prefill usually is not?"
-    options: ["Prefill has no kernels to capture","Decode repeats a short, uniform step for every token, while prefill is compute-bound with input-dependent shapes that would force constant recapture","Decode is compute-bound and prefill is memory-bound","Graph capture only works on the first request"]
+    options: ["Prefill runs as one large kernel, so there are no gaps between launches for a graph to remove", "Decode repeats one small, same-shaped step per token; prefill shapes vary by prompt and big kernels amortize launches", "Decode is compute-bound and prefill is memory-bound, so only decode gains from cutting arithmetic work", "A captured graph replays the first request's token values, so a prefill graph would give wrong text for new prompts"]
     correctIndex: 1
-    explanation: "Lesson 7.3 split the two phases: prefill does large, shape-varying matrix work where launch overhead is amortized anyway, and decode does many tiny identical steps where it dominates."
+    explanation: "Lesson 7.3 split the two phases: prefill does large, shape-varying matrix work where launch overhead is amortized anyway, and decode does many tiny identical steps where it dominates. A graph records launches and buffer addresses, not token values, and the bound types are the other way round."
   - question: "What does CUDA graph capture require of the memory it touches?"
-    options: ["That all tensors be on the CPU","That the model be quantized first","Static addresses — the replayed graph re-executes the recorded launches against the same buffers, so tensors cannot be reallocated between steps","Nothing; addresses are resolved at replay time"]
+    options: ["Static values: every input tensor must hold the same numbers at each replay, so new tokens force a recapture", "Host-resident tensors: the graph streams its inputs from pinned CPU memory at the start of every step", "Static addresses: replay reuses the recorded buffers, so tensors cannot move between steps", "Nothing in particular: replay looks up each tensor's current address, so the allocator can move buffers freely"]
     correctIndex: 2
-    explanation: "This is why serving engines pre-allocate KV blocks and keep the block table in a fixed device buffer they update in place, rather than allocating per step."
+    explanation: "This is why serving engines pre-allocate KV blocks and keep the block table in a fixed device buffer they update in place, rather than allocating per step. The contents of those buffers change every step; only their addresses must stay fixed."
   - question: "You wrap the model in torch.compile and time the very next call, which is slower than eager. What went wrong?"
-    options: ["Compilation always makes models slower","The weights were corrupted by compilation","torch.compile does not support bf16","The first call includes tracing and code generation; you measured the compiler, not the compiled model"]
+    options: ["torch.compile trades speed for exactness, so compiled models are always somewhat slower than eager", "Compilation moved the weights back to the CPU, so the call paid a host-to-device copy per layer", "torch.compile silently upcasts a bf16 model to float32, which doubles the bytes every step reads", "The first call includes tracing and code generation; you measured the compiler, not the compiled model"]
     correctIndex: 3
-    explanation: "Warm up until compilation and any shape-driven recompiles have settled, then measure steady-state decode."
+    explanation: "Warm up until compilation and any shape-driven recompiles have settled, then measure steady-state decode. Compilation does not move weights or change their dtype, and a warmed-up compiled model is usually faster, not slower."
 citations:
   - title: "torch.compiler Documentation"
     authors: "PyTorch Foundation"
@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 You profile single-stream decode on Qwen3.8-27B (one request, one token at a time) and the trace is mostly holes. The GPU does a burst of work, idles, does another burst, idles again. Utilization sits low, the power draw never approaches the card's limit, and moving to a faster accelerator changes almost nothing. Nothing is broken. You have hit a bottleneck that is not on the GPU at all.
@@ -104,7 +104,7 @@ For this model, both remedies have a hybrid-architecture asterisk that must be c
 ## What neither technique changes
 
 :::warning
-Neither technique changes the mathematics, but both can change the output. Fusion alters accumulation order, and a compiled kernel may add numbers in a different sequence from the eager one. So the last bits of bf16 results move, and sampling can break ties differently. That is expected and acceptable; discovering it during a customer incident is not. Re-run the differential test from [lesson 8.1](/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) against eager after every compilation-related change.
+Neither technique changes the mathematics, but both can change the output. Fusion alters accumulation order, and a compiled kernel may add numbers in a different sequence from the eager one. So the last bits of bf16 results move, and a near-tie between two tokens can resolve the other way, under greedy decoding as well as sampling, after which the rest of the text may differ. That is expected and acceptable; discovering it during a customer incident is not. Re-run the differential test from [lesson 8.1](/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) against eager after every compilation-related change: logits within tolerance, divergences only at near-ties, and task checks unchanged.
 :::
 
 Remember the accounting rather than the flags. Eager spends its time telling the GPU what to do. Compilation reduces how much telling is needed, and graph capture reduces how often you have to tell it. Neither buys you a faster matrix multiply. They buy back the gaps in the trace, and those gaps are the whole reason a 27B model can leave a very expensive card mostly idle.

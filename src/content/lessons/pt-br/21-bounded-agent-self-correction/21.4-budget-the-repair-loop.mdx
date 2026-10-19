@@ -1,0 +1,122 @@
+---
+id: "21.4-budget-the-repair-loop"
+track: "21-bounded-agent-self-correction"
+order: 4
+title: "Orçar o laço de reparo"
+summary: "Um laço de reparo tem no máximo três tentativas de reparo depois da execução inicial que falhou, além de limites de tokens e de tempo, e para antes quando a mesma falha volta duas vezes. Os contadores ficam no SQLite e são cobrados antes de cada chamada ao modelo, então um reinício não consegue zerá-los."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["21.3-repair-with-a-bounded-context"]
+unlocks: ["21.5-evaluate-a-correction"]
+lab:
+  id: "retry-budget"
+  kind: "calculator"
+  budgetKb: 12
+analogy: "Um chaveiro chamado para uma porta emperrada combina o preço antes de começar: três tentativas com ferramentas diferentes e, depois, ele chama o síndico. Cada tentativa é anotada na ficha do serviço antes de o chaveiro pegar a ferramenta, então, se o telefone tocar no meio, ninguém depois acha que só houve uma tentativa. Se a mesma ferramenta escorregar do mesmo jeito duas vezes, a terceira tentativa com ela é pulada. A comparação para na independência. As três ferramentas de um chaveiro falham por motivos diferentes, enquanto três patches do mesmo modelo, escritos a partir da mesma evidência, tendem a falhar pelo mesmo motivo, então a terceira tentativa vale menos que a primeira."
+teachBack:
+  prompt: "Uma equipe sobe a chance de sucesso por tentativa na calculadora de 0,4 para 0,6 dando mais contexto ao modelo, mantém três tentativas e USD 0,12 por tentativa, e quer remover a regra de falha repetida porque as escaladas agora são raras. Calcule as novas taxas de sucesso e de escalada e os custos esperado e de pior caso, depois diga o que a calculadora ainda supõe e quanto custaria remover a regra quando essa suposição falha."
+  modelAnswer: "Cada tentativa falha com chance 0,4, então as três falham com chance 0,4 ao cubo, que dá 0,064. O laço tem sucesso em 93,6% das vezes e escala em 6,4%. A tentativa um sempre roda, a dois roda com chance 0,4, a três com chance 0,16. Então o número esperado de tentativas é 1,56. O custo esperado é 1,56 vezes USD 0,12, que dá USD 0,1872. O pior caso continua sendo três tentativas, USD 0,36. A calculadora supõe que cada tentativa tem sucesso de forma independente. Quando o bug está fora dos arquivos permitidos, toda tentativa falha pelo mesmo motivo, e a chance real de sucesso é zero. A regra de falha repetida pega exatamente esse caso depois de duas tentativas. Remover a regra gasta a terceira tentativa à toa e atrasa a pessoa que vai ter de olhar."
+quiz:
+  - question: "Use o modelo da calculadora com chance de sucesso de 0,5 por tentativa, no máximo 3 tentativas e USD 0,20 por tentativa. Quais são a taxa de escalada e o custo esperado?"
+    options: ["12,5% escalam, e USD 0,60 esperados, porque toda tentativa é paga", "12,5% escalam, e USD 0,35 esperados, de 1,75 tentativas em média", "50% escalam, e USD 0,30 esperados, porque metade das execuções para cedo", "25% escalam, e USD 0,40 esperados, de 2 tentativas em média"]
+    correctIndex: 1
+    explanation: "As três falham com chance 0,5 × 0,5 × 0,5 = 0,125. As tentativas rodam com chances 1, 0,5 e 0,25, então se esperam 1,75, que vezes USD 0,20 dá USD 0,35. USD 0,60 é o pior caso, pago só quando as três rodam."
+  - question: "Um processo morre durante a chamada ao modelo da tentativa 2. O armazenamento diz attempts = 2. Depois de um reinício, quantas tentativas de reparo o laço ainda pode iniciar?"
+    options: ["Três, porque um reinício começa um laço novo com orçamento novo", "Duas, pois a tentativa 2 nunca teve resultado e então não conta", "Uma, porque a tentativa 2 foi cobrada antes da chamada ao modelo", "Nenhuma, pois uma queda dentro de uma tentativa escala na hora"]
+    correctIndex: 2
+    explanation: "A cobrança é gravada antes de o modelo ser chamado, então a tentativa que morreu está gasta e resta uma das três. Contar só tentativas terminadas deixaria um laço que cai em toda chamada tentar para sempre. Uma queda não é um veredito sobre o código, então não escala sozinha."
+  - question: "A tentativa 1 sobe a taxa de desconto para 0,5 e a tentativa 2 a baixa para 0,25. As duas falham em test_ten_units_get_the_bulk_discount na linha 9 de test_pricing.py. O que o laço faz em seguida?"
+    options: ["Roda a tentativa 3, porque o orçamento ainda permite três tentativas", "Aceita a tentativa 2, porque o resultado dela fica mais perto de USD 114,00", "Repete o patch da tentativa 2, já que uma falha idêntica pode ser instável", "Escala: a mesma falha duas vezes seguidas significa que o laço travou"]
+    correctIndex: 3
+    explanation: "As duas execuções têm a mesma assinatura (teste, tipo de erro, arquivo e linha), então os patches não tocaram na causa: dez unidades continuam sem desconto. Uma terceira taxa falharia do mesmo jeito. Chegar mais perto não é passar, e um patch repetido é recusado sem rodar."
+citations:
+  - title: "Building effective agents"
+    authors: "Erik Schluntz, Barry Zhang (Anthropic)"
+    year: 2024
+    url: "https://www.anthropic.com/engineering/building-effective-agents"
+  - title: "Reflexion: Language Agents with Verbal Reinforcement Learning"
+    authors: "Noah Shinn et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2303.11366"
+  - title: "Large Language Models Cannot Self-Correct Reasoning Yet"
+    authors: "Jie Huang et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.01798"
+updated: "2026-10-19"
+---
+
+O laço de reparo da [aula 21.3](/pt-br/lessons/21-bounded-agent-self-correction/21.3-repair-with-a-bounded-context/) poderia, em princípio, pedir patches ao modelo para sempre. Cada tentativa custa uma chamada de modelo, uma execução de testes e um pouco de tempo, e um laço preso num bug que não consegue corrigir continua pagando. Quantas tentativas ele deve ter, quanto isso custa em média e no pior caso, e como o limite sobrevive a uma queda do processo no meio do caminho? Esta aula define o orçamento, faz a conta dele e torna os contadores duráveis.
+
+## O que significa "três tentativas"?
+
+O laço começa com uma *execução inicial*: os testes no código original, que medem a falha. Ela não pede nada ao modelo. Depois vêm no máximo três *tentativas de reparo*. Cada tentativa é uma chamada de modelo propondo um patch, a verificação de política e, se o patch for permitido, uma execução de testes. Um patch recusado pela política ainda conta como tentativa, porque a chamada ao modelo foi feita e paga. O laço para na primeira tentativa cujos testes passam, ou depois da terceira.
+
+A orientação da Anthropic sobre construir agentes observa que uma tarefa costuma terminar quando está pronta, mas que também é comum incluir condições de parada, como um número máximo de iterações, para manter o controle. Três é a escolha deste curso, não uma regra de uma fonte; a calculadora abaixo mostra o que ela compra.
+
+## O que a conta diz
+
+Suponha que cada tentativa de reparo passe nos testes com probabilidade 0,4, de forma independente das outras, e custe USD 0,12. As três falham com probabilidade 0,6 × 0,6 × 0,6 = 0,216, então o laço escala em 21,6% das vezes e tem sucesso em 78,4%.
+
+As *tentativas esperadas* contam só tentativas de reparo, incluindo a que dá certo, e nunca a execução inicial. A tentativa 1 sempre roda. A tentativa 2 só roda se a 1 falhou, com probabilidade 0,6. A tentativa 3 só roda se as duas falharam, com probabilidade 0,36. Então o número esperado é 1 + 0,6 + 0,36 = 1,96, e o custo esperado é 1,96 × USD 0,12 = USD 0,2352. O pior caso são as três tentativas, USD 0,36. Orce pelo pior caso: uma média não diz quanto custa uma execução ruim.
+
+A calculadora começa desses números. Mude a chance de sucesso ou o número de tentativas e veja quão rápido as tentativas extras deixam de se pagar.
+
+:::caveat
+Todos os números acima supõem tentativas independentes. As reais raramente são. Se o bug está fora dos arquivos permitidos, ou se o próprio teste que falha está errado, toda tentativa falha pelo mesmo motivo e a chance real de sucesso é zero. Huang et al. (2023) viram que modelos revisando o próprio raciocínio sem feedback externo muitas vezes não conseguem corrigi-lo. Um modelo escrevendo o terceiro patch a partir da mesma evidência está numa posição parecida. Falhas correlacionadas tornam a escalada mais provável do que a calculadora diz, e é por isso que o laço também para em falhas repetidas.
+:::
+
+## Três limites, verificados antes de cada tentativa
+
+As tentativas são um limite. Tokens e tempo de relógio são os outros dois, porque um prompt enorme ou uma execução de testes travada podem estourar um orçamento sem usar muitas tentativas. O laço verifica os três antes de iniciar uma tentativa:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/budget.py
+    def exhausted(self, spent: Spent) -> str | None:
+        """Why no further attempt may start, or None."""
+        if spent.attempts >= self.max_attempts:
+            return f"budget: {spent.attempts} of {self.max_attempts} repair attempts used"
+        if spent.tokens >= self.max_tokens:
+            return f"budget: tokens {spent.tokens} of {self.max_tokens}"
+        if spent.seconds >= self.max_seconds:
+            return f"budget: wall time {spent.seconds:.0f} of {self.max_seconds:.0f} seconds"
+        return None
+```
+
+Os padrões são 3 tentativas, 20.000 tokens e 600 segundos. Os tokens são contados com a mesma aproximação que a [aula 19.3](/pt-br/lessons/19-agent-memory-and-context/19.3-token-budgets-and-compression/) rotula como tal, cerca de quatro caracteres por token, sobre todo prompt e toda resposta de reparo. No exercício, três patches errados gastam 1.793 tokens aproximados; com um orçamento de 1.000 tokens o laço para depois de duas tentativas, em 1.178. Um limite é verificado entre tentativas, então uma tentativa pode ultrapassá-lo; os limites por execução da [aula 17.2](/pt-br/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/) limitam quanto. O tempo vem de um relógio injetado, então o teste do limite de tempo roda na hora: com um relógio que avança 100 segundos por leitura e um orçamento de 150 segundos, a segunda tentativa é a última.
+
+## Contadores que sobrevivem a um reinício
+
+Um orçamento guardado numa variável zera quando o processo morre, e um laço que cai em toda chamada ao modelo tentaria então para sempre. Por isso os contadores ficam no SQLite, uma linha por execução, gravados com o compare-and-swap da [aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): uma atualização só casa se ninguém gravou desde que o escritor leu a linha. A ordem das gravações é o ponto:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/loop.py
+    while (reason := budget.exhausted(spent)) is None:
+        messages = repair_messages(task, original, spent.history)
+        number = spent.attempts + 1
+        # Charged before the model call, so a crash from here on still counts this attempt.
+        spent = store.charge(run_id, spent, attempts=1, tokens=sum(approx_tokens(m["content"]) for m in messages))
+        started = clock()
+        reply = model.complete(messages, tools=[PATCH_TOOL])
+```
+
+A tentativa e os tokens do prompt são gravados antes da chamada. Se o processo morre dentro da chamada, a tentativa está gasta; o que se perde são só os tokens da resposta e o tempo dessa tentativa, que nunca foram medidos. O exercício derruba uma execução dentro da tentativa 2, abre o banco de novo como um processo novo faria e encontra `attempts` em 2. O laço retomado chama o modelo mais uma vez, para a tentativa 3, e então escala.
+
+A mesma linha guarda o histórico: o número de cada tentativa, a hipótese, o hash do patch, o resultado e a assinatura da falha. O próximo prompt lista as hipóteses anteriores e seus resultados, de modo parecido com o Reflexion (Shinn et al., 2023), que guarda reflexões verbais sobre tentativas anteriores num buffer de memória episódica para as seguintes. Aqui o histórico também alimenta duas regras: um patch idêntico a um anterior é recusado, e uma falha repetida para o laço.
+
+## Pare quando a mesma falha voltar
+
+A *assinatura* de uma falha é o teste que falhou, o tipo de erro e o arquivo e a linha do frame relevante, que continuam iguais quando só os valores mudam. Se dois patches consecutivos que rodaram produzem a mesma assinatura, nenhum dos dois tocou na causa, e um terceiro provavelmente também não vai tocar:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/loop.py
+        if previous is not None and previous.signature == feedback.signature:
+            return RepairOutcome("escalated", f"repeated failure: attempts {previous.number} and {number} failed the same way ({feedback.signature})", original, spent)
+```
+
+Mudar a taxa de desconto para 0,5 e depois para 0,25 deixa dez unidades sem desconto nas duas vezes, então o laço escala depois de duas tentativas em vez de três. A escalada é a saída projetada, não uma pane: o resultado leva a falha original, a hipótese e o resultado de cada tentativa, e os contadores, que é o que uma pessoa precisa para começar de onde o laço parou.
+
+## Rode o exercício
+
+Os módulos são `src/agentlab/repair/budget.py` e `src/agentlab/repair/loop.py`; os testes estão em `tests/test_repair_loop.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_repair_loop -v`. Espere `Ran 10 tests` e `OK`. Os casos cobrem um começo que já passa e nunca chama o modelo, uma correção na segunda tentativa, a escalada depois do terceiro reparo que falhou com uma quarta resposta sem uso, o reinício, uma falha repetida, os dois orçamentos, a aprovação de um crítico que não encerra o laço enquanto os testes falham, e `retry_odds`, que confere os cinco números desta aula com a mesma conta da calculadora.
+
+Para ver o teste de reinício pegar uma regressão real, mova a linha `store.charge(... attempts=1 ...)` para baixo de `reply = model.complete(...)`. A queda na tentativa 2 agora acontece antes da cobrança, `attempts` volta como 1, e `test_counters_survive_a_restart_mid_attempt` falha. Restaure a ordem antes de seguir.

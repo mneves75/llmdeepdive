@@ -3,7 +3,7 @@ id: "8.5-sglang"
 track: "8-building-and-serving-stacks"
 order: 5
 title: "SGLang"
-summary: "When traffic is structured programs rather than isolated prompts, RadixAttention turns shared prefixes into shared memory and constrained decoding turns a schema into a guarantee."
+summary: "When traffic is structured programs rather than isolated prompts, RadixAttention turns shared prefixes into shared memory and constrained decoding enforces a schema's shape on every token it emits."
 tier: "advanced"
 locale: "en"
 prerequisites: ["8.4-vllm"]
@@ -14,17 +14,17 @@ teachBack:
   modelAnswer: "At 64 KiB of KV per token from lesson 7.2, a 3,000-token prefix costs about 188 MiB of cache. Without sharing, 40 calls hold 40 separate copies, about 7.3 GiB. Each call also pays the prefill compute for those 3,000 tokens, 120,000 prefill tokens in total. With RadixAttention the prefix is stored once (about 188 MiB) and prefilled once. Each call keeps only the blocks for its own divergent suffix. The habit that destroys the saving is putting anything volatile at the top of the prompt: a timestamp, a request id, a shuffled tool list, or a per-user greeting. Matching is exact and anchored at the start of the token ids, so a single differing token in the first line reduces the shared prefix to nothing. Every call then pays full price."
 quiz:
   - question: "Why must volatile content such as a timestamp go at the end of a prompt rather than the beginning?"
-    options: ["Timestamps confuse the tokenizer","The model reads prompts backwards","Late tokens are cached but early ones are not","Prefix matching is exact and anchored at position one, so a differing early token means no blocks are shared at all"]
+    options: ["Matching finds equal blocks anywhere in the prompt, so a timestamp at the start costs only its own block", "The radix tree is keyed from the end of the prompt, so the tail is what must stay identical across calls", "Early tokens are evicted first under LRU, so volatile content at the start falls out of the cache anyway", "Prefix matching is exact and anchored at position one, so an early differing token shares no blocks"]
     correctIndex: 3
-    explanation: "A radix tree over token ids only shares the common leading run; divergence at token one leaves an empty shared prefix, and everything after it is recomputed."
-  - question: "From lesson 8.4, what does saving KV memory through prefix sharing actually buy on a fixed card?"
-    options: ["A larger effective token pool, and therefore more concurrent sessions at the same context length","More FLOPs per second","A smaller model on disk","Lower per-token bandwidth for the weights"]
+    explanation: "A radix tree over token ids only shares the common leading run; divergence at token one leaves an empty shared prefix, and everything after it is recomputed. Matching is not content-addressed anywhere in the prompt, and LRU evicts by last use, not by position."
+  - question: "In this lesson's 40-call example, prefix sharing frees about 7 GiB of duplicated KV on a fixed card. With each session's context length unchanged, what does that buy, by lesson 8.4's accounting?"
+    options: ["More concurrent sessions, because the freed bytes join the token pool that concurrency divides", "Faster decode for each session, because a shared prefix lowers the FLOPs every new token needs", "A smaller resident model, because shared blocks let the engine page unused weights out of memory", "Less weight bandwidth per token, because the sessions now read one shared copy of the parameters"]
     correctIndex: 0
-    explanation: "Concurrency is pool size divided by tokens per session; recovering gibibytes of duplicated prefix raises the numerator without touching the weights."
+    explanation: "Concurrency is pool size divided by tokens per session; recovering gibibytes of duplicated prefix raises the numerator without touching the weights. Every session already reads the same single copy of the weights, and each new token still attends over the whole prefix, so per-token decode work does not shrink."
   - question: "What does grammar-constrained decoding guarantee, and what does it not?"
-    options: ["It guarantees factual accuracy","It guarantees output conforms to the schema, not that the content is correct or well-reasoned","It guarantees lower latency","It guarantees the model used thinking mode"]
+    options: ["It guarantees a complete, schema-valid object, so the result can go straight to the tool unchecked", "The tokens it emits follow the schema's shape; it does not promise correct content or a finished object", "It guarantees correct field values, because the mask removes every value the schema does not allow", "Nothing during sampling: the schema is only checked after the whole reply has been generated"]
     correctIndex: 1
-    explanation: "Masking disallowed tokens before sampling enforces shape only; a schema-valid object can still be wrong, so validation of meaning stays your job."
+    explanation: "Masking disallowed tokens before sampling enforces shape on what is emitted, nothing more. A schema-valid object can still be wrong, and a truncated or cancelled request stops mid-object, so check the stop reason, validate the final object and its meaning before any tool runs."
 citations:
   - title: "SGLang Documentation"
     authors: "SGLang Team"
@@ -42,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Your traffic is not what [lesson 8.4](/lessons/8-building-and-serving-stacks/8.4-vllm/) assumed. Instead of independent users asking independent questions, you are running an agent. One task fans out into forty model calls. Each call begins with the same system prompt, the same tool schemas, and the same few-shot examples (sample question-and-answer pairs that show the model the expected format): about three thousand tokens of identical preamble. The calls differ only in the last paragraph, and every one must return a JSON object your code will parse. On a general-purpose engine this workload wastes memory and compute without any error to warn you, and understanding why is the whole reason SGLang exists.
@@ -83,18 +83,18 @@ When the runtime knows the program structure, it can schedule with that knowledg
 
 ## How constrained decoding guarantees the JSON shape
 
-Structured output is the third piece, and it turns the JSON requirement into a guarantee rather than a hope. [Lesson 7.4](/lessons/7-inference-and-efficiency/7.4-sampling/) described sampling as drawing the next token from the model's probability distribution over the vocabulary. Constrained decoding adds one step before that draw:
+Structured output is the third piece, and it enforces the JSON shape at the sampler rather than hoping the prompt is obeyed. [Lesson 7.4](/lessons/7-inference-and-efficiency/7.4-sampling/) described sampling as drawing the next token from the model's probability distribution over the vocabulary. Constrained decoding adds one step before that draw:
 
 1. Your JSON schema or grammar is compiled into a state machine, which tracks what may legally come next.
 2. At every step, the engine masks the logits (the raw scores) of every token that cannot legally follow the text so far, setting their probability to zero.
 3. Sampling then happens over the tokens that remain.
 
-So the model cannot emit a stray prose apology in front of the opening brace, cannot close an array it did not open, and cannot invent a field name outside the schema. That holds because those tokens had their probability set to zero, not because the prompt asked nicely.
+So the model cannot emit a stray prose apology in front of the opening brace, cannot close an array it did not open, and cannot invent a field name outside the schema. That holds because those tokens had their probability set to zero, not because the prompt asked nicely. The guarantee covers only the tokens actually emitted, and only the schema features the engine's grammar compiler supports.
 
 Two practical notes. Compiling a grammar costs real time, so reuse and cache schemas rather than building one per request. And the constraint applies only to shape.
 
 :::caveat
-Schema-valid is not correct. A constrained decode will happily produce a perfectly formed object whose fields are wrong, invented, or contradictory. It will even look more confident than free-form text, because the usual sign of a confused model, rambling, has been masked away. Keep semantic validation downstream. Constrained decoding removes parse errors from your incident list; it does not remove hallucination.
+Schema-valid is not correct. A constrained decode will happily produce a perfectly formed object whose fields are wrong, invented, or contradictory. It will even look more confident than free-form text, because the usual sign of a confused model, rambling, has been masked away. Keep semantic validation downstream. Constrained decoding also does not promise a finished object. A request that hits its token limit, is cancelled or times out stops mid-object, and a schema keyword the grammar compiler does not support may be dropped rather than enforced. So before any tool runs, check that generation ended normally (a stop, not a length limit), parse the whole output, validate it against the schema again, and then check its meaning and permissions, as [lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) does. Constrained decoding makes parse errors rarer; it removes neither them nor hallucination.
 :::
 
 ## Sharing a prefix in a hybrid model

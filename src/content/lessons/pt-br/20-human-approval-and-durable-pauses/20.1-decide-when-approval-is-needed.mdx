@@ -1,0 +1,122 @@
+---
+id: "20.1-decide-when-approval-is-needed"
+track: "20-human-approval-and-durable-pauses"
+order: 1
+title: "Decidir quando a aprovação é necessária"
+summary: "Uma política de aprovação segura uma ação para uma pessoa quando ela não pode ser desfeita e seu valor atinge um limite, e deixa leituras e rascunhos reversíveis rodarem sozinhos. Tudo o que a política não reconhece espera por uma pessoa por padrão."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["14.4-replay-and-side-effects", "16.4-enforce-least-privilege"]
+unlocks: ["20.2-bind-approval-to-one-operation"]
+analogy: "Uma loja deixa qualquer operador de caixa registrar uma venda, mas um estorno acima de certo valor precisa da chave do gerente. A regra está escrita de antemão: depende do que a ação faz e de quanto ela movimenta, não de quão confiante o operador se sente naquele dia, e um tipo novo de transação que a regra não menciona vai para o gerente até alguém atualizar a regra. A comparação para em quem enxerga o caixa. Um gerente que olha o caixa vê a venda de verdade; quem aprova a ação de um agente vê só a prévia que o software escolheu mostrar, então a prévia precisa listar todos os campos que a aprovação vai cobrir."
+teachBack:
+  prompt: "O financeiro pede duas mudanças: faturas em EUR devem rodar sozinhas abaixo de EUR 900,00, e uma ferramenta nova, refund_supplier, deve ser adicionada. O servidor MCP dela descreve a ferramenta como somente leitura. Descreva o que needs_approval retorna hoje para um envio de EUR 500,00 e para qualquer chamada a refund_supplier, e o que você mudaria em policy.py."
+  modelAnswer: "Hoje um envio de EUR 500,00 fica retido, porque AUTO_LIMITS não tem entrada para EUR e uma moeda sem limite espera por uma pessoa. Uma chamada a refund_supplier também fica retida, porque EFFECTS não tem entrada para ela, e uma ferramenta desconhecida espera por padrão. Eu adicionaria EUR com Decimal(\"900.00\") a AUTO_LIMITS. Aí o envio de EUR 500,00 roda sozinho, e EUR 900,00 ou mais fica retido. Para o estorno, eu ignoraria a descrição de somente leitura do servidor. A especificação do MCP diz que clientes devem tratar anotações de ferramentas como não confiáveis, a menos que o servidor seja confiável. Um estorno movimenta dinheiro e não pode ser desfeito, então eu adicionaria refund_supplier a EFFECTS como irreversible. Estornos grandes passam a esperar por uma pessoa, e os pequenos rodam sozinhos abaixo do limite."
+quiz:
+  - question: "Pela política do curso, qual destas ações roda sem esperar por uma pessoa?"
+    options: ["submit_invoice de USD 1.000,00, porque ela iguala o limite em vez de ultrapassá-lo", "create_invoice_draft de USD 10.000,00, pois um rascunho pode ser apagado", "submit_invoice de EUR 10,00, porque dez euros estão muito abaixo de mil dólares", "email_supplier sem valor, porque uma mensagem não tem dinheiro associado a ela"]
+    correctIndex: 1
+    explanation: "Um rascunho é uma escrita reversível, então roda sozinho qualquer que seja o valor. A checagem do limite usa >=, então USD 1.000,00 fica retido. EUR não tem limite configurado, e a política retém uma moeda sem limite em vez de convertê-la. Uma ação irreversível sem valor que a limite também fica retida."
+  - question: "Um servidor de ferramentas adiciona archive_po e o descreve como somente leitura. O assistente pede para chamá-la. O que needs_approval retorna, e por quê?"
+    options: ["Não exige, porque a descrição do servidor diz que a ferramenta só lê dados", "Não exige, porque a chamada não traz rascunho e portanto não tem valor a comparar", "Exige, porque EFFECTS não tem entrada para ela e uma ferramenta desconhecida fica retida", "Exige, porque toda ferramenta vinda de um servidor MCP precisa da aprovação de uma pessoa"]
+    correctIndex: 2
+    explanation: "A classe de efeito vem da tabela da própria empresa, nunca do servidor. A especificação do MCP manda clientes tratarem anotações de ferramentas como não confiáveis, a menos que o servidor seja confiável. Uma ferramenta ausente da tabela fica retida até alguém classificá-la. O MCP não exige aprovação para toda chamada; diz que uma pessoa deve poder negar invocações."
+  - question: "Por que o curso roda o portão de política da aula 16.2 antes da política de aprovação, em vez de deixar a aprovação substituir o portão?"
+    options: ["A aprovação é mais lenta, então o portão roda antes só para poupar o aprovador", "O portão precisa da identidade do aprovador, que só existe depois de uma aprovação", "Uma pessoa revisa todos os campos de qualquer jeito, então o portão só repetiria essa checagem", "A aprovação confirma o que o portão já permite; ela não corrige um beneficiário errado"]
+    correctIndex: 3
+    explanation: "O portão decide se uma ação é permitida, a partir de registros que o modelo não pode mudar. A aprovação acrescenta a confirmação de uma pessoa sobre uma ação já permitida. Um aprovador cansado pode deixar passar um beneficiário errado, então o portão nunca entrega essa checagem a uma pessoa. O portão precisa só do Principal confiável da execução, não de um aprovador."
+citations:
+  - title: "Model Context Protocol specification, revision 2026-07-28: Tools"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/server/tools"
+  - title: "LLM06:2025 Excessive Agency"
+    authors: "OWASP GenAI Security Project"
+    year: 2025
+    url: "https://genai.owasp.org/llmrisk/llm062025-excessive-agency/"
+updated: "2026-10-19"
+---
+
+O assistente de compras redigiu a fatura INV-0042 para o pedido de compra PO-1004: oito estantes industriais a USD 1.250,00 cada, USD 10.000,00 a pagar ao Supplier Gamma. O portão de política da [aula 16.2](/pt-br/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) conferiu o rascunho com o registro de compra e o permitiu. O assistente deve agora enviar a fatura ao contas a pagar por conta própria? E um minuto antes, quando consultou o PO-1004, deveria ter perguntado a alguém primeiro?
+
+A maioria das pessoas responde sim à primeira pergunta e não à segunda, e acerta. Esta aula transforma essa intuição numa regra que um programa consegue aplicar, e num teste que falha se a regra mudar sem querer. A regra é uma *política de aprovação*: uma função que decide, antes de uma ação rodar, se uma pessoa precisa confirmá-la. A pessoa que confirma é o *aprovador*.
+
+## O que faz uma ação merecer a atenção de uma pessoa?
+
+Perguntar a uma pessoa tem custo. A execução para, e alguém precisa ler um pedido e decidir. Um pedido para cada consulta também enterraria os poucos que importam entre muitos que não importam. Por isso a aprovação pertence aos lugares onde um erro sairia caro e difícil de reparar. Duas propriedades de uma ação captam a maior parte disso.
+
+A primeira é se a ação pode ser desfeita. Uma ação *reversível* pode ser revertida pelo próprio sistema, sem que ninguém de fora da empresa perceba: apagar um rascunho, por exemplo. Uma ação *irreversível* sai da empresa e não tem volta: uma fatura enviada ao contas a pagar entra na programação de pagamento, e um e-mail enviado fica na caixa de entrada do fornecedor. Uma leitura não muda nada.
+
+A segunda é o tamanho. Enviar uma fatura de USD 12,00 que bate com o pedido de compra não justifica interromper ninguém. Enviar USD 10.000,00 justifica. Um valor-limite, abaixo do qual uma ação irreversível pode rodar sozinha, expressa isso.
+
+Dois casos precisam de uma decisão de antemão. Uma ferramenta de que a política nunca ouviu falar, e uma moeda sem limite configurado, ficam ambas *retidas*: a ação espera por uma pessoa. Uma regra que deixa passar o desconhecido falha aberta na primeira vez em que alguém adiciona uma ferramenta e esquece a política. O padrão à prova de falhas de Saltzer e Schroeder, da [aula 16.2](/pt-br/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/), vale aqui também.
+
+## A política, como uma tabela e uma função
+
+O exercício escreve a política em `src/agentlab/approval/policy.py`. O efeito de cada ferramenta é uma tabela que pertence à empresa, e os limites são uma segunda tabela:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/policy.py
+EFFECTS: dict[str, Effect] = {
+    "lookup_po": "read",
+    "create_invoice_draft": "reversible",  # a draft can be deleted; nothing has left the company
+    "submit_invoice": "irreversible",  # accounts payable schedules the payment
+    "email_supplier": "irreversible",  # a sent message cannot be recalled
+}
+
+# Irreversible actions below these amounts proceed without a person.
+AUTO_LIMITS: dict[str, Decimal] = {"USD": Decimal("1000.00")}
+```
+
+A função lê essas duas tabelas e o rascunho:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/policy.py
+def needs_approval(tool: str, draft: InvoiceDraft | None = None) -> Need:
+    """Hold an action for a person unless it is known to be safe to run alone."""
+    effect = EFFECTS.get(tool)
+    if effect is None:
+        return Need(True, f"{tool} has no effect class, so it is held for a person")
+    if effect == "read":
+        return Need(False, "a read changes nothing")
+    if effect == "reversible":
+        return Need(False, "a reversible write can be undone")
+    if draft is None:
+        return Need(True, f"{tool} cannot be undone and has no amount to bound it")
+    limit = AUTO_LIMITS.get(draft.currency)
+    if limit is None:
+        return Need(True, f"no automatic limit is set for {draft.currency}")
+    if draft.amount >= limit:
+        return Need(True, f"{draft.amount} {draft.currency} is at or above the {limit} {draft.currency} limit")
+    return Need(False, f"below the {limit} {draft.currency} limit")
+```
+
+Passe o caso de abertura por ela. `lookup_po` é uma leitura, então roda. `create_invoice_draft` de USD 10.000,00 é reversível, então roda também. `submit_invoice` do mesmo rascunho é irreversível, USD tem limite de 1.000,00, e 10.000,00 está nele ou acima, então fica retido. Um envio de USD 999,99 rodaria sozinho. Toda resposta traz um motivo, que vai parar no pedido que uma pessoa lê e no log de auditoria.
+
+O valor é um `Decimal`, nunca um float, pelo motivo que a [aula 16.2](/pt-br/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) deu: floats binários arredondam dinheiro. A comparação é `>=`, então o próprio limite precisa de uma pessoa. De que lado da fronteira o limite cai é uma decisão de negócio, e o teste a fixa para ninguém mudá-la por acidente.
+
+O caso do EUR mostra uma armadilha na direção oposta. Converter EUR para USD pela cotação do dia pareceria útil. Mas faria a política depender de uma fonte de câmbio, que é mais uma entrada que pode estar errada ou desatualizada. Reter a ação até alguém configurar um limite em EUR é mais lento e não tem como falhar aberto.
+
+## De onde vem a classe de efeito
+
+O modelo nunca diz à política o que uma ação faz. O servidor da ferramenta também não. O Model Context Protocol (MCP) deixa um servidor anexar *anotações* a uma ferramenta, dicas como uma descrição do seu comportamento. A especificação, revisão 2026-07-28, diz que clientes "MUST consider tool annotations to be untrusted unless they come from trusted servers" (devem considerar as anotações não confiáveis, a menos que venham de servidores confiáveis). Um servidor que quisesse fazer uma ferramenta de estorno passar despercebida bastaria descrevê-la como inofensiva. Na nossa política, uma ferramenta ausente de `EFFECTS` fica retida, diga o servidor o que disser, até uma pessoa da empresa classificá-la.
+
+A mesma especificação diz que "there SHOULD always be a human in the loop with the ability to deny tool invocations" (sempre deveria haver uma pessoa no circuito, capaz de negar invocações de ferramentas), e que clientes deveriam "Prompt for user confirmation on sensitive operations", pedir confirmação ao usuário em operações sensíveis. Ela deixa para a aplicação a escolha de *quais* operações são sensíveis. Essa escolha é o que `needs_approval` registra. A orientação da OWASP sobre *excessive agency*, uma aplicação com LLM que pode fazer mais do que sua tarefa exige, dá o mesmo conselho: "Utilise human-in-the-loop control to require a human to approve high-impact actions before they are taken", ou seja, exigir que uma pessoa aprove ações de alto impacto antes que aconteçam.
+
+## A aprovação se soma ao portão, nunca o substitui
+
+A política roda depois do portão da aula 16.2, e a ordem importa. O portão decide se uma ação é permitida: o tenant certo, o beneficiário e o valor do registro de compra, uma ferramenta dentro da concessão do agente ([aula 16.4](/pt-br/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/)). A aprovação decide se uma ação permitida precisa também da confirmação de uma pessoa. Um rascunho a pagar para a empresa errada nunca chega a um aprovador, porque o portão já o recusou.
+
+Colocar a pessoa primeiro e o portão depois seria tentador, já que um humano julga melhor. Mas aprovadores se cansam e leem por cima. A lista da OWASP formula o princípio como mediação completa: "Implement authorization in downstream systems rather than relying on an LLM to decide if an action is allowed or not", implementar a autorização nos sistemas a jusante em vez de deixar um LLM decidir se a ação é permitida. O mesmo vale para depender de uma pessoa ocupada. Cada checagem faz um trabalho diferente.
+
+:::insight
+Uma aprovação vale o que o aprovador vê. A outra função da política, `preview`, monta a única linha que um aprovador lê: `Submit INV-0042 version 1 to Supplier Gamma for 10000.00 USD`. Todo campo dela é um campo ao qual a aprovação será vinculada na [aula 20.2](/pt-br/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/). Uma prévia que mostrasse "fatura do Supplier Gamma" sem o valor pediria a uma pessoa que aprovasse um número que ela nunca viu.
+:::
+
+A responsabilidade também precisa de um nome. A política diz *que* uma pessoa precisa confirmar; a próxima aula diz *quem*: alguém com o papel `invoice_approver`, no mesmo tenant, que não seja quem pediu.
+
+## Rode o exercício
+
+O código está em `src/agentlab/approval/policy.py` e os testes em `tests/test_approval_policy.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_approval_policy.py"`. A saída esperada termina com `Ran 9 tests` e `OK`.
+
+Os testes cobrem cada regra e sua fronteira: uma leitura local e um rascunho reversível rodam sozinhos; um envio de USD 10.000,00 fica retido; exatamente USD 1.000,00 fica retido; EUR, um e-mail sem valor e uma ferramenta desconhecida `pay_invoice` ficam todos retidos. Um teste é o controle positivo: um envio de USD 999,99 roda sozinho, então uma política que retivesse tudo falharia. Agora quebre a fronteira. Troque `if draft.amount >= limit:` por `if draft.amount > limit:` e rode de novo. `test_the_limit_itself_needs_approval` fica vermelho, porque um envio de USD 1.000,00 passaria a rodar sozinho. Restaure a linha.

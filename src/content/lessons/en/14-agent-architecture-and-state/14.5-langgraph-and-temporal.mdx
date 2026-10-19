@@ -1,0 +1,168 @@
+---
+id: "14.5-langgraph-and-temporal"
+track: "14-agent-architecture-and-state"
+order: 5
+title: "LangGraph and Temporal in Practice"
+summary: "LangGraph checkpoints the run's state after every super-step and resumes from the last one; Temporal records an event history and replays it. Both repeat interrupted work, so external writes still need an idempotency key."
+tier: "core"
+locale: "en"
+prerequisites: ["14.4-replay-and-side-effects"]
+unlocks: ["20.3-durable-waits-and-callbacks"]
+analogy: "Two ways to keep a cook on track after an interruption. In the first kitchen, the cook photographs the counter after finishing each step of the recipe; after a power cut, everyone looks at the last photo and starts the next step. In the second kitchen, a clerk writes down every order sent to the suppliers and every delivery that came back; a new cook rereads the whole list from the top, skipping any order whose delivery is already written down, and carries on from the first line with no answer. LangGraph is the photo; Temporal is the clerk's list. The comparison stops at the suppliers: neither the photo nor the list can stop a supplier from delivering twice when an order is sent twice, which is why the invoice still carries an idempotency key."
+teachBack:
+  prompt: "A teammate moves invoice creation into a Temporal activity, but the activity builds its idempotency key with a fresh random UUID each time it runs. The accounts system writes the invoice on the first attempt and then times out. Walk through what Temporal does next, what the accounts system ends up holding, and which key the activity should use instead."
+  modelAnswer: "The timeout fails the first attempt, so Temporal retries the activity under its retry policy. The second attempt builds a new random UUID. The accounts system sees a key it has never seen, so it creates a second invoice. Temporal records the activity as completed once, with the second invoice's number. The workflow history therefore looks clean while the company owes the amount twice. The key must be identical on every attempt. Temporal's documentation suggests combining the workflow run id and the activity id. This exercise does exactly that with idempotency_key(info.workflow_run_id, info.activity_id). With that key, the second attempt gets the first invoice's number back. The accounts system holds one invoice."
+quiz:
+  - question: "In the LangGraph exercise, the check node crashes on its first call. A new graph object over the same SQLite file then resumes with invoke(None, config). Which nodes run again?"
+    options: ["receive and check, because a failed run always restarts the whole graph from START", "Only check, because the last checkpoint was saved after receive had finished", "Neither, because SqliteSaver also stored the half-finished output of check", "Only complete, because LangGraph skips the node that raised the error"]
+    correctIndex: 1
+    explanation: "LangGraph checkpoints at super-step boundaries: receive's step completed and was saved, check's step did not. Resuming starts at the interrupted step, so check runs a second time and receive does not. A node that raised has no output to save, and LangGraph re-runs it rather than skipping it."
+  - question: "A graph loops between check and ask_supplier, and its config sets no recursion_limit. With langgraph 1.2.12 installed, when does the run stop?"
+    options: ["After 100 super-steps, because each node may run at most a hundred times", "After 1,000 super-steps, the default stated on the current Graph API page", "Never, because LangGraph enforces no step limit unless a checkpointer is attached", "After 10,007 super-steps, the default in the pinned source, unless overridden"]
+    correctIndex: 3
+    explanation: "The pinned source sets DEFAULT_RECURSION_LIMIT to 10007, read from an environment variable, and a measured loop stopped there. The documentation page says 1,000, which does not match the installed version; that disagreement is why the exercise sets recursion_limit explicitly. The limit applies with or without a checkpointer."
+  - question: "In the Temporal exercise, the first create_invoice attempt writes the invoice and then loses its reply. Which events does the workflow history hold for create_invoice afterwards?"
+    options: ["ActivityTaskFailed for attempt 1, followed by ActivityTaskCompleted for attempt 2", "One ActivityTaskCompleted; the failed attempt leaves no event of its own", "Two ActivityTaskCompleted events, one for each attempt that actually ran", "No activity events, because the durable timer replaced them during replay"]
+    correctIndex: 1
+    explanation: "The test reads the history and finds no ActivityTaskFailed event: a retried attempt is not recorded as its own event, and the activity is recorded as completed once. That is why the history alone cannot tell you the accounts system was called twice; only the key kept that from creating two invoices."
+citations:
+  - title: "LangGraph checkpointers"
+    authors: "LangChain"
+    year: 2026
+    url: "https://docs.langchain.com/oss/python/langgraph/checkpointers"
+  - title: "LangGraph Graph API: recursion limit"
+    authors: "LangChain"
+    year: 2026
+    url: "https://docs.langchain.com/oss/python/langgraph/graph-api"
+  - title: "langgraph/_internal/_config.py at tag 1.2.12"
+    authors: "LangChain"
+    year: 2026
+    url: "https://github.com/langchain-ai/langgraph/blob/1.2.12/libs/langgraph/langgraph/_internal/_config.py"
+  - title: "Workflow Definition: deterministic constraints"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://docs.temporal.io/workflow-definition"
+  - title: "Activity Definition: idempotency"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://docs.temporal.io/activity-definition"
+  - title: "Timers and delays"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://docs.temporal.io/workflow-execution/timers-delays"
+  - title: "Python SDK testing suite"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://docs.temporal.io/develop/python/testing-suite"
+  - title: "temporalio/worker/_worker.py at tag 1.34.0"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://github.com/temporalio/sdk-python/blob/1.34.0/temporalio/worker/_worker.py"
+updated: "2026-10-18"
+---
+
+You have built the purchasing run by hand: a transition table, SQLite checkpoints with compare-and-swap, and an outbox with idempotency keys. Two widely used frameworks package these ideas. Each answers the question of [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) in its own way: after a crash, what runs again? This lesson rebuilds the run in LangGraph 1.2.12 and in Temporal's Python SDK 1.34.0, the versions the exercise project pins. Each part ends with a test that shows exactly what repeats.
+
+## The same run as a LangGraph graph
+
+LangGraph builds a run as a `StateGraph`: nodes are Python functions that return updates to a shared state, and edges say which node runs next. A *conditional edge* calls a routing function to choose among several nodes. That is the branch and loop of [lesson 14.2](/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/). Here is the wiring from the project's `frameworks.py`:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/frameworks.py
+    builder = StateGraph(GraphState)
+    builder.add_node("receive", receive)
+    builder.add_node("check", check)
+    builder.add_node("ask_supplier", ask_supplier)
+    builder.add_node("complete", complete)
+    builder.add_edge(START, "receive")
+    builder.add_edge("receive", "check")
+    builder.add_conditional_edges("check", route, ["ask_supplier", "complete"])
+    builder.add_edge("ask_supplier", "check")
+    builder.add_edge("complete", END)
+    return builder.compile(checkpointer=SqliteSaver(conn))
+```
+
+The `checkpointer` is what makes the run durable. `SqliteSaver`, from the `langgraph-checkpoint-sqlite` package, writes checkpoints to a SQLite file. Each run is a *thread*, named by the `thread_id` in the config, and checkpoints are stored per thread.
+
+## What does a LangGraph restart repeat?
+
+LangGraph's documentation says it "creates a checkpoint at each super-step boundary". A *super-step* is one tick of the graph, in which every node scheduled for that tick runs. Nodes that run one after another fall in separate super-steps. The documentation adds that "you can only resume execution from a checkpoint". So a node that crashes halfway through runs again from its start.
+
+The exercise proves it. The `check` node crashes on its first call. The test then opens a new graph object over the same file, as a restarted process would, and calls `invoke(None, config)` to resume the thread:
+
+```python
+# file: examples/agent-engineering/tests_frameworks/test_state_frameworks.py
+    def test_a_restart_resumes_after_the_last_checkpoint(self):
+        check, received = FlakyCheck(), []
+        with self.assertRaises(RuntimeError):
+            self.open_graph(check, received.append).invoke({"status": "received", "supplier_answered": True}, self.config, durability="sync")
+        # A new graph object over the same file, as after a process restart.
+        final = self.open_graph(check, received.append).invoke(None, self.config, durability="sync")
+        self.assertEqual(final["status"], "completed")
+        self.assertEqual(len(received), 1)  # finished before the crash: not run again
+        self.assertEqual(check.calls, 2)  # interrupted mid-step: runs again
+```
+
+`receive` ran once and `check` ran twice. If `check` had created an invoice before crashing, the invoice would be created twice. A framework checkpoint does not change that. Side effects inside a node still need lesson 14.4's key.
+
+The test passes `durability="sync"`. LangGraph offers three durability modes. With `"sync"`, it persists each checkpoint "synchronously before the next step starts". With `"async"`, it persists "while the next step executes", and the documentation warns it "does not write checkpoints if the process crashes during execution". In the pinned source, `"async"` is the default. Choose `"sync"` when a crash must never lose a finished step.
+
+## The step budget is recursion_limit
+
+LangGraph counts super-steps and raises `GraphRecursionError` when a run exceeds its `recursion_limit`. The exercise sets the limit to 8 in the config. A supplier who never answers then loops `check → ask_supplier → check` until the error stops it. A supplier who answers finishes in three super-steps.
+
+Why set it explicitly? The Graph API page says the default is 1,000 steps since version 1.0.6. The source at tag 1.2.12 sets `DEFAULT_RECURSION_LIMIT` to `10007`, from the environment variable `LANGGRAPH_DEFAULT_RECURSION_LIMIT`. A loop measured against the installed package stopped at 10,007 steps. When documentation and source disagree, the code you run wins, and a budget you set yourself avoids the question entirely.
+
+## The same run as a Temporal workflow
+
+Temporal splits a run in two. A *workflow* is the orchestration code. An *activity* is a function that touches the world: an API call, a database write, a model call. The Temporal server records an *event history* for each workflow, a log of what the workflow asked for and what came back. If a worker dies, another worker rebuilds the workflow by *replaying* that history: it runs the workflow code again from the top, and each activity already recorded as completed returns its stored result without running again.
+
+Replay works only if the workflow code makes "the same Workflow API calls in the same sequence, given the same input". So workflow code may not read the clock, pick random numbers or do I/O directly. Those belong in activities, or in SDK calls whose results are stored in the history. Here is the project's workflow and invoice activity:
+
+```python
+# file: examples/agent-engineering/src/agentlab/state/frameworks.py
+    @activity.defn
+    async def create_invoice(self, draft_json: str) -> str:
+        info = activity.info()
+        # Temporal's recommended key: the same on every retry, unique per workflow run.
+        key = idempotency_key(info.workflow_run_id, info.activity_id)
+        return self.service.create(key, InvoiceDraft.model_validate_json(draft_json))
+
+
+@workflow.defn
+class InvoiceWorkflow:
+    """Deterministic orchestration: no clock, no I/O, only activities and timers."""
+
+    @workflow.run
+    async def run(self, draft_json: str) -> str:
+        await workflow.execute_activity_method(
+            InvoiceActivities.check_purchase, draft_json, start_to_close_timeout=timedelta(seconds=30)
+        )
+        await workflow.sleep(timedelta(days=3))  # a durable timer: the supplier's dispute window
+        return await workflow.execute_activity_method(
+            InvoiceActivities.create_invoice,
+            draft_json,
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(initial_interval=timedelta(seconds=1), maximum_attempts=5),
+        )
+```
+
+`workflow.sleep` creates a *durable timer*. Temporal's documentation says timers are persisted and that "Workers consume no additional resources while waiting for a Timer to fire". The wait survives a worker restart. The import block at the top of `frameworks.py` sits inside `workflow.unsafe.imports_passed_through()`. Temporal re-imports the workflow's module inside a sandbox, an isolated environment, and that block tells it to reuse the already loaded LangGraph and project modules instead.
+
+## What does a Temporal restart repeat, and what proves completion?
+
+The test starts the workflow on a first worker and waits until the history shows the timer started. Then it shuts that worker down. A second worker takes over, and the test waits for the result. Temporal's time-skipping test environment fast-forwards the three days. Its SDK downloads the test server on first use, so the first run needs network access. The accounts system loses the reply to the first `create_invoice` attempt.
+
+The assertions show what happened. `check_purchase` ran once: it completed before the restart, and replay returned its recorded result. `create_invoice` ran twice, because the timeout failed the first attempt and Temporal retried it. Temporal's documentation warns that an activity "may be executed multiple times", even though it "will be observed as completed exactly once". The accounts system still holds one invoice, thanks to the key. The history holds `TimerFired` at least three days after `TimerStarted`, and it ends with `WorkflowExecutionCompleted`. It holds no `ActivityTaskFailed` event for the retried attempt.
+
+So two records answer "did it complete?". The history proves the workflow finished and saw one result. Only the accounts system's record under the key proves one invoice exists.
+
+:::note
+The workers set `max_cached_workflows=0`. A nonzero value makes a worker cache workflows and use "sticky task queues", which route a workflow's next task back to the worker that ran it last. In our trials with the cache on, the handover to the second worker stalled until the test timed out after 30 seconds. With the cache off, every task replays from history on whichever worker picks it up, which is the behaviour this exercise exists to show.
+:::
+
+## Run the exercise
+
+The code is in `src/agentlab/state/frameworks.py` and the tests in `tests_frameworks/test_state_frameworks.py`. They need the optional `frameworks` dependency group. From `examples/agent-engineering/`, run `uv sync --frozen --group frameworks`, then `uv run --frozen python -m unittest discover -s tests_frameworks -p "test_state_frameworks.py"`.
+
+Expected output ends with `Ran 4 tests` and `OK`. A traceback ending in `OutcomeUnknown: reply lost` appears above it. That is the SDK logging the first attempt's injected failure, and it is part of the test. To see the key matter, add `info.attempt` to the operation part of the key in `create_invoice`, so that each attempt gets a different key. The Temporal test then fails with `'AP-0002' != 'AP-0001'`: a second invoice now exists. Choose LangGraph when you want a graph of model and tool steps inside one process. Choose Temporal when a run must wait days, survive worker restarts and retry activities under a server's control. Either way, the key on the external write is your code's job.

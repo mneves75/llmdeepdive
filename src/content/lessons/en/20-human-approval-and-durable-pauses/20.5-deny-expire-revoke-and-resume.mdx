@@ -1,0 +1,130 @@
+---
+id: "20.5-deny-expire-revoke-and-resume"
+track: "20-human-approval-and-durable-pauses"
+order: 5
+title: "Deny, Expire, Revoke and Resume"
+summary: "A wait can end in denial, expiry, revocation or one use. Checking the approval at the moment of use, inside the transaction that queues the effect, makes approval and cancellation racing yield at most one invoice in every order."
+tier: "advanced"
+locale: "en"
+prerequisites: ["20.4-slack-and-teams-approval-adapters"]
+unlocks: []
+analogy: "A cheque can be stopped until the bank pays it. The bank checks the stop list at the counter, at the moment of paying, not when the cheque was written or when the customer walked in, so a stop that arrives one minute before payment wins and a stop that arrives one minute after is too late: the money has left, and getting it back is a new request to the payee. The comparison stops at the counter. A teller handles one customer at a time, while two of our workers can reach the same approval at once, so the check and the payment must happen in one transaction that no other worker can split."
+teachBack:
+  prompt: "A teammate proposes a faster execute: read the status with status(), and if it says approved, call a separate method that marks the row consumed and inserts the outbox row in its own transaction. Using the order approve, worker A reads status, buyer revokes, worker A runs the write, describe what happens under that design and under the course's execute."
+  modelAnswer: "Under the teammate's design, worker A reads approved and decides to proceed. The buyer then revokes, and the row becomes revoked. Worker A's write runs without looking again. If it updates the row unconditionally, it marks a revoked approval consumed and queues the invoice. That is one effect the business had cancelled: a time-of-check to time-of-use race. Under the course's execute, the read and the write happen in one BEGIN IMMEDIATE transaction. Worker A re-reads the row inside it and finds revoked, so it returns cannot execute: revoked and queues nothing. The status worker A saw earlier is only a hint; the decision is made where the effect is queued."
+quiz:
+  - question: "The race test runs the order approve, execute_a, revoke, execute_b. How many invoices end up in the outbox, and what do the last two steps return?"
+    options: ["None, because the revocation cancels the effect that execute_a had queued just before it", "One; revoke is refused because the approval was consumed, and execute_b is refused", "Two, because each worker executes once and each sees an approval when it starts", "One; revoke succeeds and marks the queued invoice as cancelled before delivery"]
+    correctIndex: 1
+    explanation: "execute_a consumes the approval and queues the invoice in one transaction. revoke then finds consumed and returns ok=False, because a queued effect cannot be withdrawn by changing the approval row. execute_b finds consumed too. The test's invariant expects exactly one effect whenever an execute comes after approve and before revoke."
+  - question: "Why does execute re-read the approval inside its own transaction instead of trusting the status the worker read a moment earlier?"
+    options: ["SQLite cannot keep a read result valid across two separate Python function calls on one connection", "Reading twice makes the outbox insert idempotent, so a retried call can never add a second row", "The status can change between check and use, so only a check where the effect is queued counts", "The approval's hash must be recomputed each time, because Decimal amounts can drift in storage"]
+    correctIndex: 2
+    explanation: "This is the time-of-check to time-of-use weakness MITRE lists as CWE-367: a resource changes between the check and its use. Doing the check and the write in one write transaction leaves no gap. Idempotency is the outbox key's job, and Decimal values do not drift."
+  - question: "The invoice was submitted an hour ago. The approver now learns the supplier was wrong and clicks Revoke. What should the system do?"
+    options: ["Revoke the approval and delete the outbox row, so the submission never happened", "Revoke the approval, so accounts payable rejects the invoice automatically", "Refuse the revoke silently, because a consumed approval cannot change its status", "Report that the effect already happened, then start a separate approved correction"]
+    correctIndex: 3
+    explanation: "Once consumed, the invoice left through the outbox, and deleting a local row does not recall it from accounts payable. revoke returns ok=False with status consumed, and that answer must reach a person, not vanish. Undoing the effect, for example with a credit note, is a new action that goes through the policy and its own approval."
+citations:
+  - title: "CWE-367: Time-of-check Time-of-use (TOCTOU) Race Condition"
+    authors: "MITRE"
+    year: 2026
+    url: "https://cwe.mitre.org/data/definitions/367.html"
+  - title: "SQLite: BEGIN TRANSACTION"
+    authors: "SQLite"
+    year: 2026
+    url: "https://www.sqlite.org/lang_transaction.html"
+  - title: "Workflow message passing"
+    authors: "Temporal Technologies"
+    year: 2026
+    url: "https://docs.temporal.io/encyclopedia/workflow-message-passing"
+updated: "2026-10-19"
+---
+
+The approver approves INV-0042 at 10:00 on Wednesday. At 10:00 and a few milliseconds, the buyer cancels the purchase, because the supplier withdrew its offer. At almost the same moment, a worker that read the approval as `approved` begins to submit the invoice. Which wins? The answer the business needs is simple to state: whatever the order, at most one invoice, and none if the cancellation came first.
+
+This lesson finishes the wait from [lesson 20.3](/lessons/20-human-approval-and-durable-pauses/20.3-durable-waits-and-callbacks/). It covers every way a wait can end, the race between approval and cancellation, and how a run continues after a refusal.
+
+## Which endings can a wait have?
+
+A request starts `pending`. From there, a person can *deny* it, the deadline can *expire* it, the business can *revoke* it (cancel the request or withdraw an approval), or the approver can approve it. An approved request has three possible futures: it is *consumed* by its one use, it expires unused, or it is revoked before use. The store's docstring lists the transitions:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/store.py
+    pending  -> approved | denied | expired | revoked
+    approved -> consumed | expired | revoked
+```
+
+`denied`, `expired`, `revoked` and `consumed` are terminal: no transition leaves them. A refused request never becomes approved later by accident. An approved request that sat unused past its deadline cannot be used either, because a three-day-old approval reflects three-day-old knowledge.
+
+## Time of check, time of use
+
+The dangerous moment is the gap between looking and acting. MITRE's catalogue of software weaknesses lists it as CWE-367, the *time-of-check time-of-use* (TOCTOU) race: "The product checks the state of a resource before using that resource", and the resource can change in between. In our case, a worker reads `approved`, the buyer revokes, and the worker submits anyway.
+
+The store closes the gap by making the check and the use one transaction. `execute` is the only path from an approval to an effect:
+
+```python
+# file: examples/agent-engineering/src/agentlab/approval/store.py
+    def execute(self, approval_id: str, draft: InvoiceDraft, now: datetime) -> Outcome:
+        """Time of use: re-check status, draft and deadline, then consume and queue the effect atomically."""
+        with self._transaction():
+            found = self._read(approval_id)
+            if found is None:
+                return Outcome(False, "unknown", f"no approval {approval_id}")
+            request, status, run_id = found
+            if status != "approved":
+                return Outcome(False, status, f"cannot execute: {status}")
+            check = covers(request, draft, now)
+            if not check.allowed:
+                if now >= request.expires_at:
+                    self._move(approval_id, "approved", "expired", now)
+                    return Outcome(False, "expired", check.reason)
+                return Outcome(False, status, check.reason)
+            self._move(approval_id, "approved", "consumed", now)
+            self._db.execute(
+                "INSERT INTO outbox (idempotency_key, run_id, payload, status) VALUES (?, ?, ?, 'pending')",
+                (request.operation_id, run_id, draft.model_dump_json()),
+            )
+            return Outcome(True, "consumed", "effect queued in the outbox")
+```
+
+Inside one `BEGIN IMMEDIATE` transaction, `execute` re-reads the row, checks the status, runs `covers` from [lesson 20.2](/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/) (deadline and hash), marks the approval consumed and inserts the invoice into track 14's outbox. Either all of that commits or none of it does. The outbox row uses the operation id as its idempotency key, so [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/)'s `deliver_pending` sends it, and `reconcile` resolves a lost reply by asking the accounts system what it recorded under that key.
+
+<Figure id="approval-race" />
+
+## Racing approval against cancellation
+
+The race test takes four operations on one request: `approve`, `revoke`, and `execute` from two workers, A and B, each with its own connection to the same file. It runs all 24 orders of them, each against a fresh database:
+
+```python
+# file: examples/agent-engineering/tests/test_approval_lifecycle.py
+    def test_every_interleaving_yields_at_most_one_permitted_effect(self):
+        for order in itertools.permutations(["approve", "revoke", "execute_a", "execute_b"]):
+            with self.subTest(order=order):
+                effects, won = self.run_order(order)
+                position = {step: i for i, step in enumerate(order)}
+                # An effect is permitted iff some execute comes after approve and before revoke.
+                permitted = any(position["approve"] < position[e] < position["revoke"] for e in ("execute_a", "execute_b"))
+                self.assertEqual(effects, 1 if permitted else 0)
+                self.assertLessEqual(sum(step.startswith("execute") for step in won), 1)
+```
+
+The *invariant*, the property that must hold in every order, is stated before the code runs, not read off the results. Exactly one invoice when some execute lands between approval and revocation, none otherwise, and never two executes that both succeed. A separate test plays the scenario from the start of the lesson step by step: worker A reads `approved`, a second worker revokes, worker A executes and is refused, and the outbox stays empty.
+
+:::caveat
+This test is deterministic: it enumerates orders of *whole* operations, with no threads and no sleeps, so it gives the same answer on every run. It does not run two transactions at literally the same instant. That case is SQLite's job: only one write transaction can be active, so a second `BEGIN IMMEDIATE` waits for the first or fails with `SQLITE_BUSY`, and it never interleaves. The `WHERE status = ?` guard in `_move` is a second line of defence. Remove it and every test still passes, because the write lock already serializes whole operations. It stays because it costs nothing and keeps the store correct if someone later weakens the transaction.
+:::
+
+## Revoking after the effect, and resuming after a refusal
+
+Revoking a consumed approval fails. `revoke` returns `ok=False` with status `consumed`, and the outbox still holds one invoice. Changing a row in our database cannot recall an invoice that may already be at accounts payable. The honest response is to tell a person that the effect happened, then start a new action, such as a credit note. That action goes through the policy of [lesson 20.1](/lessons/20-human-approval-and-durable-pauses/20.1-decide-when-approval-is-needed/) and gets its own approval like any other irreversible write.
+
+A run continues after a denial or an expiry by asking again, never by reusing the old answer. In `test_a_denied_run_resumes_with_a_new_request`, the approver denies version 1. The corrected draft is version 2 at USD 9,500.00. The old approval cannot cover it, because its hash differs, and the store refuses it. The run opens a new request, `ap-2`, the approver approves it, and `execute` queues exactly one invoice. Resuming after a crash needs no special code: a new process calls `waiting()` and finds every request still pending, as in lesson 20.3.
+
+Temporal's version of these endings uses the same ideas. Cancellation would be one more message into the workflow, a Signal or an Update, as Temporal's message-passing documentation describes. The workflow's check before submitting would sit in the same deterministic code that runs the activity. This lesson tests only the SQLite version.
+
+## Run the exercise
+
+The code is in `src/agentlab/approval/store.py` and the tests in `tests/test_approval_lifecycle.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_approval_lifecycle.py"`. Expected output ends with `Ran 9 tests` and `OK`. The race test counts as one test with 24 subtests.
+
+The other tests cover one use (a second execute is refused), a pending request that cannot run, an edited draft, an approval that lapses unused, a revoked request that cannot be approved, a revocation after execution, the revocation between check and use, and the resume after denial. The first test is also the positive control: an approved, unchanged draft produces exactly one call to the fake accounts system, so a store that refused everything would fail. Now break the time-of-use check. In `execute`, change `if status != "approved":` to `if status not in ("approved", "consumed"):` and run again. The run reports five errors: `test_an_approved_draft_is_executed_once_through_the_outbox` and four orders of the race test. In each, a second execute gets past the status check, and only the compare-and-swap in `_move`, raising `StaleWrite`, stops a second invoice. Restore the line.

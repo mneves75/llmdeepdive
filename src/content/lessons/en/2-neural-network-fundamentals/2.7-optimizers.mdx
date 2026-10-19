@@ -11,20 +11,20 @@ unlocks: ["2.8-initialization-normalization-residuals"]
 analogy: "Four cyclists descend a winding track. Plain SGD steers only from the current slope. Momentum carries velocity, smoothing alternating turns. Adam keeps separate gauges for recent direction and squared magnitude on every control, taking smaller steps where gradients are consistently large. AdamW also applies a deliberate shrinkage to weights as a separate maintenance rule. No bicycle wins every track; schedule, surface, and tuning determine the race."
 teachBack:
   prompt: "Explain how Adam's second moment gives each coordinate its own effective step size, why AdamW decouples weight decay, and why Adam's additional state makes full training much more memory-intensive than inference."
-  modelAnswer: "Adam keeps two values per coordinate: a first moment m (a smoothed gradient) and a second raw moment v (a smoothed squared gradient). It bias-corrects both and steps by m̂ divided by the square root of v̂ plus epsilon. Dividing by the typical magnitude makes the step roughly scale-free per coordinate. A steep direction and a shallow one therefore advance at comparable rates under one global learning rate. Adding an L2 term to the gradient does not survive that division as uniform shrinkage, so AdamW applies decay directly to the parameters after the adaptive step. The two moments, and often a higher-precision master copy, live alongside weights, gradients, and activations. Their exact memory depends on dtype, bookkeeping, and sharding, and the full arithmetic belongs to lesson 9.3."
+  modelAnswer: "Adam keeps two values per coordinate: a first moment m (a smoothed gradient) and a second raw moment v (a smoothed squared gradient). It bias-corrects both and steps by m̂ divided by the square root of v̂ plus epsilon. Dividing by the typical magnitude makes the step roughly scale-free per coordinate. A steep direction and a shallow one therefore advance at comparable rates under one global learning rate. Adding an L2 term to the gradient does not survive that division as uniform shrinkage, so AdamW applies decay directly to the parameters, computed from their values before the step and subtracted together with the adaptive update. The two moments, and often a higher-precision master copy, live alongside weights, gradients, and activations. Their exact memory depends on dtype, bookkeeping, and sharding, and the full arithmetic belongs to lesson 9.3."
 quiz:
   - question: "Lesson 2.6 showed one global learning rate cannot serve a steep and a shallow direction at once. How does Adam attack that specific problem?"
-    options: ["It shrinks the dataset", "It computes the exact Hessian", "It removes the learning rate entirely", "It divides each coordinate's step by the square root of that coordinate's recent squared-gradient average, so steps become roughly scale-free per direction"]
+    options: ["It shrinks the dataset", "It computes the exact Hessian", "It gives every coordinate its own learning rate, tuned by hand before training starts", "It divides each coordinate's step by the root of its recent squared-gradient average"]
     correctIndex: 3
-    explanation: "The second moment acts as a cheap per-coordinate normalizer, approximating useful geometric behavior without forming a second-derivative matrix."
+    explanation: "The second moment acts as a cheap per-coordinate normalizer, so steps become roughly scale-free per direction, approximating useful geometric behavior without forming a second-derivative matrix. Nothing is tuned by hand: each coordinate's scale comes from its own gradients."
   - question: "What is AdamW's defining change relative to Adam with an L2 penalty added to the loss?"
-    options: ["Weight decay is applied directly to the parameters, outside the adaptive gradient computation", "It removes the moment estimates", "It uses no learning rate", "It guarantees better generalization"]
+    options: ["Weight decay acts on the parameters directly, outside the adaptive step", "It just uses a larger L2 coefficient", "It uses no learning rate", "It guarantees better generalization"]
     correctIndex: 0
-    explanation: "Passing the penalty through Adam's per-coordinate division makes shrinkage depend on gradient history, which is not what weight decay is supposed to mean."
+    explanation: "Passing the penalty through Adam's per-coordinate division makes shrinkage depend on gradient history, which is not what weight decay is supposed to mean. No single larger coefficient repairs that, because the division scales each coordinate differently."
   - question: "Why does AdamW make full-training memory much larger than inference memory?"
-    options: ["It duplicates the tokenizer for every layer", "It keeps two moment tensors per trained parameter, often alongside a higher-precision master copy, gradients, and activations", "It stores the complete training corpus on the GPU", "It expands the vocabulary after every update"]
+    options: ["It keeps a second full copy of the model so it can roll back a bad step", "It keeps two moment tensors per trained parameter, plus gradients and activations", "It keeps a copy of every past gradient so that it can average over the training history", "It expands the vocabulary after every update"]
     correctIndex: 1
-    explanation: "The exact byte budget depends on dtypes, copies, and sharding and is derived once in lesson 9.3; the durable point here is that optimizer state adds tensors for every trained parameter."
+    explanation: "Often a higher-precision master copy of the weights joins them. The moments are running averages updated in place, not a stored history of past gradients. The exact byte budget depends on dtypes, copies, and sharding and is derived once in lesson 9.3; the durable point here is that optimizer state adds tensors for every trained parameter."
 citations:
   - title: "Adam: A Method for Stochastic Optimization"
     authors: "Diederik P. Kingma and Jimmy Ba"
@@ -42,7 +42,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 [Lesson 2.6](/lessons/2-neural-network-fundamentals/2.6-gradient-descent-loss-landscape/) left a concrete failure on the table. In a bowl a hundred times steeper along one axis than another, any learning rate small enough to keep the steep direction stable leaves the shallow direction crawling. Any rate fast enough for the shallow direction blows the steep one up. Backpropagation cannot help, because it reported both gradients correctly. The fix has to live in how the update uses them, which is what an **optimizer** is.
@@ -71,7 +71,7 @@ If a coordinate's gradient has a steady magnitude $|g|$, then $\hat m\approx g$ 
 
 Now the classic wrong turn, which shipped in real code for years. You want **regularization**, any technique that discourages fitting the training sample at the expense of new data (overfitting, the subject of [lesson 2.9](/lessons/2-neural-network-fundamentals/2.9-overfitting-regularization-bitter-lesson/)). So you add an L2 penalty (a term proportional to the sum of squared weights) to the loss. Its gradient contribution is $\lambda\theta$, and you hand the sum to Adam. Reason about what happens next. That term goes into $m$ and $v$ along with everything else, and then the whole thing is divided by $\sqrt{\hat v}$. A parameter whose gradients happen to be large gets its decay shrunk; a parameter with tiny gradients gets its decay amplified.
 
-The intended behavior was to pull every weight toward zero by the same proportion each step. That is not what occurs, and the strength of the regularizer now depends on unrelated gradient statistics. **AdamW** fixes it by decoupling: compute the adaptive update, apply it, then separately shrink the parameters by $\eta\lambda\theta$. The names are nearly identical but the operations differ, and that difference is why essentially every large model today is trained with AdamW rather than Adam plus L2.
+The intended behavior was to pull every weight toward zero by the same proportion each step. That is not what occurs, and the strength of the regularizer now depends on unrelated gradient statistics. **AdamW** fixes it by decoupling: the decay term never enters $m$ or $v$. Each step subtracts the adaptive update and a separate shrinkage $\eta\lambda\theta$ together, where $\theta$ is the parameter value from before the step (line 12 of Algorithm 2 in the AdamW paper). Shrinking the already-updated value instead would also scale the adaptive step by $1-\eta\lambda$, a small but different rule. The names are nearly identical but the operations differ, and that difference is why essentially every large model today is trained with AdamW rather than Adam plus L2.
 
 Not every parameter should decay. Biases and normalization scale parameters are commonly placed in a no-decay group. That configuration detail is a frequent source of silent bugs, so log which parameter names entered which group and fail loudly on unexpected omissions.
 

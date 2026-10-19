@@ -14,17 +14,17 @@ teachBack:
   modelAnswer: "Cada operação em modo eager paga um frame Python, um dispatch e um lançamento de kernel do lado da CPU. Um modelo de 64 camadas dispara da ordem de dois mil lançamentos para produzir um token. A alguns microssegundos cada, isso são milissegundos de trabalho de host por token. Esse tempo de host é um teto que continua de pé mesmo com uma GPU infinitamente rápida. O teto de lançamento importa porque a aula 7.3 já mostrou que o decode não é compute-bound. O trabalho de GPU por token é pequeno, então os dois tetos ficam a um fator pequeno um do outro. No momento em que a quantization eleva o teto de banda, o teto de lançamento passa a ser o que limita a velocidade. O torch.compile traça o modelo em um graph e gera kernels fundidos, cortando tanto o tráfego de memória quanto o número de lançamentos. O CUDA graph capture grava a sequência de lançamentos restante uma vez e a reproduz como uma única submissão. Isso remove quase todo o custo de host por lançamento, ao preço de exigir shapes estáticos e endereços de memória estáticos."
 quiz:
   - question: "Pela aula 7.3, por que a fase de decode é o alvo natural do graph capture enquanto o prefill em geral não é?"
-    options: ["O prefill não tem kernels a capturar","O decode repete um passo curto e uniforme para cada token, enquanto o prefill é compute-bound com shapes dependentes da entrada que forçariam recaptura constante","O decode é compute-bound e o prefill é memory-bound","O graph capture só funciona na primeira requisição"]
+    options: ["O prefill roda como um único kernel grande, então não há buracos entre lançamentos para um graph remover", "O decode repete um passo pequeno e de shape igual por token; o prefill varia de shape e kernels grandes amortizam lançamentos", "O decode é compute-bound e o prefill é memory-bound, então só o decode ganha com cortar trabalho aritmético", "Um graph capturado reproduz os valores de token da primeira requisição, então um graph de prefill erraria o texto de prompts novos"]
     correctIndex: 1
-    explanation: "A aula 7.3 separou as duas fases: o prefill faz trabalho matricial grande e de shape variável, onde o overhead de lançamento já é amortizado, e o decode faz muitos passos minúsculos e idênticos, onde ele domina."
+    explanation: "A aula 7.3 separou as duas fases: o prefill faz trabalho matricial grande e de shape variável, onde o overhead de lançamento já é amortizado, e o decode faz muitos passos minúsculos e idênticos, onde ele domina. Um graph grava lançamentos e endereços de buffer, não valores de token, e os tipos de limite são o contrário."
   - question: "O que o CUDA graph capture exige da memória que ele toca?"
-    options: ["Que todos os tensors estejam na CPU","Que o modelo seja quantizado antes","Endereços estáticos — o graph reproduzido reexecuta os lançamentos gravados contra os mesmos buffers, então os tensors não podem ser realocados entre passos","Nada; os endereços são resolvidos no momento da reprodução"]
+    options: ["Valores estáticos: todo tensor de entrada precisa ter os mesmos números a cada reprodução, então tokens novos forçam recaptura", "Tensors residentes no host: o graph lê as suas entradas da memória fixada da CPU no início de cada passo", "Endereços estáticos: a reprodução reusa os buffers gravados, então os tensors não podem mudar de lugar", "Nada em especial: a reprodução procura o endereço atual de cada tensor, então o alocador pode mover buffers à vontade"]
     correctIndex: 2
-    explanation: "É por isso que serving engines pré-alocam blocos de KV e mantêm a block table em um buffer fixo de device que atualizam no lugar, em vez de alocar a cada passo."
+    explanation: "É por isso que serving engines pré-alocam blocos de KV e mantêm a block table em um buffer fixo de device que atualizam no lugar, em vez de alocar a cada passo. O conteúdo desses buffers muda a cada passo; só os endereços precisam ficar fixos."
   - question: "Você embrulha o modelo em torch.compile e cronometra a chamada seguinte, que sai mais lenta que o eager. O que deu errado?"
-    options: ["A compilação sempre deixa modelos mais lentos","Os pesos foram corrompidos pela compilação","O torch.compile não suporta bf16","A primeira chamada inclui o tracing e a geração de código; você mediu o compilador, não o modelo compilado"]
+    options: ["O torch.compile troca velocidade por exatidão, então modelos compilados são sempre um pouco mais lentos que o eager", "A compilação levou os pesos de volta para a CPU, então a chamada pagou uma cópia de host para device por camada", "O torch.compile converte em silêncio um modelo bf16 para float32, o que dobra os bytes lidos a cada passo", "A primeira chamada inclui o tracing e a geração de código; você mediu o compilador, não o modelo compilado"]
     correctIndex: 3
-    explanation: "Faça o warm-up até a compilação e quaisquer recompilações por shape estabilizarem, e só então meça o decode em regime permanente."
+    explanation: "Faça o warm-up até a compilação e quaisquer recompilações por shape estabilizarem, e só então meça o decode em regime permanente. A compilação não move pesos nem muda o dtype deles, e um modelo compilado já aquecido costuma ser mais rápido, não mais lento."
 citations:
   - title: "torch.compiler Documentation"
     authors: "PyTorch Foundation"
@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Você perfila o decode de fluxo único no Qwen3.8-27B (uma requisição, um token por vez) e o trace é quase todo buraco. A GPU faz uma rajada de trabalho, fica ociosa, faz outra rajada, fica ociosa de novo. A utilização fica baixa, o consumo de energia nunca chega perto do limite da placa, e trocar por um acelerador mais rápido quase não muda nada. Nada está quebrado. Você bateu num gargalo que nem sequer está na GPU.
@@ -104,7 +104,7 @@ Para este modelo, ambos os remédios têm um asterisco de arquitetura híbrida q
 ## O que nenhuma das duas técnicas muda
 
 :::warning
-Nenhuma das duas técnicas muda a matemática, mas ambas podem mudar a saída. A fusão altera a ordem de acumulação, e um kernel compilado pode somar os números numa sequência diferente da do eager. Então os últimos bits de resultados em bf16 se movem, e o sampling pode desempatar de outro jeito. Isso é esperado e aceitável; descobrir isso durante um incidente com cliente não é. Rode de novo o teste diferencial da [aula 8.1](/pt-br/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) contra o eager depois de toda mudança relacionada a compilação.
+Nenhuma das duas técnicas muda a matemática, mas ambas podem mudar a saída. A fusão altera a ordem de acumulação, e um kernel compilado pode somar os números numa sequência diferente da do eager. Então os últimos bits de resultados em bf16 se movem, e um quase empate entre dois tokens pode se resolver para o outro lado, tanto no decoding guloso quanto no sampling, e depois disso o resto do texto pode diferir. Isso é esperado e aceitável; descobrir isso durante um incidente com cliente não é. Rode de novo o teste diferencial da [aula 8.1](/pt-br/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) contra o eager depois de toda mudança relacionada a compilação: logits dentro da tolerância, divergências só em quase empates e checagens de tarefa inalteradas.
 :::
 
 Guarde a contabilidade, não as flags. O eager gasta seu tempo dizendo à GPU o que fazer. A compilação reduz o quanto é preciso dizer, e o graph capture reduz a frequência com que você precisa dizer. Nenhuma das duas compra uma multiplicação matricial mais rápida. Elas compram de volta os buracos no trace, e esses buracos são a razão inteira pela qual um modelo 27B consegue deixar uma placa caríssima quase ociosa.

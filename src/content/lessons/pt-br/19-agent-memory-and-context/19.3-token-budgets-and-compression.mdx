@@ -1,0 +1,114 @@
+---
+id: "19.3-token-budgets-and-compression"
+track: "19-agent-memory-and-context"
+order: 3
+title: "Orçamentos de tokens e compressão"
+summary: "A janela de contexto de uma requisição precisa comportar as instruções, os schemas de ferramentas, o texto recuperado, o histórico da conversa e uma reserva para a resposta. Quando o histórico não cabe, comprima-o e julgue a compressão pelos compromissos e negações que ela perdeu, não só pelos tokens que economizou."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["19.2-ingestion-and-retrieval", "1.4-sentencepiece-byte-level-token-counts"]
+unlocks: ["19.4-scoring-eviction-and-forgetting"]
+lab:
+  id: "context-budget"
+  kind: "calculator"
+  budgetKb: 12
+analogy: "Arrumar uma mala de mão com limite de peso. Algumas coisas entram primeiro porque a viagem fracassa sem elas: o passaporte, o carregador, as passagens. O espaço para o que você comprar no caminho fica vazio de propósito. As roupas ocupam o que sobra e, quando não cabem, você dobra ou deixa algumas para trás. Deixar o único casaco quente numa viagem para a serra economiza o mesmo peso que deixar uma camisa sobrando, então a pergunta nunca é só quanto você economizou. A comparação para na balança. O peso de uma mala é o mesmo em qualquer balança, enquanto a contagem de tokens de um texto depende do tokenizador que conta."
+teachBack:
+  prompt: "Mantenha o exemplo resolvido (janela de 32.768 tokens, 4.096 reservados, 1.200 de instruções, seis trechos de 800, um histórico de 21.000 tokens), mas o catálogo de ferramentas cresce de 2.400 para 6.000 tokens de schemas. Qual é o novo limite do histórico, quanto a requisição passa do limite, quais são duas formas de abrir espaço além de comprimir o histórico, e o que o teste de compressão ainda precisa medir?"
+  modelAnswer: "O limite de entrada continua 32.768 menos 4.096, que dá 28.672 tokens. As partes fixas passam a 1.200 mais 6.000 mais 4.800, que dá 12.000. Então o histórico pode usar no máximo 28.672 menos 12.000, que dá 16.672 tokens. A requisição agora usa 12.000 mais 21.000, que dá 33.000, então passa 4.328 tokens do limite. Uma forma de abrir espaço é enviar só os schemas das ferramentas que este passo pode usar. Outra é recuperar menos trechos, ou trechos menores. Comprimir o histórico de 21.000 para 16.672 ainda exige um teste que conte quais compromissos e negações sobrevivem. Tokens economizados, sozinhos, não mostram se uma proibição como não pagar o PO-1003 foi perdida ou invertida."
+quiz:
+  - question: "Mantenha as partes e a reserva do exemplo resolvido, mas use uma janela de 65.536 tokens. Qual pode ser o tamanho do histórico da conversa?"
+    options: ["57.136 tokens, porque só os 8.400 tokens fixos saem da janela", "61.440 tokens, porque a reserva para a saída já inclui as partes fixas", "53.040 tokens: 61.440 para a entrada, menos os 8.400 fixos", "32.768 tokens, porque o histórico pode ocupar no máximo metade da janela"]
+    correctIndex: 2
+    explanation: "A reserva sai do topo primeiro, 65.536 − 4.096 = 61.440 para a entrada, e as partes fixas saem disso, deixando 53.040. Pular a reserva dá 57.136, o que deixa o modelo sem espaço para responder. A reserva guarda só a resposta, e nada no orçamento limita o histórico a metade da janela."
+  - question: "Depois de drop_stopwords, a fala \"Do not pay PO-1003 until the gloves arrive.\" vira \"pay PO-1003 gloves arrive.\". Como score() relata esse fato?"
+    options: ["Mantido, porque todos os termos do fato ainda aparecem juntos numa fala", "Perdido, porque a fala não bate mais palavra por palavra com a frase original", "Mantido com aviso, porque as falas comprimidas ficam abaixo do orçamento", "Invertido: os termos sobrevivem sem a palavra de negação, e agora ele instrui"]
+    correctIndex: 3
+    explanation: "score encontra pay, po-1003 e gloves numa fala, mas nenhum not, então a proibição virou instrução. Contar como mantido é exatamente o erro que esconde esse defeito. score nunca compara frases inteiras, e caber no orçamento não diz nada sobre o significado."
+  - question: "Um compressor corta um histórico de 21.000 para 12.000 tokens. O que você precisa medir antes de dizer que ele é melhor que o atual?"
+    options: ["Quais dos compromissos e negações pontuados ele mantém, perde ou inverte", "Os tokens que economizou, já que um histórico menor abre espaço para trechos", "A latência por chamada, já que o modelo agora lê menos tokens de entrada", "Se o resumo é fluente, já que um texto fluente preserva os fatos"]
+    correctIndex: 0
+    explanation: "Um compressor pode economizar tokens e perder justamente a proibição que importa. No exercício, tirar stopwords mantém mais falas que a janela simples e ainda inverte duas negações. Tokens e latência valem ser relatados ao lado dos fatos, não no lugar deles, e fluência não é evidência de que uma negação sobreviveu."
+citations:
+  - title: "Lost in the Middle: How Language Models Use Long Contexts"
+    authors: "Nelson F. Liu et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2307.03172"
+  - title: "MemGPT: Towards LLMs as Operating Systems"
+    authors: "Charles Packer et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.08560"
+updated: "2026-10-19"
+---
+
+O assistente de compras roda num modelo com janela de contexto de 32.768 tokens. Uma requisição leva 1.200 tokens de instruções de sistema, 2.400 tokens de schemas de ferramentas, seis trechos recuperados de 800 tokens cada e um histórico de conversa de 50 falas com 21.000 tokens. Você quer manter 4.096 tokens livres para a resposta. A requisição cabe e, se não couber, o que precisa ceder? Esta aula faz a conta, depois comprime uma conversa real de 50 falas e mede o que a compressão perdeu.
+
+## Para onde vai uma janela de contexto?
+
+Uma *janela de contexto* é o número de tokens que uma chamada ao modelo consegue conter. Ela contém o prompt e os tokens que o modelo gera, então um prompt que enche a janela não deixa espaço para resposta. O primeiro passo, portanto, é reservar a saída:
+
+- limite de entrada: 32.768 − 4.096 = 28.672 tokens.
+
+Algumas partes da requisição são fixas neste passo: as instruções de sistema, os schemas de ferramentas (as descrições das ferramentas que o modelo pode chamar) e os trechos recuperados. Juntas, elas ocupam 1.200 + 2.400 + 6 × 800 = 8.400 tokens. O histórico da conversa fica com o resto. A requisição como está usa 8.400 + 21.000 = 29.400 tokens, 728 acima do limite de entrada. O histórico precisa encolher para no máximo 28.672 − 8.400 = 20.272 tokens.
+
+Mude a janela e o veredito muda. Com 131.072 tokens, a mesma requisição cabe com 97.576 de folga. Com 8.192 tokens, o limite de entrada é 4.096, que não comporta nem os 8.400 tokens fixos, então nenhuma compressão do histórico resolve; é preciso enviar menos schemas ou menos trechos. A calculadora abaixo começa desses números e deixa você mexer em cada parte.
+
+## Contar tokens, de forma aproximada e de propósito
+
+Todos os números acima supõem que você contou com o tokenizador do próprio modelo. A [aula 1.4](/pt-br/lessons/1-text-to-tensors/1.4-sentencepiece-byte-level-token-counts/) mostrou por quê: contagens de tokens pertencem a um tokenizador, não ao texto, e a mesma frase custa quantidades diferentes em inglês e em português. O exercício precisa rodar offline sem modelo, então usa uma aproximação deliberada, rotulada como tal no código:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/compression.py
+def approx_tokens(text: str) -> int:
+    """About four characters per token, rounded up.
+
+    shortcut: an approximation, not any model's tokenizer; real counts differ
+    by tokenizer and language (lesson 1.4). Count with the model's own
+    tokenizer before trusting a budget that is close to the limit.
+    """
+    return math.ceil(len(text) / 4)
+```
+
+Um orçamento com margem larga sobrevive a uma contagem aproximada. Um orçamento 728 tokens acima, ou 728 abaixo, não: meça com o tokenizador real.
+
+## Caber não é o mesmo que ser usado
+
+Um histórico que cabe não é um histórico que o modelo vai usar bem. Liu et al. (2023) mediram perguntas e respostas sobre vários documentos e recuperação de pares chave-valor. A acurácia muitas vezes era maior quando a informação relevante estava no começo ou no fim da entrada e caía quando ela estava no meio, inclusive em modelos feitos para entradas longas. O tamanho da entrada também custa latência e memória de inferência; o KV cache, que cresce a cada token, é dimensionado na [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/). Capacidade, posição, latência e memória são quatro perguntas diferentes, e uma janela maior responde só a primeira.
+
+## Comprimir cinquenta falas, medindo pelos fatos perdidos
+
+A conversa do exercício é pequena o bastante para ler: 50 falas alternadas, 937 tokens aproximados, gerada por `conversation()` em `compression.py`. Seis falas do usuário declaram os fatos que importam; o resto é conversa de rotina sobre transportadoras, chamados e reuniões. Três fatos são compromissos (pagar o PO-1001 em 30 dias, um limite de aprovação de USD 5.000, consultar o líder do almoxarifado antes de aceitar uma entrega parcial) e três são negações (nunca pedir prateleiras ao Supplier Gamma, não juntar o PO-1002 e o PO-1004 numa fatura, não pagar o PO-1003 até as luvas chegarem). O orçamento é de 500 tokens. Os números da calculadora e os do exercício são a mesma conta em dois tamanhos.
+
+`score` confere cada fato contra as falas comprimidas. Um fato é *mantido* quando uma fala ainda tem todos os seus termos-chave e, numa negação, a palavra que nega. Ele é *invertido* quando os termos sobrevivem mas a palavra de negação não, e *perdido* nos outros casos. Três compressores, todos dentro de 500 tokens:
+
+| Compressor | Tokens | Falas mantidas | Mantidos | Perdidos | Invertidos |
+|---|---|---|---|---|---|
+| `recent_window` | 497 | 25 | 2 | 4 | 0 |
+| `drop_stopwords` | 500 | 35 | 1 | 3 | 2 |
+| `pin_ledger` | 490 | 26 | 6 | 0 | 0 |
+
+`recent_window` mantém as falas mais novas que cabem, da fala 25 em diante, então os quatro fatos declarados antes dela se perdem. `drop_stopwords` apaga palavras pequenas de todas as falas, usando uma lista de stopwords que contém *not* e *never*. Ela comporta mais falas e é a pior das três: "Do not pay PO-1003 until the gloves arrive." vira "pay PO-1003 gloves arrive.", uma proibição transformada em instrução. Um fato invertido é pior que um perdido, porque o modelo agora lê o contrário do que o comprador disse.
+
+`pin_ledger` mantém cada compromisso sinalizado palavra por palavra e preenche o resto com falas recentes:
+
+```python
+# file: examples/agent-engineering/src/agentlab/memory/compression.py
+    ledger = [t for t in turns if t.fact]
+    remaining = budget - total_tokens(ledger)
+    if remaining < 0:
+        raise ValueError(f"the commitments alone need {total_tokens(ledger)} tokens; the budget is {budget}")
+    recent = recent_window([t for t in turns if not t.fact], remaining)
+    return sorted(ledger + recent, key=lambda t: t.index)
+```
+
+As seis falas sinalizadas custam 85 tokens, e a chamada falha de forma explícita quando só elas passam do orçamento, em vez de cortar uma para caber. O MemGPT (Packer et al., 2023) é um design publicado com o mesmo espírito: ele move dados entre um contexto limitado e um armazenamento externo, em vez de confiar que a janela guarde tudo.
+
+:::caveat
+O registro de compromissos funciona aqui porque o controlador sinaliza um compromisso quando o usuário o declara. Num sistema real, essa marca vem de uma etapa de extração, que também pode perder um compromisso, e `score` é como você descobriria. Um resumo escrito por modelo seria um quarto compressor; pontuá-lo exige um modelo, então o CI do curso não roda um, mas você o pontuaria com os mesmos fatos.
+:::
+
+## Rode o exercício
+
+O módulo é `src/agentlab/memory/compression.py`; os testes estão em `tests/test_memory_compression.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_memory_compression`. A saída termina com `Ran 9 tests` e `OK`. Um teste confere a função Python `context_budget` contra todos os números do exemplo resolvido desta aula, então o texto e a calculadora não podem divergir.
+
+Para ver a conferência de fatos pegar uma perda real, troque `ledger = [t for t in turns if t.fact]` por `ledger = []`. `pin_ledger` passa a encher o orçamento só com conversa de rotina: `test_a_pinned_ledger_keeps_every_fact_within_budget` falha com os seis fatos perdidos, mesmo com o resultado cabendo no orçamento, e `test_a_ledger_larger_than_the_budget_is_an_error_not_a_silent_cut` falha porque um registro vazio nunca passa de nada. Restaure a linha antes de seguir.

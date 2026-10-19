@@ -38,13 +38,11 @@ const SHARED_TERMS = [
  * aliases that only Vite resolves.
  */
 function registryIds() {
-  const files = [
-    'src/lib/figures/1-text-to-tensors.ts',
-    'src/lib/figures/4-transformer.ts',
-    'src/lib/figures/7-inference-and-efficiency.ts',
-    'src/lib/figures/9-hardware-and-infrastructure.ts',
-    'src/lib/figures/10-video-and-world-models.ts',
-  ]
+  // Exactly the track files the registry imports, so a new track's figures
+  // are checked the moment index.ts registers them.
+  const index = readFileSync('src/lib/figures/index.ts', 'utf8')
+  const files = [...index.matchAll(/from '\.\/(\d+-[a-z0-9-]+)'/gu)].map((match) => `src/lib/figures/${match[1]}.ts`)
+  if (files.length === 0) throw new Error('src/lib/figures/index.ts imports no track figure files')
   const entries = new Map()
   for (const file of files) {
     let source

@@ -1,0 +1,138 @@
+---
+id: "22.3-supervisor-and-peer-topologies"
+track: "22-multi-agent-systems-and-a2a"
+order: 3
+title: "Supervisor and Peer Topologies"
+summary: "A supervisor owns assignment, cancellation and the final state; peers share state and must guard it themselves. Refuse lost updates with compare-and-swap, refuse wait cycles before anyone starts, and end every fan-out in a defined state with bounded cleanup."
+tier: "frontier"
+locale: "en"
+prerequisites: ["22.2-typed-handoffs", "14.4-replay-and-side-effects"]
+unlocks: ["22.4-a2a-interoperability"]
+analogy: "A kitchen with a head chef works differently from cooks sharing one whiteboard. The head chef hands out the orders, calls a dish off when the fish runs out, and decides what the table is told. Cooks at a shared whiteboard must not wipe each other's notes, and two cooks each waiting for the other's sauce will wait all night unless someone notices before service. The comparison stops at speed and at forgetting: agents rewrite the board many times a second and remember nothing between calls, so the rules about who writes and who waits have to live in code, not in anyone's attention."
+teachBack:
+  prompt: "The team adds a fifth child to the supervisor: send_reminder_email, marked optional, which emails the supplier before the invoice is drafted. One run fails on a required child after the email has already gone out. Using this lesson, say what state the run ends in, what undo can and cannot do for the email, and how you would change the design."
+  modelAnswer: "The required failure makes the run end as failed. The supervisor cancels children still running and runs undo for children that finished. An email that has been sent cannot be taken back, so no undo exists for it. The best undo could do is send a correction, which is a new external effect, not a reversal. So the design is wrong: an irreversible effect should not run inside a fan-out that can still fail. I would move the email after the fan-out completes, behind the outbox of lesson 14.4, so it is sent once and only when the run has succeeded. If the email must go early, it should be its own decided step with an idempotency key, not an optional child. Optional means its failure does not stop the run, not that its effects are harmless."
+quiz:
+  - question: "A supervisor runs three children. reserve-number (required, with an undo) and po-1003 (required) finish; supplier-rating (optional) raises. What does supervise return?"
+    options: ["failed, since any child that raises fails the whole fan-out at once", "partial, with both results kept and nothing undone or cancelled", "completed, since optional children are left out of the status", "partial, and reserve-number is undone, because one child failed"]
+    correctIndex: 1
+    explanation: "Only a required failure fails the run and triggers cancellation and undo. An optional failure is recorded in failed and makes the status partial, while the finished results are kept. Leaving the failure out of the status would hide it; undoing reserve-number would throw away good work the run still uses."
+  - question: "A peer plan says the researcher waits on the reviewer (for the report format), the reviewer waits on the coder and the coder waits on the researcher. What does plan_peers do?"
+    options: ["Starts all three and lets the step budget end the run if they stall", "Returns an order starting with the researcher, the first peer listed", "Raises DeadlockRefused naming the cycle before any peer has started", "Starts the peers without waits first, then the cycle's members after"]
+    correctIndex: 2
+    explanation: "The waits form a cycle, so no order can satisfy them and each peer would wait forever for another. plan_peers refuses the plan before anything runs. A step budget would stop the run only after wasting it, and starting peers in some order would still leave the cycle members blocked."
+  - question: "Two workers append evidence to one run at the same moment through add_evidence with attempts=3, and the second save raises StaleWrite. What happens next?"
+    options: ["Its evidence is dropped, because compare-and-swap keeps the first write", "Its write replaces the first one, because it carries the newer version", "The run fails, because a conflict means the shared state is corrupted", "It reads the run again, appends to that newer state and saves once more"]
+    correctIndex: 3
+    explanation: "StaleWrite means someone committed after this worker read the run. add_evidence reads again and appends to the newer state, so both pieces of evidence survive. Compare-and-swap refuses the stale write; it never overwrites, and the state is not corrupted. Only if every attempt loses does it raise Contention."
+citations:
+  - title: "Coroutines and Tasks: Task Cancellation (Python 3.13 documentation)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/asyncio-task.html"
+  - title: "A Critique of ANSI SQL Isolation Levels, Proceedings of ACM SIGMOD 1995"
+    authors: "Hal Berenson, Phil Bernstein, Jim Gray, Jim Melton, Elizabeth O'Neil and Patrick O'Neil"
+    year: 1995
+    url: "https://arxiv.org/abs/cs/0701157"
+  - title: "How we built our multi-agent research system"
+    authors: "Jeremy Hadfield, Barry Zhang, Kenneth Lien, Florian Scholz, Jeremy Fox and Daniel Ford, Anthropic"
+    year: 2025
+    url: "https://www.anthropic.com/engineering/multi-agent-research-system"
+updated: "2026-10-18"
+---
+
+Four children run at once for one purchasing run. The first reserves invoice number INV-0001. The second finds that PO-1003's record is missing and raises an error. The third is still waiting on a slow supplier portal for PO-1004. What state is the run in now, who decides it, and what happens to INV-0001?
+
+Without an owner the answer is "whatever happened last". This lesson gives each question a defined answer, in code that the tests run deterministically: no sleeps, no real threads racing, and every interleaving written out step by step.
+
+## Who owns the run?
+
+A *topology* is the shape of who talks to whom. In a *supervisor* topology one coordinator hands out the work, collects the results and decides the run's final state. The orchestrator-workers design of [lesson 22.1](/lessons/22-multi-agent-systems-and-a2a/22.1-decide-whether-to-divide-work/) is one. In a *peer* topology agents work side by side, reading and writing shared state or waiting on each other's output, and no single agent decides for all.
+
+Neither is safer by default. A supervisor is one place for cancellation and cleanup, and also one place that can stall: Anthropic's research system runs its subagents synchronously, which "simplifies coordination, but creates bottlenecks." Peers avoid that bottleneck but must guard shared state and waits themselves. The rest of the lesson takes the peer problems first, then the supervisor's.
+
+## Peers sharing state lose updates
+
+Two workers each add an evidence reference to the same `RunState`. Each reads the run, adds its reference and writes the run back. If both read before either writes, the second write replaces the first, and the first worker's evidence is gone with no error. Berenson and colleagues name this the *lost update*, which "occurs when transaction T1 reads a data item and then T2 updates the data item (possibly based on a previous read), then T1 (based on its earlier read value) updates the data item and commits." The test `test_a_plain_shared_dict_loses_an_update` shows it on an ordinary dictionary.
+
+The fix is the compare-and-swap save of [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): a write names the version it read, and the store refuses it with `StaleWrite` if someone committed since. Refusing is half the answer. The worker must then read again and retry, a bounded number of times:
+
+```python
+# file: examples/agent-engineering/src/agentlab/multiagent/topology.py
+def add_evidence(store: CheckpointStore, run_id: str, ref: EvidenceRef, *, attempts: int = 3, between: Callable[[], None] = lambda: None) -> RunState:
+    """Append ``ref`` to the run's evidence without losing a concurrent append.
+
+    ``between`` runs after the read and before the write; tests use it to
+    place another peer's commit exactly there.
+    """
+    for _ in range(attempts):
+        current = store.load(run_id)
+        if current is None:
+            raise KeyError(run_id)
+        between()
+        changed = RunState.model_validate({**current.model_dump(), "evidence": (*current.evidence, ref)})
+        try:
+            return store.save(changed, expected_version=current.version)
+        except StaleWrite:
+            continue  # someone committed after our read: read again, never overwrite
+    raise Contention(f"{run_id}: lost the write race {attempts} times")
+```
+
+`between` is a hook that runs after the read and before the write, so a test can place another peer's commit exactly there. With it, `test_add_evidence_rereads_after_a_conflict_and_keeps_both` ends with both references in the run. If another writer wins every time, the loop gives up with `Contention` after its attempts instead of spinning forever, and the caller decides what to do.
+
+## Peers waiting on each other
+
+Suppose the researcher waits for the reviewer to say which report format it wants, the reviewer waits for the coder's report and the coder waits for the researcher's findings. Each is waiting for another, so none ever starts. That is a *deadlock*.
+
+Draw an arrow from each peer to every peer it waits on, and you have a *wait-for graph*. A deadlock is a cycle in that graph. `plan_peers` walks the graph before anyone starts. If the walk returns to a peer still on its current path, it raises `DeadlockRefused` with the cycle, here researcher, reviewer, coder. Otherwise it returns an order in which every peer starts after the peers it waits on. A peer waiting on someone nobody starts is an error too.
+
+This is a narrower rule than "no loops". [Lesson 14.2](/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) showed that a run's own state machine may loop, bounded by a step budget. What must stay acyclic is the set of waits between peers, because a cycle there blocks every peer in it, and a step budget would only end the run after wasting it.
+
+## A supervisor's fan-out and fan-in
+
+*Fan-out* is starting several children at once; *fan-in* is collecting their results into one outcome. The supervisor marks each child as required or optional and gives it an optional `undo`, a *compensation*: an action that reverses what the child did, such as releasing a reserved invoice number.
+
+```python
+# file: examples/agent-engineering/src/agentlab/multiagent/topology.py
+async def supervise(children: list[Child], *, cleanup_attempts: int = 2) -> FanIn:
+    """Run children concurrently; a required failure stops the rest and undoes what finished.
+
+    shortcut: a child that swallows cancellation and keeps running would make
+    this wait for it; production code puts a deadline on the cancel too.
+    """
+    by_task = {asyncio.create_task(child.run(), name=child.name): child for child in children}
+    pending = set(by_task)
+    results: dict[str, object] = {}
+    failed: dict[str, str] = {}
+    cancelled: list[str] = []
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in sorted(done, key=lambda t: children.index(by_task[t])):
+            child = by_task[task]
+            if task.exception() is None:
+                results[child.name] = task.result()
+            else:
+                failed[child.name] = repr(task.exception())[:200]
+        if any(by_task[t].required for t in done if t.exception() is not None):
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)  # let each child run its cleanup
+            cancelled = [child.name for task, child in by_task.items() if task in pending]
+            pending = set()
+```
+
+The run ends in one of three defined states. *Completed*: every child succeeded. *Partial*: only optional children failed; their errors are recorded and the other results are kept. *Failed*: a required child failed. Then the supervisor cancels the children still running and waits for them to finish their cleanup. Python's documentation describes what cancelling does: "asyncio.CancelledError will be raised in the task at the next opportunity," and it recommends that coroutines "use try/finally blocks to robustly perform clean-up logic." In the opening case, the PO-1004 child is cancelled inside its wait, and its `finally` block releases its lock.
+
+## Cleanup has a bound too
+
+After a required failure, every finished child with an `undo` is compensated: INV-0001 is released. The run's history still records that the reservation happened, because hiding it would make the audit lie. A compensation can fail too, for example when the numbering service is down. It gets a fixed number of attempts (`cleanup_attempts`, two by default). A child whose undo kept failing goes to `cleanup_pending` instead of being retried forever. That list is work for a person or a reconciler, the job [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) gave to reconciliation of unknown outcomes.
+
+:::caveat
+Cancellation in asyncio is cooperative. A child that catches `CancelledError` and keeps running would make `supervise` wait for it, as the function's docstring says; production code puts a deadline on the cancel as well. Undo also only reverses what can be reversed: an email that was sent stays sent.
+:::
+
+## Run the exercise
+
+The module is `src/agentlab/multiagent/topology.py` and its tests are in `tests/test_multiagent_topology.py`, inside `examples/agent-engineering/`. From that directory, run `uv run --frozen python -m unittest discover -s tests -p "test_multiagent_topology.py"`.
+
+Expected output ends with `Ran 11 tests` and `OK`. `test_the_same_interleaving_against_compare_and_swap_is_refused` replays the lost update against the store. `test_peers_waiting_on_each_other_are_refused_before_they_start` and its control `test_an_acyclic_plan_returns_an_order_that_respects_every_wait` pin the wait-for check. `test_a_required_failure_cancels_running_siblings_and_undoes_finished_ones` is the opening case. `test_cleanup_that_keeps_failing_is_bounded_and_left_for_a_person` gives an undo that always fails. In `_undo`, change the last line from `return False` to `return True` and that test goes red: a compensation that never succeeded would be reported as done, and nobody would be asked to finish it. Restore it. [Lesson 22.4](/lessons/22-multi-agent-systems-and-a2a/22.4-a2a-interoperability/) moves one of these agents into another process and asks how the two agree on a protocol.

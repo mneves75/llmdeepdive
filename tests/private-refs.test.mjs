@@ -141,3 +141,11 @@ test('command fails closed without echoing private file or commit-metadata match
     rmSync(repository, { recursive: true, force: true })
   }
 })
+
+test('addresses at the reserved .invalid TLD are allowed; real-looking ones are not', () => {
+  // RFC 2606 reserves .invalid, so no person can own one; exercise fixtures use it.
+  const emails = (text) => scanText(text).filter((finding) => finding.rule === 'unknown-email').map((finding) => finding.hit)
+  assert.deepEqual(emails('send to records@collector.invalid or hunter2@db.invalid.'), [])
+  assert.deepEqual(emails('records@collector.invalid.example.com'), ['records@collector.invalid.example.com'])
+  assert.deepEqual(emails('someone@gmail.com'), ['someone@gmail.com'])
+})

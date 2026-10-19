@@ -14,13 +14,13 @@ teachBack:
   modelAnswer: "Os safetensors lançados do Qwen estão em bf16, então o checkpoint armazena aproximadamente 2 bytes por parâmetro; os dtypes do estado de treino não foram publicados. O bf16 tem sete bits explícitos de fração, então um update in-place muito menor que o espaçamento local entre valores representáveis pode ser arredondado até sumir. Uma receita conservadora comum aplica os updates a master weights fp32 e faz cast de cópias em precisão reduzida para o compute, mas também existem receitas pure-bf16/AnyPrecision validadas. O fp16 tem mais bits de fração, mas alcance de expoente menor, e frequentemente precisa de loss scaling. O bf16 mantém a largura de expoente do fp32 com um significando mais grosseiro. O fp8 exige escalonamento explícito, acumulação mais larga e validação no hardware específico."
 quiz:
   - question: "Por que uma receita conservadora de mixed precision pode manter master weights fp32 quando o compute usa bf16?"
-    options: ["bf16 não consegue representar números negativos", "Updates pequenos podem ficar abaixo do espaçamento bf16 perto de um peso grande, então estado master mais largo consegue acumulá-los antes do cast", "bf16 tem alcance de expoente menor que fp16", "Arquivos safetensors são read-only por definição"]
+    options: ["O bf16 não tem alcance de expoente para gradientes, então os pesos estouram sem fp32", "Updates pequenos podem sumir perto de um peso bf16 grande; o master fp32 os guarda", "O checkpoint lançado é fp32, então o treino precisa manter esse dtype de armazenamento", "Os momentos do AdamW são definidos sobre pesos fp32 e precisam ser guardados ao lado deles"]
     correctIndex: 1
-    explanation: "Uma cópia master fp32 é uma forma de evitar swamping. Não é a única receita viável, e a Qwen não publica qual política de estado de treino produziu este checkpoint."
+    explanation: "Uma cópia master em fp32 é uma forma de evitar o swamping. O bf16 mantém o alcance de expoente do fp32, o checkpoint lançado é bf16, e o AdamW não exige pesos fp32 por definição. Não é a única receita viável, e a Qwen não publica qual política de estado de treino produziu este checkpoint."
   - question: "A aula 5.8 particionou um tensor lógico entre ranks de tensor parallel. Se esse tensor usa um único fator de escala fp8 para o tensor inteiro (escala por tensor), o que se segue?"
-    options: ["Cada rank deveria escolher sua própria escala para maximizar o alcance local", "O fp8 elimina a necessidade de coletivos", "Ranks que possuem conjuntamente um tensor lógico precisam concordar sobre a escala dele, ou seus resultados parciais não podem ser combinados corretamente", "Escalas se aplicam só à dimensão do vocabulário"]
+    options: ["Cada rank escolhe a própria escala para maximizar o alcance local, e as somas parciais são somadas", "Valores fp8 carregam o próprio expoente, então nenhuma escala compartilhada é necessária entre ranks", "Ranks que dividem um tensor lógico precisam dividir a escala, ou os parciais não somam", "A escala só importa no forward pass, já que os gradientes continuam em bf16"]
     correctIndex: 2
-    explanation: "Produtos parciais de shards escalados de formas diferentes não estão na mesma unidade, então não podem ser somados diretamente. Com uma escala única por tensor, essa escala precisa ser sincronizada onde quer que o tensor seja logicamente compartilhado. Receitas mais finas, como uma escala por bloco, evitam isso dando a cada bloco sua própria escala."
+    explanation: "Produtos parciais de shards com escalas diferentes não estão nas mesmas unidades, então não podem simplesmente ser somados. Um expoente por elemento não elimina a escala do tensor inteiro, e gradientes que usam fp8 também precisam de escalas. Com uma única escala por tensor, ela precisa ser sincronizada onde quer que o tensor seja logicamente compartilhado. Receitas mais finas, como uma escala por bloco, evitam isso dando a cada bloco a sua própria escala."
   - question: "Qual grande vantagem de alcance o bf16 tem sobre o fp16?"
     options: ["Mais bits de fração que o fp32", "Representação exata de todos os inteiros", "Nenhum arredondamento", "Uma largura de expoente igual à do fp32"]
     correctIndex: 3
@@ -42,7 +42,7 @@ citations:
     authors: "PyTorch Team"
     year: 2024
     url: "https://pytorch.org/blog/efficient-large-scale-training-with-pytorch/"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Baixe o Qwen3.8-27B e os safetensors lançados estão em bf16: cerca de 2 bytes por parâmetro armazenado. Esse fato descreve o checkpoint distribuído. Ele não diz nada sobre os dtypes (formatos numéricos) usados no treino para o estado do optimizer, os master weights, a acumulação ou os gradientes, e a receita de treino não foi publicada. Por isso esta aula ensina o design de mixed precision como um conjunto de políticas explícitas e salvaguardas medidas. Ela não reconstrói a história do Qwen a partir do dtype de saída.
@@ -74,9 +74,9 @@ porque o próximo valor bf16 representável acima de 1,0 é 1,0078125, e 1,00001
 
 Uma correção conservadora é uma **cópia master** dos pesos em fp32. Os updates se acumulam ali, onde o significando tem 24 bits e $10^{-5}$ é representável contra 1,0 com folga. Os tensores bf16 usados no forward pass são regenerados a partir dela. O estado master custa 4 bytes por parâmetro.
 
-A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) é dona do orçamento em bytes do modelo para todo o curso. Aqui o ponto importante é condicional: **se** uma receita mantém master weights fp32 e dois momentos do AdamW em fp32 junto de parâmetros e gradientes bf16, ela chega a cerca de 16 bytes persistentes por parâmetro. Variantes pure-bf16/AnyPrecision (optimizers que mantêm seu estado em bf16 e compensam de outras formas, como o optimizer AnyPrecision do post do PyTorch citado) usam outras políticas de estado e precisam demonstrar estabilidade empiricamente.
+A [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) é dona da decomposição do estado de treino no curso. Aqui o ponto importante é condicional: **se** uma receita mantém master weights fp32 e dois momentos do AdamW em fp32 junto de parâmetros e gradientes bf16, ela chega a 2 + 2 + 4 + 8 = 16 bytes persistentes por parâmetro, que é o orçamento inteiro de 432 GB da aula 5.7, não um número só do optimizer. Variantes pure-bf16/AnyPrecision (optimizers que mantêm seu estado em bf16 e compensam de outras formas, como o optimizer AnyPrecision do post do PyTorch citado) usam outras políticas de estado e precisam demonstrar estabilidade empiricamente.
 
-Agora a comparação que costuma ser feita errado. Treinar tudo em fp32, a 4 bytes cada para pesos, gradientes e os dois momentos, também custa 16 bytes por parâmetro. Sob essa receita conservadora, **mixed precision não reduz a pegada persistente do optimizer.** O que ela compra são três outras coisas:
+Agora a comparação que costuma ser feita errado. Treinar tudo em fp32, a 4 bytes cada para pesos, gradientes e os dois momentos, também custa 16 bytes por parâmetro. Sob essa receita conservadora, **mixed precision não reduz a pegada persistente por parâmetro.** O que ela compra são três outras coisas:
 
 - acesso às unidades matriciais rápidas de precisão reduzida do acelerador,
 - aproximadamente metade da largura de banda em cada peso e gradiente que ela move,

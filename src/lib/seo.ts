@@ -27,9 +27,17 @@ export const brandTitle = (text: string): string => `${text} — ${BRAND}`
  * the cut.
  */
 export function lessonTitle({ lesson, track }: { lesson: string; track: string }): string {
-  const withTrack = brandTitle(`${lesson} · ${track}`)
-  return withTrack.length <= TITLE_BUDGET ? withTrack : brandTitle(lesson)
+  return fitTitle(lesson, track)
 }
+
+/** `subject · context — brand` when that fits the result line, otherwise `subject — brand`. */
+function fitTitle(subject: string, context: string): string {
+  const withContext = brandTitle(`${subject} · ${context}`)
+  return withContext.length <= TITLE_BUDGET ? withContext : brandTitle(subject)
+}
+
+/** A track page names the course after the track by the same rule: only when it fits. */
+export const trackTitle = (track: string, course: string): string => fitTitle(track, course)
 
 /** `/lessons/x/y/` → `lessons/x/y`; the root is `index`. One rule for both ends. */
 export const ogSlug = (fullPath: string): string => fullPath.replace(/^\/|\/$/gu, '') || 'index'

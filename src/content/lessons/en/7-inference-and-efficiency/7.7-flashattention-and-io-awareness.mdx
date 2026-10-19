@@ -11,16 +11,16 @@ unlocks: []
 analogy: "A baker must combine every item in two long ingredient lists, but the worktable holds only a few bowls. The naive method writes every pairwise mixture onto trays, carries all trays to a distant warehouse, then retrieves them for normalization. An IO-aware baker works in tiles that fit the table, maintains running totals, and sends only the final loaves out. FlashAttention similarly recomputes cheap local quantities to avoid transporting a gigantic attention matrix."
 teachBack:
   prompt: "Explain why materializing attention scores at Qwen3.8-27B's native context is infeasible, and how tiled online softmax computes the same result without storing the score matrix."
-  modelAnswer: "At 262,144 tokens the score matrix has two to the thirty-sixth entries per head, about 128 GiB in bf16. That 128 GiB is more than an entire accelerator's memory for a single head of a single layer, before counting Qwen's 24 query heads and 16 full-attention layers. FlashAttention loads query and key/value tiles into fast on-chip SRAM and computes local scores there. It also keeps a running row maximum and normalization sum. Whenever a later tile raises the maximum, FlashAttention rescales earlier partial outputs by the exponential of the old-minus-new maximum. The final output equals standard softmax attention up to floating-point reordering. Only the tile statistics ever exist, so memory traffic scales with the inputs and outputs rather than with the squared sequence length."
+  modelAnswer: "At 262,144 tokens the score matrix has two to the thirty-sixth entries per head, about 128 GiB in bf16. That 128 GiB is more than an entire accelerator's memory for a single head of a single layer, before counting Qwen's 24 query heads and 16 full-attention layers. FlashAttention loads query and key/value tiles into fast on-chip SRAM and computes local scores there. It also keeps a running row maximum and normalization sum. Whenever a later tile raises the maximum, FlashAttention rescales earlier partial outputs by the exponential of the old-minus-new maximum. The final output equals standard softmax attention up to floating-point reordering. Only tiles and per-row statistics ever exist, so the extra memory beyond inputs and output grows linearly with sequence length. Memory traffic still grows with the square of the sequence length, but the paper's bound makes it many times smaller than standard attention's when the squared head dimension is small next to the on-chip memory."
 quiz:
   - question: "What is the main object FlashAttention avoids materializing in device memory?"
-    options: ["The full attention score/probability matrix", "All model weights", "Every input token ID", "The final output"]
+    options: ["The full attention score/probability matrix", "The full key and value tensors of the layer", "The attention output before the projection", "The query block for each tile of keys"]
     correctIndex: 0
-    explanation: "Tiling streams through score blocks and keeps only the running maximum and normalization statistics needed to combine them exactly."
+    explanation: "Tiling streams through score blocks and keeps only the running maximum and normalization statistics needed to combine them exactly. Keys, values, queries and the output are inputs and results that still live in HBM; the quadratic score matrix is what never exists as a whole."
   - question: "Using lesson 7.3, why does FlashAttention's headline win apply to prefill more than to single-token decode?"
-    options: ["Prefill processes many query rows at once and is dominated by score traffic, while decode has one query row and is dominated by reading weights and KV cache", "Decode never runs attention", "Prefill skips the softmax", "Decode already stores the full score matrix in SRAM"]
+    options: ["Prefill has many query rows and heavy score traffic; decode has one and reads weights and KV", "Decode skips attention in the 16 full-attention layers once the cache is warm", "Prefill uses softmax while decode switches to a cheaper linear attention", "Decode already keeps its full score matrix in on-chip SRAM, so there is nothing left to tile"]
     correctIndex: 0
-    explanation: "Prefill is the phase with a large query block and a potentially enormous score matrix; decode's single row makes weight and KV-cache bandwidth the binding constraint."
+    explanation: "Prefill is the phase with a large query block and a potentially enormous score matrix; decode's single row makes weight and KV-cache bandwidth the binding constraint. Decode still runs the same softmax attention, and its one score row is small, not a stored matrix."
 citations:
   - title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
     authors: "Tri Dao et al."
@@ -30,7 +30,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-14"
+updated: "2026-10-18"
 ---
 
 Qwen3.8-27B accepts a native context of 262,144 tokens, and 16 of its 64 layers run full softmax attention over that entire span. Feed the model a maximal prompt and each of those layers must, in principle, compare every query with every key. The attention formula is one line. The question this lesson answers is whether the intermediate objects it implies can physically exist, and what to do when they cannot.
@@ -66,7 +66,7 @@ Computing directly, $e^{-4} + e^{-2} + e^{0} = 0.018 + 0.135 + 1 = 1.154$: ident
 Recomputation extends the same logic to training. The backward pass, the step that computes gradients, can recompute local scores inside tiles instead of reading a stored $N^2$ matrix. It spends cheap arithmetic to avoid expensive HBM traffic.
 
 :::caveat
-FlashAttention fixes the memory of stored intermediates, not the dependency structure. Exact dense attention still performs pairwise work that grows quadratically with sequence length, so a 262,144-token prefill remains a large computation. It just becomes one that fits.
+FlashAttention fixes the memory of stored intermediates, not the dependency structure. Exact dense attention still performs pairwise work that grows quadratically with sequence length, so a 262,144-token prefill remains a large computation. It just becomes one that fits. The paper's bounds keep the two costs apart. Extra memory grows linearly with sequence length $N$. Traffic to HBM is $\Theta(N^2d^2/M)$ for head dimension $d$ and SRAM size $M$, still quadratic in $N$, and many times below standard attention's only when $d^2$ is much smaller than $M$, a margin that shrinks at $d = 256$.
 :::
 
 ## Where the speedup applies

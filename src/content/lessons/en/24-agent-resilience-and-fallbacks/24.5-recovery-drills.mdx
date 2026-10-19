@@ -1,0 +1,112 @@
+---
+id: "24.5-recovery-drills"
+track: "24-agent-resilience-and-fallbacks"
+order: 5
+title: "Recovery Drills"
+summary: "A recovery drill injects a provider outage, a lost reply and a crash into a real batch and checks what comes out. Every item must end complete, labelled degraded, or escalated with a reason, and no effect may happen twice, however often the batch is resumed."
+tier: "advanced"
+locale: "en"
+prerequisites: ["24.4-model-cascades-and-budgets", "23.5-ci-replay-and-live-trials"]
+unlocks: ["25.1-architecture-and-threat-model-review"]
+analogy: "A fire drill uses the real alarm and the real stairs, while the building is not on fire. It counts only if everyone reaches the meeting point and the warden can say who is missing, so the drill measures the result, not the noise. The alarm is the injected fault, the stairs are the recovery code and the warden's list is the report with a label for every item. The comparison stops at what is rehearsed. A fire drill trains people, while this drill tests code and the operator's runbook together, and a fault injected into a live system can harm real users, so the course's drill runs only on synthetic data."
+teachBack:
+  prompt: "After the outage drill the operator learns that the buyer cancelled PO-1004 that morning, after its invoice was drafted from the degraded parser and delivered as AP-0003. The operator asks you to roll back the batch. Say what the batch can and cannot undo, and what should happen instead."
+  modelAnswer: "The batch cannot undo AP-0003. The invoice exists in the accounts-payable system, and deleting a checkpoint or an outbox row would only make the run forget what it did. Cancelling the batch stops items that have not started; it never reaches back into delivered effects. Reversing the invoice is a new operation, such as a void or a credit note. It needs its own approval, bound to that exact operation as in track 20, and its own idempotency key in the outbox. The check passed because it compares the total with the purchase record, which knew nothing of the cancellation. So the real gap is stale trusted data, and the runbook should send a cancelled order to a person before any invoice is drafted."
+quiz:
+  - question: "In the outage drill the fixture marks only PO-1002 and PO-1003 as provider-down, yet PO-1004 ends labelled degraded. Why?"
+    options: ["the lost reply after its write marks the item degraded, because its AP number arrived only later", "PO-1002's two failures opened the breaker, which was still open, so the model was never asked", "after the first failure the batch sends every remaining item through the fixed-layout parser", "PO-1004's USD 10,000.00 total is above what the model tier may read, so the parser handles it"]
+    correctIndex: 1
+    explanation: "The breaker in the drill opens after two failures and pauses for five minutes, and the simulated clock does not move, so PO-1003 and PO-1004 never reach the provider. The parser runs only because the model call was refused, and it reads PO-1004's fixed layout. The lost reply affects delivery, which reconciliation resolves to AP-0003; it does not change how the total was read. No amount limit exists in the drill."
+  - question: "The first run crashes right after committing PO-1002. How many invoices has accounts payable recorded, and what does the resumed run do?"
+    options: ["two, and on resume the outbox sends both again under new idempotency keys", "one, because PO-1001 was delivered before PO-1002's checkpoint was written", "none, and on resume both queued drafts are delivered once without being read again", "none, and on resume the batch starts over and the model reads all four invoices again"]
+    correctIndex: 2
+    explanation: "run_batch delivers only after the loop, so the crash leaves two pending outbox rows and no invoice. On resume, store.load finds both runs and skips them, so the model reads only PO-1003 and PO-1004, and the outbox delivers all four once. Keys come from durable ids, so a repeat never gets a new key. Starting over would read the invoices again and could change their labels."
+  - question: "Why does the degraded label live in the checkpoint's evidence instead of only in the batch report?"
+    options: ["the report is built before delivery, so its labels can still change after the reconcile step", "EvidenceRef is the only record with a free-text field, and SQLite can index only that one", "the parser's total must be hashed before lesson 20.2's approval binding will accept it", "a crash loses the report, and the resumed run must say how each committed total was read"]
+    correctIndex: 3
+    explanation: "The label is part of what the run decided, so it is committed with the state that the decision produced. The crash test checks that PO-1002 is still degraded after the resume, although the run that read it never finished. The report is built after delivery from the checkpoints. The evidence hash identifies the invoice text that was read; approval binding hashes the draft, a different thing."
+citations:
+  - title: "Principles of Chaos Engineering (version of March 2019)"
+    authors: "principlesofchaos.org contributors"
+    year: 2019
+    url: "https://principlesofchaos.org/"
+  - title: "Addressing Cascading Failures, in Site Reliability Engineering (B. Beyer, C. Jones, J. Petoff, N. R. Murphy, eds.), online edition: load shedding and graceful degradation"
+    authors: "Mike Ulrich, Google; O'Reilly Media"
+    year: 2017
+    url: "https://sre.google/sre-book/addressing-cascading-failures/"
+updated: "2026-10-18"
+---
+
+The purchasing assistant has a classifier, retries, a breaker, a fallback and a budget. None of that code has run against a real failure yet. On Friday the team runs a drill: a batch of four supplier invoices, `PO-1001` to `PO-1004`, meets a model provider outage, a reply lost after a write and a crash in the middle. What should come out? Not "everything or nothing". The batch should produce as much correct work as the faults allow, say exactly which parts are degraded and why, hand the rest to a person, and create no invoice twice.
+
+## What a drill is for
+
+The Principles of Chaos Engineering (2019) describe an experiment in four steps. Start by defining "steady state" as "some measurable output of a system that indicates normal behavior". Hypothesize that it continues. "Introduce variables that reflect real world events like servers that crash". Then "try to disprove the hypothesis". The same page warns that experimenting in production "has the potential to cause unnecessary customer pain" and asks the experimenter to keep the fallout "minimized and contained". The course's drill runs only on synthetic data in a test, which is the most contained version there is.
+
+Google's chapter on cascading failures gives the reason to drill at all. Graceful degradation, doing less or lower-quality work under trouble, "shouldn't trigger very often", and "the code path you never use is the code path that (often) doesn't work". A degraded mode that nobody exercises is a guess about the future.
+
+For this batch, steady state is a property you can count. Every item ends **complete**, **degraded** or **escalated**. Accounts payable holds exactly one invoice per item that was not escalated. A rerun changes nothing.
+
+## The chaos fixture
+
+The faults live in a file, so the drill is the same every time it runs:
+
+```json
+// file: examples/agent-engineering/src/agentlab/fixtures/resilience/chaos.json
+  "replies": {"PO-1001": "500.00", "PO-1002": "1134.00", "PO-1003": "780.00", "PO-1004": "10000.00"},
+  "provider_down_for": ["PO-1002", "PO-1003"],
+  "lost_reply_after_write": ["PO-1004"],
+  "crash_after_commit": "PO-1002"
+```
+
+`ChaosModel` answers with a scheduled extraction, or with `transport: ConnectionRefusedError` for the invoices marked down. `ChaosService` wraps lesson 14.4's `FakeInvoiceService` and loses its reply once, after writing, for `PO-1004`. The crash is a test hook: `run_batch` raises `SimulatedCrash` right after the named item's checkpoint commits. Three of the invoices use the supplier's fixed layout. `PO-1003`'s invoice is a friendly paragraph that no fixed pattern can read.
+
+## Degraded is a label, not a quiet substitute
+
+Each invoice goes to the model through lesson 24.2's `call_with_retries`, with a breaker that opens after two failures. When the model cannot answer, the batch degrades to [lesson 14.1](/lessons/14-agent-architecture-and-state/14.1-when-a-workflow-needs-an-agent/)'s fixed-layout parser. That parser is an approved substitute of the same scope: it reads the same text, needs no extra permission and refuses any layout it does not know. Whatever produced the total, it must still match the purchase record, or the item is escalated.
+
+The outage run ends this way. `PO-1001` is complete. `PO-1002`'s two failed calls open the breaker, and the parser reads its total, so it is degraded. `PO-1003` never reaches the provider, because the breaker is open, and the parser refuses its layout, so it is escalated with a reason that says both. `PO-1004` is degraded too, although the fixture never marked it down: the breaker was still open. That is the cost of a breaker, and the label makes it visible. The model was asked exactly three times.
+
+The label is written into the checkpoint, never kept only in memory. The run's `RunState` carries an `EvidenceRef` with the invoice text's SHA-256 and a note: "read by the model", or the degraded note. A report built after a crash still says which totals came from the parser.
+
+## No duplicate effects
+
+The loop that does this is short, because track 14 already built the hard parts:
+
+```python
+# file: examples/agent-engineering/src/agentlab/resilience/drill.py
+        draft, evidence = outcome
+        state = RunState(run_id=run_id, principal=principal)
+        checked = store.save(RunState.model_validate({**advance(state, "checked").model_dump(), "evidence": (evidence,)}), 0)
+        store.save(advance(checked, "ready"), checked.version, effects=[(idempotency_key(run_id, "create_invoice"), draft)])
+        if po_id == crash_after:
+            raise SimulatedCrash(f"crashed after committing {run_id}")
+    deliver_pending(store, service)
+    reconcile(store, service)
+    deliver_pending(store, service)  # effects reconciliation found were never written
+```
+
+Each item's draft enters the outbox in the same transaction as its state ([lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/)), with an idempotency key derived from the batch and the order. Delivery happens after the loop. `PO-1004`'s lost reply moves its row to reconciling, and `reconcile` asks accounts payable, finds `AP-0003` and records it, so the service sees three create calls for three invoices.
+
+In the crash run, the process dies after `PO-1002` commits. Accounts payable holds nothing yet. The resumed run, with the provider back, finds the checkpoints for `PO-1001` and `PO-1002` and skips them, so the model reads only `PO-1003` and `PO-1004`. The outbox then delivers all four, once each. `PO-1002` is still labelled degraded, because the label came from the checkpoint. Running the finished batch again makes no create call at all. An escalation commits nothing, so a rerun tries that item again, which is what an operator wants after fixing the cause.
+
+## The operator runbook
+
+A runbook is the short procedure an operator follows when a known failure happens. The drill's report is written to feed one:
+
+| What the report shows | What the operator checks | What the operator does |
+|---|---|---|
+| Items `degraded` | Which totals the parser read, from the evidence note | Accept them, or have a person compare each with the invoice |
+| Items `escalated` | The reason: provider down, unknown layout, total mismatch | Fix the cause, then rerun the batch; nothing was committed for them |
+| Items `queued` | Delivery still pending or reconciling | Rerun after the accounts-payable system is back; reconciliation runs first |
+| Breaker open | The provider's status | Wait for its trial call; never reset the breaker by hand during the outage |
+
+Cancelling is the operator's other tool, and it has a precise meaning here. With `cancelled` set, the batch starts no new item and reports the rest as `cancelled`, but it still delivers what it already committed, because a committed effect is a promise the outbox keeps. Undoing an invoice that was already delivered is not a rollback. It is a new operation with its own approval, as [lesson 20.5](/lessons/20-human-approval-and-durable-pauses/20.5-deny-expire-revoke-and-resume/) argued for a late cancellation. A drill like this one is deterministic, so it can run with every change, alongside the replayed checks of [lesson 23.5](/lessons/23-agent-evaluation-and-ci/23.5-ci-replay-and-live-trials/).
+
+## Run the exercise
+
+From `examples/agent-engineering/`, run `uv run --frozen python -m unittest tests/test_resilience_drill.py`. The output ends with `Ran 5 tests` and `OK`.
+
+`test_a_calm_run_completes_every_invoice_once` is the steady state with no faults. `test_an_outage_degrades_what_it_can_and_escalates_the_rest` checks the labels above, the three model calls, three invoices and three create calls. `test_a_crash_after_a_commit_resumes_without_a_second_invoice_or_a_lost_label` crashes and resumes. `test_running_the_same_batch_twice_changes_nothing` and `test_cancelling_starts_nothing_new_and_delivers_what_was_committed` cover reruns and cancellation.
+
+Break it: in `run_batch`, replace `continue  # committed by an earlier run` with `pass  # committed by an earlier run` and run the file. The crash and rerun tests now error with `StaleWrite: batch-1:PO-1001 is no longer at version 0`. The resumed run has asked the model about an invoice it already handled and tried to commit that item a second time, and only the checkpoint's compare-and-swap stops it. Restore the line.

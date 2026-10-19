@@ -230,3 +230,96 @@ test('shared lab math reproduces the lesson defaults and every verdict branch', 
   assert.equal(costComparison({ inM: 0, outM: 0, priceIn: 0, priceOut: 0, gpuHour: 0, tps: 1 }).verdict, 'tie')
   assert.equal(costComparison({ inM: 1e308, outM: 0, priceIn: 10, priceOut: 0, gpuHour: 1, tps: 1 }), null)
 })
+
+const CONTEXT_MESSAGES = { invalid: 'context invalid', invalidReserve: 'reserve too large' }
+const CONTEXT_OUTPUTS = ['limit', 'used', 'over', 'history', 'verdict']
+const contextControls = () => Object.fromEntries(Object.entries({
+  window: ['32768', '1', '10000000'],
+  reserveOutput: ['4096', '0', '10000000'],
+  instructions: ['1200', '0', '10000000'],
+  tools: ['2400', '0', '10000000'],
+  chunks: ['6', '0', '1000'],
+  chunkTokens: ['800', '0', '100000'],
+  history: ['21000', '0', '10000000'],
+}).map(([name, [value, min, max]]) => [name, new FakeInput(value, { min, max, integer: '' })]))
+
+test('context budget marks the reserve and the window when the window does not exceed the reserve, then clears them', async () => {
+  const outputs = outputsFor(CONTEXT_OUTPUTS, CONTEXT_MESSAGES)
+  const controls = contextControls()
+  controls.window.value = '4096'
+  const form = createForm({ controls, outputs })
+
+  await runCalculator('src/components/labs/ContextBudgetLab.astro', form)
+
+  assert.equal(outputs.validation.textContent, 'reserve too large')
+  assert.equal(controls.reserveOutput.attributes.get('aria-invalid'), 'true')
+  assert.equal(controls.window.attributes.get('aria-invalid'), 'true')
+  assert.equal(controls.history.attributes.has('aria-invalid'), false)
+  assert.equal(outputs.limit.textContent, '—')
+
+  controls.window.value = '32768'
+  form.listeners.get('input')()
+  assert.equal(outputs.validation.textContent, '')
+  assert.equal(controls.reserveOutput.attributes.has('aria-invalid'), false)
+  assert.equal(controls.window.attributes.has('aria-invalid'), false)
+})
+
+test('integer lab inputs reject a fraction on that control only', async () => {
+  const contextOutputs = outputsFor(CONTEXT_OUTPUTS, CONTEXT_MESSAGES)
+  const context = contextControls()
+  context.chunks.value = '2.5'
+  await runCalculator('src/components/labs/ContextBudgetLab.astro', createForm({ controls: context, outputs: contextOutputs }))
+  assert.equal(contextOutputs.validation.textContent, 'context invalid')
+  assert.equal(context.chunks.attributes.get('aria-invalid'), 'true')
+  assert.equal(context.chunkTokens.attributes.has('aria-invalid'), false)
+
+  const retryOutputs = outputsFor(['success', 'escalate', 'expected', 'expectedCost', 'worst'], { invalid: 'retry invalid' })
+  const retry = {
+    success: new FakeInput('0.4', { min: '0', max: '1' }),
+    attempts: new FakeInput('2.5', { min: '1', max: '20', integer: '' }),
+    cost: new FakeInput('0.12', { min: '0', max: '1000000' }),
+  }
+  await runCalculator('src/components/labs/RetryBudgetLab.astro', createForm({ controls: retry, outputs: retryOutputs }))
+  assert.equal(retryOutputs.validation.textContent, 'retry invalid')
+  assert.equal(retryOutputs.escalate.textContent, '—')
+  assert.equal(retry.attempts.attributes.get('aria-invalid'), 'true')
+  assert.equal(retry.success.attributes.has('aria-invalid'), false)
+})
+
+const SUCCESS_MESSAGES = { invalid: 'success invalid', invalidSuccesses: 'successes exceed runs' }
+const SUCCESS_OUTPUTS = ['perRun', 'total', 'perSuccess', 'rate']
+const successControls = (runs, successes) => ({
+  runs: new FakeInput(runs, { min: '1', max: '100000', integer: '' }),
+  successes: new FakeInput(successes, { min: '0', max: '100000', integer: '' }),
+  modelCost: new FakeInput('0.08', { min: '0', max: '1000000' }),
+  sandboxCost: new FakeInput('0.02', { min: '0', max: '1000000' }),
+  reviewMinutes: new FakeInput('1.5', { min: '0', max: '100000' }),
+  reviewHourly: new FakeInput('40', { min: '0', max: '100000' }),
+})
+
+test('cost per success marks the successes field, not the runs, when successes exceed runs', async () => {
+  const outputs = outputsFor(SUCCESS_OUTPUTS, SUCCESS_MESSAGES)
+  outputs.perSuccess.dataset = { none: 'none' }
+  const controls = successControls('30', '31')
+  const form = createForm({ controls, outputs })
+
+  await runCalculator('src/components/labs/CostPerSuccessLab.astro', form)
+
+  assert.equal(outputs.validation.textContent, 'successes exceed runs')
+  assert.equal(outputs.perSuccess.textContent, '—')
+  assert.equal(controls.successes.attributes.get('aria-invalid'), 'true')
+  assert.equal(controls.runs.attributes.has('aria-invalid'), false)
+
+  controls.successes.value = '24'
+  form.listeners.get('input')()
+  assert.equal(outputs.validation.textContent, '')
+  assert.equal(controls.successes.attributes.has('aria-invalid'), false)
+  assert.match(outputs.perSuccess.textContent, /^USD 1\.375$/u)
+
+  const fraction = outputsFor(SUCCESS_OUTPUTS, SUCCESS_MESSAGES)
+  fraction.perSuccess.dataset = { none: 'none' }
+  const fractional = successControls('30.5', '24')
+  await runCalculator('src/components/labs/CostPerSuccessLab.astro', createForm({ controls: fractional, outputs: fraction }))
+  assert.equal(fraction.validation.textContent, 'success invalid')
+  assert.equal(fractional.runs.attributes.get('aria-invalid'), 'true')
+})

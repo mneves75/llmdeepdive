@@ -1,0 +1,115 @@
+---
+id: "21.3-repair-with-a-bounded-context"
+track: "21-bounded-agent-self-correction"
+order: 3
+title: "Reparar com um contexto limitado"
+summary: "Cada tentativa de reparo declara uma hipótese, altera um arquivo permitido em poucas linhas e roda os mesmos testes numa cópia nova dos arquivos originais. Um bug plantado precisa falhar antes do patch e passar depois dele, e nenhum patch pode chegar ao verde editando um teste."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["21.2-read-a-failure"]
+unlocks: ["21.4-budget-the-repair-loop"]
+analogy: "Um relojoeiro trabalha num mecanismo por vez, numa bancada limpa, com o defeito escrito numa etiqueta: \"atrasa dois minutos por dia, suspeita da espiral\". Cada tentativa começa do relógio como ele chegou, não dos parafusos soltos da tentativa anterior, e a máquina que mede o resultado não é do relojoeiro para ajustar. A comparação para em desfazer uma tentativa. Devolver um relógio ao estado em que chegou exige cuidado, enquanto um software pode começar cada tentativa de uma cópia exata dos arquivos originais, então um começo limpo sai barato."
+teachBack:
+  prompt: "Mude o cenário: o bug de preços agora está em invoice_total, que esquece a última linha de toda fatura, e os arquivos permitidos da tarefa são pricing.py e rates.py. O primeiro patch de um modelo corrige invoice_total e também reescreve as docstrings de todas as funções, somando 16 linhas alteradas. O segundo patch corrige só invoice_total e também edita test_pricing.py para acrescentar um teste de fatura vazia. Diga o que a política faz com cada patch e por quê, e contra o que a segunda tentativa roda."
+  modelAnswer: "O primeiro patch está num arquivo permitido, mas 16 linhas alteradas passam do limite de 10, então ele é recusado como grande demais. A correção dentro dele pode estar certa. O limite existe porque uma pessoa consegue revisar um patch de duas linhas, e uma reescrita esconde a mudança que importa. A segunda tentativa não pode levar a edição do teste. Um patch substitui um arquivo, e test_pricing.py é um teste, que é somente leitura diga o que disser a lista de permitidos. Um teste novo é uma boa ideia, mas uma pessoa o acrescenta, fora do laço. Então o modelo deve mandar só a mudança em pricing.py. Esse patch é aplicado a uma cópia nova dos arquivos originais. Ele nunca vê nada da primeira tentativa, porque ela foi recusada e nada dela chegou a ser aplicado."
+quiz:
+  - question: "Um patch troca > por >= em pricing.py e também renomeia todas as variáveis para facilitar a leitura, somando 14 linhas alteradas. O que check_patch retorna?"
+    options: ["too large: 14 linhas alteradas passam do limite de 10 linhas", "None, porque o arquivo é permitido e os testes passariam", "outside the allowed files, porque renomear muda a API", "None, depois que a política o reduz à única linha que importa"]
+    correctIndex: 0
+    explanation: "A verificação de tamanho conta linhas removidas mais adicionadas, e 14 passa de 10, mesmo que a correção dentro do patch esteja certa. A política nunca roda os testes para decidir e nunca edita um patch. O arquivo é pricing.py, que é permitido, então o escopo não é o motivo."
+  - question: "O patch da tentativa 1 quebrou invoice_total e falhou. A tentativa 2 propõe só a troca por >=. Quais arquivos a execução de testes da tentativa 2 vê?"
+    options: ["Os arquivos quebrados da tentativa 1 com a mudança da tentativa 2 por cima", "Os arquivos originais mais o patch da tentativa 2, sem nada da tentativa 1", "Só os arquivos originais, porque uma tentativa que falha desfaz todo patch", "Os arquivos que o modelo citar na hipótese desta tentativa, quaisquer que sejam"]
+    correctIndex: 1
+    explanation: "apply retorna um snapshot novo montado a partir do projeto original e de um patch, e o executor o grava num diretório novo. Empilhar patches misturaria uma mudança sabidamente ruim em todo resultado seguinte. O próprio patch é aplicado, e uma hipótese é texto, nunca uma lista de arquivos."
+  - question: "Um modelo propõe editar test_pricing.py para esperar USD 120,00 e, por engano, a lista de permitidos da tarefa inclui test_pricing.py. O que acontece?"
+    options: ["Ele roda, porque a tarefa permite explicitamente mudar esse arquivo", "Ele roda, mas só se a hipótese explicar por que o teste estava errado", "Ele é recusado, porque a checagem de teste vem antes da de escopo", "Ele é recusado, porque USD 120,00 não bate com o pedido de compra"]
+    correctIndex: 2
+    explanation: "check_patch pergunta is_test primeiro, então um teste é somente leitura diga o que disser a lista de permitidos; o exercício tem um teste exatamente para esse engano. Uma hipótese persuasiva não muda a regra. A política nunca compara valores com pedidos de compra."
+citations:
+  - title: "SWE-bench: Can Language Models Resolve Real-World GitHub Issues?"
+    authors: "Carlos E. Jimenez et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.06770"
+  - title: "An Analysis of Patch Plausibility and Correctness for Generate-and-Validate Patch Generation Systems"
+    authors: "Zichao Qi, Fan Long, Sara Achour, Martin Rinard"
+    year: 2015
+    url: "https://www.cs.toronto.edu/~fanl/papers/kali-issta2015.pdf"
+  - title: "difflib: Helpers for computing deltas (Python 3.13)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/difflib.html"
+updated: "2026-10-18"
+---
+
+A falha agora é precisa: `test_ten_units_get_the_bulk_discount` espera `Decimal('114.00')` e recebe `Decimal('120.00')`, na linha 9 de `test_pricing.py`. Um modelo poderia responder com uma versão nova do módulo de preços inteiro, uma mudança no teste ou um caractere numa linha. As três coisas poderiam deixar o teste verde. Só uma delas é um reparo que você aceitaria incorporar. Esta aula define o que uma tentativa de reparo pode conter, verifica a tentativa antes de qualquer execução e prova a correção com os mesmos testes que falharam.
+
+## O que entra numa tentativa?
+
+Cada tentativa carrega quatro coisas, e o laço fornece ou verifica cada uma:
+
+- **Uma hipótese**: uma frase sobre a causa, como "a condição do desconto usa > onde a regra diz 10 unidades ou mais". Ela é obrigatória, tem pelo menos 10 caracteres e fica registrada com a tentativa. Uma pessoa que ler uma escalada depois vê o que cada tentativa supunha.
+- **Um teste que falha**: o id do teste e o frame relevante da [aula 21.2](/pt-br/lessons/21-bounded-agent-self-correction/21.2-read-a-failure/). O reparo precisa deixar esse teste verde sem deixar outro vermelho.
+- **Um escopo de arquivos afetados**: os arquivos que um patch pode substituir. Nesta tarefa é só `pricing.py`. O modelo vê o código desse arquivo e de nenhum outro.
+- **Um snapshot inicial limpo**: os arquivos originais, exatamente como a execução inicial que falhou os viu.
+
+Limitar o contexto é uma escolha com custo. O modelo não consegue ler um arquivo fora do escopo, então um bug cuja causa está em outro lugar, digamos numa tabela de taxas que outro módulo carrega, não tem como ser corrigido por este laço. Toda tentativa falha e o laço escala, que é o desfecho certo para uma tarefa com escopo estreito demais. Em troca, o primeiro prompt fica pequeno, 355 tokens pela aproximação de quatro caracteres por token da [aula 19.3](/pt-br/lessons/19-agent-memory-and-context/19.3-token-budgets-and-compression/). O modelo também tem menos lugares onde fazer uma mudança sem relação com o bug, e o revisor sabe de antemão qual arquivo pode mudar.
+
+Um *patch* neste exercício é o texto novo completo de um arquivo mais a hipótese. O campo `path` do patch precisa ser um nome de módulo simples como `pricing.py`, então `../pricing.py` ou `/tmp/pricing.py` falham na validação antes de qualquer política rodar. O SWE-bench (Jimenez et al., 2023) dá a um modelo uma issue e uma base de código inteira, e representa as edições dele como arquivos de patch aplicados com o programa `patch` do Unix antes de os testes rodarem. Os autores observam que resolver as tarefas dele exige achar o número relativamente pequeno de linhas que precisam ser editadas. O exercício mantém o mesmo formato numa escala menor.
+
+<Figure id="repair-attempt" />
+
+## A política de patches
+
+`check_patch` roda antes de o código com patch executar e retorna o motivo de uma recusa, ou `None`:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/patch.py
+def check_patch(patch: Patch, project: Mapping[str, str], allowed: Collection[str], seen: Collection[str] = ()) -> str | None:
+    """Why ``patch`` is refused, or None if it may run."""
+    if is_test(patch.path):
+        return f"tests are read-only: {patch.path}"
+    if patch.path not in allowed:
+        return f"outside the allowed files: {patch.path}"
+    before = project.get(patch.path, "")
+    if patch.content == before:
+        return "changes nothing"
+    if patch.sha256 in seen:
+        return "repeats an earlier attempt"
+    changed = changed_lines(before, patch.content)
+    if changed > MAX_CHANGED_LINES:
+        return f"too large: {changed} changed lines, at most {MAX_CHANGED_LINES}"
+    return None
+```
+
+A ordem importa. A checagem de teste vem primeiro, então um teste continua somente leitura mesmo que a lista de permitidos de uma tarefa o inclua por engano. Editar um teste, enfraquecer um valor esperado ou apagar uma asserção dão todos a mesma recusa: o reparo mudou a verificação em que deveria passar. Qi et al. (2015) analisaram patches que sistemas de reparo anteriores relatavam como bem-sucedidos e viram que a esmagadora maioria equivalia a uma única mudança que simplesmente apaga funcionalidade. Um patch que esvazia um teste faz o mesmo movimento, só que mirando o teste em vez do código.
+
+`changed_lines` conta linhas removidas mais adicionadas num diff unificado do `difflib`. A correção real dá 2: uma linha removida, uma adicionada. `MAX_CHANGED_LINES` é 10. Um teto de dez linhas não prova que um patch é mínimo, mas impede que uma reescrita passe despercebida e mantém todo patch aceito pequeno o bastante para uma pessoa ler em segundos. Um patch idêntico a um anterior é recusado sem rodar, porque a resposta seria a mesma.
+
+:::warning
+A política olha o texto do patch. Um patch dentro do arquivo permitido ainda pode mudar comportamento longe do bug, por exemplo chamando `sys.exit(0)` quando é importado. É por isso que existem as verificações em tempo de execução da [aula 21.1](/pt-br/lessons/21-bounded-agent-self-correction/21.1-what-counts-as-corrective-feedback/): sem resumo, com um teste pulado ou com menos testes que a base, a execução não passou.
+:::
+
+## Por que toda tentativa começa do snapshot limpo
+
+Se a tentativa 1 quebra `invoice_total` e a tentativa 2 é aplicada por cima dela, a tentativa 2 é julgada por duas mudanças, uma delas sabidamente ruim. O resultado dela não diz nada claro sobre a própria hipótese. Então o laço nunca edita o original:
+
+```python
+# file: examples/agent-engineering/src/agentlab/repair/patch.py
+def apply(project: Mapping[str, str], patch: Patch) -> dict[str, str]:
+    """A new snapshot; the original is never modified, so every attempt starts clean."""
+    return {**project, patch.path: patch.content}
+```
+
+O executor então grava esse snapshot num diretório temporário novo e vazio, a mesma disciplina que a [aula 17.2](/pt-br/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/) aplicou aos diretórios de trabalho do sandbox. Uma tentativa não vê arquivos que uma tentativa anterior gravou, e nada do que ela grava sobrevive a ela. O modelo ainda aprende com as tentativas anteriores pelas hipóteses e resultados registrados, que a [aula 21.4](/pt-br/lessons/21-bounded-agent-self-correction/21.4-budget-the-repair-loop/) põe no contexto dele.
+
+## Falha antes, passa depois, com os mesmos testes
+
+A prova de um reparo é um par de execuções com os mesmos testes. Antes do patch, `test_pricing` roda 3 testes: dois passam e `test_ten_units_get_the_bulk_discount` falha com uma asserção. Depois do patch com `>=`, os mesmos 3 testes rodam e todos passam. A contagem importa tanto quanto o resultado: `classify` usa os 3 da base como `minimum_tests`, então uma execução com patch que rodasse 2 não contaria. Esses são os testes visíveis, os que o laço viu enquanto reparava. A [aula 21.5](/pt-br/lessons/21-bounded-agent-self-correction/21.5-evaluate-a-correction/) pergunta o que eles não conseguem dizer.
+
+## Rode o exercício
+
+O módulo é `src/agentlab/repair/patch.py`; os testes estão em `tests/test_repair_patch.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_repair_patch -v`. Espere `Ran 10 tests` e `OK`.
+
+`PlantedBug` roda o bug antes e depois da correção de uma linha e verifica que a contagem de testes não mudou. `PatchPolicy` cobre cada recusa ao lado da correção aceita: um valor esperado enfraquecido, asserções apagadas com o arquivo de teste permitido por engano, um arquivo novo fora do escopo, uma reescrita, um patch que não muda nada, uma repetição e três caminhos com diretórios. `CleanSnapshot` verifica que um segundo patch nunca carrega a mudança do primeiro.
+
+Para ver um teste pegar um furo na política, troque `if is_test(patch.path):` em `check_patch` por `if False and is_test(patch.path):`. `test_editing_a_test_is_refused` e `test_deleting_assertions_is_refused_even_when_the_file_is_allowed` falham, e o teste do modelo obediente da aula 21.2 também: a recusa agora depende só da lista de permitidos, então uma única entrada errada nessa lista deixaria passar o pedido do bilhete. Restaure a linha antes de seguir.
