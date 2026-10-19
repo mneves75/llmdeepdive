@@ -1,0 +1,176 @@
+---
+id: "22.4-a2a-interoperability"
+track: "22-multi-agent-systems-and-a2a"
+order: 4
+title: "A2A Interoperability"
+summary: "Two agents built and started separately agree through A2A: an Agent Card to discover the other side, tasks with artifacts for results and a version on every request. The course implements a small pinned subset of A2A v1.0.1 over JSON-RPC and refuses incompatible versions on both sides."
+tier: "frontier"
+locale: "en"
+prerequisites: ["22.3-supervisor-and-peer-topologies", "15.5-transport-and-authorization-boundaries"]
+unlocks: ["22.5-researcher-coder-reviewer"]
+analogy: "Ordering from another company's warehouse works because both sides follow a published form: the warehouse posts what it stocks and how to order, every order carries the form's edition, and the reply is a delivery note with a reference number you can quote later. Neither side needs to know how the other runs inside. The comparison stops at trust: a posted catalogue can point you to any address, and a model-driven agent on either side can be talked into odd requests, so the client checks where it sends its credentials and the server checks every request against who actually sent it."
+teachBack:
+  prompt: "A partner upgrades its records agent. Its new card lists two interfaces: first gRPC at protocol 1.1, then JSON-RPC at 1.0 on the same origin. A week later the partner drops the 1.0 interface. Using this lesson, say what this course's client does on each day and what you would change to keep working."
+  modelAnswer: "On the first day the client skips the gRPC entry, because it speaks only JSON-RPC. It takes the JSON-RPC interface at 1.0, which is the first entry it supports, and sends A2A-Version 1.0 on every request. When the 1.0 interface disappears, choose_interface finds no JSON-RPC interface at 1.0 and raises IncompatibleAgent. Nothing is sent, so nothing fails halfway. To keep working I would implement 1.1 by reading the 1.1 specification, not by guessing that 1.1 means the same as 1.0. I would add a pinned fixture for 1.1, and let the client prefer 1.1 when offered while still accepting 1.0. I would not make the client silently fall back to whatever the card offers. The specification itself warns that automatic fallback can silently lose features."
+quiz:
+  - question: "A client sends A2A-Version: 1.0.1 with a SendMessage request to this course's records agent, which serves protocol 1.0. What does the agent do?"
+    options: ["Refuses with -32009, since only the exact string 1.0 is accepted", "Reads it as 0.3, since an unrecognised version header means 0.3", "Serves it as 1.0, since patch numbers take no part in negotiation", "Serves it as 1.0, then adds a warning field the client has to read"]
+    correctIndex: 2
+    explanation: "Section 3.6 identifies the protocol by Major.Minor and says patch numbers must not be considered when negotiating, so negotiated() keeps 1.0 and the request is served. Only an empty or absent header means 0.3. Clients should not send a patch number, but treating one as a different version would break a conforming request."
+  - question: "A card fetched from http://127.0.0.1:8080 lists a JSON-RPC interface at protocol 1.0 whose url is http://collector.invalid/a2a. What does this course's choose_interface do?"
+    options: ["Returns that interface, because the card is the agent's own description", "Returns it, and the client drops the Authorization header before sending", "Falls back to the card's own origin and sends the request there instead", "Raises IncompatibleAgent, so the bearer token is never sent to that host"]
+    correctIndex: 3
+    explanation: "The card is data fetched from the network, and following its URL would send the client's bearer token to whichever host it names. This client refuses an interface on another origin; that rule is the course's choice, not a requirement of the specification. Dropping the header would just fail authentication, and guessing a different URL is not what the card said."
+  - question: "This course talks JSON-RPC over HTTP both to its MCP server (track 15) and to the A2A records agent. What differs in what sits on the other side?"
+    options: ["MCP serves tools to one agent; an A2A server is an agent you give a task", "MCP fixes the version in an initialize handshake; A2A has no handshake", "An A2A server runs only on gRPC, while an MCP server runs only on stdio", "MCP results arrive as artifacts, while A2A results come back as tool output"]
+    correctIndex: 0
+    explanation: "A2A's own comparison describes MCP as how an agent uses individual tools and resources, and A2A as how agents collaborate on tasks. MCP revision 2026-07-28 has no initialize handshake: like A2A, each request carries its version. A2A defines JSON-RPC, gRPC and HTTP+JSON bindings, and artifacts are A2A's result objects."
+citations:
+  - title: "Agent2Agent (A2A) Protocol Specification, version 1.0.1"
+    authors: "A2A Project"
+    year: 2026
+    url: "https://a2a-protocol.org/v1.0.1/specification/"
+  - title: "A2A protocol data model, specification/a2a.proto at tag v1.0.1"
+    authors: "A2A Project"
+    year: 2026
+    url: "https://github.com/a2aproject/A2A/blob/v1.0.1/specification/a2a.proto"
+  - title: "A2A and MCP: Detailed Comparison (A2A documentation, v1.0.1)"
+    authors: "A2A Project"
+    year: 2026
+    url: "https://a2a-protocol.org/v1.0.1/topics/a2a-and-mcp/"
+  - title: "Model Context Protocol specification 2026-07-28: Versioning and Compatibility"
+    authors: "Model Context Protocol"
+    year: 2026
+    url: "https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning"
+updated: "2026-10-18"
+---
+
+The purchase-records lookup now belongs to another team. It runs as their agent, in its own process, started on its own schedule. The purchasing assistant cannot import its code; it can only send it requests. To get the total of PO-1001 the two sides must agree on how to find each other, how to ask, how an answer looks and which edition of the rules they follow. And when they disagree, both sides must notice before anything happens.
+
+That agreement is the job of A2A, the *Agent2Agent protocol*. This lesson pins A2A specification v1.0.1, released on 2026-05-28, and builds a small part of it. Everything below is a deliberately bounded subset for learning, not a compliant implementation.
+
+## A2A and MCP do different jobs
+
+A2A's own comparison page puts the line here. MCP "defines how an AI agent interacts with and utilizes individual tools and resources, such as a database or an API." A2A "focuses on enabling different agents to collaborate with one another to achieve a common goal." In track 15 the MCP server offered tools to one agent, which decided when to call them. Here the remote side is an agent that receives a task and decides for itself how to do it.
+
+A few terms come from the specification. The *A2A client* sends requests; the *A2A server* is the remote agent. An *Agent Card* is a JSON document in which the server describes itself. A *Message* is one turn, made of *Parts*: text, structured data or a file. A *Task* is the unit of work, with an id the server generates and a state such as `TASK_STATE_COMPLETED`. An *Artifact* is a task's output. The specification separates the last two on purpose: "Messages SHOULD NOT be used to deliver task outputs. Results SHOULD BE returned using Artifacts associated with a Task."
+
+Both protocols carry their version on every request, and neither keeps a session in which a version was agreed once. MCP revision 2026-07-28 puts it in each request's `_meta`, as [lesson 15.2](/lessons/15-tool-contracts-and-mcp/15.2-json-rpc-and-protocol-lifecycle/) showed. A2A puts it in an `A2A-Version` header.
+
+## Discovery: the Agent Card
+
+A client finds a server's card at `/.well-known/agent-card.json`. The card from the fixture names the agent, describes it, lists one skill, `lookup-purchase-order`, and declares its capabilities: no streaming, no push notifications, no extended card. It also declares a bearer-token security scheme and one interface: the URL, the binding `JSONRPC` and the protocol version `1.0`. The proto file at the tag is the normative data model (section 1.4), so the card carries every field the proto marks as required, with the camelCase names that section 5.5 asks for.
+
+The specification's rule for the client is to pick the first interface it supports. This client adds one rule of its own:
+
+```python
+# file: examples/agent-engineering/src/agentlab/multiagent/a2a.py
+def choose_interface(card: dict, *, origin: str) -> dict:
+    """The first JSON-RPC interface at protocol 1.0, and only on the origin the card came from."""
+    offered = card.get("supportedInterfaces") or []
+    for interface in offered:
+        if interface.get("protocolBinding") == "JSONRPC" and negotiated(interface.get("protocolVersion")) == PROTOCOL_VERSION:
+            if _origin(interface.get("url", "")) != _origin(origin):
+                # A card can name any URL; following it blindly would hand the bearer token to that host.
+                raise IncompatibleAgent(f"the card points its interface at {_origin(interface.get('url', ''))[1]!r}")
+            return interface
+    raise IncompatibleAgent(f"no JSONRPC interface at {PROTOCOL_VERSION}; offered {[(i.get('protocolBinding'), i.get('protocolVersion')) for i in offered]}")
+```
+
+A card that offers only protocol 0.3 is refused before any request is sent. So is a card whose interface points to a different host, because the client would attach its token to every request it sends there.
+
+## A version on every request
+
+The server reads the header on every call. The specification identifies a version by "the `Major.Minor` elements" and says patch numbers "MUST not be considered when clients and servers negotiate protocol versions". It also says "Agents MUST interpret empty value as 0.3 version":
+
+```python
+# file: examples/agent-engineering/src/agentlab/multiagent/a2a.py
+def negotiated(header: str | None) -> str:
+    """The Major.Minor a request asks for; an empty or absent header means 0.3 (section 3.6.2)."""
+    requested = (header or "").strip() or "0.3"
+    return ".".join(requested.split(".")[:2])
+```
+
+```python
+# file: examples/agent-engineering/src/agentlab/multiagent/a2a.py
+def _run(name: str, params: dict, version: str | None, operations: dict) -> dict:
+    # Checked on every request: there is no session in which a version was agreed once.
+    if negotiated(version) != PROTOCOL_VERSION:
+        details = error_info("VERSION_NOT_SUPPORTED", requested=negotiated(version)[:16], supported=PROTOCOL_VERSION)
+        raise RpcError(VERSION_NOT_SUPPORTED, "Version not supported", details)
+    if name in REFUSED:
+        raise RpcError(*REFUSED[name])
+    return operations[name](params)
+```
+
+A request with no header, or with `0.5` or `2.0`, gets JSON-RPC error `-32009`, the code section 5.4 assigns to `VersionNotSupportedError`, and nothing runs. `1.0.1` is served as 1.0. The agent reuses the JSON-RPC dispatcher from track 15, which turns the raised `RpcError` into an error response; its details follow section 9.5, an array of objects that each carry an `@type`.
+
+## One exchange, pinned
+
+The server runs as its own process, `python -m agentlab.multiagent.a2a`, on 127.0.0.1; the test is the client. The JSON-RPC binding sends `application/json` bodies to the URL in the card (section 9.1). The pinned fixture holds the exact first exchange, and the test requires the parsed response to equal it exactly. The client's message, with an id the client chose and one data part:
+
+```json
+// file: examples/agent-engineering/src/agentlab/fixtures/multiagent/a2a_exchange.json
+        "message": {
+          "messageId": "msg-1",
+          "role": "ROLE_USER",
+          "parts": [{"data": {"poId": "PO-1001"}, "mediaType": "application/json"}]
+        }
+```
+
+And the task the server returns, with a server-generated id and the result in an artifact:
+
+```json
+// file: examples/agent-engineering/src/agentlab/fixtures/multiagent/a2a_exchange.json
+        "task": {
+          "id": "task-1",
+          "contextId": "ctx-1",
+          "status": {"state": "TASK_STATE_COMPLETED"},
+          "artifacts": [
+            {
+              "artifactId": "artifact-1",
+              "name": "purchase-order",
+              "parts": [
+                {
+                  "data": {"poId": "PO-1001", "supplier": "Supplier Alpha", "total": "500.00", "currency": "USD"},
+                  "mediaType": "application/json"
+                }
+              ]
+            }
+          ]
+        }
+```
+
+Other answers are pinned in the tests. Each one uses the code section 5.4 assigns:
+
+| Situation | Answer |
+|---|---|
+| `GetTask` for a task that does not exist, or that another tenant created | `-32001` TaskNotFound |
+| `CancelTask` on a finished task | `-32002` TaskNotCancelable |
+| A push-notification method, when the card declares none | `-32003` PushNotificationNotSupported |
+| `SendStreamingMessage`, when the card declares no streaming | `-32004` UnsupportedOperation |
+| A message with no parts | `-32602` Invalid params |
+
+Asking for another tenant's order, PO-2001, is not a protocol error: the request is valid. The work is refused, so the task ends in `TASK_STATE_REJECTED` with a status message and no artifact.
+
+## Tolerant on the wire, strict inside
+
+Section 5.7 says "Implementations SHOULD ignore unrecognized fields in messages, allowing for forward compatibility as the protocol evolves." The wire models here ignore unknown fields, so a server that adds a field in a later minor version does not break this client. That is the opposite of the handoffs in [lesson 22.2](/lessons/22-multi-agent-systems-and-a2a/22.2-typed-handoffs/), which forbid unknown fields. The difference is who owns the format. A2A is shared between parties who upgrade at different times. Your own handoffs change only when you change them, and there an unknown field means a bug or an attack. The skill's own input, `{"poId": "PO-1001"}`, is strict again: it is this agent's contract, not the protocol's.
+
+## Who is asking
+
+The card declares a bearer scheme, and section 7.4 says the server "MUST authenticate every incoming request". A missing or wrong token gets HTTP 401 with a `WWW-Authenticate: Bearer` challenge. The server maps the token to a `Principal` and scopes every task to it. Like the token checks in [lesson 15.5](/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/), identity comes from the credential, never from anything the message says. Another tenant asking for a task id gets the same `TaskNotFound` as for an id that never existed, because servers "MUST NOT reveal the existence of resources the client is not authorized to access."
+
+:::caveat
+This subset runs plain HTTP on localhost. Section 7.1 requires encrypted transport in production. The tokens in the tests are synthetic strings, not secrets, and nothing leaves the machine.
+:::
+
+## What the subset leaves out
+
+Implemented: the card, `SendMessage` in blocking mode, `GetTask` and `CancelTask` over the JSON-RPC binding, the version check and bearer authentication. Refused with the specification's error: streaming, `SubscribeToTask`, push notifications, `ListTasks` (a core operation that a compliant server must support), and the extended card. Not implemented at all: multi-turn input, task history and `historyLength`, file parts, extensions, card signatures, caching headers, tenants, the gRPC and HTTP+JSON bindings, the `A2A-Version` request-parameter form that section 3.6.1 allows (only the header is read) and TLS. A client-supplied `contextId` is accepted and kept. Every task here finishes inside `SendMessage`, so a cancel always meets a finished task. The module's docstring keeps this list next to the code.
+
+## Run the exercise
+
+The module is `src/agentlab/multiagent/a2a.py` and its tests are in `tests/test_multiagent_a2a.py`, inside `examples/agent-engineering/`. From that directory, run `uv run --frozen python -m unittest discover -s tests -p "test_multiagent_a2a.py"`.
+
+Expected output ends with `Ran 14 tests` and `OK`. `test_card_and_first_exchange_match_the_pinned_fixture` starts a fresh server process and compares the card and the first exchange with the fixture. `test_incompatible_versions_are_refused_with_version_not_supported` sends no header, `0.3`, `0.5` and `2.0`, and `test_a_patch_number_does_not_change_the_negotiated_version` is its control. In `negotiated`, replace `or "0.3"` with `or "1.0"` and the version test goes red: a client that sent no header would be served as if it spoke 1.0. Restore it. [Lesson 22.5](/lessons/22-multi-agent-systems-and-a2a/22.5-researcher-coder-reviewer/) puts three agents with different capabilities on one job.

@@ -1,0 +1,138 @@
+---
+id: "22.3-supervisor-and-peer-topologies"
+track: "22-multi-agent-systems-and-a2a"
+order: 3
+title: "Topologias de supervisor e de pares"
+summary: "Um supervisor é dono da distribuição, do cancelamento e do estado final; pares dividem estado e precisam protegê-lo por conta própria. Recuse atualizações perdidas com compare-and-swap, recuse ciclos de espera antes de alguém começar e termine todo fan-out num estado definido, com limpeza limitada."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["22.2-typed-handoffs", "14.4-replay-and-side-effects"]
+unlocks: ["22.4-a2a-interoperability"]
+analogy: "Uma cozinha com chef funciona de um jeito diferente de cozinheiros que dividem um quadro branco. O chef distribui os pedidos, cancela um prato quando o peixe acaba e decide o que a mesa vai ouvir. Cozinheiros num quadro compartilhado não podem apagar as anotações uns dos outros, e dois cozinheiros esperando cada um o molho do outro vão esperar a noite toda, a menos que alguém perceba antes do serviço. A comparação para na velocidade e no esquecimento: agentes reescrevem o quadro muitas vezes por segundo e não lembram de nada entre chamadas, então as regras sobre quem escreve e quem espera precisam morar no código, não na atenção de alguém."
+teachBack:
+  prompt: "A equipe acrescenta um quinto filho ao supervisor: send_reminder_email, marcado como opcional, que manda um e-mail ao fornecedor antes de a fatura ser redigida. Uma execução falha num filho obrigatório depois que o e-mail já saiu. Usando esta aula, diga em que estado a execução termina, o que undo pode e não pode fazer pelo e-mail e como você mudaria o desenho."
+  modelAnswer: "A falha obrigatória faz a execução terminar como failed. O supervisor cancela os filhos ainda rodando e roda undo para os filhos que terminaram. Um e-mail enviado não pode ser desfeito, então não existe undo para ele. O máximo que undo faria é mandar uma correção, que é um novo efeito externo, não uma reversão. Então o desenho está errado: um efeito irreversível não deveria rodar dentro de um fan-out que ainda pode falhar. Eu levaria o e-mail para depois que o fan-out termina, atrás do outbox da aula 14.4, para que ele seja enviado uma vez e só quando a execução deu certo. Se o e-mail precisar sair cedo, ele deve ser um passo decidido à parte, com chave de idempotência, e não um filho opcional. Opcional quer dizer que a falha dele não para a execução, não que os efeitos dele são inofensivos."
+quiz:
+  - question: "Um supervisor roda três filhos. reserve-number (obrigatório, com undo) e po-1003 (obrigatório) terminam; supplier-rating (opcional) lança um erro. O que supervise devolve?"
+    options: ["failed, já que qualquer filho com erro derruba o fan-out inteiro na hora", "partial, com os dois resultados mantidos e nada desfeito ou cancelado", "completed, já que filhos opcionais ficam fora do status", "partial, e reserve-number é desfeito, porque um filho falhou"]
+    correctIndex: 1
+    explanation: "Só uma falha obrigatória derruba a execução e dispara cancelamento e undo. Uma falha opcional fica registrada em failed e deixa o status como partial, enquanto os resultados prontos são mantidos. Deixar a falha fora do status a esconderia; desfazer reserve-number jogaria fora trabalho bom que a execução ainda usa."
+  - question: "Um plano de pares diz que o pesquisador espera o revisor (pelo formato do relatório), o revisor espera o programador e o programador espera o pesquisador. O que plan_peers faz?"
+    options: ["Inicia os três e deixa o orçamento de passos encerrar se eles travarem", "Devolve uma ordem que começa pelo pesquisador, o primeiro par listado", "Lança DeadlockRefused nomeando o ciclo antes de qualquer par começar", "Inicia primeiro os pares sem espera e depois os membros do ciclo"]
+    correctIndex: 2
+    explanation: "As esperas formam um ciclo, então nenhuma ordem as satisfaz e cada par esperaria para sempre por outro. plan_peers recusa o plano antes de qualquer coisa rodar. Um orçamento de passos só pararia a execução depois de desperdiçá-la, e iniciar os pares em alguma ordem ainda deixaria os membros do ciclo bloqueados."
+  - question: "Dois workers acrescentam evidência a uma mesma execução no mesmo instante por add_evidence com attempts=3, e o segundo save lança StaleWrite. O que acontece em seguida?"
+    options: ["A evidência dele é descartada, porque o compare-and-swap fica com a primeira", "A escrita dele substitui a primeira, porque traz a versão mais nova", "A execução falha, porque um conflito quer dizer estado compartilhado corrompido", "Ele relê a execução, acrescenta ao estado mais novo e salva de novo"]
+    correctIndex: 3
+    explanation: "StaleWrite quer dizer que alguém gravou depois que este worker leu a execução. add_evidence lê de novo e acrescenta ao estado mais novo, então as duas evidências sobrevivem. O compare-and-swap recusa a escrita velha; ele nunca sobrescreve, e o estado não está corrompido. Só se todas as tentativas perderem ele lança Contention."
+citations:
+  - title: "Coroutines and Tasks: Task Cancellation (Python 3.13 documentation)"
+    authors: "Python Software Foundation"
+    year: 2026
+    url: "https://docs.python.org/3.13/library/asyncio-task.html"
+  - title: "A Critique of ANSI SQL Isolation Levels, Proceedings of ACM SIGMOD 1995"
+    authors: "Hal Berenson, Phil Bernstein, Jim Gray, Jim Melton, Elizabeth O'Neil e Patrick O'Neil"
+    year: 1995
+    url: "https://arxiv.org/abs/cs/0701157"
+  - title: "How we built our multi-agent research system"
+    authors: "Jeremy Hadfield, Barry Zhang, Kenneth Lien, Florian Scholz, Jeremy Fox e Daniel Ford, Anthropic"
+    year: 2025
+    url: "https://www.anthropic.com/engineering/multi-agent-research-system"
+updated: "2026-10-18"
+---
+
+Quatro filhos rodam ao mesmo tempo numa execução de compras. O primeiro reserva o número de fatura INV-0001. O segundo descobre que o registro do PO-1003 não existe e lança um erro. O terceiro ainda espera um portal de fornecedor lento para o PO-1004. Em que estado a execução está agora, quem decide isso e o que acontece com o INV-0001?
+
+Sem um dono, a resposta é "o que aconteceu por último". Esta aula dá a cada pergunta uma resposta definida, em código que os testes rodam de forma determinística: sem sleeps, sem threads de verdade disputando e com cada intercalação escrita passo a passo.
+
+## Quem é dono da execução?
+
+Uma *topologia* é o formato de quem fala com quem. Numa topologia de *supervisor*, um coordenador distribui o trabalho, recolhe os resultados e decide o estado final da execução. A arquitetura orchestrator-workers da [aula 22.1](/pt-br/lessons/22-multi-agent-systems-and-a2a/22.1-decide-whether-to-divide-work/) é uma delas. Numa topologia de *pares* (*peers*), os agentes trabalham lado a lado, lendo e escrevendo estado compartilhado ou esperando a saída uns dos outros, e nenhum agente decide por todos.
+
+Nenhuma é mais segura por padrão. Um supervisor é um lugar só para cancelamento e limpeza, e também um lugar só que pode travar: o sistema de pesquisa da Anthropic roda os subagentes de forma síncrona, o que "simplifies coordination, but creates bottlenecks" (simplifica a coordenação, mas cria gargalos). Pares evitam esse gargalo, mas precisam proteger sozinhos o estado compartilhado e as esperas. O resto da aula trata primeiro dos problemas dos pares, depois dos do supervisor.
+
+## Pares que dividem estado perdem atualizações
+
+Dois workers acrescentam, cada um, uma referência de evidência ao mesmo `RunState`. Cada um lê a execução, acrescenta a sua referência e grava a execução de volta. Se os dois leem antes de qualquer um gravar, a segunda gravação substitui a primeira, e a evidência do primeiro worker some sem erro nenhum. Berenson e colegas chamam isso de *lost update* (atualização perdida), que "occurs when transaction T1 reads a data item and then T2 updates the data item (possibly based on a previous read), then T1 (based on its earlier read value) updates the data item and commits" (ocorre quando a transação T1 lê um item, T2 atualiza o item, e então T1, com base no valor que leu antes, atualiza o item e confirma). O teste `test_a_plain_shared_dict_loses_an_update` mostra isso num dicionário comum.
+
+A correção é o save com compare-and-swap (comparar e trocar) da [aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): uma escrita diz qual versão leu, e o store a recusa com `StaleWrite` se alguém gravou depois. Recusar é metade da resposta. O worker precisa então ler de novo e tentar outra vez, um número limitado de vezes:
+
+```python
+# file: examples/agent-engineering/src/agentlab/multiagent/topology.py
+def add_evidence(store: CheckpointStore, run_id: str, ref: EvidenceRef, *, attempts: int = 3, between: Callable[[], None] = lambda: None) -> RunState:
+    """Append ``ref`` to the run's evidence without losing a concurrent append.
+
+    ``between`` runs after the read and before the write; tests use it to
+    place another peer's commit exactly there.
+    """
+    for _ in range(attempts):
+        current = store.load(run_id)
+        if current is None:
+            raise KeyError(run_id)
+        between()
+        changed = RunState.model_validate({**current.model_dump(), "evidence": (*current.evidence, ref)})
+        try:
+            return store.save(changed, expected_version=current.version)
+        except StaleWrite:
+            continue  # someone committed after our read: read again, never overwrite
+    raise Contention(f"{run_id}: lost the write race {attempts} times")
+```
+
+`between` é um gancho que roda depois da leitura e antes da escrita, para que um teste possa pôr a gravação de outro par exatamente ali. Com ele, `test_add_evidence_rereads_after_a_conflict_and_keeps_both` termina com as duas referências na execução. Se outro escritor ganha toda vez, o laço desiste com `Contention` depois das tentativas, em vez de girar para sempre, e quem chamou decide o que fazer.
+
+## Pares que esperam uns pelos outros
+
+Suponha que o pesquisador espera o revisor dizer qual formato de relatório quer, o revisor espera o relatório do programador e o programador espera o que o pesquisador achou. Cada um espera por outro, então nenhum começa. Isso é um *deadlock* (impasse).
+
+Desenhe uma seta de cada par para cada par que ele espera e você tem um *grafo de espera*. Um deadlock é um ciclo nesse grafo. `plan_peers` percorre o grafo antes de alguém começar. Se o percurso volta a um par que ainda está no caminho atual, ele lança `DeadlockRefused` com o ciclo, aqui pesquisador, revisor, programador. Caso contrário, devolve uma ordem em que cada par começa depois dos pares que espera. Um par esperando alguém que ninguém inicia também é erro.
+
+Essa regra é mais estreita que "nada de laços". A [aula 14.2](/pt-br/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) mostrou que a máquina de estados da própria execução pode ter laços, limitados por um orçamento de passos. O que precisa continuar acíclico é o conjunto de esperas entre pares, porque um ciclo ali bloqueia todos os pares dele, e um orçamento de passos só encerraria a execução depois de desperdiçá-la.
+
+## Fan-out e fan-in de um supervisor
+
+*Fan-out* é iniciar vários filhos de uma vez; *fan-in* é juntar os resultados deles num único desfecho. O supervisor marca cada filho como obrigatório ou opcional e lhe dá um `undo` opcional, uma *compensação*: uma ação que reverte o que o filho fez, como liberar um número de fatura reservado.
+
+```python
+# file: examples/agent-engineering/src/agentlab/multiagent/topology.py
+async def supervise(children: list[Child], *, cleanup_attempts: int = 2) -> FanIn:
+    """Run children concurrently; a required failure stops the rest and undoes what finished.
+
+    shortcut: a child that swallows cancellation and keeps running would make
+    this wait for it; production code puts a deadline on the cancel too.
+    """
+    by_task = {asyncio.create_task(child.run(), name=child.name): child for child in children}
+    pending = set(by_task)
+    results: dict[str, object] = {}
+    failed: dict[str, str] = {}
+    cancelled: list[str] = []
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in sorted(done, key=lambda t: children.index(by_task[t])):
+            child = by_task[task]
+            if task.exception() is None:
+                results[child.name] = task.result()
+            else:
+                failed[child.name] = repr(task.exception())[:200]
+        if any(by_task[t].required for t in done if t.exception() is not None):
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)  # let each child run its cleanup
+            cancelled = [child.name for task, child in by_task.items() if task in pending]
+            pending = set()
+```
+
+A execução termina num de três estados definidos. *Completed*: todos os filhos deram certo. *Partial*: só filhos opcionais falharam; os erros deles ficam registrados e os outros resultados são mantidos. *Failed*: um filho obrigatório falhou. Aí o supervisor cancela os filhos ainda rodando e espera que terminem a limpeza. A documentação do Python descreve o que cancelar faz: "asyncio.CancelledError will be raised in the task at the next opportunity" (o CancelledError será lançado na tarefa na próxima oportunidade), e recomenda que corrotinas "use try/finally blocks to robustly perform clean-up logic" (usem blocos try/finally para fazer a limpeza de forma robusta). No caso do começo, o filho do PO-1004 é cancelado dentro da espera, e o bloco `finally` dele libera o lock.
+
+## A limpeza também tem limite
+
+Depois de uma falha obrigatória, todo filho terminado que tem `undo` é compensado: o INV-0001 é liberado. O histórico da execução continua registrando que a reserva aconteceu, porque escondê-la faria a auditoria mentir. Uma compensação também pode falhar, por exemplo quando o serviço de numeração está fora do ar. Ela tem um número fixo de tentativas (`cleanup_attempts`, duas por padrão). Um filho cujo undo continuou falhando vai para `cleanup_pending` em vez de ser tentado para sempre. Essa lista é trabalho para uma pessoa ou um reconciliador, a tarefa que a [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) deu à reconciliação de desfechos desconhecidos.
+
+:::caveat
+O cancelamento no asyncio é cooperativo. Um filho que captura `CancelledError` e continua rodando faria `supervise` esperar por ele, como diz a docstring da função; código de produção também põe um prazo no cancelamento. E undo só reverte o que é reversível: um e-mail enviado continua enviado.
+:::
+
+## Rode o exercício
+
+O módulo é `src/agentlab/multiagent/topology.py` e seus testes estão em `tests/test_multiagent_topology.py`, dentro de `examples/agent-engineering/`. A partir desse diretório, rode `uv run --frozen python -m unittest discover -s tests -p "test_multiagent_topology.py"`.
+
+A saída esperada termina com `Ran 11 tests` e `OK`. `test_the_same_interleaving_against_compare_and_swap_is_refused` repete a atualização perdida contra o store. `test_peers_waiting_on_each_other_are_refused_before_they_start` e o controle dele, `test_an_acyclic_plan_returns_an_order_that_respects_every_wait`, fixam a verificação do grafo de espera. `test_a_required_failure_cancels_running_siblings_and_undoes_finished_ones` é o caso do começo. `test_cleanup_that_keeps_failing_is_bounded_and_left_for_a_person` usa um undo que sempre falha. Em `_undo`, troque a última linha de `return False` para `return True` e esse teste fica vermelho: uma compensação que nunca deu certo seria relatada como feita, e ninguém seria chamado para terminá-la. Restaure. A [aula 22.4](/pt-br/lessons/22-multi-agent-systems-and-a2a/22.4-a2a-interoperability/) leva um desses agentes para outro processo e pergunta como os dois combinam um protocolo.
