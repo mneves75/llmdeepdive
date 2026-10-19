@@ -67,7 +67,8 @@ def verify(secret: str, headers: Mapping[str, str], body: bytes, now: datetime) 
     lower = {name.lower(): value for name, value in headers.items()}
     timestamp = lower.get("x-slack-request-timestamp", "")
     signature = lower.get("x-slack-signature", "")
-    if not (timestamp.isascii() and timestamp.isdigit()):
+    # Bounded first: int() refuses more than 4,300 digits, and a crash is not a 401.
+    if not (timestamp.isascii() and timestamp.isdigit() and len(timestamp) <= 20):
         return False
     if abs(now.timestamp() - int(timestamp)) > TOLERANCE.total_seconds():
         return False  # possibly a replay of a request someone captured earlier

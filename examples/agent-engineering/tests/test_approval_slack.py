@@ -147,3 +147,14 @@ class SlackCallbacks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbsurdTimestamp(unittest.TestCase):
+    def test_an_absurd_timestamp_is_rejected_not_an_error(self):
+        # Python refuses to parse an int of more than 4,300 digits; the handler must answer 401, not crash.
+        from agentlab.approval.slack import verify
+
+        headers = {"X-Slack-Request-Timestamp": "9" * 5000, "X-Slack-Signature": "v0=00"}
+        self.assertFalse(verify("test-only-secret", headers, b"", datetime(2026, 10, 18, tzinfo=UTC)))
+        # Control: a well-formed but stale timestamp is also refused, by the window.
+        self.assertFalse(verify("test-only-secret", {**headers, "X-Slack-Request-Timestamp": "1"}, b"", datetime(2026, 10, 18, tzinfo=UTC)))
