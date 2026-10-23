@@ -5,6 +5,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-10-23
+
+Build tooling past its open advisories. No lesson, figure or page changes: the
+built HTML differs from 0.14.0 only in the generator tag, the footer version
+and the asset hashes.
+
+### Security
+
+- **astro 7.2.8 → 7.3.8 and `@astrojs/mdx` 7.0.5 → 7.0.8**, which bring vite
+  8.3.5: clears the high vite advisory GHSA-587h-7wmj-h5pm and five lesser vite
+  ones, the moderate MDX XSS (GHSA-98hj-9722-w3j8) and the smol-toml quadratic
+  parse (now 1.9.1). `pnpm audit --audit-level=high` exits 0 again.
+- **katex pinned at 0.18.10**, past GHSA-238p-pmpm-9mq7. Not `^`: 0.18.11 is
+  deprecated upstream as accidentally breaking. The katex 0.16 copy inside
+  `rehype-katex` keeps that low advisory; moving it would change the renderer.
+- **http-cache-semantics 4.3.0**, past GHSA-ch52-4w7c-c8xp. The audit ignore for
+  it is gone: the fix the advisory named has shipped.
+- `/.well-known/security.txt` is served as `text/plain; charset=utf-8`, as RFC
+  9116 asks; the asset server sent it without a charset.
+- `.gitignore` covers `.dev.vars*` and `.cloudflare/`.
+
 ## [0.14.0] — 2026-10-18
 
 The course gains a second part: twelve tracks on building agent systems, with

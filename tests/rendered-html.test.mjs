@@ -442,6 +442,9 @@ test('security.txt publishes a contact and has not expired', () => {
   const expires = Date.parse(text.match(/^Expires: (\S+)$/mu)?.[1] ?? '')
   const days = (expires - Date.now()) / 86_400_000
   assert.ok(days > 0 && days <= 366, `security.txt Expires is ${Math.round(days)} days away`)
+  // RFC 9116 wants UTF-8, and the asset server sends .txt without a charset.
+  const headers = readFileSync(join(DIST, '_headers'), 'utf8')
+  assert.match(headers, /^\/\.well-known\/security\.txt\n(?: {2}.*\n)*? {2}Content-Type: text\/plain; charset=utf-8$/mu)
 })
 
 // A lab's worked default must pass its own input rules, or the browser blanks
