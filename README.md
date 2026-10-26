@@ -182,6 +182,16 @@ secret. When it is unset the check says so rather than passing quietly. Keep
 that list to distinctive names: entries that are also ordinary English words
 will match the prose and the gate will be turned off rather than fixed.
 
+### Staging resources
+
+This checkout deploys static assets only: `wrangler.jsonc` has no Worker script, D1 binding,
+cron or queue consumer. The former `llmdeepdive-staging` D1 was an unused resource for this
+architecture and is intentionally absent after the 2026-10-26 cleanup. Keep its archive only
+for separately authorized recovery; a static release must not recreate it or add a database.
+There is no staging D1 UUID to replace and no database migration step. Confirm the deploy
+dry-run still reports assets with no bindings. Run the `mneves-security` deploy gate on the
+exact release commit before any deployment; the existing live checks remain required.
+
 Staging deploys with `pnpm deploy:staging`. A successful command is not enough:
 confirm the new version with Wrangler, then prove what the edge serves:
 
