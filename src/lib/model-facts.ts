@@ -252,3 +252,50 @@ export const QWEN_COMMON_MISTAKE = {
     'WRONG — follows from the 256 KiB error above. The real figure is 16 GiB.',
   ),
 } as const satisfies Record<string, ModelFact>
+
+/**
+ * Published TensorFold benchmark figures (pinned at ashhart/TensorFold@v1.2.1),
+ * centralized here so Home.astro and Track 7/11/12 lessons share one provenance
+ * owner and never drift across locales or hardware attributions.
+ *
+ * Provenance:
+ *   - https://github.com/ashhart/TensorFold/blob/v1.2.1/docs/recipes/qwen3.8-27b.md
+ *     * Apple M5 Ultra: 162–226 tok/s single-stream greedy decode on
+ *       TensorFold/Qwen3.8-27B-MLX-4bit + z-lab/Qwen3.8-27B-DFlash2 (up from
+ *       51.6 tok/s without a drafter).
+ *     * Apple M5 Pro (64 GB, TensorFold 0.3.5.1, Python + MLX, --parallel 8):
+ *       201.4 tok/s aggregate across 8 concurrent streams; 0.25–0.37 s warm
+ *       TTFT with 24.4–29.8 tok/s decode across 8k–32k context.
+ *   - https://github.com/ashhart/TensorFold/blob/v1.2.1/docs/cache-benchmarks.md
+ *     * Apple M5 Ultra: 0.28 s warm cached-prefix resume vs 1.29 s cold prefill
+ *       (4.4× faster TTFT).
+ *   - https://github.com/ashhart/TensorFold/blob/v1.2.1/docs/speed-up-mode.md
+ *     * Paired 2× 256 GB M5 Ultra over Thunderbolt 5 + MCDMA (--speed-up):
+ *       200–247 tok/s single-stream code decode (179–186 tok/s chat) on
+ *       Qwen3.8-Flash-Next-MLX-6bit, or 53.7 tok/s on
+ *       kindlingai/glm-5.3-exlr8-k2-k3-k4.
+ */
+export const TENSORFOLD_BENCHMARKS = {
+  pin: 'v1.2.1',
+  decode: {
+    metric: { en: '162–226 tok/s', 'pt-br': '162–226 tok/s' },
+    receipt: {
+      en: 'Single-stream greedy decode on Apple M5 Ultra (TensorFold/Qwen3.8-27B-MLX-4bit + z-lab/Qwen3.8-27B-DFlash2, up from 51.6 tok/s without a drafter); 201.4 tok/s aggregate across 8 concurrent streams (--parallel 8) on 64 GB M5 Pro (TensorFold 0.3.5.1, Python + MLX).',
+      'pt-br': 'Decode greedy em stream único no Apple M5 Ultra (TensorFold/Qwen3.8-27B-MLX-4bit + z-lab/Qwen3.8-27B-DFlash2, contra 51,6 tok/s sem drafter); 201,4 tok/s agregados em 8 streams concorrentes (--parallel 8) no M5 Pro de 64 GB (TensorFold 0.3.5.1, Python + MLX).',
+    },
+  },
+  reuse: {
+    metric: { en: '0.28 s vs 1.29 s', 'pt-br': '0,28 s vs 1,29 s' },
+    receipt: {
+      en: 'Warm cached-prefix resume vs cold prefill on Apple M5 Ultra (4.4× faster TTFT), and 0.25–0.37 s warm TTFT with 24.4–29.8 tok/s decode across 8k–32k context on 64 GB M5 Pro.',
+      'pt-br': 'Retomada com prefixo em cache contra prefill a frio no Apple M5 Ultra (TTFT 4,4× mais rápido), e 0,25–0,37 s de TTFT com 24,4–29,8 tok/s de decode entre 8k e 32k de contexto no M5 Pro de 64 GB.',
+    },
+  },
+  cluster: {
+    metric: { en: '200–247 tok/s', 'pt-br': '200–247 tok/s' },
+    receipt: {
+      en: 'Single-stream code decode (179–186 tok/s chat) on Qwen3.8-Flash-Next-MLX-6bit across two 256 GB M5 Ultra Macs over Thunderbolt 5 + MCDMA (--speed-up), or 53.7 tok/s on kindlingai/glm-5.3-exlr8-k2-k3-k4.',
+      'pt-br': 'Decode de código em stream único (179–186 tok/s em chat) no Qwen3.8-Flash-Next-MLX-6bit em dois Macs M5 Ultra de 256 GB via Thunderbolt 5 + MCDMA (--speed-up), ou 53,7 tok/s no kindlingai/glm-5.3-exlr8-k2-k3-k4.',
+    },
+  },
+} as const

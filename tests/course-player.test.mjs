@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { TRACK_17_FIGURES } from '../src/lib/figures/17-sandboxed-agent-execution.ts'
 
 const DIST = 'dist'
 
@@ -167,6 +168,54 @@ test('no stylesheet references a token the system no longer defines', () => {
   }
 })
 
+test('the teach-back and quiz keep their own state out of the progress pass', () => {
+  // progress-client rewrites data-complete on every [data-lesson-key] from the
+  // stored completion. On a teach-back or quiz root that erased the check's own
+  // verdict, so a returning learner who passed the quiz never completed the
+  // lesson: Lesson.astro read the teach-back as invalid.
+  for (const { route, html } of lessonPages) {
+    for (const hook of ['data-teach-back', 'data-lesson-quiz']) {
+      const roots = tagsWith(html, hook)
+      assert.equal(roots.length, 1, `${route}: expected one ${hook} root`)
+      assert.equal(attr(roots[0], 'data-lesson-key'), undefined, `${route}: ${hook} must not carry data-lesson-key`)
+      assert.ok(attr(roots[0], 'data-check-key'), `${route}: ${hook} needs its own data-check-key`)
+    }
+  }
+})
+
+test('pausing the sky stops only its ambient motion, never the arrival', () => {
+  // A wildcard pause froze the one-off arrival: paused within its first few
+  // seconds, later constellations stayed undrawn and their links hidden.
+  const astro = join(DIST, '_astro')
+  const css = readdirSync(astro).filter((name) => name.endsWith('.css')).map((name) => readFileSync(join(astro, name), 'utf8')).join('\n')
+  assert.ok(/data-motion-toggle\]:not\(:checked\)\)\s*\.sky__comet/u.test(css), 'the comet pauses with the toggle')
+  // Astro scopes a bare `*` to the component's class alone (`.astro-xxxx`).
+  const wildcard = /data-motion-toggle\]:not\(:checked\)\)\s*(?:\*|\.astro-[\w-]+)\s*\{/gu
+  assert.deepEqual([...css.matchAll(wildcard)].map((match) => match[0]), [], 'a pause must name what it stops')
+})
+
+/** The first declared step of every 'up' stack, in both locales: its foundation. */
+const UP_FOUNDATIONS = new Set(
+  Object.values(TRACK_17_FIGURES)
+    .flatMap((figure) => [figure.body, ...(figure.steps ?? []).map((frame) => frame.body)])
+    .filter((body) => body?.kind === 'stack' && body.direction === 'up')
+    .flatMap((body) => Object.values(body.steps[0].label)),
+)
+
+test("an 'up' stack draws its foundation last, in markup as on screen", () => {
+  // `direction: ltr` once stood in for the reversal and did nothing, so every
+  // sandbox figure drew the hardware on top of the script it isolates.
+  const stacks = all.flatMap(({ route, html }) =>
+    [...html.matchAll(/<ol\b[^>]*data-direction="up"[^>]*>([\s\S]*?)<\/ol>/gu)].map((match) => ({ route, open: match[0].slice(0, match[0].indexOf('>') + 1), body: match[1] })))
+  assert.ok(stacks.length >= 4, 'the sandbox lessons publish their isolation stacks')
+  for (const { route, open, body } of stacks) {
+    assert.match(open, /\breversed\b/u, `${route}: an up stack numbers from its bottom layer`)
+    const labels = [...body.matchAll(/class="fig-stack__label[^"]*">([^<]*)</gu)].map((match) => match[1])
+    assert.ok(UP_FOUNDATIONS.has(labels.at(-1) ?? ''), `${route}: the foundation must be the last band, got ${labels.join(' / ')}`)
+    assert.ok(!UP_FOUNDATIONS.has(labels[0] ?? ''), `${route}: a foundation must not be the top band, got ${labels.join(' / ')}`)
+  }
+})
+
 test('a star fills only for its own lesson, never because an ancestor is complete', () => {
   // The lesson <article> carries data-complete="true" once the lesson is done;
   // a descendant selector would then fill every star inside it (prerequisites,
@@ -201,6 +250,9 @@ test('scroll-driven animations keep their timeline out of the animation shorthan
   const folded = [...css.matchAll(/animation:[^;}]*(?:view\(|scroll\(|\s--[a-z][\w-]*\s*(?:[;}]|$))/gu)].map((match) => match[0])
   assert.deepEqual(folded, [], 'a timeline must be set with animation-timeline, never inside the animation shorthand')
   assert.ok(/animation-timeline:\s*view\(\)/u.test(css), 'the build should still declare view() timelines')
+  const arriveKeyframe = css.match(/@keyframes\s+arrive\s*\{(?:[^{}]|\{[^}]*\})*\}/u)?.[0] ?? ''
+  assert.ok(arriveKeyframe, 'expected @keyframes arrive in built CSS')
+  assert.doesNotMatch(arriveKeyframe, /opacity/u, '@keyframes arrive must keep text at full opacity so --ink-faint never drops below 4.5:1 AA contrast')
 })
 
 test('home pages render the three-stage inference mechanics plate with HTML labels and localized lesson links', () => {

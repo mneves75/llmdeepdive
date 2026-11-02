@@ -108,7 +108,7 @@ The explorer's current contract is the **Signal Observatory**: every component
 in `COMPONENTS` has a selectable 3D port, an evidence-drawer state and a valid
 lesson link. The specimen keeps visible input→output direction and bilingual
 layer identity. Since 0.9 it is an armillary instrument on one steel axis:
-porcelain embedding and LM-head plates, ink-enamel decks with engraved
+porcelain embedding and LM-head plates, neutral graphite enamel decks with engraved
 dials, attention as a dome whose query–key arcs thicken with the attention
 weight, one warm gold FFN core (`--tier-core`), calibration hoops for norms
 and porcelain side meridians for the two residual bypasses; the selected port
@@ -354,6 +354,21 @@ argument. Do not add `main` or bindings to `wrangler.jsonc`.
   2026-09-15), and the ruleset stays off on purpose: do not add
   `static.cloudflareinsights.com` to the CSP. `pnpm verify:live` fails if the
   edge injects anything into the home page, so run it after any zone change.
+  It came back once: on 2026-11-02 the site had `auto_install: true` and an
+  enabled ruleset again, and every visitor's console logged the blocked
+  beacon. Read it with `cf rum site-info list` (account id in
+  `CLOUDFLARE_ACCOUNT_ID`) and set it with `cf rum site-info update <site>
+  --auto-install false --enabled false --zone-tag <zone>`.
+- **Zone settings that rewrite or annotate responses stay off** (2026-11-02):
+  Rocket Loader, Email Obfuscation, Mirage, Automatic HTTPS Rewrites,
+  Server-Side Excludes, Replace Insecure JS and Network Error Logging. The
+  first three inject script the CSP would block; the next three rewrite HTML
+  that is already all-HTTPS and byte-identical to `dist/`; NEL added two
+  report headers to every response and sent visitors' network errors to a
+  third party, which a tracking-free site does not do. SSL is Full (strict);
+  Brotli, HTTP/3, 0-RTT, Early Hints and Speed Brain stay on;
+  `browser_cache_ttl` stays 0 so `_headers` governs caching. Bot Fight Mode
+  and AI-bot blocking stay off at the zone level.
 - **Pagefind's language order is not stable between builds.**
   `finalize-dist.mjs` sorts `pagefind-entry.json`'s languages; without that, a
   rebuilt `dist/` for the released commit does not match production byte for

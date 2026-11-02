@@ -5,6 +5,76 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-11-02
+
+### Changed
+
+- **The explorer's instrument is neutral.** Its enamel decks were the plate
+  colour mixed toward chart blue, lit by a blue fill light, and read as navy
+  on the night stage. Enamel is now neutral graphite (the plate lifted 16%
+  toward the ink), every light is neutral, and chart blue stays on the lines
+  that mean something: engravings, the token path, attention arcs and the
+  graticule. Pressed Isolate is an ink plate, like the active theme option.
+- The home mechanics tabs drop their `01/02/03` numerals: three parallel
+  mechanisms are not a sequence.
+
+### Fixed
+
+- **Lesson completion for returning learners.** The progress pass rewrites
+  `data-complete` on every `[data-lesson-key]`, and the teach-back and quiz
+  roots carried that key, so on load it erased the teach-back's own verdict.
+  A learner who had saved a valid explanation, came back and passed the quiz
+  never completed the lesson. Both roots now carry `data-check-key`.
+  Pressing Check with no answer chosen no longer revokes a recorded pass.
+- **Search:** Enter in the field closed the dialog (its only button was the
+  form's default submit); it now moves to the first result. Excerpts showed
+  Pagefind's escaped `&gt;` and `&lt;` literally.
+- **Explorer:** a drag cleared the selection and Isolate, so an isolated part
+  could not be turned to be looked at; selection now happens on a tap (one
+  pointer that never moved past 6 px, so pinches and out-and-back drags do
+  not select). The callout card hung over neighbouring ports; it now sits
+  outside the instrument's projected span, and docks to a top corner when the
+  stage has no room beside it. The WebGL probe releases its context.
+- **Stacks drawn bottom-up** (`direction: 'up'`) rendered top-down, so the
+  four sandbox-isolation figures in track 17 put the hardware above the
+  script. They now render foundation-last, in markup and on screen.
+- **Pausing the home sky** froze its one-off arrival, leaving later
+  constellations undrawn and their track links hidden; it now pauses only the
+  comet and the breathing stars. The mechanics pulses stop with it.
+- The language link's accessible name contains its visible `PT`/`EN`
+  (WCAG 2.5.3); the pt-BR end-of-course card says "Fim do curso"; figure
+  scroll regions stop being tab stops when they do not scroll; the teach-back
+  status wraps and is announced only when it changes.
+
+### Operations
+
+- Cloudflare had re-enabled Web Analytics auto-install for the zone, so the
+  edge injected a beacon the CSP blocked on every page. It is off again, and
+  Network Error Logging, Automatic HTTPS Rewrites, Server-Side Excludes and
+  Replace Insecure JS are off; SSL is Full (strict). See AGENTS.md.
+
+- **Benchmark provenance & single source of truth (`src/lib/model-facts.ts`,
+  `Home.astro`, lessons `11.4` and `11.5` in EN and pt-BR):** centralized
+  TensorFold `v1.2.1` benchmark strings in `TENSORFOLD_BENCHMARKS` inside
+  `src/lib/model-facts.ts`, attributed the `201.4 tok/s` 8-stream aggregate
+  figure to the 64 GB Apple M5 Pro (`--parallel 8`, TensorFold 0.3.5.1 Python +
+  MLX) per upstream `docs/recipes/qwen3.8-27b.md` rather than M5 Ultra, and
+  distinguished `--parallel N` (concurrent decode lanes) from `--max-inflight N`
+  (admission limit).
+- **Scroll-entrance contrast (`src/styles/global.css`):** `@keyframes arrive`
+  animates `translate` only and keeps text at `opacity: 1`, so `--ink-faint`
+  never drops below 4.5:1 AA contrast during scroll entrance.
+- **Browser & pin verification (`scripts/render-check.mjs`,
+  `tests/content-pins.test.mjs`, `tests/course-player.test.mjs`):** `render:check`
+  now drives all three `.mechanics` stages on `/` and `/pt-br/` at 320px with
+  JavaScript disabled and verifies 320px end-scroll reachability on `.steps ol`
+  and `.index__list` (with `--self-test` defect injection); `content-pins.test.mjs`
+  enforces exact immutable tags across Tracks 11–13, `Home.astro`, and
+  `README.md`, rejecting bare or floating branch URLs. The no-JavaScript
+  checks wait for layout instead of an animation frame, which never fires
+  with scripts disabled and left `render:check` waiting forever in every
+  engine.
+
 ## [0.15.0] — 2026-11-02
 
 ### Added

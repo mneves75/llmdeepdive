@@ -2,6 +2,44 @@
 
 ## Current Direction
 
+- **2026-11-02, 0.15.1 is two pieces of work in one release.** A frontend
+  review (neutral 3D instrument, callout clear of ports, tap-to-select,
+  lesson completion for returning learners, search Enter, up-stacks, sky
+  pause, a11y fixes) was folded together, at the owner's request, with a
+  parallel session's uncommitted benchmark-provenance work described below,
+  so neither static deploy would replace the other. The zone's Web Analytics
+  auto-install had come back on (blocked beacon on every page); it and NEL
+  are off. Left for the owner: the zone WAF rule `obs_ai_crawler_block` (not
+  created by this repo) exempts `/sitemap.xml`, but this site's sitemap is
+  `/sitemap-index.xml`, so verified AI crawlers are blocked from it and from
+  every page `llms.txt` links to. Review findings not fixed, by choice:
+  lab `<output aria-live>` announces every keystroke (needs a debounce
+  design), explorer `touch-action: none` vs "no touch-scroll capture",
+  track-page Continue shows the last lesson course-wide.
+  Shipped: `v0.15.1-beta2` staging `1afa5a0f`, `v0.15.1` (`b762435`)
+  production `51db6e96`; `verify:live` PASS on both. Independent review found
+  that a tap must be one still pointer (pinch and out-and-back drags selected)
+  and that a clamped callout must dock, not overlap. Two release-tool traps
+  surfaced: with `javaScriptEnabled: false` neither a requestAnimationFrame
+  callback nor `addStyleTag`'s load event ever fires, so `render:check` and its
+  self-test hung forever; and Speed Brain's Speculation-Rules makes WebKit load
+  the lesson as a non-navigation request after a 503 prefetch, so the
+  `verify:live` canary matches a non-prefetch GET instead. The firefox
+  self-test case "coming back after leaving mid-boot" is flaky (bfcache keeps
+  the canvas the self-test unhid).
+
+- **2026-11-02, 0.15.1: advisor fixes for TensorFold benchmark provenance,
+  no-JS `.mechanics` browser checks, immutable pin enforcement, and `.arrive`
+  full-opacity contrast.** Centralized `TENSORFOLD_BENCHMARKS` in
+  `src/lib/model-facts.ts`; fixed the `201.4 tok/s` 8-stream attribution to
+  64 GB M5 Pro (`--parallel 8`, TensorFold 0.3.5.1 Python + MLX) in `Home.astro`
+  and lesson 11.5 (EN/pt-BR) and distinguished `--parallel` from `--max-inflight`
+  in 11.4; kept `.arrive` at `opacity: 1` so `--ink-faint` retains 7.0:1
+  contrast during scroll entry; added no-JS `.mechanics` stage switching and
+  320px strip end-scroll checks (plus `--self-test` controls) to
+  `scripts/render-check.mjs`; and tightened `tests/content-pins.test.mjs` to
+  require exact immutable tags and reject bare/floating URLs.
+
 - **2026-11-02, 0.15.0: home inference mechanics observatory plate and TensorFold (`v1.2.1`) coverage.**
   Added a three-stage, zero-JavaScript interactive inference mechanics plate on
   `/` and `/pt-br/` (`Home.astro`: parallel speculative decoding with DFlash2,
@@ -107,8 +145,9 @@
   white in the field edition since dual themes were added (Shiki inline
   colours); `defaultColor: false` plus `light-dark()` in `prose.css` fixes it.
   `a11y:contrast` now holds chroma, the lightness ladder and the black/white
-  ends (19 failures on the 0.10.0 palette). The 3D instrument keeps its
-  chart-blue enamel and lights on purpose; the owner may ask to neutralise it.
+  ends (19 failures on the 0.10.0 palette). The 3D instrument kept its
+  chart-blue enamel and lights until 0.15.1, when the owner asked for it to
+  be neutralised.
   An independent verifier (fresh context, another model, browser only) passed
   6 of 10 frozen criteria and failed 4 on things this release did not change;
   the owner approved production knowing that. Open, all older than 0.11.0:
