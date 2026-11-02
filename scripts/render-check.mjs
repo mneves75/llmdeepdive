@@ -281,6 +281,81 @@ async function explorerFailures(browser, name, base) {
 
 const WIDE_FONTS = ":root { --font-display: Verdana, 'DejaVu Sans', sans-serif !important; --font-body: Verdana, 'DejaVu Sans', sans-serif !important; --font-ui: Verdana, 'DejaVu Sans', sans-serif !important; }"
 
+async function mechanicsAndStripFailures(browser, name, base) {
+  const failures = []
+  const context = await browser.newContext({ viewport: { width: 320, height: 740 }, javaScriptEnabled: false })
+  try {
+    const page = await context.newPage()
+    for (const route of ['/', '/pt-br/']) {
+      await page.goto(base + route, { waitUntil: 'load' })
+      if (selfTest && route === '/') {
+        await page.addStyleTag({ content: '.mechanics__panel { display: grid !important; }' })
+      }
+      await settle(page)
+      const ids = ['mechanics-decode', 'mechanics-reuse', 'mechanics-cluster']
+      for (let expectedIdx = 0; expectedIdx < ids.length; expectedIdx++) {
+        if (expectedIdx > 0) {
+          await page.locator(`#${ids[expectedIdx]}-label`).click()
+          await settle(page)
+        }
+        const state = await page.evaluate(() => {
+          const panels = [...document.querySelectorAll('.mechanics__panel')]
+          return panels.map((panel) => getComputedStyle(panel).display !== 'none' && panel.getClientRects().length > 0)
+        })
+        const expected = ids.map((_, idx) => idx === expectedIdx)
+        if (JSON.stringify(state) !== JSON.stringify(expected)) {
+          failures.push(`${name} ${route} @no-js: mechanics stage ${expectedIdx + 1} visible panels ${JSON.stringify(state)} !== ${JSON.stringify(expected)}`)
+          break
+        }
+      }
+      // Keyboard operation and focus ring on the active radio's label.
+      await page.locator('#mechanics-decode').focus()
+      await page.keyboard.press('ArrowRight')
+      await settle(page)
+      const kbState = await page.evaluate(() => {
+        const reuse = document.getElementById('mechanics-reuse')
+        const label = document.getElementById('mechanics-reuse-label')
+        return {
+          checked: reuse instanceof HTMLInputElement && reuse.checked,
+          outlineStyle: label ? getComputedStyle(label).outlineStyle : 'none',
+        }
+      })
+      if (!kbState.checked) {
+        failures.push(`${name} ${route} @no-js: ArrowRight from #mechanics-decode did not select #mechanics-reuse`)
+      }
+    }
+
+    // Narrow-screen horizontal strips (.steps ol on lessons, .index__list on /explore/)
+    // must reach their final item cleanly when scrolled to the end at 320px.
+    const stripChecks = [
+      [BASELINE_ROUTES[0], '.steps ol'],
+      ['/explore/', '.index__list'],
+    ]
+    for (const [route, selector] of stripChecks) {
+      await page.goto(base + route, { waitUntil: 'load' })
+      if (selfTest && route === '/explore/') {
+        await page.addStyleTag({ content: '.index__list > :last-child { margin-inline-end: -200px !important; }' })
+      }
+      await settle(page)
+      const reached = await page.evaluate((sel) => {
+        const scroller = document.querySelector(sel)
+        const last = scroller?.lastElementChild
+        if (!scroller || !last) return false
+        scroller.scrollLeft = scroller.scrollWidth
+        const sRect = scroller.getBoundingClientRect()
+        const lRect = last.getBoundingClientRect()
+        return lRect.right <= sRect.right + 1.5 && lRect.left >= sRect.left - 1.5
+      }, selector)
+      if (!reached) {
+        failures.push(`${name} ${route}: strip ${selector} did not reach its final item cleanly at 320px`)
+      }
+    }
+  } finally {
+    await context.close()
+  }
+  return failures
+}
+
 async function checkEngine(name, base, allRoutes, wideFonts = false) {
   const browser = await ENGINES[name].launch()
   const label = wideFonts ? `${name}+wide-fonts` : name
@@ -325,6 +400,7 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
     const explorer = await explorerFailures(browser, name, base)
     failures.push(...explorer.failures)
     if (explorer.covered) explorerEngines.push(name)
+    failures.push(...await mechanicsAndStripFailures(browser, name, base))
   } finally {
     await browser.close()
   }
@@ -359,6 +435,8 @@ try {
       `${engine} ${checked[0]}: link in running text without an underline: planted wrapped link`,
       ...(engine === 'chromium' ? [`chromium+wide-fonts ${checked[0]}: page overflows`] : []),
       ...BASELINE_ROUTES.map((route) => `${engine} ${route} @1280: inline maths moves`),
+      `${engine} / @no-js: mechanics stage 1 visible panels`,
+      `${engine} /explore/: strip .index__list did not reach its final item cleanly at 320px`,
       ...(explorerEngines.includes(engine)
         ? [
             `${engine} /explore/: the stage was not still loading at the click`,

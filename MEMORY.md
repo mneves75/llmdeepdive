@@ -2,6 +2,18 @@
 
 ## Current Direction
 
+- **2026-11-02, 0.15.1: advisor fixes for TensorFold benchmark provenance,
+  no-JS `.mechanics` browser checks, immutable pin enforcement, and `.arrive`
+  full-opacity contrast.** Centralized `TENSORFOLD_BENCHMARKS` in
+  `src/lib/model-facts.ts`; fixed the `201.4 tok/s` 8-stream attribution to
+  64 GB M5 Pro (`--parallel 8`, TensorFold 0.3.5.1 Python + MLX) in `Home.astro`
+  and lesson 11.5 (EN/pt-BR) and distinguished `--parallel` from `--max-inflight`
+  in 11.4; kept `.arrive` at `opacity: 1` so `--ink-faint` retains 7.0:1
+  contrast during scroll entry; added no-JS `.mechanics` stage switching and
+  320px strip end-scroll checks (plus `--self-test` controls) to
+  `scripts/render-check.mjs`; and tightened `tests/content-pins.test.mjs` to
+  require exact immutable tags and reject bare/floating URLs.
+
 - **2026-11-02, 0.15.0: home inference mechanics observatory plate and TensorFold (`v1.2.1`) coverage.**
   Added a three-stage, zero-JavaScript interactive inference mechanics plate on
   `/` and `/pt-br/` (`Home.astro`: parallel speculative decoding with DFlash2,

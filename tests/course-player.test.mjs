@@ -240,6 +240,9 @@ test('scroll-driven animations keep their timeline out of the animation shorthan
   const folded = [...css.matchAll(/animation:[^;}]*(?:view\(|scroll\(|\s--[a-z][\w-]*\s*(?:[;}]|$))/gu)].map((match) => match[0])
   assert.deepEqual(folded, [], 'a timeline must be set with animation-timeline, never inside the animation shorthand')
   assert.ok(/animation-timeline:\s*view\(\)/u.test(css), 'the build should still declare view() timelines')
+  const arriveKeyframe = css.match(/@keyframes\s+arrive\s*\{(?:[^{}]|\{[^}]*\})*\}/u)?.[0] ?? ''
+  assert.ok(arriveKeyframe, 'expected @keyframes arrive in built CSS')
+  assert.doesNotMatch(arriveKeyframe, /opacity/u, '@keyframes arrive must keep text at full opacity so --ink-faint never drops below 4.5:1 AA contrast')
 })
 
 test('home pages render the three-stage inference mechanics plate with HTML labels and localized lesson links', () => {
