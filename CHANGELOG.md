@@ -70,7 +70,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   JavaScript disabled and verifies 320px end-scroll reachability on `.steps ol`
   and `.index__list` (with `--self-test` defect injection); `content-pins.test.mjs`
   enforces exact immutable tags across Tracks 11–13, `Home.astro`, and
-  `README.md`, rejecting bare or floating branch URLs.
+  `README.md`, rejecting bare or floating branch URLs. The no-JavaScript
+  checks wait for layout instead of an animation frame, which never fires
+  with scripts disabled and left `render:check` waiting forever in every
+  engine.
 
 ## [0.15.0] — 2026-11-02
 

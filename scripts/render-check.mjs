@@ -67,6 +67,10 @@ function routes() {
 }
 
 const settle = (page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+// With JavaScript disabled no animation frame ever fires, so settle() would
+// wait forever there. Forcing layout is enough: radio :checked styles and
+// scrollLeft apply synchronously.
+const reflow = (page) => page.evaluate(() => void document.documentElement.getBoundingClientRect())
 
 async function layoutFailures(page) {
   return page.evaluate(() => {
@@ -291,12 +295,12 @@ async function mechanicsAndStripFailures(browser, name, base) {
       if (selfTest && route === '/') {
         await page.addStyleTag({ content: '.mechanics__panel { display: grid !important; }' })
       }
-      await settle(page)
+      await reflow(page)
       const ids = ['mechanics-decode', 'mechanics-reuse', 'mechanics-cluster']
       for (let expectedIdx = 0; expectedIdx < ids.length; expectedIdx++) {
         if (expectedIdx > 0) {
           await page.locator(`#${ids[expectedIdx]}-label`).click()
-          await settle(page)
+          await reflow(page)
         }
         const state = await page.evaluate(() => {
           const panels = [...document.querySelectorAll('.mechanics__panel')]
@@ -311,7 +315,7 @@ async function mechanicsAndStripFailures(browser, name, base) {
       // Keyboard operation and focus ring on the active radio's label.
       await page.locator('#mechanics-decode').focus()
       await page.keyboard.press('ArrowRight')
-      await settle(page)
+      await reflow(page)
       const kbState = await page.evaluate(() => {
         const reuse = document.getElementById('mechanics-reuse')
         const label = document.getElementById('mechanics-reuse-label')
@@ -336,7 +340,7 @@ async function mechanicsAndStripFailures(browser, name, base) {
       if (selfTest && route === '/explore/') {
         await page.addStyleTag({ content: '.index__list > :last-child { margin-inline-end: -200px !important; }' })
       }
-      await settle(page)
+      await reflow(page)
       const reached = await page.evaluate((sel) => {
         const scroller = document.querySelector(sel)
         const last = scroller?.lastElementChild
