@@ -171,7 +171,11 @@ async function canaryFailures(engineName, base, version, selfTest) {
       }
       // A well-formed link to a missing lesson lands on the localized 404 page,
       // which has a heading too: require a 200 and the lesson's own article.
-      const response = page.waitForResponse((r) => r.request().isNavigationRequest() && new URL(r.url()).pathname === href, { timeout: 30_000 })
+      // Speed Brain's Speculation-Rules header lets WebKit prefetch the lesson
+      // (answered 503 on a cache miss, by design) and then load it as a request
+      // Playwright does not flag as a navigation; take the lesson response that
+      // is not a prefetch.
+      const response = page.waitForResponse((r) => new URL(r.url()).pathname === href && r.request().method() === 'GET' && !r.request().headers()['sec-purpose'], { timeout: 30_000 })
       await Promise.all([page.waitForURL((url) => url.pathname === href, { timeout: 30_000 }), cta.click()])
       const expectedStatus = selfTest ? 299 : 200
       const status = (await response).status()
