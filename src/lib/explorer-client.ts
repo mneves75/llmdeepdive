@@ -2,6 +2,8 @@ import { COMPONENTS, factText, lensText, type Lens } from './explorer-data'
 import type { Locale } from './i18n'
 import { readDisplayFont, readPalette } from './three/palette'
 import { isWebGLAvailable } from './three/webgl'
+import { floatingCalloutLeft } from './callout-placement'
+import { TapGesture } from './tap-gesture'
 
 /**
  * Client wiring for the Anatomy Explorer.
@@ -44,7 +46,6 @@ const PIN_MIN_WIDTH = 640
 const LEADER_RISE = 26
 const LEADER_RUN = 22
 /** CSS pixels a pointer may travel and still count as a tap rather than a drag. */
-const TAP_SLOP = 6
 const EDGE = 8
 
 /** Waits for the display face so port numerals are not baked in a fallback. */
@@ -318,13 +319,16 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       const pos = markers.screenPosition(markers.selected, width, height)
       if (!pos) return
       callout.dataset.behind = String(pos.behind)
-      if (width < PIN_MIN_WIDTH) {
+      const dock = (): void => {
         // Docked: top corner opposite the port, leader straight to it.
         const left = pos.x < width / 2 ? width - calloutSize.width - EDGE : EDGE
         callout.style.transform = `translate3d(${left.toFixed(1)}px, ${EDGE}px, 0)`
         const fromX = left + calloutSize.width / 2
         const fromY = EDGE + calloutSize.height
         selectLeader?.setAttribute('d', `M${fromX.toFixed(1)} ${fromY.toFixed(1)}L${pos.x.toFixed(1)} ${(pos.y - 12).toFixed(1)}`)
+      }
+      if (width < PIN_MIN_WIDTH) {
+        dock()
         return
       }
       // Floating: an elbow leader rising away from the model's axis, the label
@@ -333,12 +337,21 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       const outward = key?.hasAttribute('data-pinned') || pos.x >= width / 2 ? 1 : -1
       const elbowX = pos.x + outward * LEADER_RUN
       const elbowY = pos.y - LEADER_RISE
-      // The card starts past the instrument's silhouette, never over a port.
-      const span = instrumentSpan(stage.camera, width)
-      const endX = outward > 0
-        ? Math.max(elbowX + LEADER_RUN, span.right + LEADER_RUN)
-        : Math.min(elbowX - LEADER_RUN, span.left - LEADER_RUN)
-      const left = Math.max(EDGE, Math.min(outward > 0 ? endX + 6 : endX - 6 - calloutSize.width, width - calloutSize.width - EDGE))
+      // The card starts past the instrument's silhouette, never over a port;
+      // when the stage has no room there, it docks instead.
+      const left = floatingCalloutLeft({
+        outward,
+        elbowX,
+        span: instrumentSpan(stage.camera, width),
+        run: LEADER_RUN,
+        cardWidth: calloutSize.width,
+        stageWidth: width,
+        edge: EDGE,
+      })
+      if (left === null) {
+        dock()
+        return
+      }
       const top = Math.max(EDGE, Math.min(elbowY - calloutSize.height / 2, height - calloutSize.height - EDGE))
       callout.style.transform = `translate3d(${left.toFixed(1)}px, ${top.toFixed(1)}px, 0)`
       const startX = pos.x + outward * 13
@@ -375,21 +388,16 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     // A tap selects (or, off every port, clears); a drag only orbits. Selecting
     // on pointerdown cleared the selection and Isolate at the start of every
     // drag, so an isolated part could not be turned to be looked at.
-    let press: { x: number; y: number; pointer: number } | null = null
-    const onPointerDown = (ev: PointerEvent): void => {
-      press = { x: ev.clientX, y: ev.clientY, pointer: ev.pointerId }
-    }
+    const tap = new TapGesture()
     const onPointerUp = (ev: PointerEvent): void => {
-      const start = press
-      press = null
-      if (!start || start.pointer !== ev.pointerId) return
-      if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > TAP_SLOP) return
+      if (!tap.up(ev.pointerId, ev.clientX, ev.clientY)) return
       const rect = canvas.getBoundingClientRect()
       select(markers.pick(ev.clientX - rect.left, ev.clientY - rect.top, rect.width, rect.height))
     }
-    on(canvas, 'pointerdown', onPointerDown as EventListener)
+    on(canvas, 'pointerdown', ((ev: PointerEvent) => tap.down(ev.pointerId, ev.clientX, ev.clientY)) as EventListener)
+    on(canvas, 'pointermove', ((ev: PointerEvent) => tap.move(ev.pointerId, ev.clientX, ev.clientY)) as EventListener)
     on(canvas, 'pointerup', onPointerUp as EventListener)
-    on(canvas, 'pointercancel', () => { press = null })
+    on(canvas, 'pointercancel', ((ev: PointerEvent) => tap.cancel(ev.pointerId)) as EventListener)
 
     // Keyboard parity with the pointer. Missing in the reference project, which
     // left its entire annotation layer mouse-only.

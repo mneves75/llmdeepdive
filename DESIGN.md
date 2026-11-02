@@ -574,7 +574,8 @@ self-attention, residual add, RMSNorm, feed-forward, residual add, LM head.
   entry beside its deck; selection draws a crimson leader to an HTML callout
   card hung outside the instrument's projected span, so it never covers a
   port. Isolate dims everything else to 12% opacity; pressed, it is an ink
-  plate like the active theme option. A tap selects; a drag only orbits.
+  plate like the active theme option. A tap (one still pointer) selects; a
+  drag or pinch only orbits. Without room beside the instrument, the card docks.
 - Before WebGL, an SVG poster of the same instrument fills the stage, and
   every port, fact and lesson link exists as HTML.
 

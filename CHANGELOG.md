@@ -30,9 +30,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   form's default submit); it now moves to the first result. Excerpts showed
   Pagefind's escaped `&gt;` and `&lt;` literally.
 - **Explorer:** a drag cleared the selection and Isolate, so an isolated part
-  could not be turned to be looked at; selection now happens on a tap. The
-  callout card hung over neighbouring ports; it now sits outside the
-  instrument's projected span. The WebGL probe releases its context.
+  could not be turned to be looked at; selection now happens on a tap (one
+  pointer that never moved past 6 px, so pinches and out-and-back drags do
+  not select). The callout card hung over neighbouring ports; it now sits
+  outside the instrument's projected span, and docks to a top corner when the
+  stage has no room beside it. The WebGL probe releases its context.
 - **Stacks drawn bottom-up** (`direction: 'up'`) rendered top-down, so the
   four sandbox-isolation figures in track 17 put the hardware above the
   script. They now render foundation-last, in markup and on screen.
