@@ -14,12 +14,13 @@ export function floatingCalloutLeft(opts: {
   edge: number
 }): number | null {
   const { outward, elbowX, span, run, cardWidth, stageWidth, edge } = opts
+  if (cardWidth > stageWidth - 2 * edge) return null
   if (outward > 0) {
     const ideal = Math.max(elbowX + run, span.right + run) + 6
-    const left = Math.min(ideal, stageWidth - edge - cardWidth)
+    const left = Math.min(Math.max(ideal, edge), stageWidth - edge - cardWidth)
     return left >= span.right + run ? left : null
   }
   const ideal = Math.min(elbowX - run, span.left - run) - 6 - cardWidth
-  const left = Math.max(ideal, edge)
+  const left = Math.max(Math.min(ideal, stageWidth - edge - cardWidth), edge)
   return left + cardWidth <= span.left - run ? left : null
 }
