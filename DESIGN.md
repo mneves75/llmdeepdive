@@ -554,9 +554,13 @@ instrument on a single axis, input at the bottom and output at the top,
 always. Eight decks stand on a plinth under a crown: embedding, RMSNorm,
 self-attention, residual add, RMSNorm, feed-forward, residual add, LM head.
 
-- Plates are vitreous enamel (the plate colour mixed 13% toward chart blue)
-  engraved like a chart; rods and hoops are satin nickel (`ink-muted`, fully
-  metallic); ports and tokens are glazed porcelain (`ink`).
+- Plates are vitreous enamel, neutral graphite (the plate colour lifted 16%
+  toward the ink, `ENAMEL_LIFT`), engraved like a chart; rods and hoops are
+  satin nickel (`ink-muted`, fully metallic); ports and tokens are glazed
+  porcelain (`ink`). Every light is neutral. Hue on the instrument is carried
+  only by lines (chart-blue engravings, token path, attention arcs, the
+  graticule floor), the gold core and the crimson reticle; until 0.15.1 the
+  enamel and the fill light were tinted chart blue and read as navy.
 - Attention is a small celestial dome; the query token is a star and its
   attention to earlier tokens is drawn as great-circle arcs weighted by the
   attention weight. The feed-forward network is the one warm element, a
@@ -568,7 +572,9 @@ self-attention, residual add, RMSNorm, feed-forward, residual add, LM head.
   clock; copies ride the bypasses and arrive at each add with it.
 - The stage is the night plate in both editions. An HTML layer key pins each
   entry beside its deck; selection draws a crimson leader to an HTML callout
-  card. Isolate dims everything else to 12% opacity.
+  card hung outside the instrument's projected span, so it never covers a
+  port. Isolate dims everything else to 12% opacity; pressed, it is an ink
+  plate like the active theme option. A tap selects; a drag only orbits.
 - Before WebGL, an SVG poster of the same instrument fills the stage, and
   every port, fact and lesson link exists as HTML.
 

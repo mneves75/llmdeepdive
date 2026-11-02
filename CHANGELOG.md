@@ -7,7 +7,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.15.1] — 2026-11-02
 
+### Changed
+
+- **The explorer's instrument is neutral.** Its enamel decks were the plate
+  colour mixed toward chart blue, lit by a blue fill light, and read as navy
+  on the night stage. Enamel is now neutral graphite (the plate lifted 16%
+  toward the ink), every light is neutral, and chart blue stays on the lines
+  that mean something: engravings, the token path, attention arcs and the
+  graticule. Pressed Isolate is an ink plate, like the active theme option.
+- The home mechanics tabs drop their `01/02/03` numerals: three parallel
+  mechanisms are not a sequence.
+
 ### Fixed
+
+- **Lesson completion for returning learners.** The progress pass rewrites
+  `data-complete` on every `[data-lesson-key]`, and the teach-back and quiz
+  roots carried that key, so on load it erased the teach-back's own verdict.
+  A learner who had saved a valid explanation, came back and passed the quiz
+  never completed the lesson. Both roots now carry `data-check-key`.
+  Pressing Check with no answer chosen no longer revokes a recorded pass.
+- **Search:** Enter in the field closed the dialog (its only button was the
+  form's default submit); it now moves to the first result. Excerpts showed
+  Pagefind's escaped `&gt;` and `&lt;` literally.
+- **Explorer:** a drag cleared the selection and Isolate, so an isolated part
+  could not be turned to be looked at; selection now happens on a tap. The
+  callout card hung over neighbouring ports; it now sits outside the
+  instrument's projected span. The WebGL probe releases its context.
+- **Stacks drawn bottom-up** (`direction: 'up'`) rendered top-down, so the
+  four sandbox-isolation figures in track 17 put the hardware above the
+  script. They now render foundation-last, in markup and on screen.
+- **Pausing the home sky** froze its one-off arrival, leaving later
+  constellations undrawn and their track links hidden; it now pauses only the
+  comet and the breathing stars. The mechanics pulses stop with it.
+- The language link's accessible name contains its visible `PT`/`EN`
+  (WCAG 2.5.3); the pt-BR end-of-course card says "Fim do curso"; figure
+  scroll regions stop being tab stops when they do not scroll; the teach-back
+  status wraps and is announced only when it changes.
+
+### Operations
+
+- Cloudflare had re-enabled Web Analytics auto-install for the zone, so the
+  edge injected a beacon the CSP blocked on every page. It is off again, and
+  Network Error Logging, Automatic HTTPS Rewrites, Server-Side Excludes and
+  Replace Insecure JS are off; SSL is Full (strict). See AGENTS.md.
 
 - **Benchmark provenance & single source of truth (`src/lib/model-facts.ts`,
   `Home.astro`, lessons `11.4` and `11.5` in EN and pt-BR):** centralized

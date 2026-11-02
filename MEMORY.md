@@ -2,6 +2,21 @@
 
 ## Current Direction
 
+- **2026-11-02, 0.15.1 is two pieces of work in one release.** A frontend
+  review (neutral 3D instrument, callout clear of ports, tap-to-select,
+  lesson completion for returning learners, search Enter, up-stacks, sky
+  pause, a11y fixes) was folded together, at the owner's request, with a
+  parallel session's uncommitted benchmark-provenance work described below,
+  so neither static deploy would replace the other. The zone's Web Analytics
+  auto-install had come back on (blocked beacon on every page); it and NEL
+  are off. Left for the owner: the zone WAF rule `obs_ai_crawler_block` (not
+  created by this repo) exempts `/sitemap.xml`, but this site's sitemap is
+  `/sitemap-index.xml`, so verified AI crawlers are blocked from it and from
+  every page `llms.txt` links to. Review findings not fixed, by choice:
+  lab `<output aria-live>` announces every keystroke (needs a debounce
+  design), explorer `touch-action: none` vs "no touch-scroll capture",
+  track-page Continue shows the last lesson course-wide.
+
 - **2026-11-02, 0.15.1: advisor fixes for TensorFold benchmark provenance,
   no-JS `.mechanics` browser checks, immutable pin enforcement, and `.arrive`
   full-opacity contrast.** Centralized `TENSORFOLD_BENCHMARKS` in
@@ -119,8 +134,9 @@
   white in the field edition since dual themes were added (Shiki inline
   colours); `defaultColor: false` plus `light-dark()` in `prose.css` fixes it.
   `a11y:contrast` now holds chroma, the lightness ladder and the black/white
-  ends (19 failures on the 0.10.0 palette). The 3D instrument keeps its
-  chart-blue enamel and lights on purpose; the owner may ask to neutralise it.
+  ends (19 failures on the 0.10.0 palette). The 3D instrument kept its
+  chart-blue enamel and lights until 0.15.1, when the owner asked for it to
+  be neutralised.
   An independent verifier (fresh context, another model, browser only) passed
   6 of 10 frozen criteria and failed 4 on things this release did not change;
   the owner approved production knowing that. Open, all older than 0.11.0:

@@ -11,6 +11,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { TRACK_17_FIGURES } from '../src/lib/figures/17-sandboxed-agent-execution.ts'
 
 const DIST = 'dist'
 
@@ -193,6 +194,14 @@ test('pausing the sky stops only its ambient motion, never the arrival', () => {
   assert.deepEqual([...css.matchAll(wildcard)].map((match) => match[0]), [], 'a pause must name what it stops')
 })
 
+/** The first declared step of every 'up' stack, in both locales: its foundation. */
+const UP_FOUNDATIONS = new Set(
+  Object.values(TRACK_17_FIGURES)
+    .flatMap((figure) => [figure.body, ...(figure.steps ?? []).map((frame) => frame.body)])
+    .filter((body) => body?.kind === 'stack' && body.direction === 'up')
+    .flatMap((body) => Object.values(body.steps[0].label)),
+)
+
 test("an 'up' stack draws its foundation last, in markup as on screen", () => {
   // `direction: ltr` once stood in for the reversal and did nothing, so every
   // sandbox figure drew the hardware on top of the script it isolates.
@@ -202,7 +211,8 @@ test("an 'up' stack draws its foundation last, in markup as on screen", () => {
   for (const { route, open, body } of stacks) {
     assert.match(open, /\breversed\b/u, `${route}: an up stack numbers from its bottom layer`)
     const labels = [...body.matchAll(/class="fig-stack__label[^"]*">([^<]*)</gu)].map((match) => match[1])
-    assert.match(labels.at(-1) ?? '', /^(Hardware|Máquina física)$/u, `${route}: the foundation must be the last band, got ${labels.join(' / ')}`)
+    assert.ok(UP_FOUNDATIONS.has(labels.at(-1) ?? ''), `${route}: the foundation must be the last band, got ${labels.join(' / ')}`)
+    assert.ok(!UP_FOUNDATIONS.has(labels[0] ?? ''), `${route}: a foundation must not be the top band, got ${labels.join(' / ')}`)
   }
 })
 
