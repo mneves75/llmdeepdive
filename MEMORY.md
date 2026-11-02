@@ -16,6 +16,17 @@
   lab `<output aria-live>` announces every keystroke (needs a debounce
   design), explorer `touch-action: none` vs "no touch-scroll capture",
   track-page Continue shows the last lesson course-wide.
+  Shipped: `v0.15.1-beta2` staging `1afa5a0f`, `v0.15.1` (`b762435`)
+  production `51db6e96`; `verify:live` PASS on both. Independent review found
+  that a tap must be one still pointer (pinch and out-and-back drags selected)
+  and that a clamped callout must dock, not overlap. Two release-tool traps
+  surfaced: with `javaScriptEnabled: false` neither a requestAnimationFrame
+  callback nor `addStyleTag`'s load event ever fires, so `render:check` and its
+  self-test hung forever; and Speed Brain's Speculation-Rules makes WebKit load
+  the lesson as a non-navigation request after a 503 prefetch, so the
+  `verify:live` canary matches a non-prefetch GET instead. The firefox
+  self-test case "coming back after leaving mid-boot" is flaky (bfcache keeps
+  the canvas the self-test unhid).
 
 - **2026-11-02, 0.15.1: advisor fixes for TensorFold benchmark provenance,
   no-JS `.mechanics` browser checks, immutable pin enforcement, and `.arrive`
