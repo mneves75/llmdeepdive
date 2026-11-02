@@ -71,6 +71,13 @@ const settle = (page) => page.evaluate(() => new Promise((resolve) => requestAni
 // wait forever there. Forcing layout is enough: radio :checked styles and
 // scrollLeft apply synchronously.
 const reflow = (page) => page.evaluate(() => void document.documentElement.getBoundingClientRect())
+// addStyleTag waits for the style's load event, which no script can observe
+// with JavaScript disabled; append the element directly instead.
+const injectStyle = (page, css) => page.evaluate((text) => {
+  const style = document.createElement('style')
+  style.textContent = text
+  document.head.append(style)
+}, css)
 
 async function layoutFailures(page) {
   return page.evaluate(() => {
@@ -293,7 +300,7 @@ async function mechanicsAndStripFailures(browser, name, base) {
     for (const route of ['/', '/pt-br/']) {
       await page.goto(base + route, { waitUntil: 'load' })
       if (selfTest && route === '/') {
-        await page.addStyleTag({ content: '.mechanics__panel { display: grid !important; }' })
+        await injectStyle(page, '.mechanics__panel { display: grid !important; }')
       }
       await reflow(page)
       const ids = ['mechanics-decode', 'mechanics-reuse', 'mechanics-cluster']
@@ -338,7 +345,7 @@ async function mechanicsAndStripFailures(browser, name, base) {
     for (const [route, selector] of stripChecks) {
       await page.goto(base + route, { waitUntil: 'load' })
       if (selfTest && route === '/explore/') {
-        await page.addStyleTag({ content: '.index__list > :last-child { margin-inline-end: -200px !important; }' })
+        await injectStyle(page, '.index__list > :last-child { margin-inline-end: -200px !important; }')
       }
       await reflow(page)
       const reached = await page.evaluate((sel) => {
