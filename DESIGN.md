@@ -86,6 +86,9 @@ typography:
     fontSize: "0.8125rem"
     fontWeight: 400
     fontFeature: "\"tnum\" 1"
+  social-card:
+    fontFamily: "Mona Sans, Roboto, sans-serif"
+    fontWeight: 700
 rounded:
   xs: "2px"
   sm: "4px"

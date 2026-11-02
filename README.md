@@ -114,7 +114,7 @@ reference system) and the JEPA family of world models (I-JEPA, V-JEPA 2 and
 2.1, VL-JEPA), read from the papers themselves.
 
 Tracks 11–13 are hands-on: the Mac Studio
-Ultra with MLX, mlx-lm and MLX serving (`mlx_lm.server`, mlx-serve); NVIDIA's
+Ultra with MLX, mlx-lm and MLX serving (`mlx_lm.server`, mlx-serve, TensorFold); NVIDIA's
 DGX Spark and DGX Station with the CUDA programming model and stack; and
 llama.cpp in depth (ggml backends, making a GGUF, `llama-server`, `llama-bench`,
 speculative decoding and RPC). Every command was run against a pinned release
@@ -147,6 +147,14 @@ dense trunk within a configurable memory budget. Lesson 7.12 explains the
 storage/RAM tradeoff with revision-pinned architecture and measurement sources.
 The engine and checkpoint remain external to the site; a low process RSS does
 not remove their disk requirements or establish interactive speed on a laptop.
+
+The native Metal and CUDA 13 serving case studies in lessons 7.5, 11.4, 11.5,
+and 12.5 reference [TensorFold](https://github.com/ashhart/TensorFold/tree/v1.2.1)
+(`v1.2.1`), an Apache-2.0 Zig inference engine covering external DFlash2
+speculative decoding verified against `--no-drafts`, retained prefix caching and
+deterministic context compaction (`--compact-at`), paired two-Mac Thunderbolt 5
+and MCDMA serving (`--speed-up`), and admission/loop guards (`--thinking-budget`,
+`--loop-guard`).
 
 ## Develop
 
@@ -181,6 +189,16 @@ also forbid specific client, project or tooling names, set
 secret. When it is unset the check says so rather than passing quietly. Keep
 that list to distinctive names: entries that are also ordinary English words
 will match the prose and the gate will be turned off rather than fixed.
+
+### Staging resources
+
+This checkout deploys static assets only: `wrangler.jsonc` has no Worker script, D1 binding,
+cron or queue consumer. The former `llmdeepdive-staging` D1 was an unused resource for this
+architecture and is intentionally absent after the 2026-10-26 cleanup. Keep its archive only
+for separately authorized recovery; a static release must not recreate it or add a database.
+There is no staging D1 UUID to replace and no database migration step. Confirm the deploy
+dry-run still reports assets with no bindings. Run the `mneves-security` deploy gate on the
+exact release commit before any deployment; the existing live checks remain required.
 
 Staging deploys with `pnpm deploy:staging`. A successful command is not enough:
 confirm the new version with Wrangler, then prove what the edge serves:

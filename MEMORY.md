@@ -2,6 +2,18 @@
 
 ## Current Direction
 
+- **2026-11-02, 0.15.0: home inference mechanics observatory plate and TensorFold (`v1.2.1`) coverage.**
+  Added a three-stage, zero-JavaScript interactive inference mechanics plate on
+  `/` and `/pt-br/` (`Home.astro`: parallel speculative decoding with DFlash2,
+  retained prefix caching with deterministic context compaction, and paired
+  two-node Thunderbolt 5 serving with admission/loop guards) using native radio
+  inputs, HTML labels, and geometry-only SVG plates. Added bilingual coverage of
+  `ashhart/TensorFold` (`v1.2.1`, enforced per track by `tests/content-pins.test.mjs`)
+  in lessons 7.5, 11.4, 11.5, and 12.5. Fixed the `.arrive` scroll-driven
+  opacity floor (`0.85` opacity, `entry 0% cover 18%`), narrow-screen scroll
+  padding on `.steps ol` and `.index__list`, and all `impeccable detect`
+  design-system warnings.
+
 - **2026-10-19, 0.14.0 live: agent-engineering tracks 14–25.** PR #16, merge
   `1a6fde5` (tree `29f5beb`); `v0.14.0-beta1` staging version `1faea6f5`,
   `v0.14.0` production version `98d8456f`; `verify:live` PASS on both (1,394

@@ -5,6 +5,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-11-02
+
+### Added
+
+- **Home inference mechanics observatory plate (`Home.astro`):** a three-stage,
+  zero-JavaScript interactive plate (parallel speculative decoding with DFlash2,
+  retained prefix caching with deterministic context compaction, and paired
+  two-node Thunderbolt 5 serving with admission and loop guards) in English and
+  Brazilian Portuguese. Step switching uses native radio inputs and sibling
+  selectors; SVG plates draw geometry and motion pulses only while HTML holds
+  every string so pt-BR wraps cleanly at 320px.
+- **TensorFold (`ashhart/TensorFold`, pinned at `v1.2.1`) across Tracks 7, 11,
+  and 12:** Lesson 7.5 covers external block-diffusion drafting
+  (`z-lab/Qwen3.8-27B-DFlash2`) and 128-stream Metal shared-lane verification
+  against `--no-drafts`; Lesson 11.4 adds `tensorfold serve` alongside
+  `mlx_lm.server` and `mlx-serve` (loopback default `127.0.0.1:8080`,
+  `cached_tokens`, `--compact-at`, `--thinking-budget`, `--loop-guard`); Lesson
+  11.5 adds paired two-Mac Thunderbolt 5 and MCDMA serving (`--speed-up` /
+  `--exlr8`) verified stream-for-stream against solo runs; Lesson 12.5 adds
+  native CUDA 13 (`libcuda.so.1`, driver R580+ startup check) serving on DGX
+  Spark GB10. `tests/content-pins.test.mjs` enforces a single pinned
+  `ashhart/TensorFold` revision per track.
+
+### Fixed
+
+- Scroll-driven `.arrive` rows in `src/styles/global.css` start at 0.85 opacity
+  without blur and complete within `entry 0% cover 18%`, eliminating the
+  half-faded (`~0.54` opacity) resting state at the bottom of the viewport.
+- Narrow-screen lesson step strip (`.steps ol` in `Lesson.astro`) and explorer
+  port strip (`.index__list` in `Explorer.astro`) add trailing scroll padding
+  and tighter column sizing so labels at 390px and 320px do not clip against the
+  edge fade mask.
+- Resolved all `impeccable detect` design-system drift warnings across
+  `Home.astro`, `SkyChart.astro`, `Lesson.astro`, `global.css`, and `DESIGN.md`.
+
+### Security
+
+- **astro 7.2.8 → 7.3.8, `@astrojs/mdx` 7.0.5 → 7.0.8, `katex` 0.18.10, and
+  overrides for `http-cache-semantics` (`^4.3.0`), `undici` (`^7.30.1`), and
+  `zod` (`^4.6.6`):** clears all high-severity build-time advisories so
+  `pnpm audit --audit-level=high` exits 0 without `auditConfig.ignoreGhsas`.
+- `/.well-known/security.txt` is served with
+  `Content-Type: text/plain; charset=utf-8` (RFC 9116), asserted in
+  `tests/rendered-html.test.mjs`, and `.gitignore` covers `.cloudflare/` and
+  `.dev.vars*`.
+
 ## [0.14.0] — 2026-10-18
 
 The course gains a second part: twelve tracks on building agent systems, with

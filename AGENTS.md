@@ -677,9 +677,10 @@ that keep the lessons true:
 ## External systems reference
 
 The published corpus is tracks 0–25 (185 lessons per locale); documentation
-must describe that shipped scope exactly. Tracks 11–13 (Mac Studio Ultra and
-MLX, DGX and CUDA, llama.cpp in depth) pin their software: MLX `v0.32.3`,
-mlx-lm `v0.32.0`, ddalcu/mlx-serve `v26.10.1` and llama.cpp `b11380`. Re-read
+must describe that shipped scope exactly. Tracks 7 and 11–13 (Inference and
+Efficiency, Mac Studio Ultra and MLX, DGX and CUDA, llama.cpp in depth) pin
+their software: MLX `v0.32.3`, mlx-lm `v0.32.0`, ddalcu/mlx-serve `v26.10.1`,
+ashhart/TensorFold `v1.2.1` and llama.cpp `b11380`. Re-read
 a flag at the pinned tag before changing it, and move the pin in every lesson
 of the track at once (`tests/content-pins.test.mjs` fails a track that cites
 two revisions of one repository). Lesson 11.1 owns the M5 Ultra bandwidth

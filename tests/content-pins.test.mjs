@@ -3,9 +3,9 @@
  *
  * Tracks 11–13 teach flags and APIs that change between releases, so every
  * lesson in a track links the same pinned tag (llama.cpp b11380, MLX v0.32.3,
- * mlx-lm v0.32.0, mlx-serve v26.10.1). Moving the pin in one lesson and not
- * its neighbours would leave a track teaching two versions at once, with
- * every other gate green.
+ * mlx-lm v0.32.0, mlx-serve v26.10.1, TensorFold v1.2.1). Moving the pin in one
+ * lesson and not its neighbours would leave a track teaching two versions at
+ * once, with every other gate green.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -13,7 +13,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const LESSONS = 'src/content/lessons'
-const PINNED = /github\.com\/(ggml-org\/llama\.cpp|ml-explore\/mlx-lm|ml-explore\/mlx|ddalcu\/mlx-serve)\/(?:blob|tree)\/([^/"\s)]+)/gu
+const PINNED = /github\.com\/(ggml-org\/llama\.cpp|ml-explore\/mlx-lm|ml-explore\/mlx|ddalcu\/mlx-serve|ashhart\/TensorFold)\/(?:blob|tree)\/([^/"\s)]+)/gu
 
 /** Revisions cited per repository in one text. */
 function revisionsByRepo(text) {

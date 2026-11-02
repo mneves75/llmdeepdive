@@ -202,3 +202,21 @@ test('scroll-driven animations keep their timeline out of the animation shorthan
   assert.deepEqual(folded, [], 'a timeline must be set with animation-timeline, never inside the animation shorthand')
   assert.ok(/animation-timeline:\s*view\(\)/u.test(css), 'the build should still declare view() timelines')
 })
+
+test('home pages render the three-stage inference mechanics plate with HTML labels and localized lesson links', () => {
+  for (const { route, html } of homePages) {
+    const prefix = route === '/pt-br/' ? '/pt-br' : ''
+    for (const stageId of ['mechanics-decode', 'mechanics-reuse', 'mechanics-cluster']) {
+      assert.match(html, new RegExp(`id="${stageId}"`, 'u'), `${route}: missing radio input #${stageId}`)
+      assert.match(html, new RegExp(`for="${stageId}"`, 'u'), `${route}: missing label for #${stageId}`)
+    }
+    const svgs = [...html.matchAll(/<svg\b[^>]*class="[^"]*\bmechanics__svg\b[^"]*"[^>]*>([\s\S]*?)<\/svg>/gu)]
+    assert.equal(svgs.length, 3, `${route}: expected three mechanics SVG plates`)
+    for (const [, svgBody] of svgs) {
+      assert.doesNotMatch(svgBody, /<text\b/iu, `${route}: mechanics SVG must contain geometry only, never <text>`)
+    }
+    assert.match(html, new RegExp(`href="${prefix}/lessons/7-inference-and-efficiency/7\\.5-beam-search-speculative-decoding-and-medusa/"`, 'u'))
+    assert.match(html, new RegExp(`href="${prefix}/lessons/11-mac-studio-ultra-and-mlx/11\\.4-serving-from-a-mac-mlx-lm-server-and-mlx-serve/"`, 'u'))
+    assert.match(html, new RegExp(`href="${prefix}/lessons/11-mac-studio-ultra-and-mlx/11\\.5-clustering-macs-mlx-distributed/"`, 'u'))
+  }
+})
