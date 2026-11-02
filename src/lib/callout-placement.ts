@@ -1,7 +1,8 @@
 /**
  * Left edge of the floating callout card, hung past the instrument's
- * silhouette on the `outward` side, or null when the card would have to be
- * pushed back over the instrument to stay inside the stage. Null means dock.
+ * silhouette on the `outward` side and kept inside the stage. Null when
+ * keeping it inside would leave less than `run` between card and instrument:
+ * the caller docks the card instead.
  */
 export function floatingCalloutLeft(opts: {
   outward: 1 | -1
@@ -14,9 +15,11 @@ export function floatingCalloutLeft(opts: {
 }): number | null {
   const { outward, elbowX, span, run, cardWidth, stageWidth, edge } = opts
   if (outward > 0) {
-    const left = Math.max(elbowX + run, span.right + run) + 6
-    return left + cardWidth <= stageWidth - edge ? left : null
+    const ideal = Math.max(elbowX + run, span.right + run) + 6
+    const left = Math.min(ideal, stageWidth - edge - cardWidth)
+    return left >= span.right + run ? left : null
   }
-  const left = Math.min(elbowX - run, span.left - run) - 6 - cardWidth
-  return left >= edge ? left : null
+  const ideal = Math.min(elbowX - run, span.left - run) - 6 - cardWidth
+  const left = Math.max(ideal, edge)
+  return left + cardWidth <= span.left - run ? left : null
 }

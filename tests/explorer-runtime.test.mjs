@@ -90,4 +90,9 @@ test('the floating callout never lands on the instrument; without room it docks'
   assert.equal(leftSide, null, 'only 220px left of the span: dock')
   const wideLeft = floatingCalloutLeft({ ...base, span: { left: 520, right: 720 }, outward: -1, elbowX: 560, stageWidth: 1200 })
   assert.ok(wideLeft !== null && wideLeft + base.cardWidth <= 520 - base.run, `card ends before the span (${wideLeft})`)
+  // Ideal spot overflows, but pulled back inside it still clears the span: float, do not dock.
+  const pulledBack = floatingCalloutLeft({ ...base, outward: 1, elbowX: 442, stageWidth: 700 })
+  assert.equal(pulledBack, 700 - 8 - 240, 'clamped inside the stage, 32 px clear of the span')
+  const pulledBackLeft = floatingCalloutLeft({ ...base, span: { left: 280, right: 480 }, outward: -1, elbowX: 258, stageWidth: 700 })
+  assert.equal(pulledBackLeft, 8, 'mirrored: clamped to the left edge, still clear of the span')
 })
