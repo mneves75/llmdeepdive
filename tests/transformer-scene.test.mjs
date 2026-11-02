@@ -11,6 +11,7 @@ import {
   RIM_RADIUS,
   TransformerScene,
   deckLayout,
+  instrumentSpan,
   signalAt,
   transformerMarkers,
 } from '../src/lib/three/scenes/transformer.ts'
@@ -101,6 +102,32 @@ test('the FFN is the one warm core', () => {
   ctx.root.traverse((part) => { if (part.material?.userData?.warm) warm += 1 })
   assert.equal(warm, 1, 'exactly one warm mesh, the FFN core')
   assert.equal(ctx.root.getObjectByName('compute-core').material.userData.warm, true)
+})
+
+test('enamel is neutral graphite: the night has no hue', () => {
+  const { ctx } = built()
+  const enamel = []
+  ctx.root.traverse((part) => { if (part.material?.name === 'enamel') enamel.push(part.material) })
+  assert.ok(enamel.length > 0, 'the decks carry enamel')
+  const { r, g, b } = enamel[0].color.clone().convertLinearToSRGB()
+  assert.ok(Math.max(r, g, b) - Math.min(r, g, b) < 0.01, `enamel must have no hue, got rgb(${r}, ${g}, ${b})`)
+  assert.ok(r > 0.12, 'enamel must read lighter than the night plate it stands on')
+})
+
+test('a label placed outside the instrument span covers no port', () => {
+  for (const azimuth of [0, 1.1, 2.4, 4]) {
+    const camera = new THREE.PerspectiveCamera(39, 16 / 10, 0.1, 100)
+    camera.position.set(Math.sin(azimuth) * 7, 1.22, Math.cos(azimuth) * 7)
+    camera.lookAt(0, 0, 0)
+    camera.updateMatrixWorld()
+    const width = 1000
+    const span = instrumentSpan(camera, width)
+    assert.ok(span.right > span.left)
+    for (const port of transformerMarkers()) {
+      const x = ((new THREE.Vector3(...port.position).project(camera).x + 1) / 2) * width
+      assert.ok(x > span.left && x < span.right, `port ${port.id} at ${x.toFixed(1)} lies outside [${span.left.toFixed(1)}, ${span.right.toFixed(1)}]`)
+    }
+  }
 })
 
 test('isolate dims every other piece and maps mechanism aliases to their deck', () => {

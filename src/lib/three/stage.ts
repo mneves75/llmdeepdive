@@ -197,12 +197,12 @@ export class Stage {
     const h = 32
     const data = new Uint8Array(w * h * 4)
     const night = new THREE.Color(this.palette.plate)
-    const sky = new THREE.Color(this.palette.accent)
+    const sky = new THREE.Color(this.palette.ink)
     for (let y = 0; y < h; y += 1) {
       const v = y / (h - 1)
       for (let x = 0; x < w; x += 1) {
         const u = x / w
-        // Overhead softbox, a vertical strip light, and a faint chart-blue horizon.
+        // Overhead softbox, a vertical strip light, and a faint neutral horizon.
         const softbox = Math.exp(-(((v - 0.12) / 0.09) ** 2)) * Math.exp(-(((u - 0.3) / 0.16) ** 2))
         const strip = Math.exp(-(((u - 0.78) / 0.025) ** 2)) * (v > 0.15 && v < 0.6 ? 1 : 0)
         const horizon = Math.exp(-(((v - 0.5) / 0.08) ** 2)) * 0.18
@@ -228,11 +228,13 @@ export class Stage {
   private addLighting(): void {
     const key = new THREE.DirectionalLight(0xffffff, 1.9)
     key.position.set(3.5, 6.5, 5.5)
-    const fill = new THREE.DirectionalLight(this.palette.accent, 0.45)
+    // Every light is neutral: a coloured light would tint porcelain and enamel,
+    // and hue on the instrument belongs to its lines, the core and the reticle.
+    const fill = new THREE.DirectionalLight(this.palette.ink, 0.45)
     fill.position.set(-5, 1.5, 2.5)
     const rim = new THREE.DirectionalLight(0xffffff, 0.8)
     rim.position.set(-2, 3, -6)
-    const ambient = new THREE.HemisphereLight(this.palette.accent, this.palette.plate, 0.35)
+    const ambient = new THREE.HemisphereLight(this.palette.ink, this.palette.plate, 0.35)
     this.scene.add(key, fill, rim, ambient)
   }
 

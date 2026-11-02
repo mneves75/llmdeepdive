@@ -167,6 +167,45 @@ test('no stylesheet references a token the system no longer defines', () => {
   }
 })
 
+test('the teach-back and quiz keep their own state out of the progress pass', () => {
+  // progress-client rewrites data-complete on every [data-lesson-key] from the
+  // stored completion. On a teach-back or quiz root that erased the check's own
+  // verdict, so a returning learner who passed the quiz never completed the
+  // lesson: Lesson.astro read the teach-back as invalid.
+  for (const { route, html } of lessonPages) {
+    for (const hook of ['data-teach-back', 'data-lesson-quiz']) {
+      const roots = tagsWith(html, hook)
+      assert.equal(roots.length, 1, `${route}: expected one ${hook} root`)
+      assert.equal(attr(roots[0], 'data-lesson-key'), undefined, `${route}: ${hook} must not carry data-lesson-key`)
+      assert.ok(attr(roots[0], 'data-check-key'), `${route}: ${hook} needs its own data-check-key`)
+    }
+  }
+})
+
+test('pausing the sky stops only its ambient motion, never the arrival', () => {
+  // A wildcard pause froze the one-off arrival: paused within its first few
+  // seconds, later constellations stayed undrawn and their links hidden.
+  const astro = join(DIST, '_astro')
+  const css = readdirSync(astro).filter((name) => name.endsWith('.css')).map((name) => readFileSync(join(astro, name), 'utf8')).join('\n')
+  assert.ok(/data-motion-toggle\]:not\(:checked\)\)\s*\.sky__comet/u.test(css), 'the comet pauses with the toggle')
+  // Astro scopes a bare `*` to the component's class alone (`.astro-xxxx`).
+  const wildcard = /data-motion-toggle\]:not\(:checked\)\)\s*(?:\*|\.astro-[\w-]+)\s*\{/gu
+  assert.deepEqual([...css.matchAll(wildcard)].map((match) => match[0]), [], 'a pause must name what it stops')
+})
+
+test("an 'up' stack draws its foundation last, in markup as on screen", () => {
+  // `direction: ltr` once stood in for the reversal and did nothing, so every
+  // sandbox figure drew the hardware on top of the script it isolates.
+  const stacks = all.flatMap(({ route, html }) =>
+    [...html.matchAll(/<ol\b[^>]*data-direction="up"[^>]*>([\s\S]*?)<\/ol>/gu)].map((match) => ({ route, open: match[0].slice(0, match[0].indexOf('>') + 1), body: match[1] })))
+  assert.ok(stacks.length >= 4, 'the sandbox lessons publish their isolation stacks')
+  for (const { route, open, body } of stacks) {
+    assert.match(open, /\breversed\b/u, `${route}: an up stack numbers from its bottom layer`)
+    const labels = [...body.matchAll(/class="fig-stack__label[^"]*">([^<]*)</gu)].map((match) => match[1])
+    assert.match(labels.at(-1) ?? '', /^(Hardware|Máquina física)$/u, `${route}: the foundation must be the last band, got ${labels.join(' / ')}`)
+  }
+})
+
 test('a star fills only for its own lesson, never because an ancestor is complete', () => {
   // The lesson <article> carries data-complete="true" once the lesson is done;
   // a descendant selector would then fill every star inside it (prerequisites,

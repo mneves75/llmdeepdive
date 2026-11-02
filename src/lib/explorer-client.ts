@@ -43,6 +43,8 @@ const PIN_MIN_WIDTH = 640
 /** Leader geometry, in CSS pixels. */
 const LEADER_RISE = 26
 const LEADER_RUN = 22
+/** CSS pixels a pointer may travel and still count as a tap rather than a drag. */
+const TAP_SLOP = 6
 const EDGE = 8
 
 /** Waits for the display face so port numerals are not baked in a fallback. */
@@ -206,7 +208,7 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       return
     }
 
-    const [{ Stage }, { MarkerLayer }, { TransformerScene, transformerMarkers, deckSilhouette }] = await Promise.all([
+    const [{ Stage }, { MarkerLayer }, { TransformerScene, transformerMarkers, deckSilhouette, instrumentSpan }] = await Promise.all([
       import('./three/stage'),
       import('./three/markers'),
       import('./three/scenes/transformer'),
@@ -331,7 +333,11 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       const outward = key?.hasAttribute('data-pinned') || pos.x >= width / 2 ? 1 : -1
       const elbowX = pos.x + outward * LEADER_RUN
       const elbowY = pos.y - LEADER_RISE
-      const endX = elbowX + outward * LEADER_RUN
+      // The card starts past the instrument's silhouette, never over a port.
+      const span = instrumentSpan(stage.camera, width)
+      const endX = outward > 0
+        ? Math.max(elbowX + LEADER_RUN, span.right + LEADER_RUN)
+        : Math.min(elbowX - LEADER_RUN, span.left - LEADER_RUN)
       const left = Math.max(EDGE, Math.min(outward > 0 ? endX + 6 : endX - 6 - calloutSize.width, width - calloutSize.width - EDGE))
       const top = Math.max(EDGE, Math.min(elbowY - calloutSize.height / 2, height - calloutSize.height - EDGE))
       callout.style.transform = `translate3d(${left.toFixed(1)}px, ${top.toFixed(1)}px, 0)`
@@ -366,12 +372,24 @@ export function mountExplorer(root: HTMLElement): Cleanup {
       stage.invalidate()
     }
 
+    // A tap selects (or, off every port, clears); a drag only orbits. Selecting
+    // on pointerdown cleared the selection and Isolate at the start of every
+    // drag, so an isolated part could not be turned to be looked at.
+    let press: { x: number; y: number; pointer: number } | null = null
     const onPointerDown = (ev: PointerEvent): void => {
+      press = { x: ev.clientX, y: ev.clientY, pointer: ev.pointerId }
+    }
+    const onPointerUp = (ev: PointerEvent): void => {
+      const start = press
+      press = null
+      if (!start || start.pointer !== ev.pointerId) return
+      if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > TAP_SLOP) return
       const rect = canvas.getBoundingClientRect()
-      const hit = markers.pick(ev.clientX - rect.left, ev.clientY - rect.top, rect.width, rect.height)
-      select(hit)
+      select(markers.pick(ev.clientX - rect.left, ev.clientY - rect.top, rect.width, rect.height))
     }
     on(canvas, 'pointerdown', onPointerDown as EventListener)
+    on(canvas, 'pointerup', onPointerUp as EventListener)
+    on(canvas, 'pointercancel', () => { press = null })
 
     // Keyboard parity with the pointer. Missing in the reference project, which
     // left its entire annotation layer mouse-only.
