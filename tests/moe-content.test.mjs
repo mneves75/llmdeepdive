@@ -67,6 +67,30 @@ const sections = (text) => {
   return map
 }
 
+
+/**
+ * Phrases whose numeral is load-bearing in a specific role. A presence check
+ * passes when the same number appears twice in a section; these do not.
+ */
+const PHRASES = {
+  '4-transformer/4.18-mixture-of-experts.mdx': {
+    '__teachback__': (locale) => [`8 x ${group(BUDGET.expertWidth, locale)} = ${group(17408, locale)}`],
+  },
+  '5-pretraining-at-scale/5.14-keeping-experts-busy.mdx': {
+    'The loss-free bias': (locale) =>
+      locale === 'pt-br'
+        ? [`no passo ${LAB.best.step}`]
+        : [`at step ${LAB.best.step}`],
+  },
+  '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
+    'Low-bit experts': (locale) => {
+      // the saving from also quantizing the rest, on top of experts at 4 bits
+      const saving = Math.round(INT4_STORAGE - (BUDGET.storedFfnTotal + REST) * 0.5e-9)
+      return locale === 'pt-br' ? [`economiza ${saving} GB`] : [`saves ${saving} GB`]
+    },
+  },
+}
+
 const lesson = (locale, path) => readFileSync(`src/content/lessons/${locale}/${path}`, 'utf8')
 
 /** heading → values that section must quote, per locale. */
@@ -176,6 +200,9 @@ for (const locale of LOCALES) {
           const forms = [...new Set([value, value.replaceAll('.', ','), value.replaceAll(',', '.')])]
           const ok = forms.some((form) => boundary(form).test(body))
           assert.ok(ok, `${path} §${name} no longer quotes "${value}"`)
+        }
+        for (const phrase of PHRASES[path]?.[heading]?.(locale) ?? []) {
+          assert.ok(body.includes(phrase), `${path} §${name} no longer says "${phrase}"`)
         }
       }
     })
