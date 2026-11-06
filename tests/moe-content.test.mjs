@@ -88,6 +88,7 @@ const CLAIMS = {
       num(TOTAL / 1e9, 1, locale),
       num(TOTAL / 27e9, 2, locale),
       num(TOTAL * 2e-9, 1, locale),
+      num(27e9 * 2e-9, 0, locale),
     ],
     'The router: two decisions from one matrix': (locale) => [
       group(BUDGET.routerParamsPerLayer, locale),
@@ -110,8 +111,14 @@ const CLAIMS = {
     'Where the weights start': (locale) => [group(17408, locale), group(BUDGET.expertWidth, locale)],
   },
   '5-pretraining-at-scale/5.16-expert-parallelism.mdx': {
-    'The bytes, counted': () => [
-      group(DISPATCH_PER_LAYER, 'en'),
+    '__teachback__': (locale) => [
+      group(DISPATCH_PER_LAYER / 8, locale),
+      group(DISPATCH_PER_LAYER, locale),
+      group(DISPATCH_PER_TOKEN, locale),
+    ],
+    'The bytes, counted': (locale) => [
+      group(DISPATCH_PER_LAYER, locale),
+      group(DISPATCH_PER_LAYER / 8, locale),
       `${(DISPATCH_PER_TOKEN / 1024 ** 2).toFixed(0)} MiB`,
       `${(DISPATCH_PER_BATCH / 1024 ** 3).toFixed(0)} GiB`,
     ],
