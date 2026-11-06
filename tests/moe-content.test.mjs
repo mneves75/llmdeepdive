@@ -91,13 +91,6 @@ const PHRASES = {
         ? [`no passo ${LAB.best.step}`]
         : [`at step ${LAB.best.step}`],
   },
-  '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
-    'Low-bit experts': (locale) => {
-      // the saving from also quantizing the rest, on top of experts at 4 bits
-      const saving = Math.round(INT4_STORAGE - (BUDGET.storedFfnTotal + REST) * 0.5e-9)
-      return locale === 'pt-br' ? [`economiza ${saving} GB`] : [`saves ${saving} GB`]
-    },
-  },
 }
 
 
@@ -109,7 +102,10 @@ const PHRASES = {
  */
 const READS = {
   '4-transformer/4.18-mixture-of-experts.mdx': {
-    '__teachback__': { [group(BUDGET.expertWidth, 'en')]: 3 },
+    '__teachback__': {
+      [group(BUDGET.expertWidth, 'en')]: 3,
+      [group(BUDGET.activeFfnPerLayer / 8, 'en')]: 2,
+    },
     'Store eight times more, pay the same': { [group(BUDGET.expertWidth, 'en')]: 3 },
   },
   '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
@@ -168,6 +164,7 @@ const CLAIMS = {
       group(DISPATCH_PER_TOKEN, locale),
     ],
     'The bytes, counted': (locale) => [
+      '80 \\text{ KiB}',
       group(DISPATCH_PER_LAYER, locale),
       group(DISPATCH_PER_LAYER / 8, locale),
       `${(DISPATCH_PER_TOKEN / 1024 ** 2).toFixed(0)} MiB`,
@@ -202,6 +199,7 @@ const CLAIMS = {
       num(INT4_EXPERT_READS + INT4_REST_READS, 1, locale),
       num((ACTIVE_TOTAL + REST) * 0.5e-9, 1, locale),
       num(INT4_STORAGE, 1, locale),
+      num((BUDGET.storedFfnTotal + REST) * 0.5e-9, 1, locale),
       num(TOTAL * 2e-9 / INT4_STORAGE, 1, locale),
       num(BF16_READS / (INT4_EXPERT_READS + INT4_REST_READS), 1, locale),
     ],
