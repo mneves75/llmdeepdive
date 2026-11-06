@@ -74,7 +74,16 @@ const sections = (text) => {
  */
 const PHRASES = {
   '4-transformer/4.18-mixture-of-experts.mdx': {
-    '__teachback__': (locale) => [`8 x ${group(BUDGET.expertWidth, locale)} = ${group(17408, locale)}`],
+    '__teachback__': (locale) => [
+      `8 x ${group(BUDGET.expertWidth, locale)} = ${group(17408, locale)}`,
+      locale === 'pt-br'
+        ? `cada especialista tem ${group(BUDGET.expertWidth, locale)}`
+        : `each expert is ${group(BUDGET.expertWidth, locale)} wide`,
+    ],
+    'Store eight times more, pay the same': (locale) =>
+      locale === 'pt-br'
+        ? [`cada um com ${group(BUDGET.expertWidth, locale)} de largura`]
+        : [`each ${group(BUDGET.expertWidth, locale)} wide`],
   },
   '5-pretraining-at-scale/5.14-keeping-experts-busy.mdx': {
     'The loss-free bias': (locale) =>
@@ -88,6 +97,23 @@ const PHRASES = {
       const saving = Math.round(INT4_STORAGE - (BUDGET.storedFfnTotal + REST) * 0.5e-9)
       return locale === 'pt-br' ? [`economiza ${saving} GB`] : [`saves ${saving} GB`]
     },
+  },
+}
+
+
+/**
+ * How many times a value legitimately appears in one block, counting both
+ * separator conventions (math keeps the English comma in pt-BR). Presence alone
+ * cannot see that "each 2,176 wide" became 2,177 when another 2,176 sits in the
+ * same section; the count can.
+ */
+const READS = {
+  '4-transformer/4.18-mixture-of-experts.mdx': {
+    '__teachback__': { [group(BUDGET.expertWidth, 'en')]: 3 },
+    'Store eight times more, pay the same': { [group(BUDGET.expertWidth, 'en')]: 3 },
+  },
+  '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
+    '__teachback__': { [Number((TOTAL / 1e9).toFixed(1))]: 2 },
   },
 }
 
@@ -149,6 +175,11 @@ const CLAIMS = {
     ],
   },
   '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
+    'Two numbers, moving in opposite directions': (locale) => [
+      num(TOTAL / 1e9, 1, locale),
+      num(27e9 * 2e-9, 0, locale),
+      num(TOTAL * 2e-9, 1, locale),
+    ],
     '__teachback__': (locale) => [
       num(BUDGET.storedFfnTotal / 1e9, 1, locale),
       num(ACTIVE_TOTAL / 1e9, 1, locale),
@@ -184,6 +215,7 @@ const HEADINGS = {
   'The router: two decisions from one matrix': 'O router: duas decisões de uma matriz',
   'How many experts, how wide, and who sees every token': 'Quantos experts, qual largura, e quem vê todo token',
   'The loss-free bias': 'O viés sem loss',
+  'Two numbers, moving in opposite directions': 'Dois números, em direções opostas',
   'Where the weights start': 'De onde vêm os pesos',
   'The bytes, counted': 'Os bytes, contados',
   'Low-bit experts': 'Experts em poucos bits',
@@ -207,6 +239,11 @@ for (const locale of LOCALES) {
           const forms = [...new Set([value, value.replaceAll('.', ','), value.replaceAll(',', '.')])]
           const ok = forms.some((form) => boundary(form).test(body))
           assert.ok(ok, `${path} §${name} no longer quotes "${value}"`)
+        }
+        for (const [value, expected] of Object.entries(READS[path]?.[heading] ?? {})) {
+          const forms = [...new Set([value, value.replaceAll('.', ','), value.replaceAll(',', '.')])]
+          const seen = forms.reduce((sum, form) => sum + (body.split(form).length - 1), 0)
+          assert.equal(seen, expected, `${path} §${name}: expected ${expected} occurrence(s) of "${value}", found ${seen}`)
         }
         for (const phrase of PHRASES[path]?.[heading]?.(locale) ?? []) {
           assert.ok(body.includes(phrase), `${path} §${name} no longer says "${phrase}"`)
