@@ -49,7 +49,8 @@ source. What a practitioner would actually do, and what this plan does instead:
 1. **Build the instrument before the prose.** Every MoE claim in the lessons is
    produced by one pure module, `src/lib/moe-math.ts`: mixture weights, MaxVio,
    the sign-update loop, parameters stored versus active, dispatch bytes. The
-   lessons quote it, the lab calls it, and a test pins every quoted number. The
+   lessons quote it, the lab calls it, and `tests/moe-content.test.mjs` pins the
+   numbers 4.18, 5.16 and 7.14 quote, in both locales. The
    site has been bitten three times by prose and code disagreeing (the 540 GB
    AdamW budget, the third residual bypass, the three KV budgets); a new topic
    gets the mechanism that prevents a fourth.
@@ -79,7 +80,7 @@ source. What a practitioner would actually do, and what this plan does instead:
 | The rendered Space | The six chapter MDX files at revision `ef70726` | Exact tables and code; no extraction artefacts |
 | A paraphrase of flags | Megatron source at `d6316eb45`, three files | Flags quoted with a pin and a date |
 | The handbook's 6.86B toy model | Qwen3.8-27B's published `config.json`, already in `model-facts.ts` | Every number in the course's own worked example, and an identity a reader can check: 8 × 2,176 = 17,408 |
-| The handbook's citation list as given | `arxiv.org/abs/<id>` fetched for all 27 ids used | All resolve; titles match the claims, including the 2026 ones |
+| The handbook's citation list as given | `arxiv.org/abs/<id>` fetched for all 29 ids the lessons cite | All resolve; titles match the claims, including the 2026 ones |
 
 ## Decision
 

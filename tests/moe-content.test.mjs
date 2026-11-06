@@ -57,6 +57,8 @@ for (const locale of LOCALES) {
 
   test(`${locale}: 4.18 quotes the parameter counts the module computes`, () => {
     const text = lesson(locale, '4-transformer/4.18-mixture-of-experts.mdx')
+    has(text, group(BUDGET.expertWidth, locale), '4.18 (expert width)')
+    has(text, group(BUDGET.activeFfnPerLayer / 8, locale), '4.18 (one expert)')
     has(text, group(BUDGET.storedFfnPerLayer, locale), '4.18 (stored per layer)')
     has(text, group(BUDGET.activeFfnPerLayer, locale), '4.18 (active per layer)')
     has(text, num(TOTAL / 1e9, 1, locale), '4.18 (stored total, billions)')

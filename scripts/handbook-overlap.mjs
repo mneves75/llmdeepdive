@@ -51,8 +51,15 @@ const words = (text) =>
 
 const body = (file) => {
   const raw = readFileSync(file, 'utf8')
-  // Frontmatter is citation metadata; a title must match the source exactly.
-  return raw.startsWith('---') ? raw.slice(raw.indexOf('\n---', 3) + 4) : raw
+  // Only the citation ENTRIES are exempt: a title and an author list must match
+  // the source exactly to be verifiable. Everything else in the frontmatter —
+  // summary, analogy, teach-back prompt and answer — is prose a learner reads,
+  // and an earlier version of this script skipped it entirely, which is how a
+  // copied sentence survived in the model answer.
+  return raw
+    .split('\n')
+    .filter((line) => !/^\s+- (title|authors):/u.test(line))
+    .join('\n')
 }
 
 if (!existsSync(SOURCE)) {
