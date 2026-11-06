@@ -102,7 +102,7 @@ site deliberately does not use, are in `AGENTS.md` under **Search metadata**.
 
 ## Current scale
 
-370 lessons live (185 English, 185 Portuguese) across 26 tracks in two parts,
+380 lessons live (190 English, 190 Portuguese) across 26 tracks in two parts,
 with full parity enforced by the build. Part one, tracks 0–13, is how a model
 works. Tracks 0–7 carry the model from first principles
 to efficient inference; track 8 covers the serving stacks that run it (PyTorch,

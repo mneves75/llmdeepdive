@@ -120,6 +120,28 @@ try {
   if (missingInPortuguese.length) failures.push('Missing in pt-br: ' + missingInPortuguese.join(', '))
   if (missingInEnglish.length) failures.push('Missing in en: ' + missingInEnglish.join(', '))
 
+  // Body shape must match across locales. A paragraph-level edit that replaces
+  // text up to the next blank line silently deletes adjacent list items, and no
+  // existing gate sees it: the frontmatter matches, the prose is translated, and
+  // both files still build. Counting headings and top-level list items catches
+  // the loss without pretending to compare wording.
+  const shapeOf = (lesson) => ({
+    headings: (lesson.body.match(/^## /gmu) ?? []).length,
+    comments: (lesson.body.match(/^:::\w+/gmu) ?? []).length,
+    bullets: (lesson.body.match(/^- /gmu) ?? []).length,
+  })
+  for (const [id, en] of english) {
+    const pt = portuguese.get(id)
+    if (!pt) continue
+    const enShape = shapeOf(en)
+    const ptShape = shapeOf(pt)
+    for (const key of ['headings', 'comments', 'bullets']) {
+      if (enShape[key] !== ptShape[key]) {
+        failures.push('Lesson "' + id + '" has ' + enShape[key] + ' ' + key + ' in en but ' + ptShape[key] + ' in pt-br')
+      }
+    }
+  }
+
   const trackFiles = walkFiles(TRACKS_ROOT, TRACK_EXTENSIONS)
   if (trackFiles.length === 0) throw new Error(displayPath(TRACKS_ROOT) + ' contains no track files')
   const tracksByLocale = new Map([['en', new Map()], ['pt-br', new Map()]])

@@ -1,0 +1,148 @@
+---
+id: "5.14-keeping-experts-busy"
+order: 14
+track: "5-pretraining-at-scale"
+title: "Keeping every expert busy"
+summary: "Uneven routing makes the busiest GPU set the step, so a few overloaded experts cost more than the FLOPs suggest. An auxiliary loss, a selection bias and quantile balancing steer the load differently, and the balance loss alone cannot tell you whether any of them worked."
+tier: "advanced"
+locale: "en"
+prerequisites: ["4.18-mixture-of-experts", "5.7-data-parallelism-zero-fsdp"]
+unlocks: ["5.15-upcycling-and-moe-stability"]
+lab:
+  id: "moe-balance"
+  kind: "calculator"
+  budgetKb: 12
+analogy: "A restaurant with one kitchen per cuisine takes orders as they come. If four tables order the same cuisine at once, that kitchen works late while the others stand idle, and the whole service waits for it. A manager can reward the waiters for spreading orders (an auxiliary loss), quietly steer guests by adjusting how attractive each kitchen looks (a selection bias), or compute, from this evening's bookings, exactly how attractive each kitchen should look (quantile balancing)."
+teachBack:
+  prompt: "A colleague reports an auxiliary loss of 1.0 on eight experts and concludes the load is balanced. Using the definition, show why that reading is wrong, then say which number you would report instead and what the loss-free bias changes about the router's gradients."
+  modelAnswer: "The Switch auxiliary loss is E times the sum over experts of each expert's share of token assignments times its mean router probability. If the router is flat, every probability is 1/E, so the sum is 1/E times the sum of the shares, which is 1/E, and the loss is E/E = 1 whatever the counts are. With counts 32, 32, 0, 0, 0, 0, 0, 0 the loss is 1 and the busiest expert takes four times the mean, a MaxVio of 3. I would report MaxVio from the token counts. The loss-free bias adds a per-expert offset before the top-k and never to the gathered weights, so it changes which experts are selected and contributes no gradient to the router; the auxiliary loss does the opposite, pulling the probabilities themselves toward an even load."
+quiz:
+  - question: "Eight experts, 64 tokens, top-1. Counts are 32, 32, 0, 0, 0, 0, 0, 0 and the router's probabilities are flat. What do the Switch auxiliary loss and MaxVio report?"
+    options: ["Both report an even load", "Aux loss 1, MaxVio 3", "Aux loss 3, MaxVio 1", "Aux loss 1, MaxVio 0"]
+    correctIndex: 1
+    explanation: "With flat probabilities the auxiliary loss collapses to 1 for any load, so it cannot distinguish this batch from a perfectly even one. The mean load is 8, the busiest expert has 32, so MaxVio is 32/8 - 1 = 3."
+  - question: "What does the loss-free balancing bias change?"
+    options: ["The router's probabilities, through a small gradient", "The expert weights, by scaling their outputs", "Which experts are selected, not their weights", "The learning rate of the router, per expert"]
+    correctIndex: 2
+    explanation: "The bias is added to each expert's score before the top-k and left out when the selected scores become weights, so it moves selections without contributing a gradient. Moving the probabilities is what the auxiliary loss does; the bias never touches expert weights or the optimizer's rate."
+  - question: "Why can balancing over the global batch lower perplexity but slow the step?"
+    options: ["It lets experts specialize while each GPU stays uneven", "It removes the all-to-all from the critical path", "It gives every expert exactly the same number of tokens per step", "It reduces the memory each expert needs for activations"]
+    correctIndex: 0
+    explanation: "A global-batch scope lets code tokens crowd onto a few experts as long as other domains fill the rest, which is what lets experts specialize. The same freedom leaves each micro-batch uneven, so the busiest GPU waits and the step slows — the handbook reports about 5.8% for one 43B model."
+citations:
+  - title: "Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity"
+    authors: "William Fedus, Barret Zoph, and Noam Shazeer"
+    year: 2021
+    url: "https://arxiv.org/abs/2101.03961"
+  - title: "Auxiliary-Loss-Free Load Balancing Strategy for Mixture-of-Experts"
+    authors: "Lean Wang, Huazuo Gao, Chenggang Zhao, Xu Sun, and Damai Dai"
+    year: 2024
+    url: "https://arxiv.org/abs/2408.15664"
+  - title: "DeepSeek-V3 Technical Report"
+    authors: "DeepSeek-AI"
+    year: 2024
+    url: "https://arxiv.org/abs/2412.19437"
+  - title: "Demons in the Detail: On Implementing Load Balancing Loss for Training Specialized Mixture-of-Expert Models"
+    authors: "Zihan Qiu et al."
+    year: 2025
+    url: "https://arxiv.org/abs/2501.11873"
+  - title: "Kimi K3: Open Frontier Intelligence"
+    authors: "Kimi Team"
+    year: 2026
+    url: "https://arxiv.org/abs/2607.24653"
+  - title: "ID Balancing: Stable Training of Extremely Sparse MoE via PID-Based Load Control"
+    authors: "Peng Jin et al."
+    year: 2026
+    url: "https://arxiv.org/abs/2609.39137"
+  - title: "The Ultimate MoE Training Handbook"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
+updated: "2026-11-06"
+---
+
+## The step waits for the busiest GPU
+
+[Lesson 4.18](/lessons/4-transformer/4.18-mixture-of-experts/) built a router that sends each token to eight of sixty-four experts, spread across GPUs. Every GPU receives the tokens routed to the experts it holds, runs them, and sends the results back. The all-to-all that moves them is a synchronization point: the next step cannot start until the slowest participant arrives. So if one GPU's experts receive twice the average load, the other GPUs wait, and the step costs what the busiest GPU costs, not what the average costs.
+
+The handbook measured the size of that effect on its 7B-A1B model: with routing forced even, the same iteration ran 1.5 times faster at initialization than with a freshly initialized learned router. Forcing the routing even throws away what the router learned, so it is a control run and never a training setting — but it is the right control, because it shows the throughput that better balancing is trying to reach.
+
+To talk about imbalance you need a number. The one the literature uses is **MaxVio**, short for maximal violation: how far the busiest expert's load sits above the mean, as a fraction of the mean.
+
+$$
+\mathrm{MaxVio} = \frac{\max_e c_e}{\frac{1}{E}\sum_e c_e} - 1
+$$
+
+Work it on four experts with counts 2, 2, 4, 0. The mean is 2, the busiest has 4, so MaxVio is $4/2 - 1 = 1$: the busiest expert takes twice the average. The zero-count expert stays in the mean — that is what makes a dead expert visible instead of invisible. An even load gives 0, and the ceiling is $E - 1$: the busiest expert cannot hold more than every token.
+
+## The auxiliary loss, and the number that lies
+
+The oldest fix adds a term to the training loss that rewards an even load. The **auxiliary loss** (aux loss) multiplies the number of experts by a sum over experts of two quantities: each expert's share of the batch's token assignments, and its mean router probability. Its gradient pulls the router's probabilities toward spreading tokens, which competes with the gradient from next-token prediction.
+
+Here is the trap, worked exactly. Take eight experts, 64 tokens, top-1, and a router whose probabilities are flat: 1/8 for every expert. Put 32 tokens on expert 1 and 32 on expert 2. Each expert's share is 32/64 = 0.5 for those two and 0 for the rest, so the sum of share times probability is $0.5 \times \tfrac{1}{8} + 0.5 \times \tfrac{1}{8} = \tfrac{1}{8}$, and the loss is $8 \times \tfrac{1}{8} = 1$.
+
+Now compute the same loss for a perfectly even load: each share is 1/8, each probability is 1/8, the sum is $8 \times \tfrac{1}{64} = \tfrac{1}{8}$, and the loss is again 1. **The auxiliary loss reads 1 for both**, while MaxVio reads 3 for the first and 0 for the second. Megatron logs this value with the coefficient divided out, which is why "the aux loss is 1" is what a run reports — and why a run can report it while half its tokens sit on two experts.
+
+:::warning
+Never read balance from the auxiliary loss. Read it from token counts, per layer. The loss can also fall while the load stays skewed: the handbook reports a small model whose lower layers flattened the probabilities and lowered the loss without spreading the tokens. A metric that improves when the router stops caring is not a balance metric.
+:::
+
+The coefficient is the other half. At 1e-3 the loss pulls rarely; at 1e-2 it balances but costs language-model quality. The handbook reports a 10B ablation: at 1e-4 the least-used expert still received roughly a fourteenth of what the busiest got, and only at 1e-2 did the load even out — with test loss rising to match. That trade-off is the aux loss's defining property: it buys balance with gradient interference.
+
+## Scope: which tokens count as balanced
+
+The loss has to count over some set of tokens, and the choice changes what "balanced" means.
+
+- **Micro-batch**, the default. Each micro-batch's load is even, which keeps each GPU's work even. The cost is that a micro-batch packed with one domain, say all code, spreads its tokens over every expert, so no expert can specialize in code.
+- **Sequence.** The tightest scope: every sequence spreads over all experts even when the batch mixes domains. DeepSeek-V3 carries a small sequence-wise loss (coefficient 1e-4) alongside its bias, so a single sequence cannot crowd a few experts while the batch as a whole looks even.
+- **Global batch.** Counts accumulate across micro-batches and data-parallel replicas. This is what lets experts specialize by domain, and it lowers perplexity in the study that compared the three. The cost lands on the hardware: within each micro-batch the distribution is uneven again. The handbook measures about 5.8% slower steps on a 43B model, of which roughly one point is communication and the rest idle time from uneven work.
+
+:::note
+Balance at the scope you chose, not at a different one. A batch can be even over all its tokens while one GPU's slice is badly skewed. Micro-batch MaxVio values cannot be averaged into the global one: the two quantities move in opposite directions.
+:::
+
+## The loss-free bias
+
+The auxiliary loss changes the router's probabilities, which is what makes its gradient compete with the language model's. The **loss-free bias** avoids that competition entirely. Every expert carries a bias. It enters the score *before* the top-k, and it is excluded when the winning scores are turned into weights. Once per training step, every bias moves by the same fixed amount: up if its expert was underloaded, down if it was overloaded.
+
+Take four experts with counts 7, 4, 3, 2 and a step of 0.01. The mean is 4. Expert 1 is over the mean, so its bias falls by 0.01. Expert 2 is exactly at the mean, so it does not move. Experts 3 and 4 rise by 0.01 each. Megatron compares integers (`total - counts x experts`) rather than floats against a mean, so an exactly even expert stays put — a float comparison would have moved it by rounding noise.
+
+The bias has three knobs worth knowing:
+
+- **The update rule.** A sign update moves every expert the same distance however far it is from the mean. A **linear** update moves each in proportion to its distance, and an **AdamW** update adapts the step per expert. LongCat-Flash runs a linear rule; ZAYA1-8B feeds the error to AdamW.
+- **The fixed step's limit.** The step has to suit the expert count. The handbook reports a sweep where, at an update rate of 1e-3, the busiest expert's load grew with the expert count to about 50 times the mean at 1,024 experts, and above 128 experts the bias also hurt language-model quality.
+- **Drift.** If the per-step changes do not sum to zero, the mean of all biases drifts. That changes no selection, because adding the same number to every score leaves the top-k unchanged, but it costs precision where the bias is stored in bf16. Moonlight and Trinity Mini subtract the mean of the steps; DeepSeek-V3's released biases sit at a per-layer mean between 2.2 and 8.0, while Moonlight's average zero.
+
+The lab on this page runs that loop with the router frozen, so the only thing moving is the selection bias. Its default batch starts at MaxVio 4.13, reaches 0.13 at step 39 and ends at 0.50 at step 40: the fixed step walked past the target and came back. A larger step falls faster and settles worse, which is the trade the figure shows.
+
+<Figure id="moe-maxvio" />
+
+## Quantile balancing
+
+The bias steps toward the right value. **Quantile balancing** solves for it instead. For each expert, rank the micro-batch's tokens by their score for that expert and read off the quantile that only the expert's target share of tokens beats. That quantile sets the bias directly, for the next batch. What Kimi K3 ranks precisely is each token's margin over its own (k+1)-th best score rather than the raw score, because the margin is what decides whether the expert wins a slot.
+
+It balances sooner than a fixed step at about the same loss in the comparison study at 19B parameters with 768 experts, halving average MaxVio. Kimi K3 uses it over the whole global batch, reading each expert's quantile from a histogram summed across GPUs, after balancing became harder once its routed pool reached 896 experts per layer. The price is real: every micro-batch now needs an extra ranking per expert, overlaying the per-token top-k, and Megatron refuses the method next to any auxiliary loss, router fusion or group-limited routing.
+
+The subtlety is the distance between the two counts. A bias fitted over all the batch's tokens can flatten the total while a single GPU's share remains lopsided. In the 7.5B run the handbook cites, the rank-averaged quantile took the global MaxVio to 0.92, yet the busiest expert in the worst layer's expert-parallel micro-batch still carried about seven times an even share — a local MaxVio of 5.96. Computing the exact global quantile instead brought both figures down. Report both numbers, or the global one will hide the one that sets the step.
+
+## Choosing
+
+| Balancer | What it changes | What it costs | When it fits |
+|---|---|---|---|
+| Aux loss, 1e-3 | Router probabilities, through a gradient | Competes with the LM loss; a flat router can cheat it | The default, and the simplest to reason about |
+| Loss-free bias | Selections only | A fixed step lags, and is too coarse above ~128 experts | When no gradient may be pulled; pair with a tiny sequence loss |
+| Quantile | Selections, solved per batch | A per-expert top-k; local imbalance can hide | When the fixed step is too slow; global bias, check local MaxVio |
+
+One comparison to treat carefully: on the handbook's five router configurations, quantile balancing posted the best median throughput across the final 20 of 120 iterations — 139 TFLOP/s, next to 125 for the auxiliary loss and 99 for a bias-only configuration — and finished with the highest training loss as well. That is one seed and 120 iterations. A throughput ranking that does not reach the same loss is not a faster training run.
+
+:::insight
+The one setting to keep out of a real run is the one that looks best in a benchmark: forced-even routing replaces the router's logits with random ones. It is a control that tells you how much imbalance costs, and the handbook is explicit that it is never a way to train.
+:::
+
+## What this does not establish
+
+- The 1.5x, the 5.8% and the throughput ranking are **one cluster's measurements** at the scales named. They are not constants.
+- The bias's update-rate limits come from one sweep on small MoEs. Another expert count needs its own measurement.
+- None of the three balancers is established as the best: the literature disagrees, and the handbook says so.
+
+[Lesson 5.15](/lessons/5-pretraining-at-scale/5.15-upcycling-and-moe-stability/) moves from routing to the run itself: where the weights start and which failures leave the loss flat.

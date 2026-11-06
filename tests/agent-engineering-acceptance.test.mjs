@@ -47,14 +47,14 @@ function corpus(locale) {
 
 const corpora = new Map(LOCALES.map((locale) => [locale, corpus(locale)]))
 
-// --- Acceptance 1: 26 tracks and 185 lessons per locale, in two parts -------
+// --- Acceptance 1: 26 tracks and 190 lessons per locale, in two parts -------
 
 for (const locale of LOCALES) {
-  test(`${locale}: 26 tracks and 185 lessons, tracks 14–25 in the agents part`, () => {
+  test(`${locale}: 26 tracks and 190 lessons, tracks 14–25 in the agents part`, () => {
     const { tracks, lessons } = corpora.get(locale)
     assert.equal(tracks.length, 26)
-    assert.equal(lessons.length, 185)
-    assert.equal(new Set(lessons.map((item) => item.id)).size, 185, 'duplicate lesson id')
+    assert.equal(lessons.length, 190)
+    assert.equal(new Set(lessons.map((item) => item.id)).size, 190, 'duplicate lesson id')
     for (const track of tracks) {
       assert.equal(track.part, NEW_TRACKS.has(track.id) ? 'agents' : 'models', `${track.id} part`)
       assert.equal(track.locale, locale)
@@ -329,11 +329,11 @@ for (const locale of LOCALES) {
     }
   })
 
-  test(`${locale}: the build holds 185 lesson pages and 26 track pages`, () => {
+  test(`${locale}: the build holds 190 lesson pages and 26 track pages`, () => {
     const base = locale === 'en' ? DIST : join(DIST, 'pt-br')
     const lessonsPages = walkFiles(resolve(base, 'lessons'), new Set(['.html'])).filter((file) => /lessons\/[^/]+\/[^/]+\/index\.html$/u.test(file))
     const trackPages = walkFiles(resolve(base, 'tracks'), new Set(['.html'])).filter((file) => /tracks\/[^/]+\/index\.html$/u.test(file))
-    assert.equal(lessonsPages.length, 185)
+    assert.equal(lessonsPages.length, 190)
     assert.equal(trackPages.length, 26)
   })
 }
@@ -359,7 +359,7 @@ test('progress keys keep the shape that stored first-part progress uses', () => 
 test('tracks 0–13 keep their lesson ids and orders', () => {
   // Progress keys and URLs are the lesson id; the first part must not move.
   const first = corpora.get('en').lessons.filter((item) => !NEW_TRACKS.has(item.track))
-  assert.equal(first.length, 125)
+  assert.equal(first.length, 130)
   for (const item of first) {
     assert.ok(new RegExp(`/${item.track}/${item.id}\\.mdx$`, 'u').test(item.file), `${item.file}: id or track does not match its path`)
     assert.ok(existsSync(join(DIST, 'lessons', item.track, item.id, 'index.html')), `${item.id}: no built page`)

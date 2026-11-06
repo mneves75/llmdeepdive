@@ -1,0 +1,183 @@
+---
+id: "4.18-mixture-of-experts"
+track: "4-transformer"
+order: 18
+title: "Mixture of experts: one token, eight FFNs"
+summary: "A router picks a few expert FFNs per token, so the model can store far more capacity than any token pays for. Qwen3.8-27B's 17,408-wide FFN split into 64 experts on the same active budget would store 8x the feed-forward parameters, and 5.4x the whole model."
+tier: "advanced"
+locale: "en"
+prerequisites: ["4.9-feed-forward-block", "4.11-full-transformer-block"]
+unlocks: ["5.14-keeping-experts-busy"]
+analogy: "A hospital could give every patient the same general-practitioner appointment. Instead it triages: a nurse reads the case and sends it to a few specialists, and each specialist writes a note that is weighted by how sure the nurse was. The hospital employs many more doctors than any one patient sees, and the bill per patient depends on how many are consulted, not on how many are on staff."
+teachBack:
+  prompt: "Qwen3.8-27B's FFN is 17,408 wide. Split it into 64 experts with top-8 routing and compute the width of one expert, the stored feed-forward parameters per layer, and the active ones. Then explain why a router that computes weights in bf16 can send a token to a different expert than the same router in fp32."
+  modelAnswer: "8 x 2,176 = 17,408, so each expert is 2,176 wide. A gated expert has three matrices, so one expert is 3 x 5,120 x 2,176 = 33,423,360 parameters, and a layer stores 64 of them: 2,139,095,040. A token keeps 8, so it uses 8 x 33,423,360 = 267,386,880, exactly the dense layer's count. bf16 keeps about 8 bits of significand, so two logits within roughly a thousandth of each other in relative terms can round to the same value. Top-k then has to break a tie, and the framework does not promise which expert wins. In fp32 the two logits stay different and the order is fixed. That is why the router's arithmetic is kept in fp32 even when the rest of the layer trains in bf16."
+quiz:
+  - question: "With 64 experts of width 2,176 and top-8 routing, what does one token pay for in feed-forward compute?"
+    options: ["All 64 experts, because the router reads every expert's output", "Eight experts, 267,386,880 parameters, the same as the dense layer", "One expert, 33,423,360 parameters, an eighth of the dense layer", "Sixty-four experts, 2,139,095,040 parameters, eight times the dense layer"]
+    correctIndex: 1
+    explanation: "The router reads only scores, one per expert, and runs the selected eight. Eight experts of 33,423,360 give exactly 267,386,880, which is why the active budget matches the dense layer by construction. Storing 2,139,095,040 is what the layer holds, not what a token computes."
+  - question: "Two routers see the same token with logits 4.1 and 3.2 for the top two experts. One uses softmax, the other sigmoid, both renormalised over top-2. What differs?"
+    options: ["The experts selected; sigmoid can rank them differently", "Nothing; both functions preserve the ranking and the weights", "The weights: softmax gives about 0.71 to the top expert, sigmoid about 0.51", "The weights: sigmoid gives about 0.71 to the top expert, softmax about 0.51"]
+    correctIndex: 2
+    explanation: "Both gates rank these logits the same way, so the same two experts are chosen. Softmax rescales the difference exponentially and gives the top expert about 0.711 of the pair's weight; sigmoid saturates near 0.98 and 0.96, so after renormalising the top expert gets only about 0.506. A saturated gate makes a confident router look undecided."
+  - question: "Why does the router's matrix multiply run in fp32 when the experts train in bf16?"
+    options: ["Because fp32 makes the router faster on tensor cores", "Because the router's weights are too large for bf16", "Because bf16 cannot represent logits below zero", "Because bf16 can round two close logits together, and top-k then picks between them arbitrarily"]
+    correctIndex: 3
+    explanation: "The router's output is an ordering, not a magnitude. bf16 keeps few significand bits, so two nearly equal logits can round to the same number; the tie-break is then whatever the top-k implementation does, and a token reaches an expert the fp32 router would not have chosen. The weights fit bf16 fine, and negative logits are representable."
+citations:
+  - title: "Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer"
+    authors: "Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean"
+    year: 2017
+    url: "https://arxiv.org/abs/1701.06538"
+  - title: "Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity"
+    authors: "William Fedus, Barret Zoph, and Noam Shazeer"
+    year: 2021
+    url: "https://arxiv.org/abs/2101.03961"
+  - title: "ST-MoE: Designing Stable and Transferable Sparse Expert Models"
+    authors: "Barret Zoph et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2202.08906"
+  - title: "DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts Language Models"
+    authors: "Damai Dai et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2401.06066"
+  - title: "Unified Scaling Laws for Routed Language Models"
+    authors: "Aidan Clark et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2202.01169"
+  - title: "LatentMoE: Toward Optimal Accuracy per FLOP and Parameter in Mixture of Experts"
+    authors: "Venmugil Elango et al."
+    year: 2026
+    url: "https://arxiv.org/abs/2601.18089"
+  - title: "Kimi K3: Open Frontier Intelligence"
+    authors: "Kimi Team"
+    year: 2026
+    url: "https://arxiv.org/abs/2607.24653"
+  - title: "The Ultimate MoE Training Handbook"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
+updated: "2026-11-06"
+---
+
+## The FFN every token pays for
+
+[Lesson 4.9](/lessons/4-transformer/4.9-feed-forward-block/) counted Qwen3.8-27B's feed-forward block: three matrices, 5,120 by 17,408, about 267 million parameters in each of the 64 layers. Every token passes through every one of those parameters. That is what "dense" means here, and it is also the block's weakness. If you want the model to know more, you add width or depth, and every token pays for the addition.
+
+The handbook's opening measurement gives the stakes: 18 of the 20 highest-scoring open-weights models on the Artificial Analysis index are mixtures of experts.
+
+A **mixture of experts** (MoE) breaks that link. The layer stores many small feed-forward networks, called **experts**, and a small learned **router** chooses a few of them for each token. The model's *stored* parameter count grows with the number of experts; its *active* count, the work one token does, grows with how many the router picks. This lesson builds the accounting, then opens the router.
+
+:::note
+Qwen3.8-27B does **not** ship this way. Its FFNs are dense, as 4.9 says. The numbers below are a counterfactual: what the same model's feed-forward budget would look like if it were split into experts. Every figure comes from the published config and the arithmetic is yours to check.
+:::
+
+## Store eight times more, pay the same
+
+Pick a shape with one constraint: the experts a token uses must add up to the dense width it replaces. Sixty-four experts, top-8, each 2,176 wide, because
+
+$$
+8 \times 2{,}176 = 17{,}408.
+$$
+
+One gated expert has the same three matrices as the dense block, so it holds $3 \times 5{,}120 \times 2{,}176 = 33{,}423{,}360$ parameters. The layer stores 64 of them, $2{,}139{,}095{,}040$, and a token runs eight, $267{,}386{,}880$ — the dense layer's count, exactly. The layer stores eight times more feed-forward capacity and the token pays nothing extra.
+
+<Figure id="moe-stored-versus-active" />
+
+Across the model the arithmetic moves the total much less than the feed-forward term, because attention and the embedding table do not change. The dense feed-forward blocks hold 17.11 billion of the 27 billion parameters. Replacing all 64 with this MoE gives 146.8 billion stored, of which about 27 billion are active per token: 5.44 times the model, at the same active budget. In bf16, the weights go from 54 GB to 293.6 GB.
+
+Two consequences follow immediately, and the rest of the course returns to both.
+
+- **Memory is now the binding constraint.** Every expert stays resident in case a token picks it, so the serving problem in [lesson 7.14](/lessons/7-inference-and-efficiency/7.14-serving-an-moe/) is a memory problem before it is a compute problem.
+- **The router is now a learned component with its own failure modes.** A dense model has no decision to get wrong. An MoE makes one per token per layer, and [lesson 5.14](/lessons/5-pretraining-at-scale/5.14-keeping-experts-busy/) is about what happens when those decisions pile up.
+
+## The router: two decisions from one matrix
+
+The router is a single matrix $W_r$ with one row per expert: 64 by 5,120 here, 327,680 parameters per layer — one part in 6,500 of what the experts hold. For a token vector $x$ it produces one **logit** per expert, $W_r x$. A logit is an unbounded score, larger meaning "this expert suits this token more". Then two things happen:
+
+1. **Selection.** The top $k$ logits choose the experts. With $k = 8$, the token goes to eight of the sixty-four.
+2. **Weighting.** A **gating function** turns those logits into weights, and the layer returns the sum of the chosen experts' outputs multiplied by their weights:
+
+$$
+y = \sum_{e \in \text{top-}k} w_e \, E_e(x).
+$$
+
+:::note
+Terms this lesson uses and the rest of the course assumes: **top-k** means the k highest scores; **softmax** turns a list of scores into positive weights that sum to 1; **sigmoid** maps one score to a number between 0 and 1; **renormalise** means dividing the selected weights by their sum so they add to 1 again.
+:::
+
+Three gates are in use. On the same token, with logits 4.1 and 3.2 for the top two experts, they disagree about how much each expert counts:
+
+| Gate (8 experts, top-2) | Top weight | Second weight |
+|---|---|---|
+| softmax over the 8, renormalised over the top 2 | 0.711 | 0.289 |
+| sigmoid, renormalised over the top 2 | 0.506 | 0.494 |
+| sqrt(softplus), renormalised over the top 2 | 0.530 | 0.470 |
+
+The ordering is identical in all three; the weights are not. Softmax compares experts against each other, so a gap of 0.9 in logits becomes a gap of 0.42 in weight. Sigmoid scores each expert alone, and at logits this large it has saturated: 0.984 and 0.961 are nearly the same number, so a *confident* router hands its top two experts almost equal shares. sqrt(softplus) sits between them.
+
+<Figure id="moe-router-weights" />
+
+That difference is a design choice, not a detail. A saturated sigmoid gate makes the layer average its best experts; a sharp softmax gate lets one expert dominate. If you want to read which way a trained model actually behaves, you need the weights, not the logits — and [lesson 5.14](/lessons/5-pretraining-at-scale/5.14-keeping-experts-busy/) shows how to capture them.
+
+:::insight
+The same numbers serve two purposes: choosing the experts, and mixing what they return. A gate decides the split among the chosen experts; it does not decide the size of their combined contribution. That second quantity is the next section.
+:::
+
+Two choices change who does the picking. **Token choice**, the default, lets each token keep its best k experts — which is exactly what lets loads skew. **Expert choice** reverses the direction: every expert keeps its own best tokens. The load evens out, at a price — a token's destination now depends on tokens further along the sequence, which do not exist yet at inference time. **Hash layers** drop the learned router: the expert set comes from a lookup on the token id. DeepSeek-V4 used one for its first three MoE layers and V4.1 dropped it; the handbook reports that a hash table spreads frequent tokens no better than a random one, and that learned routing scales better as more layers become MoE. DeepSeek-V4.1 keeps Engram, a token-id lookup that adds n-gram embeddings rather than choosing experts, at two layers while its router picks every layer's experts.
+
+## How big is the mixture's output?
+
+Softmax gives the top-k weights a sum below 1, and the sum differs from token to token. Leave it alone and the layer's output size moves with the router's mood. The standard fix is **renormalisation**: divide the chosen weights by their sum, so they add to 1.
+
+Renormalising fixes the sum but not the magnitude. Take k experts with equal weight and uncorrelated outputs of equal RMS (root mean square, a measure of a vector's typical size). Their weighted sum has RMS $1/\sqrt{k}$ of one expert's, because independent contributions add in quadrature rather than linearly. At $k = 8$ that is a factor of 2.83.
+
+So implementations multiply the routed output by a **routed scaling factor**, often near $\sqrt{k}$. DeepSeek-V3 uses 2.5 at $k = 8$; Kimi K2 used 2.827 $\approx \sqrt{8}$; Kimi K3 renormalises with no extra factor at $k = 16$, as the handbook reads its config. The value is not settled across shipped models, and it changes the routed branch's share against any shared expert, which is why the next section cares about it too.
+
+:::caveat
+$\sqrt{k}$ restores the RMS only under the assumptions above: equal weights, equal RMS, no correlation. A trained router violates all three. Treat $\sqrt{k}$ as the reason the factor exists, not as the value to copy.
+:::
+
+## Why the router runs in fp32
+
+A router's output is an ordering, and bf16 (brain float 16, the 16-bit format most training uses) keeps about eight bits of significand. Two logits that differ in the third decimal can round to the same bf16 number. Top-k then has to break a tie, and PyTorch does not promise which expert wins. The token reaches an expert the full-precision router would not have chosen, and nothing in the loss says so.
+
+The record on this is about stability rather than accuracy. The handbook reports that a bf16 router diverged in Switch Transformers while an fp32 router trained at bf16 speed, and that ST-MoE's **z-loss** — a penalty on the logits' logsumexp, the log of the sum of exponentials — kept every run stable. At the time of writing, five of the ten open MoEs the handbook tabulates run the router's matrix multiply in bf16 in their *inference* code, while the training precision is rarely reported.
+
+The practical rule is narrow and defensible: keep the router's arithmetic in fp32, and add a z-loss if a softmax router's logits drift upward. Everything else in the layer can follow the training format.
+
+## How many experts, how wide, and who sees every token
+
+With the parameter budget fixed, more experts means narrower ones. **Granularity** describes that split: an MoE with 16 experts of width $d/2$ and top-4 has the same stored parameters and the same active compute as one with 8 experts of width $d$ and top-2. The handbook reports one 18-layer ablation in which loss kept improving as experts got finer, up to 128 experts of a quarter width with top-8, and stopped improving beyond that. Finer experts also mean smaller matrix multiplications, which use the GPU less efficiently, so the point where quality stops improving is where the experiment should stop.
+
+Three variations are common enough that the course names them:
+
+- **A shared expert** is one FFN outside the router that processes every token. DeepSeekMoE introduced it so that common patterns need not be duplicated across routed experts. If the routed weights are renormalised to a scaling factor $s$, the shared expert takes $1/(1+s)$ of each token's output — 28.6% at $s = 2.5$. The measured gain is small and inconsistent: the handbook reports 0.01–0.02 lower loss in two models, and nothing or slightly worse in two others.
+- **Latent MoE** projects each token down to a smaller width $\ell$ before dispatch and back up after the experts. Every copy on the wire shrinks from $d$ to $\ell$, which buys $d/\ell$ times more experts and a proportionally larger top-k at the same traffic. the handbook reports NVIDIA's 73B-A8B ablation scoring 4.6 points higher on MMLU-Pro at matched size; the cost is two extra projections per token, and Kimi K3 needed a norm before the up-projection to keep it stable.
+- **Variable compute** lets the number of experts, or their width, differ per token while the average stays fixed. LongCat-Flash selects 12 of 512 ordinary experts plus 256 identity paths that compute nothing, targeting an average of 8 ordinary experts per token. It is a real design, not a default: Megatron's grouped matrix multiplications assume one expert width.
+
+Every expert so far uses the same activation as a dense FFN, with one addition worth knowing. An expert's output can grow without bound while the loss stays flat — the handbook reports one expert reaching 5,700 times the layer's median output norm — so some models clamp the activation (DeepSeek-V4.1-Flash at 10, Step 3.5 Flash at 7) or replace it with a smoothly capped variant (Kimi K3's SiTU-GLU). Clamping did not remove every loss spike in the studies the handbook cites; it bounds a known growth path.
+
+## Where the MoE layers sit
+
+A model does not have to put an MoE in every layer, and each MoE layer costs two **all-to-all** exchanges — a collective that sends each token to the GPUs holding its experts and brings the results back. Three layouts are in production:
+
+- **MoE in every layer**, as in Qwen3 and gpt-oss: the most capacity and the most exchanges.
+- **Leading dense layers**, as in DeepSeek-V3 (first three) and Kimi K3 (first one): a few layers keep the cheaper dense block, which removes the earliest exchanges.
+- **Alternating dense and MoE**, as in Llama 4 Maverick: half the exchanges, half the MoE capacity.
+
+Leading dense layers are often justified by early-layer balance, and the evidence for that specific benefit is thin: the handbook notes that two of the reports it read observed it without data, while one model with two leading dense layers still saw its first MoE layers balance worst. The reliable argument is the simpler one: fewer MoE layers, fewer exchanges.
+
+:::caveat
+Rewiring the block can hide the exchange. A parallel block feeds attention and the MoE the same input, so dispatch runs while attention computes; a shortcut-connected MoE also hides the combine. Both change what the router sees, and [lesson 5.16](/lessons/5-pretraining-at-scale/5.16-expert-parallelism/) covers what they buy and what they cost. Do not add them for speed before you have measured that the exchange is exposed.
+:::
+
+## What this does not establish
+
+- The 5.44x is a **budget choice**, not a scaling law. A different expert width, or a different number of MoE layers, gives a different number.
+- Nothing here says an MoE at this size would be better than the dense model. Quality comparisons need training runs, and the course does not have one.
+- The granularity, shared-expert and latent results are **one lab's ablations each**, at the scales named. The handbook's own conclusion says so.
+- The router's fp32 rule is about training stability. At inference, half the tabulated models compute it in bf16, and whether that changes their outputs is a measurement, not a principle.
+
+The next four lessons follow the consequences: keeping the experts busy ([5.14](/lessons/5-pretraining-at-scale/5.14-keeping-experts-busy/)), starting from a dense checkpoint ([5.15](/lessons/5-pretraining-at-scale/5.15-upcycling-and-moe-stability/)), paying for the exchange ([5.16](/lessons/5-pretraining-at-scale/5.16-expert-parallelism/)), and serving the result ([7.14](/lessons/7-inference-and-efficiency/7.14-serving-an-moe/)).

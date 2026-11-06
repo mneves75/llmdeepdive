@@ -676,7 +676,7 @@ that keep the lessons true:
 
 ## External systems reference
 
-The published corpus is tracks 0–25 (185 lessons per locale); documentation
+The published corpus is tracks 0–25 (190 lessons per locale); documentation
 must describe that shipped scope exactly. Tracks 7 and 11–13 (Inference and
 Efficiency, Mac Studio Ultra and MLX, DGX and CUDA, llama.cpp in depth) pin
 their software: MLX `v0.32.3`, mlx-lm `v0.32.0`, ddalcu/mlx-serve `v26.10.1`,
@@ -692,6 +692,24 @@ Track 10 (video and world models)
 cites Qwen3-VL's technical report for video tokenisation and the JEPA papers
 (I-JEPA, V-JEPA, V-JEPA 2, V-JEPA 2.1, VL-JEPA) directly; none of it is a claim
 about Qwen3.8-27B.
+
+Mixture of experts lives in lessons 4.18 (router and expert budget), 5.14
+(balancing), 5.15 (upcycling and stability), 5.16 (expert parallelism) and 7.14
+(serving). Their source is *The Ultimate MoE Training Handbook*
+(`huggingface.co/spaces/huggingface/moe-blogpost`, revision `ef70726`, read
+2026-11-06). **It has no licence**: cite its facts and measurements, never copy
+its prose or figures. Every number in those lessons is either a `MOE` derived
+fact, a `moe-math` result, or a cited measurement, and
+`tests/moe-content.test.mjs` checks the prose of 4.18, 5.16 and 7.14 against
+the module, in both locales. Flags were
+checked against Megatron-LM at `d6316eb45`, the handbook's pin; teach the
+mechanism and name the flag as a dated example, never the reverse. The prose
+itself is checked for copying by `pnpm content:overlap`, which needs a local
+copy of the chapters (`HANDBOOK_DIR=… pnpm content:overlap`) because the source
+cannot be vendored; it scans for shared 12-word sequences and ignores YAML
+frontmatter, where citation titles must stay verbatim. The page the Space serves
+is an iframe shell, so the readable text lives at
+`huggingface-moe-blogpost.hf.space`.
 
 The Kimi K3 implementation reference is
 [Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c). For the streaming

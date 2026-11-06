@@ -2,6 +2,21 @@
 
 ## Current Direction
 
+- **2026-11-06, 0.16.0: mixture of experts, five lessons per locale.**
+  `4.18` (router, expert budget, layer placement), `5.14` (load balancing),
+  `5.15` (upcycling, Muon, MTP, quiet failures), `5.16` (expert parallelism) and
+  `7.14` (serving). Source: *The Ultimate MoE Training Handbook*, Space revision
+  `ef70726`, read 2026-11-06. **It has no licence**, so the corpus cites its facts
+  and measurements and reproduces none of its prose or figures. Every number the
+  lessons quote is produced by `src/lib/moe-math.ts` (21 arithmetic tests) and
+  `tests/moe-content.test.mjs` fails when a lesson stops quoting the module; the
+  `MOE` block in `model-facts.ts` owns the 146.8B/27B counterfactual. New
+  `moe-balance` lab: the sign-update loop on a frozen router, server-rendered in
+  both locales. Corpus is now **190 lessons per locale, 380 MDX files**; no
+  existing id, order or URL moved. Started from `origin/main` (`0060c7f`) in
+  `.scratch/wt-moe`; the uncommitted 0.15.1 advisor work in the main checkout was
+  left untouched and is not part of this release.
+
 - **2026-11-02, 0.15.0: home inference mechanics observatory plate and TensorFold (`v1.2.1`) coverage.**
   Added a three-stage, zero-JavaScript interactive inference mechanics plate on
   `/` and `/pt-br/` (`Home.astro`: parallel speculative decoding with DFlash2,

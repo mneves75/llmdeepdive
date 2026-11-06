@@ -9,10 +9,17 @@
 import {
   LLAMA_CPP_QUANT_BENCH,
   LLAMA_CPP_QUANT_BENCH_MODEL,
+  MOE,
   QWEN,
   QWEN_COMMON_MISTAKE,
 } from '~/lib/model-facts'
 import type { Figure } from './types'
+
+/** Gigabytes with the locale's decimal separator: 293.6 GB / 293,6 GB. */
+const gb = (value: number, locale: 'en' | 'pt-br'): string => {
+  const text = value.toFixed(1)
+  return `${locale === 'pt-br' ? text.replace('.', ',') : text} GB`
+}
 
 /** The benchmark rows as plot points, so neither series can drift from the other. */
 const benchPoints = (
@@ -248,6 +255,52 @@ export const TRACK_7_FIGURES = {
               label: { en: 'F16 baseline', 'pt-br': 'Linha de base F16' },
             },
           ],
+        },
+      ],
+    },
+  },
+
+  'moe-serving-memory': {
+    lesson: '7.14-serving-an-moe',
+    title: { en: 'Storage falls faster than reads', 'pt-br': 'O armazenamento cai mais rápido que as leituras' },
+    caption: {
+      en: `The model from lesson 4.18, which does not ship: it stores ${MOE.totalStored.value.toLocaleString('en-US')} parameters with about 27 billion active. Each row shows what the whole model holds and what one decoded token reads. Quantizing the routed experts to 4 bits cuts storage ${(MOE.weightsGbBf16.value / MOE.servingGbExpertsInt4.value).toFixed(1)} times, but reads only from ${gb(MOE.readsPerTokenBf16.value, 'en')} to ${gb(MOE.readsPerTokenExpertsInt4.value, 'en')}, because attention and the embeddings are every token's cost and stay in bf16.`,
+      'pt-br': `O modelo da aula 4.18, que não é publicado assim: guarda ${MOE.totalStored.value.toLocaleString('pt-BR')} parâmetros com cerca de 27 bilhões ativos. Cada linha mostra o que o modelo inteiro guarda e o que um token decodificado lê. Quantizar os experts roteados para 4 bits corta o armazenamento ${(MOE.weightsGbBf16.value / MOE.servingGbExpertsInt4.value).toFixed(1).replace('.', ',')} vezes, mas as leituras só caem de ${gb(MOE.readsPerTokenBf16.value, 'pt-br')} para ${gb(MOE.readsPerTokenExpertsInt4.value, 'pt-br')}, porque atenção e embeddings são custo de todo token e ficam em bf16.`,
+    },
+    body: {
+      kind: 'flow',
+      steps: [
+        {
+          label: { en: 'Dense model, bf16', 'pt-br': 'Modelo denso, bf16' },
+          detail: {
+            en: `${gb(QWEN.weightsGbBf16.value, 'en')} stored · ${gb(MOE.readsPerTokenBf16.value, 'en')} read per token`,
+            'pt-br': `${gb(QWEN.weightsGbBf16.value, 'pt-br')} armazenados · ${gb(MOE.readsPerTokenBf16.value, 'pt-br')} lidos por token`,
+          },
+          pigment: 'muted',
+        },
+        {
+          label: { en: 'MoE, everything bf16', 'pt-br': 'MoE, tudo em bf16' },
+          detail: {
+            en: `${gb(MOE.weightsGbBf16.value, 'en')} stored · the same read per token`,
+            'pt-br': `${gb(MOE.weightsGbBf16.value, 'pt-br')} armazenados · a mesma leitura por token`,
+          },
+          pigment: 'danger',
+        },
+        {
+          label: { en: 'Routed experts at 4 bits', 'pt-br': 'Experts roteados em 4 bits' },
+          detail: {
+            en: `${gb(MOE.servingGbExpertsInt4.value, 'en')} stored · ${gb(MOE.readsPerTokenExpertsInt4.value, 'en')} read per token`,
+            'pt-br': `${gb(MOE.servingGbExpertsInt4.value, 'pt-br')} armazenados · ${gb(MOE.readsPerTokenExpertsInt4.value, 'pt-br')} lidos por token`,
+          },
+          pigment: 'caution',
+        },
+        {
+          label: { en: 'Every active weight at 4 bits', 'pt-br': 'Todo peso ativo em 4 bits' },
+          detail: {
+            en: `${gb(MOE.servingGbAllInt4.value, 'en')} stored · ${gb(MOE.readsPerTokenAllInt4.value, 'en')} read per token`,
+            'pt-br': `${gb(MOE.servingGbAllInt4.value, 'pt-br')} armazenados · ${gb(MOE.readsPerTokenAllInt4.value, 'pt-br')} lidos por token`,
+          },
+          pigment: 'success',
         },
       ],
     },

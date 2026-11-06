@@ -1,0 +1,148 @@
+---
+id: "5.14-keeping-experts-busy"
+order: 14
+track: "5-pretraining-at-scale"
+title: "Mantendo todo expert ocupado"
+summary: "Roteamento desigual faz a GPU mais ocupada ditar o passo, então alguns experts sobrecarregados custam mais do que os FLOPs sugerem. Uma loss auxiliar, um viés de seleção e o quantile balancing guiam a carga de formas diferentes, e a loss de balanceamento sozinha não diz se alguma funcionou."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["4.18-mixture-of-experts", "5.7-data-parallelism-zero-fsdp"]
+unlocks: ["5.15-upcycling-and-moe-stability"]
+lab:
+  id: "moe-balance"
+  kind: "calculator"
+  budgetKb: 12
+analogy: "Um restaurante com uma cozinha por tipo de prato aceita pedidos conforme chegam. Se quatro mesas pedem o mesmo tipo ao mesmo tempo, aquela cozinha trabalha até tarde enquanto as outras ficam paradas, e o serviço inteiro espera por ela. O gerente pode premiar os garçons por espalhar os pedidos (uma loss auxiliar), conduzir os clientes em silêncio ajustando o quão atraente cada cozinha parece (um viés de seleção), ou calcular, a partir das reservas da noite, exatamente o quão atraente cada cozinha deveria parecer (quantile balancing)."
+teachBack:
+  prompt: "Um colega reporta loss auxiliar 1,0 em oito experts e conclui que a carga está equilibrada. Usando a definição, mostre por que essa leitura está errada e diga qual número você reportaria e o que o viés sem loss muda nos gradientes do router."
+  modelAnswer: "A loss auxiliar do Switch é E vezes a soma, sobre os experts, da fatia de atribuições de cada expert pela probabilidade média do router para ele. Se o router é plano, toda probabilidade é 1/E, então a soma fica 1/E vezes a soma das fatias, que é 1/E, e a loss é E/E = 1 qualquer que seja a contagem. Com contagens 32, 32, 0, 0, 0, 0, 0, 0 a loss é 1 e o expert mais ocupado leva quatro vezes a média, um MaxVio de 3. Eu reportaria o MaxVio das contagens de tokens. O viés sem loss soma um deslocamento por expert antes do top-k e nunca aos pesos coletados, então muda quais experts são selecionados e não contribui gradiente para o router; a loss auxiliar faz o oposto, puxando as próprias probabilidades para uma carga uniforme."
+quiz:
+  - question: "Oito experts, 64 tokens, top-1. As contagens são 32, 32, 0, 0, 0, 0, 0, 0 e as probabilidades do router são planas. O que a loss auxiliar do Switch e o MaxVio reportam?"
+    options: ["Os dois reportam carga uniforme", "Loss auxiliar 1, MaxVio 3", "Loss auxiliar 3, MaxVio 1", "Loss auxiliar 1, MaxVio 0"]
+    correctIndex: 1
+    explanation: "Com probabilidades planas a loss auxiliar colapsa em 1 para qualquer carga, então não distingue este lote de um perfeitamente uniforme. A carga média é 8, o expert mais ocupado tem 32, então o MaxVio é 32/8 - 1 = 3."
+  - question: "O que o viés de balanceamento sem loss muda?"
+    options: ["As probabilidades do router, por um gradiente pequeno", "Os pesos dos experts, escalando suas saídas", "Quais experts são selecionados, não seus pesos", "A taxa de aprendizado do router, por expert"]
+    correctIndex: 2
+    explanation: "O viés é somado ao score de cada expert antes do top-k e fica de fora quando os scores escolhidos viram pesos, então move seleções sem contribuir gradiente. Mover as probabilidades é o que a loss auxiliar faz; o viés nunca toca os pesos dos experts nem a taxa do otimizador."
+  - question: "Por que balancear sobre o lote global pode baixar a perplexidade mas deixar o passo mais lento?"
+    options: ["Permite especialização por domínio com cada GPU desigual", "Remove o all-to-all do caminho crítico", "Dá a cada expert exatamente o mesmo número de tokens por passo", "Reduz a memória que cada expert precisa para ativações"]
+    correctIndex: 0
+    explanation: "Um escopo de lote global deixa tokens de código se acumularem em poucos experts desde que outros domínios preencham o resto, e é isso que permite a especialização. A mesma liberdade deixa cada micro-lote desigual, então a GPU mais ocupada espera e o passo desacelera — o handbook relata cerca de 5,8% para um modelo de 43B."
+citations:
+  - title: "Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity"
+    authors: "William Fedus, Barret Zoph, and Noam Shazeer"
+    year: 2021
+    url: "https://arxiv.org/abs/2101.03961"
+  - title: "Auxiliary-Loss-Free Load Balancing Strategy for Mixture-of-Experts"
+    authors: "Lean Wang, Huazuo Gao, Chenggang Zhao, Xu Sun, and Damai Dai"
+    year: 2024
+    url: "https://arxiv.org/abs/2408.15664"
+  - title: "DeepSeek-V3 Technical Report"
+    authors: "DeepSeek-AI"
+    year: 2024
+    url: "https://arxiv.org/abs/2412.19437"
+  - title: "Demons in the Detail: On Implementing Load Balancing Loss for Training Specialized Mixture-of-Expert Models"
+    authors: "Zihan Qiu et al."
+    year: 2025
+    url: "https://arxiv.org/abs/2501.11873"
+  - title: "Kimi K3: Open Frontier Intelligence"
+    authors: "Kimi Team"
+    year: 2026
+    url: "https://arxiv.org/abs/2607.24653"
+  - title: "ID Balancing: Stable Training of Extremely Sparse MoE via PID-Based Load Control"
+    authors: "Peng Jin et al."
+    year: 2026
+    url: "https://arxiv.org/abs/2609.39137"
+  - title: "The Ultimate MoE Training Handbook"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
+updated: "2026-11-06"
+---
+
+## O passo espera pela GPU mais ocupada
+
+A [aula 4.18](/pt-br/lessons/4-transformer/4.18-mixture-of-experts/) montou um router que manda cada token a oito de sessenta e quatro experts, espalhados por GPUs. Cada GPU recebe os tokens roteados para os experts que guarda, executa-os e devolve os resultados. O all-to-all que os move é um ponto de sincronização: o próximo passo não começa até o participante mais lento chegar. Então, se os experts de uma GPU recebem o dobro da carga média, as outras esperam, e o passo custa o que custa a GPU mais ocupada, não o que custa a média.
+
+O handbook mediu o tamanho desse efeito no seu modelo 7B-A1B: com o roteamento forçado a ser uniforme, a mesma iteração rodou 1,5 vez mais rápido na inicialização do que com um router aprendido recém-inicializado. Forçar a uniformidade joga fora o que o router aprendeu, então é uma execução de controle e nunca um ajuste de treino — mas é o controle certo, porque mostra a vazão que um balanceamento melhor tenta alcançar.
+
+Para falar de desequilíbrio você precisa de um número. O que a literatura usa é o **MaxVio**, abreviação de maximal violation: o quanto a carga do expert mais ocupado fica acima da média, como fração da média.
+
+$$
+\mathrm{MaxVio} = \frac{\max_e c_e}{\frac{1}{E}\sum_e c_e} - 1
+$$
+
+Calcule em quatro experts com contagens 2, 2, 4, 0. A média é 2, o mais ocupado tem 4, então o MaxVio é $4/2 - 1 = 1$: o expert mais ocupado leva o dobro da média. O expert com zero entra na média — é o que faz um expert morto aparecer em vez de desaparecer. Uma carga uniforme dá 0, e o teto é $E - 1$: o expert mais ocupado não pode conter mais do que todos os tokens.
+
+## A loss auxiliar, e o número que mente
+
+A correção mais antiga soma ao treino um termo que premia carga uniforme. A **loss auxiliar** multiplica o número de experts por uma soma, sobre os experts, de duas quantidades: a fatia de atribuições de tokens de cada expert e a probabilidade média do router para ele. Seu gradiente puxa as probabilidades do router para espalhar tokens, e compete com o gradiente da previsão do próximo token.
+
+Aqui está a armadilha, calculada exatamente. Tome oito experts, 64 tokens, top-1, e um router com probabilidades planas: 1/8 para cada expert. Ponha 32 tokens no expert 1 e 32 no expert 2. A fatia de cada um é 32/64 = 0,5 para esses dois e 0 para o resto, então a soma de fatia vezes probabilidade é $0.5 \times \tfrac{1}{8} + 0.5 \times \tfrac{1}{8} = \tfrac{1}{8}$, e a loss é $8 \times \tfrac{1}{8} = 1$.
+
+Agora calcule a mesma loss para uma carga perfeitamente uniforme: cada fatia é 1/8, cada probabilidade é 1/8, a soma é $8 \times \tfrac{1}{64} = \tfrac{1}{8}$, e a loss é 1 de novo. **A loss auxiliar lê 1 nos dois casos**, enquanto o MaxVio lê 3 no primeiro e 0 no segundo. O Megatron registra esse valor com o coeficiente dividido, e é por isso que "a loss auxiliar está em 1" é o que uma execução reporta — e por isso uma execução pode reportar isso com metade dos tokens em dois experts.
+
+:::warning
+Nunca leia balanceamento pela loss auxiliar. Leia pelas contagens de tokens, por camada. A loss também pode cair com a carga torta: o handbook relata um modelo pequeno cujas camadas baixas achatavam as probabilidades e baixavam a loss sem espalhar os tokens. Uma métrica que melhora quando o router para de se importar não é métrica de balanceamento.
+:::
+
+O handbook relata uma ablação em um modelo de 10B: em 1e-4 o expert menos usado ainda recebia cerca de um quatorze avos do que o mais ocupado levava, e só em 1e-2 a carga se uniformizou — com a loss de teste subindo junto.
+
+## Escopo: quais tokens contam como equilibrados
+
+A loss precisa contar sobre algum conjunto de tokens, e a escolha muda o que "equilibrado" significa.
+
+- **Micro-lote**, o padrão. A carga de cada micro-lote fica uniforme, o que mantém o trabalho de cada GPU uniforme. O custo é que um micro-lote empacotado com um só domínio, digamos todo código, espalha seus tokens por todos os experts, então nenhum expert pode se especializar em código.
+- **Sequência.** O escopo mais apertado: toda sequência se espalha por todos os experts mesmo quando o lote mistura domínios. O DeepSeek-V3 carrega uma pequena loss por sequência (coeficiente 1e-4) ao lado do viés, para que uma única sequência não concentre poucos experts enquanto o lote inteiro parece uniforme.
+- **Lote global.** As contagens acumulam entre micro-lotes e réplicas de paralelismo de dados. É o que permite experts se especializarem por domínio, e baixa a perplexidade no estudo que comparou os três. O custo cai no hardware: dentro de cada micro-lote a distribuição volta a ser desigual. O handbook mede passos cerca de 5,8% mais lentos em um modelo de 43B, dos quais cerca de um ponto é comunicação e o resto é tempo ocioso por trabalho desigual.
+
+:::note
+Equilibre no escopo que você escolheu, não em outro. Um lote pode estar uniforme no total enquanto a fatia de uma GPU está bem torta. MaxVios de micro-lote não podem ser combinados por média no global: as duas quantidades andam em direções opostas.
+:::
+
+## O viés sem loss
+
+A loss auxiliar muda as probabilidades do router, e é isso que faz seu gradiente competir com o do modelo de linguagem. O **viés sem loss** evita a competição por completo. Todo expert carrega um viés. Ele entra no score *antes* do top-k e fica de fora quando os scores vencedores viram pesos. Uma vez por passo de treino, todo viés se move pela mesma quantia fixa: para cima se seu expert ficou subcarregado, para baixo se ficou sobrecarregado.
+
+Tome quatro experts com contagens 7, 4, 3, 2 e passo de 0,01. A média é 4. O expert 1 está acima da média, então seu viés cai 0,01. O expert 2 está exatamente na média, então não se move. Os experts 3 e 4 sobem 0,01 cada. O Megatron compara inteiros (`total - contagens x experts`) em vez de floats contra uma média, então um expert exatamente na média fica parado — uma comparação em float o teria movido por ruído de arredondamento.
+
+O viés tem três botões que vale conhecer:
+
+- **A regra de atualização.** Uma atualização de sinal move todo expert a mesma distância, por mais longe que esteja da média. Uma atualização **linear** move cada um em proporção à distância, e uma **AdamW** adapta o passo por expert. O LongCat-Flash usa a regra linear; o ZAYA1-8B entrega o erro ao AdamW.
+- **O limite do passo fixo.** O passo precisa caber no número de experts. O handbook relata uma varredura em que, com taxa de 1e-3, a carga do expert mais ocupado cresceu com o número de experts até cerca de 50 vezes a média com 1.024 experts, e acima de 128 experts o viés também prejudicou a qualidade do modelo.
+- **Deriva.** Se as mudanças por passo não somam zero, a média de todos os viéses deriva. Isso não muda seleção alguma, porque somar o mesmo número a todo score deixa o top-k igual, mas custa precisão onde o viés é guardado em bf16. Moonlight e Trinity Mini subtraem a média dos passos; os viéses publicados do DeepSeek-V3 ficam com média por camada entre 2,2 e 8,0, enquanto os do Moonlight ficam em zero.
+
+O laboratório desta página roda esse laço com o router congelado, então a única coisa que se move é o viés de seleção. O lote padrão começa em MaxVio 4,13, chega a 0,13 no passo 39 e termina em 0,50 no passo 40: o passo fixo passou do alvo e voltou. Um passo maior cai mais rápido e assenta pior, que é a troca que a figura mostra.
+
+<Figure id="moe-maxvio" />
+
+## Quantile balancing
+
+O viés caminha em direção ao valor certo. O **quantile balancing** resolve o valor. Para cada expert, ordene os tokens do micro-lote pelo score deles para aquele expert e leia o quantil que apenas a fatia alvo de tokens supera. Esse quantil define o viés diretamente, para o próximo lote. O que o Kimi K3 ordena, precisamente, é a margem de cada token sobre o próprio (k+1)-ésimo melhor score, não o score bruto, porque a margem é o que decide se o expert ganha uma vaga.
+
+Ele equilibra mais cedo do que um passo fixo, com loss parecida, na comparação feita em um modelo de 19B com 768 experts, cortando pela metade o MaxVio médio. O Kimi K3 o usa sobre o lote global inteiro, lendo o quantil de cada expert de um histograma somado entre GPUs, depois que equilibrar ficou mais difícil quando seu pool roteado chegou a 896 experts por camada. O preço é real: todo micro-lote agora precisa de um ranking extra por expert, sobreposto ao top-k por token, e o Megatron recusa o método ao lado de qualquer loss auxiliar, fusão de router ou roteamento limitado por grupo.
+
+A sutileza é a distância entre as duas contagens. Um viés ajustado sobre todos os tokens do lote pode achatar o total enquanto a fatia de uma GPU continua torta. Na execução de 7,5B citada pelo handbook, o quantil com média por rank levou o MaxVio global a 0,92, mas o expert mais ocupado no pior micro-lote de expert-parallel ainda carregava cerca de sete vezes uma fatia uniforme — um MaxVio local de 5,96. Calcular o quantil global exato baixou os dois números.
+
+## Escolhendo
+
+| Balanceador | O que muda | O que custa | Quando serve |
+|---|---|---|---|
+| Loss auxiliar, 1e-3 | Probabilidades do router, por gradiente | Compete com a loss do LM; um router plano engana | O padrão, e o mais simples de raciocinar |
+| Viés sem loss | Só as seleções | Passo fixo atrasa, e fica grosso acima de ~128 experts | Quando nenhum gradiente pode ser puxado; com uma loss por sequência pequena |
+| Quantile | Seleções, resolvidas por lote | Um top-k por expert; o desequilíbrio local pode se esconder | Quando o passo fixo é lento demais; viés global, confira o MaxVio local |
+
+Uma comparação a tratar com cuidado: nas cinco configurações de router do handbook, o quantile balancing teve a melhor vazão mediana nas últimas 20 de 120 iterações — 139 TFLOP/s, contra 125 da loss auxiliar e 99 de uma configuração só de viés — e terminou também com a maior loss de treino. É uma semente e 120 iterações. Um ranking de vazão que não chega à mesma loss não é um treino mais rápido.
+
+:::insight
+O único ajuste que deve ficar fora de uma execução real é o que parece melhor no benchmark: o roteamento forçado a uniforme troca os logits do router por aleatórios. É um controle que diz quanto o desequilíbrio custa, e o handbook é explícito que nunca é forma de treinar.
+:::
+
+## O que isto não estabelece
+
+- O 1,5x, os 5,8% e o ranking de vazão são **medições de um cluster** nas escalas nomeadas. Não são constantes.
+- Os limites da taxa de atualização do viés vêm de uma varredura em MoEs pequenos. Outro número de experts precisa da própria medição.
+- Nenhum dos três balanceadores está estabelecido como o melhor: a literatura discorda, e o handbook diz isso.
+
+A [aula 5.15](/pt-br/lessons/5-pretraining-at-scale/5.15-upcycling-and-moe-stability/) passa do roteamento para a execução em si: de onde vêm os pesos e quais falhas deixam a loss plana.
