@@ -94,6 +94,12 @@ const PHRASES = {
         ? [`no passo ${LAB.best.step}`]
         : [`at step ${LAB.best.step}`],
   },
+  '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
+    'Two numbers, moving in opposite directions': (locale) =>
+      locale === 'pt-br'
+        ? ['ativa cerca de 27 bilhões por token']
+        : ['activates about 27 billion per token'],
+  },
 }
 
 
