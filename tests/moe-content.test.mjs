@@ -95,21 +95,26 @@ const PHRASES = {
 
 
 /**
- * How many times a value legitimately appears in one block, counting both
- * separator conventions (math keeps the English comma in pt-BR). Presence alone
- * cannot see that "each 2,176 wide" became 2,177 when another 2,176 sits in the
- * same section; the count can.
+ * How many times each derived value is stated in the whole lesson, counting both
+ * separator conventions. A presence check cannot see that one of two copies was
+ * corrupted; the total can, wherever the copies sit — body, summary, teach-back
+ * or an aside. Adding a legitimate statement means bumping its count here, which
+ * is exactly the review this file exists to force.
  */
-const READS = {
+const COUNTS = {
   '4-transformer/4.18-mixture-of-experts.mdx': {
-    '__teachback__': {
-      [group(BUDGET.expertWidth, 'en')]: 3,
-      [group(BUDGET.activeFfnPerLayer / 8, 'en')]: 2,
-    },
-    'Store eight times more, pay the same': { [group(BUDGET.expertWidth, 'en')]: 3 },
+    '2,176': 7, '17,408': 5, '33,423,360': 5, '2,139,095,040': 4, '267,386,880': 4,
+    '17.11': 1, '146.8': 1, '5.44': 2, '293.6': 1, '54': 1, '327,680': 1, '6,500': 1,
+    '0.711': 2, '0.289': 1, '0.506': 2, '0.494': 1, '0.530': 1, '0.470': 1, '28.6': 1,
+  },
+  '5-pretraining-at-scale/5.14-keeping-experts-busy.mdx': { '4.13': 1, '0.13': 1, '0.50': 1 },
+  '5-pretraining-at-scale/5.15-upcycling-and-moe-stability.mdx': { '17,408': 1, '2,176': 1 },
+  '5-pretraining-at-scale/5.16-expert-parallelism.mdx': {
+    '10,240': 3, '81,920': 3, '5,242,880': 1, '80 \\text{ KiB}': 1, '5 MiB': 3, '10 GiB': 1,
   },
   '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
-    '__teachback__': { [Number((TOTAL / 1e9).toFixed(1))]: 2 },
+    '146.8': 4, '293.6': 3, '88.3': 2, '3.3': 2, '54': 3, '34.2': 2, '8.6': 2, '19.8': 2,
+    '28.4': 2, '1.9': 3, '73.4': 1, '13.5': 1, '15 GB': 1, '17.1': 2, '9.9': 2, '136.9': 1,
   },
 }
 
@@ -238,14 +243,23 @@ for (const locale of LOCALES) {
           const ok = forms.some((form) => boundary(form).test(body))
           assert.ok(ok, `${path} §${name} no longer quotes "${value}"`)
         }
-        for (const [value, expected] of Object.entries(READS[path]?.[heading] ?? {})) {
-          const forms = [...new Set([value, value.replaceAll('.', ','), value.replaceAll(',', '.')])]
-          const seen = forms.reduce((sum, form) => sum + (body.split(form).length - 1), 0)
-          assert.equal(seen, expected, `${path} §${name}: expected ${expected} occurrence(s) of "${value}", found ${seen}`)
-        }
         for (const phrase of PHRASES[path]?.[heading]?.(locale) ?? []) {
           assert.ok(body.includes(phrase), `${path} §${name} no longer says "${phrase}"`)
         }
+      }
+    })
+  }
+}
+
+
+for (const locale of LOCALES) {
+  for (const [path, expected] of Object.entries(COUNTS)) {
+    test(`${locale}: ${path.split('/').pop()} states each derived value the expected number of times`, () => {
+      const text = lesson(locale, path).replaceAll('{,}', ',')
+      for (const [value, count] of Object.entries(expected)) {
+        const forms = [...new Set([value, value.replaceAll('.', ','), value.replaceAll(',', '.')])]
+        const seen = forms.reduce((sum, form) => sum + text.split(form).length - 1, 0)
+        assert.equal(seen, count, `${path}: expected ${count} occurrence(s) of "${value}", found ${seen}`)
       }
     })
   }
