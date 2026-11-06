@@ -112,7 +112,7 @@ const COUNTS = {
   '5-pretraining-at-scale/5.14-keeping-experts-busy.mdx': { '4.13': 1, '0.13': 1, '0.50': 1 },
   '5-pretraining-at-scale/5.15-upcycling-and-moe-stability.mdx': { '17,408': 1, '2,176': 1 },
   '5-pretraining-at-scale/5.16-expert-parallelism.mdx': {
-    '10,240': 3, '81,920': 3, '5,242,880': 1, '80 \\text{ KiB}': 1, '5 MiB': 3, '10 GiB': 1,
+    '10,240': 3, '81,920': 3, '5,242,880': 1, '80 \\text{ KiB}': 1, '80 KiB': 3, '5 MiB': 3, '10 GiB': 1,
   },
   '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
     '146.8': 4, '293.6': 3, '88.3': 2, '3.3': 2, '54': 3, '34.2': 2, '8.6': 2, '19.8': 2,
