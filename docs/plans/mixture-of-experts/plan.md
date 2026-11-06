@@ -46,14 +46,19 @@ Qwen3.8-27B's published config, not from the handbook.
 A summary of five chapters would be bigger than the course and shallower than the
 source. What a practitioner would actually do, and what this plan does instead:
 
-1. **Build the instrument before the prose.** Every MoE claim in the lessons is
-   produced by one pure module, `src/lib/moe-math.ts`: mixture weights, MaxVio,
-   the sign-update loop, parameters stored versus active, dispatch bytes. The
-   lessons quote it, the lab calls it, and `tests/moe-content.test.mjs` pins the
-   numbers 4.18, 5.16 and 7.14 quote, in both locales. The
-   site has been bitten three times by prose and code disagreeing (the 540 GB
-   AdamW budget, the third residual bypass, the three KV budgets); a new topic
-   gets the mechanism that prevents a fourth.
+1. **Build the instrument before the prose.** Every MoE number the course
+   *derives* is produced by one pure module, `src/lib/moe-math.ts`: mixture
+   weights, MaxVio, the sign-update loop, parameters stored versus active,
+   dispatch bytes. `tests/moe-content.test.mjs` pins every derived number the
+   five lessons quote — section by section and inside each teach-back, in both
+   locales — and changing one in the prose fails it. Numbers *attributed* to a
+   paper or the handbook are not derived and are not pinned this way: the
+   sentence that uses one names its source, and the citation audit checks it.
+   That split is the evidence policy, and collapsing it would demand that an
+   arithmetic module invent another lab's measurement. The site has been bitten
+   three times by prose and code disagreeing (the 540 GB AdamW budget, the third
+   residual bypass, the three KV budgets); a new topic gets the mechanism that
+   prevents a fourth.
 2. **Keep the evidence kinds apart.** The handbook mixes four kinds of claim and
    they do not merge: (a) arithmetic on a published config, (b) one cluster's
    measurement, (c) one lab's ablation, (d) a technical report's setting. Each
