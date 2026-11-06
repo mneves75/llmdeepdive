@@ -11,7 +11,7 @@
  * The source cannot live in this repository. Point `HANDBOOK_DIR` at a local
  * copy of the handbook's chapter files and run this:
  *
- *   HANDBOOK_DIR=~/.scratch/handbook pnpm content:overlap
+ *   HANDBOOK_DIR=/path/to/handbook pnpm content:overlap
  *
  * Without the directory the check reports SKIP and exits 0, so CI and a clone
  * without the source still build. It is an authoring gate, not a release gate —
