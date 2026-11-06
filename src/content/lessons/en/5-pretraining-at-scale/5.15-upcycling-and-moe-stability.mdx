@@ -1,0 +1,123 @@
+---
+id: "5.15-upcycling-and-moe-stability"
+order: 15
+track: "5-pretraining-at-scale"
+title: "Starting from dense, staying alive"
+summary: "Upcycling copies a trained dense FFN into experts, which buys a head start a long run will repay. Muon keeps a rarely routed expert moving while AdamW lets its step shrink, and three quiet failures — collapse, a dead expert, a rogue expert — can leave the loss flat while the run is already broken."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.14-keeping-experts-busy", "5.11-learning-rate-schedules"]
+unlocks: ["5.16-expert-parallelism"]
+analogy: "A bakery that already knows how to bake can open eight small counters by copying its recipes into each one, then let each counter drift toward a specialty. Copying starts the shop ahead, but a customer base rebuilt from scratch eventually catches up, and nothing on the sales board says a counter has quietly stopped selling."
+teachBack:
+  prompt: "Explain why upcycling helps a short MoE run and hurts a long one, why a rarely routed expert moves under Muon but not under AdamW, and which two measurements separate a dead expert from a rogue one when the loss stays flat."
+  modelAnswer: "Upcycling copies a trained dense FFN into the experts, so the MoE starts where the dense run stopped instead of at random weights. The head start is the compute already spent on the dense model, and a run from scratch eventually catches it: OLMoE's from-scratch run caught up after 500B tokens, a quarter of the dense model's 2T, while another study needed 120% of the dense model's compute. A short run therefore banks the head start; a long run pays for it and ends at the same place. AdamW divides each weight's update by that weight's gradient history, so an expert that sees few tokens gets a small, noisy step. Muon orthogonalizes the update and scales it by the matrix's shape, so the step size does not shrink with the gradient, and momentum carries the expert through a step with no tokens. A dead expert's mean output norm falls far below its layer's median; a rogue expert's rises far above it. MaxVio catches routing collapse, which neither norm will show on its own."
+quiz:
+  - question: "When is upcycling a trained dense checkpoint plainly worth it?"
+    options: ["Whenever the MoE will train for fewer tokens than the dense run did", "Always, because starting from trained weights can only help", "Only when the dense model and the MoE have identical parameter counts", "Never, because the optimizer state cannot be reused"]
+    correctIndex: 0
+    explanation: "The head start is worth the compute already spent, so it pays when the MoE run is short relative to the dense run. A from-scratch run catches up — at 25% of the dense tokens in one study and 120% of its compute in another — so a long run ends at the same place and the copying bought nothing. Parameter counts need not match, and Megatron starts the MoE with a fresh optimizer anyway."
+  - question: "Why does Muon keep a rarely routed expert moving when AdamW lets it stall?"
+    options: ["Muon applies a larger learning rate to experts with fewer tokens", "Muon orthogonalizes the update and scales it by shape, so its size does not follow the gradient's", "Muon skips the experts that received no tokens that step", "Muon stores the expert's gradients in fp32 instead of bf16"]
+    correctIndex: 1
+    explanation: "AdamW normalizes each weight's step by its own gradient history, so a thin, noisy gradient produces a small step. Muon pushes the update's singular values toward one and multiplies by a shape-dependent scale, so the step size is set by the matrix rather than the gradient, and momentum carries it across a step with no tokens. It does not skip experts, and precision is not the mechanism."
+  - question: "The loss is flat. Which pair of measurements separates a dead expert from a rogue one?"
+    options: ["MaxVio and the load-balancing loss", "Tokens per expert and the learning rate", "The minimum and maximum expert output norms against the layer median", "The gradient norm and the parameter norm"]
+    correctIndex: 2
+    explanation: "A dead expert's output norm collapses far below the layer's median; a rogue expert's rises far above it — about 5,700 times the median in the case the handbook reports. MaxVio shows routing collapse, which is a different failure and can accompany a dead expert without identifying it, and run-level norms say nothing about one expert."
+citations:
+  - title: "Sparse Upcycling: Training Mixture-of-Experts from Dense Checkpoints"
+    authors: "Aran Komatsuzaki et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2212.05055"
+  - title: "OLMoE: Open Mixture-of-Experts Language Models"
+    authors: "Niklas Muennighoff et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2409.02060"
+  - title: "Muon is Scalable for LLM Training"
+    authors: "Jingyuan Liu et al."
+    year: 2025
+    url: "https://arxiv.org/abs/2502.16982"
+  - title: "Step 3.5 Flash: Open Frontier-Level Intelligence with 11B Active Parameters"
+    authors: "StepFun"
+    year: 2026
+    url: "https://arxiv.org/abs/2602.10604"
+  - title: "On the Design of Qwen3.8-Next Architecture: Evaluation, Efficiency, and Training Stability"
+    authors: "Qwen Team"
+    year: 2026
+    url: "https://arxiv.org/abs/2608.30320"
+  - title: "DeepSeek-V3 Technical Report"
+    authors: "DeepSeek-AI"
+    year: 2024
+    url: "https://arxiv.org/abs/2412.19437"
+  - title: "The Ultimate MoE Training Handbook"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
+updated: "2026-11-06"
+---
+
+## Where the weights start
+
+An MoE can start from random weights, like any model, or from a dense checkpoint whose feed-forward blocks already work. The second option is **upcycling**: cut each dense FFN into pieces, copy the pieces into experts, and keep training.
+
+[Lesson 4.18](/lessons/4-transformer/4.18-mixture-of-experts/) chose a shape where the pieces fit exactly. The dense FFN is 17,408 wide and the experts are 2,176 wide, so one dense block splits into eight slices, and each slice is copied into eight of the 64 experts. The MoE now computes, at initialization, the same function as the dense model it came from: eight identical copies of a slice, run together, span the width the dense block had.
+
+<Figure id="moe-upcycle-slices" />
+
+Two details keep the copy honest. The optimizer state does not carry over — Megatron saves the freshly upcycled MoE at iteration 1 with no optimizer state — so the MoE begins a new schedule. And Megatron rescales the copied weights, because a token's eight experts now *sum* into what one wider block used to compute; the scaling factor depends on the activation (a cube root for a gated FFN, a square root for a plain ReLU one). Read the rescaling as a correction for summing copies, not as a hyperparameter to tune.
+
+:::note
+An MoE with one expert and top-1 computes exactly the dense function, which makes a parity run possible: upcycle the dense checkpoint, train the one-expert MoE beside the dense model, and the two losses should track. The handbook reports a gap of 0.00087 over 15 aligned steps in its run. That is a test of the plumbing, not a result about MoE quality.
+:::
+
+## What the head start is worth
+
+The head start is the compute already spent on the dense run. A run from scratch eventually catches up, and how soon decides whether upcycling was worth it.
+
+In OLMoE, a from-scratch MoE caught up with the upcycled one after 500B tokens, a quarter of the 2T tokens the dense model had trained on. In Komatsuzaki et al.'s sparse-upcycling runs, catching up took 120% of the dense checkpoint's compute — more than simply training the dense model had cost. So the trade is: upcycle when the MoE run is short relative to the dense run, and expect a long run to pay the whole bill anyway.
+
+The same idea applies to growing an existing MoE: copy experts and their router rows to go from 32 to 64. Exact copies tie, and a token then picks an expert and its clone at equal weight — one distinct expert instead of two. Perturbing the copy gives the router a gradient between the pair; random new experts avoid the tie but route weight to untrained experts. Both have been used, and the handbook names which model used which.
+
+## The optimizer sees a different problem
+
+Each expert sees only the tokens routed to it. In a batch of millions of tokens, a rare expert might see a handful. That asymmetry is where AdamW and Muon behave differently.
+
+**AdamW** divides each weight's update by that weight's own gradient history. An expert with few tokens produces a thin, noisy gradient, and its step shrinks accordingly. **Muon** orthogonalizes the update — pushing its nonzero singular values toward one — and then multiplies by a scale set by the matrix's shape alone. The step size no longer follows the gradient's magnitude, and momentum carries the expert through a step in which it received no tokens at all.
+
+Moonlight, an MoE with 3B active and 16B total parameters, performed significantly better with Muon than its AdamW twin at matched settings, compared at about 1.2T tokens. Two cautions come with it. Under Muon, experts can collapse, and too large an update scale can make a run diverge; the handbook reports that Megatron's default scale of 1.0 diverged on a dense 7B in one team's tests, and that starting at 0.2 was safer.
+
+The router is a separate question that adopters answer differently. DeepSeek-V4 keeps its router on Muon. Qwen3.8-Next moved its router to AdamW after Muon destabilized the router early in training. A small comparison found AdamW on the router slightly worse than row-normalized or left-spectral updates. There is no settled answer; if you adopt Muon, decide the router's optimizer deliberately rather than by inheritance.
+
+## Multi-token prediction
+
+**Multi-token prediction** (MTP) adds one transformer layer per extra token to predict. The extra layer takes the model's hidden state together with the *next* token's embedding, projects the concatenation back to the hidden width, and predicts the token after next through the same output head the main model uses. DeepSeek-V3 found it better on most benchmarks at both scales it tested, and the extra layer can be dropped at inference.
+
+It costs step time, and the cost lands in one place. Under pipeline parallelism the step waits for its slowest stage, so a layer added to one stage costs its share of that stage's work, not its much smaller share of the whole model. Unless a pipeline layout moves it, Megatron puts the MTP layer on the last stage, which already holds the output head. The handbook reports early steps about 37% longer with one MTP layer on its 256-node runs, and spreading the model over eight pipeline stages did not close the gap; a 14B MoE elsewhere reports 7%. DeepSeek-V3 weighted the MTP loss at 0.3 for its first 10T tokens and 0.1 after.
+
+## Three quiet failures
+
+A run can fail loudly or quietly. The loud failure is a NaN or an infinite value in the loss or the gradients. Megatron checks every step by default, reruns the step on the same GPU to separate a transient error from a repeatable one, and if the NaN repeats, exits with code 16 so the job restarts from a checkpoint on another GPU. A second rerun there separates a faulty GPU from a NaN the data or the model really produced. A **spiky loss** — ten times the largest of the first hundred values — gets the same treatment without stopping the run.
+
+The quiet failures are the ones that cost days, because the loss can stay flat through all three:
+
+| Failure | What moves | What you read |
+|---|---|---|
+| Routing collapse | Tokens pile onto a few experts | MaxVio climbs, per layer |
+| Dead expert | One expert's output shrinks toward zero | Its mean output norm far below the layer's median |
+| Rogue expert | One expert's output grows without bound | Its mean output norm far above the median |
+
+The rogue case is not hypothetical: the handbook reports one expert in Step 3.5 Flash's layer 45 reaching about 5,700 times the median output norm while the loss barely moved. That is why the norm ratio, not the loss, is the signal, and why some models clamp the activation before it can grow.
+
+:::caveat
+None of these measurements is on by default in every framework, and each requires its own capture: token counts per expert for MaxVio, an activation dump or a forward hook for the norms. A run without them can look healthy for its whole duration. Budget the monitoring before the run, not after the first suspicious plateau.
+:::
+
+## What this does not establish
+
+- The catch-up points (500B tokens, 120% of compute) come from two specific comparisons. Another dense checkpoint and another data mix move them.
+- Muon's advantage is measured on one model shape at one scale. Its interaction with the router is contested between shipped models.
+- The MTP cost figures are step-time shares under specific pipeline layouts, not a general price.
+- Nothing here claims an MoE trains more stably than a dense model. It claims the failure modes differ, and that the signals must differ too.
+
+[Lesson 5.16](/lessons/5-pretraining-at-scale/5.16-expert-parallelism/) follows the tokens out of the GPU: what the exchange costs, and which fix is worth its complexity.

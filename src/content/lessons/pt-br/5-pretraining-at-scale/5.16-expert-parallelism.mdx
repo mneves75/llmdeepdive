@@ -1,0 +1,141 @@
+---
+id: "5.16-expert-parallelism"
+order: 16
+track: "5-pretraining-at-scale"
+title: "O imposto do all-to-all"
+summary: "Toda camada MoE manda cada token às GPUs que guardam seus experts, então a troca fica no caminho crítico. Um token custa 80 KiB por camada e 5 MiB em 64 camadas; as correções trocam tráfego, precisão ou tokens descartados, e cada uma precisa ser medida."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.15-upcycling-and-moe-stability", "5.8-model-parallelism"]
+unlocks: ["7.14-serving-an-moe"]
+analogy: "Uma sala de triagem separa encomendas para vinte depósitos. Mandar cada encomenda direto ao seu depósito funciona enquanto todos ficam no mesmo prédio; quando alguns estão do outro lado da cidade, cada rota cruza a cidade e a linha de triagem espera pela van mais lenta. Você pode mandar menos vans (limitar os depósitos que uma encomenda alcança), mandar encomendas menores (baixar a precisão) ou começar o próximo lote enquanto as vans estão na rua (sobrepor)."
+teachBack:
+  prompt: "Calcule os bytes de despacho que um token envia por 64 camadas MoE com top-8, largura oculta 5.120, bf16. Depois explique por que o roteamento limitado por grupo pode não economizar nada mesmo limitando os nós que um token alcança, e qual condição faz com que economize."
+  modelAnswer: "Cada cópia carrega 5.120 valores de 2 bytes, então uma cópia tem 10.240 bytes; o top-8 manda oito cópias, 81.920 bytes = 80 KiB por camada. Em 64 camadas isso dá 5.242.880 bytes = 5 MiB por token, só o despacho. O roteamento limitado por grupo limita em quais nós os experts de um token podem estar. Com o despachante all-to-all, o token ainda manda uma cópia por expert selecionado, então se o router escolhe experts fora do nó do próprio token, o mesmo número de cópias cruza a rede e limitar nós não economiza nada em média. Ele economiza quando o despachante manda uma cópia por nó de destino e a encaminha dentro daquele nó, como faz o despachante flex com DeepEP, e quando o expert-parallel atravessa vários nós."
+quiz:
+  - question: "De onde vêm os 80 KiB por token por camada MoE?"
+    options: ["Oito cópias de um estado oculto de 5.120 valores em bf16", "Os logits do router para 64 experts", "Uma cópia do embedding do token, 5.120 bytes", "Os pesos dos experts que cada GPU lê"]
+    correctIndex: 0
+    explanation: "O despachante manda uma cópia do estado oculto do token por expert selecionado. 5.120 valores a 2 bytes são 10.240 bytes por cópia, e o top-8 manda oito, dando 81.920 bytes. Os logits do router são 64 números, e os pesos ficam na GPU que guarda o expert."
+  - question: "Uma execução EP16 em dois nós reporta 'Using network Socket' no log do NCCL. O que isso significa?"
+    options: ["O NCCL escolheu o transporte mais rápido disponível", "O NCCL caiu para TCP e a troca será muito mais lenta", "O job está usando a contagem de GPUs errada", "O all-to-all terminou com sucesso"]
+    correctIndex: 1
+    explanation: "O log nomeia o transporte que o NCCL selecionou. Socket significa que ele não usou a rede do cluster, e a execução proxy do handbook ficou cerca de 25 vezes mais lenta. A linha Wanted nomeia o transporte pretendido, como Libfabric na EFA ou IB na InfiniBand."
+  - question: "O que um fator de capacidade muda de fato?"
+    options: ["Quantos experts cada token pode selecionar", "O tamanho do expert-parallel", "Quantos tokens um expert aceita antes de os demais pularem", "A precisão dos pesos dos experts"]
+    correctIndex: 2
+    explanation: "Um fator de capacidade limita os tokens de cada expert, mantendo os de maior probabilidade e descartando o resto, o que limita a memória e o trabalho do rank mais ocupado ao custo de uma loss maior. Ele não muda o top-k, o arranjo EP nem a precisão."
+citations:
+  - title: "DeepSeek-V3 Technical Report"
+    authors: "DeepSeek-AI"
+    year: 2024
+    url: "https://arxiv.org/abs/2412.19437"
+  - title: "Shortcut-connected Expert Parallelism for Accelerating Mixture-of-Experts"
+    authors: "Weilin Cai et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2404.05019"
+  - title: "LongCat-Flash Technical Report"
+    authors: "InclusionAI"
+    year: 2025
+    url: "https://arxiv.org/abs/2509.01322"
+  - title: "Pangu Ultra MoE: How to Train Your Big MoE on Ascend NPUs"
+    authors: "Huawei Pangu Team"
+    year: 2025
+    url: "https://arxiv.org/abs/2505.04519"
+  - title: "MegaBlocks: Efficient Sparse Training with Mixture-of-Experts"
+    authors: "Trevor Gale et al."
+    year: 2022
+    url: "https://arxiv.org/abs/2211.15841"
+  - title: "Megatron Core MoE: A Report on Mixture-of-Experts Training"
+    authors: "NVIDIA Megatron Core Team"
+    year: 2026
+    url: "https://arxiv.org/abs/2603.07685"
+  - title: "Nemotron 3 Super: Open, Efficient Mixture-of-Experts Hybrid Mamba-Transformer Model"
+    authors: "NVIDIA"
+    year: 2026
+    url: "https://arxiv.org/abs/2604.12374"
+  - title: "The Ultimate MoE Training Handbook"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
+updated: "2026-11-06"
+---
+
+## Os bytes, contados
+
+A [aula 4.18](/pt-br/lessons/4-transformer/4.18-mixture-of-experts/) dividiu o bloco feed-forward em experts e anotou a conta: toda camada MoE manda cada token às GPUs que guardam seus experts e traz os resultados de volta. Esta aula precifica essa troca.
+
+Comece com um token, uma camada, top-8, largura oculta 5.120, bf16. Cada cópia do token são 5.120 valores de 2 bytes, 10.240 bytes, e o token manda uma cópia por expert selecionado:
+
+$$
+8 \times 5{,}120 \times 2 = 81{,}920 \text{ bytes} = 80 \text{ KiB}.
+$$
+
+Em 64 camadas isso dá 5 MiB por token, e um micro-lote de 2.048 tokens manda 10 GiB por forward — em uma direção, antes de o combine devolver qualquer coisa.
+
+<Figure id="moe-all-to-all-bytes" />
+
+Dois fatos fazem esse número importar. Dentro de um nó as cópias viajam em NVLink, a centenas de gigabytes por segundo. Entre nós elas cruzam a rede do cluster, onde a banda de all-to-all medida pelo handbook foi 77,14 GB/s em dois nós, 39,25 em quatro e 30,91 em oito. Os mesmos bytes custam tempos bem diferentes dependendo de onde os experts estão.
+
+O handbook traçou um passo de um MoE 7B-A1B em um único nó: metade dele era all-to-all exposto, com o router ainda desequilibrado. Uma execução separada da mesma config com roteamento forçado a uniforme fez aquela iteração 40% mais rápida. Então, antes de tratar a rede como o problema, confira a carga — a [aula 5.14](/pt-br/lessons/5-pretraining-at-scale/5.14-keeping-experts-busy/) é a correção mais barata.
+
+## Tamanho do expert-parallel
+
+O **expert-parallel** (EP) espalha os experts de uma camada entre ranks. O Megatron forma cada grupo EP com ranks consecutivos por padrão, então um EP que divide a contagem de GPUs de um nó mantém toda troca dentro do nó. Nossos nós têm oito GPUs, então EP8 fica em NVLink e EP16 atravessa dois nós.
+
+A diferença não é pequena. Na comparação do handbook, EP16 em dois nós rodou 59% abaixo de EP8 em um nó — embora essas execuções também usassem nós diferentes e outro número de micro-lotes por passo, e é por isso que o livro apresenta isso como indicação, não como resultado controlado.
+
+A sequência prática é: couber os experts dentro de um nó, somar réplicas de paralelismo de dados conforme você soma nós, e medir os dois arranjos no número de nós alvo antes de se comprometer. Um EP maior reduz os pesos que cada GPU guarda mas alarga o grupo que cada token pode precisar alcançar.
+
+:::warning
+Confira o transporte antes de culpar a rede. O NCCL pode cair para sockets TCP enquanto o job pede a rede: o handbook relata duas execuções que definiram as variáveis da EFA e ainda registraram "Using network Socket", rodando cerca de 25 vezes mais lentas que sua execução EP16 (1,7 contra 42,0 TFLOP/s). Com `NCCL_DEBUG=INFO`, leia a linha "Using network": você quer Libfabric ou IB, não Socket.
+:::
+
+## Sobrepondo a troca
+
+A troca fica no caminho crítico porque se senta entre duas computações: o router lê a saída da atenção, então o despacho não começa antes, e a próxima camada lê a saída do MoE, então nada começa até o combine terminar. Três formas quebram essa dependência.
+
+- **Um bloco paralelo** alimenta atenção e MoE com a mesma entrada, então o despacho roda enquanto a atenção computa. O combine é mais difícil de esconder, porque só pode sobrepor o trabalho que resta na mesma camada.
+- **Um MoE com atalho** também esconde o combine, atrás do compute denso que roda ao lado. Um modelo estilo LLaMA2 ligado assim treinou 1,12 a 1,14 vez mais rápido que um MoE top-2 padrão em um nó de oito GPUs, e o LongCat-Flash relata sua comunicação exposta caindo de 25,3% para 8,4%.
+- **Intercalar micro-lotes** não exige mudança de arquitetura: o forward de um micro-lote roda ao lado do backward de outro, então o all-to-all de um se esconde atrás do compute do outro. O handbook mediu até 35% mais vazão em dois nós, ao custo de 5 a 10 GB a mais de memória reservada por rank.
+
+:::caveat
+A sobreposição e a recomputação de ativações competem pela mesma memória e, no Megatron, a recomputação total precisa estar desligada para a sobreposição rodar. Se a execução só cabe com recomputação total, a sobreposição não está disponível sem um plano de memória mais fino — recomputação seletiva mais offload das entradas grandes —, e essa é outra troca, não "ligar a flag".
+:::
+
+## Limitando para onde os tokens vão
+
+Os top-k experts de um token podem estar em qualquer lugar. O **roteamento limitado por grupo** restringe onde ele pode olhar primeiro: o DeepSeek-V3 pontua cada nó somando os dois maiores scores do token ali, mantém 4 de 8 nós e então escolhe o top-k entre os experts deles, de modo que nenhum token alcança mais de quatro nós.
+
+O que isso economiza depende inteiramente do despachante. O despachante `alltoall` do Megatron manda uma cópia por expert selecionado, então limitar nós apenas move as cópias para menos nós: se o token ainda alcança experts fora do próprio nó, o mesmo número de cópias cruza a rede. Com o despachante DeepEP, o token manda uma cópia por nó de destino e aquele nó a encaminha internamente, então limitar nós limita bytes. Modelos recentes em geral abandonaram o limite — o DeepSeek-V4 removeu o do V3 —, enquanto Ling e Ring o mantêm.
+
+:::insight
+O limite muda quais experts um token pode escolher, então muda o que o modelo aprende, a um custo pequeno de qualidade. Essa é uma mudança de outra natureza que um kernel mais rápido: tente toda recomendação que deixa o treino igual antes de gastar qualidade na rede.
+:::
+
+## Descartar ou replicar
+
+O rank que guarda um expert quente termina por último. Há duas respostas.
+
+**Descartar.** Um **fator de capacidade** limita quantos tokens cada expert aceita, mantendo os de maior probabilidade; o resto pula aquele expert. Ele limita a memória e o trabalho do rank mais ocupado, e custa loss: a Pangu treinou um MoE de 20B com fator de capacidade 1,5 e sem descarte, e a execução sem descarte manteve loss menor o tempo todo, com uma diferença que crescia com o número de experts. Com fator 1,5 aquela equipe viu cerca de 6% dos tokens descartados em um modelo de 20B e cerca de 8% em um de 718B.
+
+**Replicar.** Copie o expert quente para um rank mais ocioso. Cada cópia custa pesos no forward e uma redução de gradiente de volta no backward, então um planejador faz o mínimo possível. O UltraEP, replanejando por micro-lote e camada, levou o rank mais ocupado de três execuções de treino de 1,30–2,86 vezes a média para 1,01–1,03. O serving faz o mesmo com cópias mais duradouras.
+
+Mantenha o modo sem descarte como padrão. Um fator de capacidade serve para uma execução sem memória cujo desequilíbrio não se conserta mais barato, e o fine-tuning volta ao sem descarte porque tokens descartados caem dentro de pares instrução-resposta.
+
+## Precisão
+
+A maior parte do compute de uma camada MoE é multiplicação de matrizes, e boa parte da memória de ativação são as entradas que essas multiplicações guardam para o backward. O **FP8** corta os bytes dos dois pela metade e roda mais rápido nos tensor cores de Hopper e Blackwell; a equipe do Megatron Core relata cerca de 10 a 25% de ponta a ponta para treino de MoE grande.
+
+A divisão importa. As multiplicações de forward e as duas de backward das camadas lineares rodam em FP8; o embedding, a cabeça de saída, as normas, o núcleo da atenção e o router ficam em bf16 ou fp32. O router não é negociável: ruído de quantização ali muda quais experts um token alcança. O DeepSeek treinou MoEs de 16B e 230B em FP8 por cerca de um trilhão de tokens cada e ficou dentro de 0,25% de erro relativo contra bf16; o Ling-1T manteve o mesmo limite em 900B tokens com cerca de 15% mais MFU.
+
+Quatro bits é o próximo degrau, e os primeiros MoEs grandes já foram pré-treinados ali. O Nemotron 3 Super rodou 25T tokens em NVFP4 na maior parte das camadas lineares, mantendo os últimos 15% da rede, as projeções de atenção, os embeddings e as camadas MTP em bf16. O handbook anota o sinal de custo: sob NVFP4, elementos exatamente zero no gradiente de pesos dos experts cresceram até 7% dos parâmetros no final, e voltar uma ablação para bf16 restaurou a contagem.
+
+## O que isto não estabelece
+
+- Os números de banda, aceleração e porcentagem são medições em hardware e formas nomeados. Outro número de nós tem outra linha de base, e é por isso que a própria política do handbook é comparar cada alocação com uma linha de base no *mesmo* número de nós.
+- As correções não se somam. Cada uma vem do seu próprio arranjo; teste uma por vez.
+- O limite de loss do FP8 é uma medição em três execuções, não uma garantia para outro modelo ou receita.
+- Nada aqui diz qual combinação é certa para um cluster. Diz como cada escolha gasta tráfego, precisão ou tokens, e o que custa em troca.
+
+A [aula 7.14](/pt-br/lessons/7-inference-and-efficiency/7.14-serving-an-moe/) leva a mesma troca para o serving, onde a restrição de memória e o padrão de requisições tornam outras escolhas corretas.

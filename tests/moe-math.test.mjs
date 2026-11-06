@@ -21,6 +21,7 @@ import {
   dispatchBytes,
   maxVio,
   mixtureWeights,
+  moeBalance,
   moeParameterBudget,
   signUpdate,
 } from '../src/lib/moe-math.ts'
@@ -150,6 +151,16 @@ test('the counterfactual total matches the values model-facts publishes', () => 
   close(total * 2e-9, 293.6206, 1e-3)
 })
 
+test('the serving reads separate storage from what a decoded token touches', () => {
+  const budget = moeParameterBudget({ hidden: 5120, denseFfn: 17408, layers: 64, experts: 64, topK: 8 })
+  const nonExpert = 27e9 - budget.denseFfnPerLayer * 64
+  const rest = nonExpert + budget.routerParamsPerLayer * 64
+  const active = budget.activeFfnPerLayer * 64
+  close(active * 0.5e-9 + rest * 2e-9, 28.3728, 1e-4)
+  close((active + rest) * 0.5e-9, 13.5105, 1e-4)
+  close((budget.storedFfnTotal + rest) * 0.5e-9, 73.4051, 1e-4)
+})
+
 test('the expert width must divide the dense FFN exactly', () => {
   assert.throws(
     () => moeParameterBudget({ hidden: 8, denseFfn: 10, layers: 1, experts: 3, topK: 1 }),
@@ -170,4 +181,53 @@ test('all-to-all bytes follow k x hidden x bytes, per layer and per batch', () =
     dispatchBytes({ tokens: 2048, layers: 64, topK: 8, hidden: 5120, bytesPerElement: 2 }),
     10_737_418_240,
   )
+})
+
+const BALANCE_DEFAULTS = { experts: 8, tokens: 64, skew: 0.5, rate: 0.02, steps: 40 }
+
+test('the balancing loop is deterministic and conserves tokens', () => {
+  const first = moeBalance(BALANCE_DEFAULTS)
+  const second = moeBalance(BALANCE_DEFAULTS)
+  assert.deepEqual(first, second)
+  assert.equal(first.after.reduce((sum, value) => sum + value, 0), 64)
+  for (const point of first.trace) {
+    assert.equal(point.counts.reduce((sum, value) => sum + value, 0), 64)
+  }
+})
+
+test('random preferences are uneven on their own, and a tilt makes it worse', () => {
+  // No tilt, so no expert is favoured: the hash term alone still leaves the
+  // batch at MaxVio 0.375. That is the honest starting point — a router is not
+  // balanced just because nothing pushes it.
+  const flat = moeBalance({ ...BALANCE_DEFAULTS, skew: 0 })
+  close(flat.maxVioBefore, 0.375, 1e-9)
+  const tilted = moeBalance(BALANCE_DEFAULTS)
+  assert.ok(tilted.maxVioBefore > flat.maxVioBefore)
+  for (const skew of [0, 0.2, 0.5]) {
+    const run = moeBalance({ ...BALANCE_DEFAULTS, skew })
+    assert.ok(run.maxVioAfter < run.maxVioBefore, `skew ${skew} did not improve`)
+  }
+})
+
+test('the fixed step pulls MaxVio down by an order of magnitude, then overshoots', () => {
+  const run = moeBalance(BALANCE_DEFAULTS)
+  close(run.maxVioBefore, 4.125, 1e-9)
+  // 4.125 -> 0.125 at step 39, then 0.5 at step 40: the step walked past the
+  // target and came back, which is the honest behaviour the lesson teaches.
+  assert.ok(run.best.maxVio < 0.2, `best ${run.best.maxVio}`)
+  assert.ok(run.maxVioAfter > run.best.maxVio, 'the final step should show the overshoot')
+})
+
+test('a larger step converges faster and settles worse', () => {
+  const slow = moeBalance({ ...BALANCE_DEFAULTS, rate: 0.02 })
+  const fast = moeBalance({ ...BALANCE_DEFAULTS, rate: 0.05 })
+  const atTen = (run) => run.trace.find((point) => point.step === 10)?.maxVio ?? Number.NaN
+  assert.ok(atTen(fast) < atTen(slow), 'a bigger step should be ahead at step 10')
+  assert.ok(fast.best.maxVio > slow.best.maxVio, 'and should settle above the smaller step')
+})
+
+test('the lab rejects a shape it cannot simulate', () => {
+  assert.throws(() => moeBalance({ ...BALANCE_DEFAULTS, experts: 1 }), /2 to 64 experts/)
+  assert.throws(() => moeBalance({ ...BALANCE_DEFAULTS, tokens: 4 }), /8 to 4,096 tokens/)
+  assert.throws(() => moeBalance({ ...BALANCE_DEFAULTS, skew: 3 }), /skew/)
 })

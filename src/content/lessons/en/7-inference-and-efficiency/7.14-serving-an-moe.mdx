@@ -1,0 +1,135 @@
+---
+id: "7.14-serving-an-moe"
+order: 14
+track: "7-inference-and-efficiency"
+title: "Serving an MoE: cheap compute, dear memory"
+summary: "An MoE stores every expert and runs a few, so serving it is a memory problem before a compute problem. Serving a smaller k, quantizing the experts, and splitting prefill from decode each buy something different, and the equal-budget comparison is the one that decides."
+tier: "advanced"
+locale: "en"
+prerequisites: ["5.16-expert-parallelism", "7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+unlocks: []
+analogy: "A library keeps every volume on the shelves but lends a reader only a few at a time. The building's size is set by the whole collection; the reader's time is set by the few books they carry. Shrinking the font helps the building more than the reader, and buying more branches helps borrowing far more than browsing."
+teachBack:
+  prompt: "An MoE stores 146.8 billion parameters, 27 billion active. Explain why quantizing the routed experts to 4 bits shrinks memory about 3.3 times but the weights a decoded token reads only about 1.9 times, and why expert parallelism helps decode more than prefill."
+  modelAnswer: "The routed experts hold 136.9 billion of the 146.8 billion parameters, so putting them in 4 bits cuts almost the whole model roughly in half, from 293.6 GB to 88.3 GB. A decoded token, though, reads only its active weights: 17.1 billion active expert parameters, which halve from 34.2 GB to 17.1 GB, plus the 9.9 billion non-expert parameters at bf16, about 19.8 GB, which do not shrink. Its reads fall from 54 GB to 28.4 GB. The rest of the model is every token's cost, so it dominates the reads once the experts are small. In decode each expert sees only the next token or few of each request, so spreading the experts over more GPUs means each GPU reads fewer weights per step and the all-to-all gathers a larger batch for each expert; that is why decode runs at EP64 or more. Prefill processes thousands of tokens per step, so each expert already has a large batch and a wide EP adds communication without reducing reads much."
+quiz:
+  - question: "Why does 4-bit quantization of the routed experts shrink memory more than it shrinks the bytes a decoded token reads?"
+    options: ["Because the experts hold most of the parameters but only the active ones are read", "Because 4 bits cuts every weight by the same factor", "Because the KV cache is quantized at the same time", "Because quantization makes attention cheaper per token"]
+    correctIndex: 0
+    explanation: "Storage counts every expert; a token reads only the experts it selects, plus all of attention and the embeddings, which stay in bf16. So memory falls by most of the expert bytes while reads fall by the active expert bytes plus the unchanged rest. Attention is not what the expert quantization touches."
+  - question: "You serve top-4 instead of the trained top-8 on a flat softmax router. Why is the denominator a choice?"
+    options: ["Because top-4 changes which experts the router would have ranked first", "Because renormalising over the four survivors gives each more weight than it had at top-8", "Because the KV cache is sized by top-k", "Because the experts' weights change when you serve a smaller k"]
+    correctIndex: 1
+    explanation: "Renormalising over the survivors divides by their own sum, so each keeps a larger share than it had at top-8, changing the routed branch's gain. Dividing by the top-8 or top-16 mass anchors the gain to the trained value, and the measured quality difference between those denominators is large — which is why the choice is not a detail."
+  - question: "Why does decoding run at a wider expert parallelism than prefill?"
+    options: ["Prefill cannot use expert parallelism at all", "Decode needs more memory per token than prefill", "Each expert sees few tokens per decode step, so more GPUs mean fewer weights read per step and a larger batch per expert", "Decode has a larger batch of tokens than prefill"]
+    correctIndex: 2
+    explanation: "A decode step carries the next token or few of each request, so an expert's batch is small and spreading experts over more GPUs reduces the weights each GPU reads while gathering a workable batch per expert. A prefill step already has thousands of tokens, so a wider group adds communication without that gain."
+citations:
+  - title: "Training-Free Halving of Activated Experts in Fine-Grained Mixture-of-Experts Models"
+    authors: "Xing Chen and Hengshuai Yao"
+    year: 2026
+    url: "https://arxiv.org/abs/2609.04575"
+  - title: "gpt-oss-120b & gpt-oss-20b Model Card"
+    authors: "OpenAI"
+    year: 2025
+    url: "https://arxiv.org/abs/2508.10925"
+  - title: "Kimi K3: Open Frontier Intelligence"
+    authors: "Moonshot AI"
+    year: 2026
+    url: "https://arxiv.org/abs/2607.24653"
+  - title: "DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression"
+    authors: "DeepSeek-AI"
+    year: 2026
+    url: "https://arxiv.org/abs/2609.19969"
+  - title: "MegaScale-Infer: Serving Mixture-of-Experts at Scale with Disaggregated Expert Parallelism"
+    authors: "Ruidong Zhu et al."
+    year: 2025
+    url: "https://arxiv.org/abs/2504.02263"
+  - title: "Step-3 is Large yet Affordable: Model-system Co-design for Cost-effective Decoding"
+    authors: "StepFun"
+    year: 2025
+    url: "https://arxiv.org/abs/2507.19427"
+  - title: "Stabilizing MoE Reinforcement Learning by Aligning Training and Inference Routers"
+    authors: "Wenhan Ma et al."
+    year: 2025
+    url: "https://arxiv.org/abs/2510.11370"
+  - title: "The Ultimate MoE Training Handbook"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
+updated: "2026-11-06"
+---
+
+## Two numbers, moving in opposite directions
+
+[Lesson 4.18](/lessons/4-transformer/4.18-mixture-of-experts/) ended with a model that stores 146.8 billion parameters and activates about 27 billion per token. Serving it means holding the first number and paying the second. A dense 27B model holds 54 GB in bf16; the MoE holds 293.6 GB, because every expert stays resident in case a token picks it, while a decoded token still reads a dense model's worth of weights.
+
+That asymmetry decides the rest of this lesson. Memory is set by what is *stored*. Latency at batch one is set by what is *read*. Optimisations that shrink the first do not necessarily shrink the second, and the ones that do usually cost something else.
+
+## Serving a smaller k
+
+The trained model picks 8 experts per token. Nothing stops you from serving fewer: each dropped expert is compute saved, while every expert stays in memory for the tokens that still pick it.
+
+The complication is the weights. A renormalising router divides the chosen weights by their sum, so the routed branch's gain is calibrated for the trained k. Serve top-4 and the four survivors share the same total, each with a larger weight than it had. That changes two things at once: which experts run, and how much each contributes.
+
+Chen and Yao separate the two with one integer. Keep the top $k_1$ experts, but divide their weights by the softmax mass of the top $k_2$. Setting $k_2 = k_1$ is the usual renormalisation over the survivors; $k_2 = 8$ anchors the gain to the trained value; $k_2 = 16$ divides by a larger mass. On a Qwen3.6-35B-A3B router whose top 8 experts hold only 0.182 of the softmax mass, serving top-4 renormalised over the survivors lost 4.65 MMLU points against the trained model, dividing by the top-8 mass lost 3.10, and dividing by the top-16 mass lost 0.35 — a difference the authors report as not significant. Dropping renormalisation entirely at top-6 lost 27.45 points. In exchange, top-4 halved the activated routed parameters, from 1.006B to 0.503B, 17% of everything a token uses.
+
+:::warning
+Those numbers belong to one model with one flat router. On Gemma-4-26B-A4B, whose top 8 hold 0.302 of the mass, dropping renormalisation at top-6 raised perplexity by 0.7% against 356% on the flatter Qwen router. How much the denominator matters is a property of your router, and the way to learn it is to measure the top-k mass.
+:::
+
+Serving *more* experts than the model trained with is the other direction, and it does not reliably help: in one fine-tuning study, serving top-16 on a model trained at top-8 moved a nine-benchmark average from 41.35 to 41.09, inside the reported error bars. The extra combinations were never trained together.
+
+## Low-bit experts
+
+After training, the weights stop moving, and two numbers describe what they cost: the bytes in memory, and the bytes each decoded token reads. The routed experts hold most of the parameters, so their precision sets most of the model's size.
+
+<Figure id="moe-serving-memory" />
+
+For the model from lesson 4.18, the four steps show why the two numbers separate. Storing every weight in bf16 is 293.6 GB. Putting the routed experts in 4 bits takes that to 88.3 GB, a factor of 3.3. But a decoded token reads only its active weights: 17.1 billion active expert parameters, whose bill halves from 34.2 GB to 17.1 GB, plus the 9.9 billion non-expert parameters at bf16, about 19.8 GB, which do not shrink at all. Reads fall from 54 GB to 28.4 GB, a factor of 1.9. Quantizing attention as well takes storage to 73.4 GB and reads to 13.5 GB — a further quarter off the reads for only 15 GB of memory, because attention holds few parameters but every token reads it.
+
+Shipped models take both scopes. gpt-oss-20b quantizes its MoE weights to about 4.25 bits per parameter; those weights hold more than 90% of the parameters, so the 120b model fits on one 80 GB GPU. Kimi K3 quantizes only its routed experts through SFT and RL, and ZAYA1-8B's release does the same. Qwen's GPTQ-Int4 build of its 30B MoE also quantizes attention.
+
+:::note
+The course's memory budget for one accelerator is [lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/). This lesson adds the MoE-specific term — the experts you must hold but a token may not read — and does not re-derive the KV cache.
+:::
+
+## Expert parallelism at serving
+
+Training picks one EP size for one kind of step: a large batch of tokens processed together. Serving runs two kinds. A **prefill** step processes prompts and can carry tens of thousands of tokens per GPU. A **decode** step carries the next token or few of each request in flight, so each expert sees a small batch. Spreading experts over more GPUs helps decode: each GPU holds and reads fewer weights per step, while the all-to-all gathers a larger batch for each expert.
+
+DeepSeek sizes the two in opposite directions for DeepSeek-V4.1-Flash. Prefill runs at EP2 to EP8, the smallest size whose GPUs hold enough memory; decode runs at EP64 to EP128, the widest the available GPUs allow. With 64 requests per GPU, EP64 held 7 routed experts per GPU and decoded about 15,700 tokens per second per GPU at about 246 per user, against EP8's 52 experts and about 12,600 at 198 — about 25% higher on both. At 256 requests per GPU the two nearly met.
+
+The price is structural. Prefill and decode get roughly equal GPUs, so a deployment at decode EP64 has a floor of 128 GPUs. Every GPU in one EP instance is also a single communication domain: one failed GPU takes the whole instance down, and on restart the group is re-sized to the healthy GPUs.
+
+:::caveat
+Under expert parallelism, a step runs as a CUDA graph only when every EP rank is decoding. If any rank has a prefill in its batch, all ranks fall back to eager mode. A mixed workload therefore loses the graph on the steps where a prefill lands, which is a scheduling question, not a kernel one.
+:::
+
+## Attention and FFN in separate pools
+
+In a colocated layout each GPU runs both halves of each layer. Decoding makes different demands on them: attention holds few parameters but keeps the key-value cache of every request in flight, while the experts hold most of the parameters and keep no per-request state. **Attention–FFN disaggregation** puts them on separate GPUs and passes micro-batches between the pools, so each pool computes while the other works.
+
+MegaScale-Infer reports up to 1.90 times the per-GPU throughput of earlier serving systems. For a specific deployment, FastAFD runs Qwen3-235B-A22B on 28 attention GPUs plus 4 expert GPUs and reports 1.41 times the per-GPU throughput of colocated EP4. That comparison is the one to examine: when a later study re-provisioned both layouts for the same 72-GPU budget, the ratio fell to 0.99. Across all its modelled settings, homogeneous disaggregation raised fixed-budget throughput in only a minority.
+
+Training also constrains this. Step-3 derives the sparsest MoE an expert pool can serve while staying compute-bound and overlapping communication, and the bound rises with width and depth: about 0.058 for DeepSeek-V3's width and depth on H800, with Step-3 itself at about 0.08. A sparser model has to fall back on large expert parallelism or on routing restrictions.
+
+## The routing mismatch in RL
+
+Reinforcement learning separates sample generation from gradient computation. A rollout engine generates with its own kernels and, in off-policy or asynchronous RL, with weights an update or more behind the trainer's. These differences shift probabilities; in an MoE they can also change which experts a token runs through, so the trainer differentiates a path the sample never took.
+
+Both causes have been measured. Generating with one engine and training with another, about 10% of routers on Qwen3-30B-A3B chose different experts, and 94% of tokens differed in at least one layer. After one gradient update, about 10% of the activated experts for the same rollout had changed. The two 10%s count different things — engines that disagree, and experts that move with the weights.
+
+Recording the rollout's expert choices and replaying them in the trainer removes the first cause: the train-inference KL fell from 1.5e-3 to 7.5e-4, close to a dense model's 6.4e-4. Whether it improves reward is contested: the authors report stability gains, a later Qwen study saw none in on-policy training, and another found replay below plain GRPO on one model but not on another. The GSPO authors, who had used replay, dropped it for sequence-level importance ratios.
+
+:::note
+A separate lever targets the kernels' own share of the mismatch: **batch-invariant kernels** make a token's log-probability independent of how requests were batched. Megatron documents this as a fix for "a real source of error and instability in RL" and warns that it significantly affects speed; DeepSeek's DeepInfer ships the same option.
+:::
+
+## What this does not establish
+
+- The 146.8B model is the course's counterfactual. Its memory arithmetic is exact; no serving benchmark of it exists.
+- The MMLU and throughput figures belong to the models and budgets named. The equal-budget re-provisioning that turned 1.41 into 0.99 is the caution, not an exception.
+- Replay's reward effect is not settled, and the sources disagree in public.
+- None of this says an MoE is cheaper to serve than a dense model of the same quality. It says where the costs sit, and which lever moves which one.

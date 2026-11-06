@@ -1,0 +1,135 @@
+---
+id: "7.14-serving-an-moe"
+order: 14
+track: "7-inference-and-efficiency"
+title: "Servindo um MoE: compute barato, memória cara"
+summary: "Um MoE guarda todos os experts e executa poucos, então servi-lo é um problema de memória antes de compute. Servir um k menor, quantizar os experts e separar prefill de decode compram coisas diferentes, e a comparação com orçamento igual é a que decide."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["5.16-expert-parallelism", "7.11-serving-stacks-vllm-sglang-tensorrt-llm"]
+unlocks: []
+analogy: "Uma biblioteca mantém todos os volumes nas estantes mas empresta poucos por vez a cada leitor. O tamanho do prédio é definido pela coleção inteira; o tempo do leitor é definido pelos poucos livros que ele carrega. Diminuir a fonte ajuda o prédio mais do que o leitor, e comprar mais filiais ajuda o empréstimo muito mais do que a consulta."
+teachBack:
+  prompt: "Um MoE guarda 146,8 bilhões de parâmetros, 27 bilhões ativos. Explique por que quantizar os experts roteados para 4 bits encolhe a memória cerca de 3,3 vezes mas os pesos que um token decodificado lê caem só cerca de 1,9 vez, e por que o expert-parallel ajuda mais o decode que o prefill."
+  modelAnswer: "Os experts roteados guardam 136,9 bilhões dos 146,8 bilhões de parâmetros, então pô-los em 4 bits corta quase o modelo inteiro pela metade, de 293,6 GB para 88,3 GB. Um token decodificado, porém, lê só seus pesos ativos: 17,1 bilhões de parâmetros ativos de experts, que caem de 34,2 GB para 17,1 GB, mais os 9,9 bilhões de parâmetros não-expert em bf16, cerca de 19,8 GB, que não encolhem. As leituras dele caem de 54 GB para 28,4 GB. O resto do modelo é custo de todo token, então domina as leituras quando os experts ficam pequenos. No decode cada expert vê só o próximo token ou poucos de cada requisição, então espalhar os experts por mais GPUs faz cada GPU ler menos pesos por passo e o all-to-all juntar um lote maior para cada expert; é por isso que o decode roda em EP64 ou mais. O prefill processa milhares de tokens por passo, então cada expert já tem um lote grande e um EP largo só soma comunicação."
+quiz:
+  - question: "Por que a quantização em 4 bits dos experts roteados encolhe a memória mais do que encolhe os bytes que um token decodificado lê?"
+    options: ["Porque os experts guardam a maior parte dos parâmetros mas só os ativos são lidos", "Porque 4 bits corta todo peso pelo mesmo fator", "Porque o cache KV é quantizado ao mesmo tempo", "Porque a quantização barateia a atenção por token"]
+    correctIndex: 0
+    explanation: "O armazenamento conta todo expert; um token lê só os experts que seleciona, mais toda a atenção e os embeddings, que ficam em bf16. Então a memória cai pela maior parte dos bytes dos experts enquanto as leituras caem pelos bytes ativos dos experts mais o resto inalterado. A atenção não é o que a quantização dos experts toca."
+  - question: "Você serve top-4 em vez do top-8 treinado em um router softmax plano. Por que o denominador é uma escolha?"
+    options: ["Porque o top-4 muda quais experts o router teria posto em primeiro", "Porque renormalizar sobre os quatro sobreviventes dá a cada um mais peso do que ele tinha no top-8", "Porque o cache KV é dimensionado pelo top-k", "Porque os pesos dos experts mudam quando você serve um k menor"]
+    correctIndex: 1
+    explanation: "Renormalizar sobre os sobreviventes divide pela soma deles, então cada um mantém uma fatia maior do que tinha no top-8, o que muda o ganho do ramo roteado. Dividir pela massa do top-8 ou do top-16 ancora o ganho no valor treinado, e a diferença de qualidade medida entre esses denominadores é grande — por isso a escolha não é detalhe."
+  - question: "Por que o decode roda com expert-parallel mais largo que o prefill?"
+    options: ["O prefill não pode usar expert-parallel de forma alguma", "O decode precisa de mais memória por token que o prefill", "Cada expert vê poucos tokens por passo de decode, então mais GPUs significam menos pesos lidos por passo e um lote maior por expert", "O decode tem um lote de tokens maior que o prefill"]
+    correctIndex: 2
+    explanation: "Um passo de decode carrega o próximo token ou poucos de cada requisição, então o lote de um expert é pequeno e espalhar experts por mais GPUs reduz os pesos que cada GPU lê enquanto junta um lote viável por expert. Um passo de prefill já tem milhares de tokens, então um grupo mais largo soma comunicação sem esse ganho."
+citations:
+  - title: "Training-Free Halving of Activated Experts in Fine-Grained Mixture-of-Experts Models"
+    authors: "Xing Chen and Hengshuai Yao"
+    year: 2026
+    url: "https://arxiv.org/abs/2609.04575"
+  - title: "gpt-oss-120b & gpt-oss-20b Model Card"
+    authors: "OpenAI"
+    year: 2025
+    url: "https://arxiv.org/abs/2508.10925"
+  - title: "Kimi K3: Open Frontier Intelligence"
+    authors: "Moonshot AI"
+    year: 2026
+    url: "https://arxiv.org/abs/2607.24653"
+  - title: "DeepSeek-V4.1-Flash: Pushing the Limits of KV Cache Compression"
+    authors: "DeepSeek-AI"
+    year: 2026
+    url: "https://arxiv.org/abs/2609.19969"
+  - title: "MegaScale-Infer: Serving Mixture-of-Experts at Scale with Disaggregated Expert Parallelism"
+    authors: "Ruidong Zhu et al."
+    year: 2025
+    url: "https://arxiv.org/abs/2504.02263"
+  - title: "Step-3 is Large yet Affordable: Model-system Co-design for Cost-effective Decoding"
+    authors: "StepFun"
+    year: 2025
+    url: "https://arxiv.org/abs/2507.19427"
+  - title: "Stabilizing MoE Reinforcement Learning by Aligning Training and Inference Routers"
+    authors: "Wenhan Ma et al."
+    year: 2025
+    url: "https://arxiv.org/abs/2510.11370"
+  - title: "The Ultimate MoE Training Handbook"
+    authors: "Hugging Face"
+    year: 2026
+    url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
+updated: "2026-11-06"
+---
+
+## Dois números, em direções opostas
+
+A [aula 4.18](/pt-br/lessons/4-transformer/4.18-mixture-of-experts/) terminou com um modelo que guarda 146,8 bilhões de parâmetros e ativa cerca de 27 bilhões por token. Servi-lo significa sustentar o primeiro número e pagar o segundo. Um modelo denso de 27B guarda 54 GB em bf16; o MoE guarda 293,6 GB, porque todo expert fica residente caso um token o escolha, enquanto um token decodificado ainda lê o equivalente a um modelo denso em pesos.
+
+Essa assimetria decide o resto da aula. A memória é definida pelo que é *guardado*. A latência em lote 1 é definida pelo que é *lido*. Otimizações que encolhem o primeiro não encolhem necessariamente o segundo, e as que encolhem costumam custar outra coisa.
+
+## Servindo um k menor
+
+O modelo treinado escolhe 8 experts por token. Nada impede servir menos: cada expert descartado é compute economizado, enquanto todo expert fica na memória para os tokens que ainda o escolhem.
+
+A complicação são os pesos. Um router que renormaliza divide os pesos escolhidos pela soma deles, então o ganho do ramo roteado está calibrado para o k do treino. Sirva top-4 e os quatro sobreviventes dividem o mesmo total, cada um com peso maior do que tinha. Isso muda duas coisas de uma vez: quais experts rodam e quanto cada um contribui.
+
+Chen e Yao separam as duas com um inteiro. Mantenha os $k_1$ melhores experts, mas divida seus pesos pela massa softmax do top $k_2$. Com $k_2 = k_1$ é a renormalização usual sobre os sobreviventes; $k_2 = 8$ ancora o ganho no valor treinado; $k_2 = 16$ divide por uma massa maior. Em um router do Qwen3.6-35B-A3B cujos 8 melhores experts guardam só 0,182 da massa softmax, servir top-4 renormalizado sobre os sobreviventes perdeu 4,65 pontos de MMLU contra o modelo treinado, dividir pela massa do top-8 perdeu 3,10, e dividir pela massa do top-16 perdeu 0,35 — uma diferença que os autores reportam como não significativa. Abandonar a renormalização no top-6 perdeu 27,45 pontos. Em troca, o top-4 cortou pela metade os parâmetros roteados ativados, de 1,006B para 0,503B, 17% de tudo o que um token usa.
+
+:::warning
+Esses números pertencem a um modelo com um router plano. No Gemma-4-26B-A4B, cujos 8 melhores guardam 0,302 da massa, abandonar a renormalização no top-6 elevou a perplexidade em 0,7% contra 356% no router mais plano do Qwen. Quanto o denominador importa é uma propriedade do seu router, e a forma de descobrir é medir a massa do top-k.
+:::
+
+Servir *mais* experts do que o modelo treinou é a outra direção, e não ajuda de forma confiável: em um estudo de fine-tuning, servir top-16 em um modelo treinado em top-8 moveu uma média de nove benchmarks de 41,35 para 41,09, dentro das barras de erro reportadas. As combinações extras nunca foram treinadas juntas.
+
+## Experts em poucos bits
+
+Depois do treino, os pesos param de se mover, e dois números descrevem seu custo: os bytes em memória e os bytes que cada token decodificado lê. Os experts roteados guardam a maior parte dos parâmetros, então a precisão deles define a maior parte do tamanho do modelo.
+
+<Figure id="moe-serving-memory" />
+
+Para o modelo da aula 4.18, os quatro passos mostram por que os dois números se separam. Guardar todo peso em bf16 é 293,6 GB. Pôr os experts roteados em 4 bits leva a 88,3 GB, um fator de 3,3. Mas um token decodificado lê só seus pesos ativos: 17,1 bilhões de parâmetros ativos de experts, cuja conta cai de 34,2 GB para 17,1 GB, mais os 9,9 bilhões de parâmetros não-expert em bf16, cerca de 19,8 GB, que não encolhem de forma alguma. As leituras caem de 54 GB para 28,4 GB, um fator de 1,9. Quantizar a atenção também leva o armazenamento a 73,4 GB e as leituras a 13,5 GB — mais um quarto fora das leituras por apenas 15 GB de memória, porque a atenção guarda poucos parâmetros mas todo token a lê.
+
+Modelos publicados cobrem os dois escopos. O gpt-oss-20b quantiza seus pesos MoE para cerca de 4,25 bits por parâmetro; esses pesos guardam mais de 90% dos parâmetros, então o modelo 120b cabe em uma GPU de 80 GB. O Kimi K3 quantiza só os experts roteados ao longo de SFT e RL, e a versão do ZAYA1-8B faz o mesmo. A build GPTQ-Int4 do MoE de 30B do Qwen também quantiza a atenção.
+
+:::note
+O orçamento de memória de um acelerador neste curso é a [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/). Esta aula soma o termo específico de MoE — os experts que você precisa guardar mas um token pode não ler — e não deriva o cache KV de novo.
+:::
+
+## Expert-parallel no serving
+
+O treino escolhe um EP para um tipo de passo: um lote grande de tokens processados juntos. O serving roda dois tipos. Um passo de **prefill** processa prompts e pode carregar dezenas de milhares de tokens por GPU. Um passo de **decode** carrega o próximo token ou poucos de cada requisição em voo, então cada expert vê um lote pequeno. Espalhar experts por mais GPUs ajuda o decode: cada GPU guarda e lê menos pesos por passo, enquanto o all-to-all junta um lote maior para cada expert.
+
+O DeepSeek dimensiona os dois em direções opostas para o DeepSeek-V4.1-Flash. O prefill roda em EP2 a EP8, o menor tamanho cujas GPUs guardam memória suficiente; o decode roda em EP64 a EP128, o mais largo que as GPUs disponíveis permitem. Com 64 requisições por GPU, EP64 guardou 7 experts roteados por GPU e decodificou cerca de 15.700 tokens por segundo por GPU a cerca de 246 por usuário, contra 52 experts e cerca de 12.600 a 198 no EP8 — cerca de 25% mais nos dois. Com 256 requisições por GPU os dois quase se encontram.
+
+O preço é estrutural. Prefill e decode recebem aproximadamente o mesmo número de GPUs, então um deployment com decode em EP64 tem piso de 128 GPUs. Toda GPU de uma instância EP é também um único domínio de comunicação: uma GPU com defeito derruba a instância inteira, e no reinício o grupo é redimensionado para as GPUs saudáveis.
+
+:::caveat
+Sob expert-parallel, um passo roda como grafo CUDA só quando todo rank EP está em decode. Se algum rank tem um prefill no lote, todos os ranks voltam ao modo eager. Uma carga mista, portanto, perde o grafo nos passos em que cai um prefill, o que é uma questão de escalonamento, não de kernel.
+:::
+
+## Atenção e FFN em pools separados
+
+Em um arranjo colocado, cada GPU roda as duas metades de cada camada. O decode faz exigências diferentes sobre elas: a atenção guarda poucos parâmetros mas mantém o cache de chave-valor de toda requisição em voo, enquanto os experts guardam a maior parte dos parâmetros e não mantêm estado por requisição. A **desagregação atenção–FFN** põe as duas em GPUs separadas e passa micro-lotes entre os pools, de modo que cada pool computa enquanto o outro trabalha.
+
+O MegaScale-Infer reporta até 1,90 vez a vazão por GPU de sistemas de serving anteriores. Para um deployment específico, o FastAFD roda o Qwen3-235B-A22B em 28 GPUs de atenção mais 4 GPUs de experts e reporta 1,41 vez a vazão por GPU do EP4 colocado. Essa comparação é a que se deve examinar: quando um estudo posterior re-provisionou os dois arranjos para o mesmo orçamento de 72 GPUs, a razão caiu para 0,99. Em todos os cenários que modelou, a desagregação homogênea elevou a vazão com orçamento fixo em apenas uma minoria.
+
+O treino também restringe isso. O Step-3 deriva o MoE mais esparso que um pool de experts consegue servir mantendo-se limitado por compute e sobrepondo comunicação, e o limite sobe com largura e profundidade: cerca de 0,058 para a largura e a profundidade do DeepSeek-V3 em H800, com o próprio Step-3 em cerca de 0,08. Um modelo mais esparso precisa cair em expert-parallel grande ou em restrições de roteamento.
+
+## A divergência de roteamento no RL
+
+O RL separa a geração de amostras do cálculo do gradiente. Um motor de rollout gera com seus próprios kernels e, em RL off-policy ou assíncrono, com pesos uma atualização ou mais atrás do treinador. Essas diferenças deslocam probabilidades; em um MoE elas também podem mudar quais experts um token percorre, então o treinador diferencia um caminho que a amostra nunca tomou.
+
+As duas causas já foram medidas. Gerando com um motor e treinando com outro, cerca de 10% dos routers no Qwen3-30B-A3B escolheram experts diferentes, e 94% dos tokens diferiram em pelo menos uma camada. Depois de uma atualização de gradiente, cerca de 10% dos experts ativados para o mesmo rollout tinham mudado. Os dois 10% contam coisas diferentes — motores que discordam e experts que se movem com os pesos.
+
+Gravar as escolhas de experts do rollout e reexecutá-las no treinador remove a primeira causa: a KL treino-inferência caiu de 1,5e-3 para 7,5e-4, perto de 6,4e-4 de um modelo denso. Se isso melhora a recompensa é contestado: os autores reportam ganhos de estabilidade, um estudo posterior do Qwen não viu nenhum em treino on-policy, e outro achou a reexecução abaixo do GRPO simples em um modelo mas não em outro. Os autores do GSPO, que usavam reexecução, a abandonaram por razões de importância em nível de sequência.
+
+:::note
+Outra alavanca ataca a fatia dos próprios kernels na divergência: **kernels invariantes a lote** tornam o log-probabilidade de um token independente de como as requisições foram agrupadas. O Megatron documenta isso como correção para "uma fonte real de erro e instabilidade em RL" e avisa que afeta significativamente a velocidade; o DeepInfer, do DeepSeek, traz a mesma opção.
+:::
+
+## O que isto não estabelece
+
+- O modelo de 146,8B é o contra-factual do curso. Sua aritmética de memória é exata; não existe benchmark de serving dele.
+- Os números de MMLU e vazão pertencem aos modelos e orçamentos nomeados. O re-provisionamento com orçamento igual que virou 1,41 em 0,99 é o aviso, não a exceção.
+- O efeito da reexecução sobre a recompensa não está assentado, e as fontes discordam em público.
+- Nada aqui diz que um MoE é mais barato de servir que um modelo denso da mesma qualidade. Diz onde os custos ficam e qual alavanca move qual.

@@ -194,6 +194,8 @@ const MOE_DISPATCH_PER_LAYER =
 /** The 4-bit case: routed experts at half a byte, everything else in bf16. */
 const MOE_EXPERTS_INT4_BYTES = MOE_BUDGET.storedFfnTotal * 0.5
 const MOE_REST_BF16_BYTES = (MOE_NON_EXPERT + MOE_ROUTER_TOTAL) * 2
+const MOE_ACTIVE_FFN_TOTAL = MOE_BUDGET.activeFfnPerLayer * QWEN.layers.value
+const MOE_REST_PARAMS = MOE_NON_EXPERT + MOE_ROUTER_TOTAL
 
 export const MOE = {
   experts: fact(MOE_SHAPE.experts, 'experts per layer', 'derived', 'the lesson\'s chosen shape'),
@@ -288,6 +290,30 @@ export const MOE = {
     'GB',
     'derived',
     'experts at 4 bits + attention, embeddings and routers in bf16 (9,908,211,200 x 2 B)',
+  ),
+  readsPerTokenBf16: fact(
+    QWEN.paramsTotal.value * 2e-9,
+    'GB per decoded token',
+    'derived',
+    'a decoded token reads every active weight once: 27e9 x 2 B, the same as the dense model',
+  ),
+  readsPerTokenExpertsInt4: fact(
+    MOE_ACTIVE_FFN_TOTAL * 0.5e-9 + MOE_REST_PARAMS * 2e-9,
+    'GB per decoded token',
+    'derived',
+    'active experts at 4 bits (17,112,760,320 x 0.5 B) + the rest at bf16 (9,908,211,200 x 2 B)',
+  ),
+  servingGbAllInt4: fact(
+    (MOE_BUDGET.storedFfnTotal + MOE_REST_PARAMS) * 0.5e-9,
+    'GB',
+    'derived',
+    'every weight at 4 bits: (136,902,082,560 + 9,908,211,200) x 0.5 B',
+  ),
+  readsPerTokenAllInt4: fact(
+    (MOE_ACTIVE_FFN_TOTAL + MOE_REST_PARAMS) * 0.5e-9,
+    'GB per decoded token',
+    'derived',
+    'every active weight at 4 bits: (17,112,760,320 + 9,908,211,200) x 0.5 B',
   ),
 } as const satisfies Record<string, ModelFact>
 

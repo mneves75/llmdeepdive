@@ -154,3 +154,15 @@ export function binOf(value: number, min: number, max: number, bins: number): nu
   const index = Math.floor(fraction * bins)
   return Math.min(bins - 1, Math.max(0, index))
 }
+
+/**
+ * Millions as a short label, with the locale's decimal separator.
+ *
+ * `Intl` compact notation renders "267.4M" in English but "267,4 mi" in
+ * Portuguese, and "mi" is a unit nobody reads as millions. The figures need one
+ * short number and one separator, so this stays explicit and testable.
+ */
+export function millions(value: number, locale: 'en' | 'pt-br'): string {
+  const text = (value / 1e6).toFixed(1)
+  return locale === 'pt-br' ? text.replace('.', ',') : text
+}

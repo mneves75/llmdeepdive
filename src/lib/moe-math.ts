@@ -332,3 +332,118 @@ export const dispatchBytes = (input: DispatchInput): number => {
   }
   return tokens * layers * topK * hidden * bytesPerElement
 }
+
+export interface MoeBalanceInput {
+  readonly experts: number
+  readonly tokens: number
+  /** How strongly the batch prefers the low-numbered experts, 0 to 2. */
+  readonly skew: number
+  /** How far each bias moves per step. */
+  readonly rate: number
+  readonly steps: number
+}
+
+export interface MoeBalanceStep {
+  readonly step: number
+  readonly maxVio: number
+  readonly counts: readonly number[]
+}
+
+export interface MoeBalanceResult {
+  readonly before: readonly number[]
+  readonly after: readonly number[]
+  readonly bias: readonly number[]
+  readonly maxVioBefore: number
+  readonly maxVioAfter: number
+  readonly trace: readonly MoeBalanceStep[]
+  /** The lowest MaxVio the loop reached, and when. */
+  readonly best: { readonly step: number; readonly maxVio: number }
+}
+
+/**
+ * The lab's batch: every token gets a deterministic affinity for every expert.
+ *
+ * `skew` tilts the batch toward low-numbered experts; the per-token term comes
+ * from a fixed hash, not from a random number generator, so the same inputs give
+ * the same batch on the server, in the browser and in the test. A random batch
+ * would make the lab unreproducible and the lesson's quoted numbers unverifiable.
+ */
+const moeAffinity = (input: MoeBalanceInput): number[][] => {
+  const { experts, tokens, skew } = input
+  const span = experts > 1 ? experts - 1 : 1
+  const rows: number[][] = []
+  for (let token = 0; token < tokens; token += 1) {
+    const row: number[] = []
+    for (let expert = 0; expert < experts; expert += 1) {
+      const tilt = -skew * 3 * (expert / span)
+      const seed = Math.sin((token * 13 + expert * 7) * 12.9898) * 43758.5453
+      const noise = 1.2 * (seed - Math.floor(seed)) - 0.6
+      row.push(tilt + noise)
+    }
+    rows.push(row)
+  }
+  return rows
+}
+
+/**
+ * The loss-free balancing loop on a frozen router, which is what lesson 5.14's
+ * lab shows: the batch never changes, so the only thing moving between steps is
+ * the selection bias.
+ *
+ * The loop follows Megatron's order. It routes with the current bias, updates
+ * each bias by the fixed step in the direction of that load, then routes again
+ * with the new bias. `before` is the load with no bias at all and `after` is the
+ * load the final bias produces, so a reader compares two real routings rather
+ * than two estimates.
+ *
+ * A fixed step does not converge to an exact split. It walks past the target and
+ * comes back, which is why `best` exists: a run that ends above its own minimum
+ * is showing the overshoot, not a bug.
+ */
+export const moeBalance = (input: MoeBalanceInput): MoeBalanceResult => {
+  const { experts, tokens, skew, rate, steps } = input
+  if (!Number.isInteger(experts) || experts < 2 || experts > 64) {
+    throw new RangeError('moeBalance needs 2 to 64 experts')
+  }
+  if (!Number.isInteger(tokens) || tokens < 8 || tokens > 4096) {
+    throw new RangeError('moeBalance needs 8 to 4,096 tokens')
+  }
+  if (!Number.isFinite(skew) || skew < 0 || skew > 2) {
+    throw new RangeError('moeBalance needs a skew between 0 and 2')
+  }
+  if (!Number.isFinite(rate) || rate <= 0 || rate > 1) {
+    throw new RangeError('moeBalance needs an update rate above 0 and at most 1')
+  }
+  if (!Number.isInteger(steps) || steps < 0 || steps > 200) {
+    throw new RangeError('moeBalance needs 0 to 200 steps')
+  }
+
+  const affinity = moeAffinity(input)
+  let bias = new Array<number>(experts).fill(0)
+  const before = allocate({ affinity, bias }).counts
+  const trace: MoeBalanceStep[] = [
+    { step: 0, maxVio: maxVio(before) ?? 0, counts: before },
+  ]
+
+  let best = { step: 0, maxVio: trace[0]?.maxVio ?? 0 }
+  let after: readonly number[] = before
+
+  for (let step = 1; step <= steps; step += 1) {
+    const driving = allocate({ affinity, bias }).counts
+    bias = signUpdate({ counts: driving, bias, rate })
+    after = allocate({ affinity, bias }).counts
+    const value = maxVio(after) ?? 0
+    trace.push({ step, maxVio: value, counts: after })
+    if (value < best.maxVio) best = { step, maxVio: value }
+  }
+
+  return {
+    before,
+    after,
+    bias,
+    maxVioBefore: trace[0]?.maxVio ?? 0,
+    maxVioAfter: trace[trace.length - 1]?.maxVio ?? 0,
+    trace,
+    best,
+  }
+}
