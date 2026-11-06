@@ -114,6 +114,7 @@ const CLAIMS = {
       num(TOTAL * 2e-9, 1, locale),
       num(27e9 * 2e-9, 0, locale),
     ],
+    'How many experts, how wide, and who sees every token': (locale) => [num(100 / (1 + 2.5), 1, locale)],
     'The router: two decisions from one matrix': (locale) => [
       group(BUDGET.routerParamsPerLayer, locale),
       group(ROUTER_RATIO, locale),
@@ -149,6 +150,9 @@ const CLAIMS = {
   },
   '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
     '__teachback__': (locale) => [
+      num(BUDGET.storedFfnTotal / 1e9, 1, locale),
+      num(ACTIVE_TOTAL / 1e9, 1, locale),
+      num(REST / 1e9, 1, locale),
       num(TOTAL * 2e-9, 1, locale),
       num((BUDGET.storedFfnTotal * 0.5 + REST * 2) * 1e-9, 1, locale),
       num(ACTIVE_TOTAL * 2e-9, 1, locale),
@@ -156,6 +160,8 @@ const CLAIMS = {
       num(INT4_EXPERT_READS + INT4_REST_READS, 1, locale),
     ],
     'Low-bit experts': (locale) => [
+      num(ACTIVE_TOTAL / 1e9, 1, locale),
+      num(REST / 1e9, 1, locale),
       num(TOTAL * 2e-9, 1, locale),
       num((BUDGET.storedFfnTotal * 0.5 + REST * 2) * 1e-9, 1, locale),
       num(BF16_READS, 0, locale),
@@ -176,6 +182,7 @@ const HEADINGS = {
   'The FFN every token pays for': 'A FFN que todo token paga',
   'Store eight times more, pay the same': 'Guardar oito vezes mais, pagando o mesmo',
   'The router: two decisions from one matrix': 'O router: duas decisões de uma matriz',
+  'How many experts, how wide, and who sees every token': 'Quantos experts, qual largura, e quem vê todo token',
   'The loss-free bias': 'O viés sem loss',
   'Where the weights start': 'De onde vêm os pesos',
   'The bytes, counted': 'Os bytes, contados',
