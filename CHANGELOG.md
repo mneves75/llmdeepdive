@@ -5,6 +5,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-11-06
+
+### Added
+
+- **Mixture of experts, five lessons per locale across tracks 4, 5 and 7.**
+  `4.18` builds the stored-versus-active budget on Qwen3.8-27B's published
+  shape — 64 experts of 2,176 at top-8 store 2,139,095,040 parameters per layer
+  and run 267,386,880, so the model would hold 146.8B at the same 27B active —
+  and compares softmax, sigmoid and sqrt(softplus) on one token's logits
+  (0.711/0.289, 0.506/0.494, 0.530/0.470). `5.14` works the auxiliary-loss trap:
+  with flat probabilities the loss reads 1 for a load of `[32,32,0,0,0,0,0,0]`,
+  whose MaxVio is 3. `5.15` covers upcycling, Muon against AdamW for a rarely
+  routed expert, multi-token prediction and the three quiet failures. `5.16`
+  prices the all-to-all at 80 KiB per token per layer and 10 GiB per
+  2,048-token forward. `7.14` serves the result: 293.6 GB in bf16, 88.3 GB with
+  the routed experts at 4 bits, while a decoded token's reads fall only from
+  54 GB to 28.4 GB.
+- **`moe-balance` lab:** the loss-free balancing loop on a frozen router, in
+  both locales. It server-renders its defaults, shows token counts rather than a
+  loss, and reproduces the lesson's overshoot (MaxVio 4.125 → 0.125 at step 39,
+  0.5 at step 40).
+- **`src/lib/moe-math.ts`:** one implementation of mixture weights, MaxVio, the
+  Switch auxiliary loss, the sign update, the parameter budget and dispatch
+  bytes. 21 arithmetic tests pin it, and `tests/moe-content.test.mjs` fails if a
+  lesson stops quoting the values it computes.
+- **Figures:** stored versus active parameters, the router's weights under three
+  gates, MaxVio over update steps, upcycling slices, dispatch bytes from one copy
+  to ten gigabytes, and serving memory against per-token reads.
+- **`MOE` derived facts** in `model-facts.ts`, with the arithmetic in each note.
+
+### Changed
+
+- Corpus: **190 lessons per locale** across the same 26 tracks (380 MDX files).
+  The acceptance test, `README.md`, `AGENTS.md` and `PRODUCT.md` carry the new
+  counts; no existing lesson id, order or URL changed.
+
+### Notes
+
+- Source: *The Ultimate MoE Training Handbook* (Hugging Face Space, revision
+  `ef70726`, read 2026-11-06). The Space declares no licence, so nothing is
+  reproduced: facts and measurements are cited, prose and figures are the
+  course's own. Flags quoted in the lessons were checked against Megatron-LM at
+  `d6316eb45`, the commit the handbook pins.
+- The 146.8B model is a **counterfactual** on Qwen3.8-27B's published config,
+  not a model that exists; the lessons say so where the numbers appear.
+
 ## [0.15.0] — 2026-11-02
 
 ### Added

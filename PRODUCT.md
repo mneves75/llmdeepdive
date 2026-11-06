@@ -44,7 +44,7 @@ The interface supports light, dark, and operating-system themes.
 
 ## Capabilities and Constraints
 
-- 185 current lessons in each of English and pt-BR across 26 ordered tracks in
+- 190 current lessons in each of English and pt-BR across 26 ordered tracks in
   two parts, with parity enforced at build time. Part one (tracks 0–13) is how
   a model works: track 10 covers video models and JEPA-family world models,
   and tracks 11–13 cover running models on a Mac Studio Ultra with MLX, on
