@@ -171,10 +171,17 @@ async function canaryFailures(engineName, base, version, selfTest) {
       }
       // A well-formed link to a missing lesson lands on the localized 404 page,
       // which has a heading too: require a 200 and the lesson's own article.
-      const response = page.waitForResponse((r) => r.request().isNavigationRequest() && new URL(r.url()).pathname === href, { timeout: 30_000 })
+      //
+      // The status is read with a request rather than with `waitForResponse`.
+      // In WebKit the navigation completes — the URL changes and the lesson
+      // renders — but Playwright's `response` event for a cross-document view
+      // transition never fires, so the event-based check timed out on a healthy
+      // deploy in every engine run from 0.16.0 on. The request proves the same
+      // fact (the destination answers with this status) without depending on
+      // that event.
       await Promise.all([page.waitForURL((url) => url.pathname === href, { timeout: 30_000 }), cta.click()])
       const expectedStatus = selfTest ? 299 : 200
-      const status = (await response).status()
+      const status = (await page.request.get(new URL(href, base).href)).status()
       if (status !== expectedStatus) failures.push(`${engineName} ${href}: lesson answered HTTP ${status}, expected ${expectedStatus}`)
       if (selfTest) await page.evaluate(() => document.querySelector('h1')?.remove())
       const lessonSelector = selfTest ? '[data-self-test-lesson]' : 'article[data-lesson-key]'
