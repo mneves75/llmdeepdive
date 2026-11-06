@@ -114,7 +114,7 @@ const COUNTS = {
   },
   '7-inference-and-efficiency/7.14-serving-an-moe.mdx': {
     '146.8': 4, '293.6': 3, '88.3': 2, '3.3': 2, '54': 3, '34.2': 2, '8.6': 2, '19.8': 2,
-    '28.4': 2, '1.9': 3, '73.4': 1, '13.5': 1, '15 GB': 1, '17.1': 2, '9.9': 2, '136.9': 1,
+    '28.4': 2, '1.9': 2, '73.4': 1, '13.5': 1, '15 GB': 1, '17.1': 2, '9.9': 2, '136.9': 1,
   },
 }
 
@@ -258,7 +258,12 @@ for (const locale of LOCALES) {
       const text = lesson(locale, path).replaceAll('{,}', ',')
       for (const [value, count] of Object.entries(expected)) {
         const forms = [...new Set([value, value.replaceAll('.', ','), value.replaceAll(',', '.')])]
-        const seen = forms.reduce((sum, form) => sum + text.split(form).length - 1, 0)
+        // Numeric boundaries, not substring counting: "15 GB" is not present in
+        // "115 GB", and a split() count was.
+        const seen = forms.reduce(
+          (sum, form) => sum + (text.match(new RegExp(`(?<![\\d.,])${escape(form)}(?!\\d)`, 'gu')) ?? []).length,
+          0,
+        )
         assert.equal(seen, count, `${path}: expected ${count} occurrence(s) of "${value}", found ${seen}`)
       }
     })
