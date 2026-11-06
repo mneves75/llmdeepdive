@@ -49,8 +49,10 @@ const boundary = (needle) => new RegExp(`(?<![\\d.,])${escape(needle)}(?!\\d)`, 
 
 /** The YAML frontmatter, so the teach-back answer is checked like any section. */
 const teachBack = (text) => {
-  const end = text.indexOf('\n---', 3)
-  return end === -1 ? '' : text.slice(3, end)
+  const start = text.indexOf('teachBack:')
+  if (start === -1) return ''
+  const end = text.indexOf('\nquiz:', start)
+  return text.slice(start, end === -1 ? text.indexOf('\n---', start) : end)
 }
 
 /** Split a lesson body into `##` sections by heading text. */
@@ -105,7 +107,7 @@ const CLAIMS = {
     ],
   },
   '5-pretraining-at-scale/5.15-upcycling-and-moe-stability.mdx': {
-    'Where the weights start': (locale) => [group(BUDGET.expertWidth, locale)],
+    'Where the weights start': (locale) => [group(17408, locale), group(BUDGET.expertWidth, locale)],
   },
   '5-pretraining-at-scale/5.16-expert-parallelism.mdx': {
     'The bytes, counted': () => [
@@ -118,6 +120,7 @@ const CLAIMS = {
     '__teachback__': (locale) => [
       num(TOTAL * 2e-9, 1, locale),
       num((BUDGET.storedFfnTotal * 0.5 + REST * 2) * 1e-9, 1, locale),
+      num(ACTIVE_TOTAL * 2e-9, 1, locale),
       num(ACTIVE_TOTAL * 0.5e-9, 1, locale),
       num(INT4_EXPERT_READS + INT4_REST_READS, 1, locale),
     ],
