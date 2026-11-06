@@ -60,6 +60,12 @@ for (const locale of LOCALES) {
     has(text, group(BUDGET.expertWidth, locale), '4.18 (expert width)')
     has(text, group(BUDGET.activeFfnPerLayer / 8, locale), '4.18 (one expert)')
     has(text, group(BUDGET.routerParamsPerLayer, locale), '4.18 (router per layer)')
+    has(text, group(17408, locale), '4.18 (dense FFN width)')
+    has(text, group(5120, locale), '4.18 (hidden width)')
+    // "one part in 6,500" is the router against what the experts hold, to the
+    // nearest hundred. Typing it was the last number a mutation could move.
+    const routerRatio = Math.round(BUDGET.storedFfnPerLayer / BUDGET.routerParamsPerLayer / 100) * 100
+    has(text, group(routerRatio, locale), '4.18 (router ratio)')
     has(text, group(BUDGET.storedFfnPerLayer, locale), '4.18 (stored per layer)')
     has(text, group(BUDGET.activeFfnPerLayer, locale), '4.18 (active per layer)')
     has(text, num(TOTAL / 1e9, 1, locale), '4.18 (stored total, billions)')
@@ -73,6 +79,7 @@ for (const locale of LOCALES) {
     has(text, num(TOTAL * 2e-9, 1, locale), '7.14 (bf16 storage)')
     has(text, num((BUDGET.storedFfnTotal * 0.5 + REST * 2) * 1e-9, 1, locale), '7.14 (experts at 4 bits)')
     has(text, num(ACTIVE_TOTAL * 0.5e-9 + REST * 2e-9, 1, locale), '7.14 (reads, experts at 4 bits)')
+    has(text, num(ACTIVE_TOTAL * 0.5e-9, 1, locale), '7.14 (active experts at 4 bits)')
     has(text, num((ACTIVE_TOTAL + REST) * 0.5e-9, 1, locale), '7.14 (reads, all 4 bits)')
     has(text, num((BUDGET.storedFfnTotal + REST) * 0.5e-9, 1, locale), '7.14 (storage, all 4 bits)')
     has(text, num(ACTIVE_TOTAL * 2e-9, 1, locale), '7.14 (bf16 expert reads)')
