@@ -27,8 +27,9 @@
  */
 
 /** Where a number came from, so a reviewer can check it without leaving the file. */
-export type FactSource = 'config' | 'card' | 'derived' | 'measured'
+import { moeParameterBudget } from './moe-math'
 
+export type FactSource = 'config' | 'card' | 'derived' | 'measured'
 export interface ModelFact {
   readonly value: number
   /** Unit as it should be spoken, e.g. 'layers', 'KiB per token'. Not localised. */
@@ -148,6 +149,146 @@ export const QWEN = {
 
   paramsTotal: fact(27e9, 'parameters', 'card', 'marketed ~27B, includes the vision tower'),
   weightsGbBf16: fact(54, 'GB', 'derived', '27e9 parameters x 2 B'),
+} as const satisfies Record<string, ModelFact>
+
+/**
+ * The MoE counterfactual the MoE lessons work through.
+ *
+ * This is NOT a model that exists. Qwen3.8-27B ships dense FFNs; lesson 4.9 says
+ * so and no lesson may contradict it. The question these facts answer is: if the
+ * same active feed-forward budget were split into experts, what would the
+ * numbers be? That is a legitimate arithmetic question about published values,
+ * and it is the only way to teach stored-versus-active parameters on the
+ * course's own model instead of on a stranger's.
+ *
+ * The shape is chosen so a reader can check the identity by hand:
+ * 64 experts, top-8, each 2,176 wide, because 8 x 2,176 = 17,408, the dense FFN
+ * width. The arithmetic lives in `moeParameterBudget`, and
+ * `tests/moe-math.test.mjs` pins every value below.
+ *
+ * Two rules follow from this being a counterfactual:
+ *
+ * 1. No claim about quality, speed or memory *measured* on this model exists.
+ *    Memory arithmetic is fine; a benchmark number would not be.
+ * 2. The 5.4x figure is a budget choice, not a scaling law. Choosing a different
+ *    expert width changes it, and the lessons say so.
+ */
+const MOE_SHAPE = { experts: 64, topK: 8 } as const
+
+const MOE_BUDGET = moeParameterBudget({
+  hidden: QWEN.hiddenSize.value,
+  denseFfn: QWEN.ffnIntermediate.value,
+  layers: QWEN.layers.value,
+  ...MOE_SHAPE,
+})
+
+const MOE_DENSE_FFN_TOTAL = MOE_BUDGET.denseFfnPerLayer * QWEN.layers.value
+const MOE_ROUTER_TOTAL = MOE_BUDGET.routerParamsPerLayer * QWEN.layers.value
+const MOE_NON_EXPERT = QWEN.paramsTotal.value - MOE_DENSE_FFN_TOTAL
+const MOE_TOTAL = MOE_NON_EXPERT + MOE_BUDGET.storedFfnTotal + MOE_ROUTER_TOTAL
+
+/** Bytes one token sends in one layer: top-k copies of the hidden state, bf16. */
+const MOE_DISPATCH_PER_LAYER =
+  MOE_SHAPE.topK * QWEN.hiddenSize.value * QWEN.bytesPerElement.value
+
+/** The 4-bit case: routed experts at half a byte, everything else in bf16. */
+const MOE_EXPERTS_INT4_BYTES = MOE_BUDGET.storedFfnTotal * 0.5
+const MOE_REST_BF16_BYTES = (MOE_NON_EXPERT + MOE_ROUTER_TOTAL) * 2
+
+export const MOE = {
+  experts: fact(MOE_SHAPE.experts, 'experts per layer', 'derived', 'the lesson\'s chosen shape'),
+  topK: fact(MOE_SHAPE.topK, 'experts per token', 'derived', 'one token keeps 8 of the 64'),
+  expertWidth: fact(
+    MOE_BUDGET.expertWidth,
+    'dimensions per expert',
+    'derived',
+    'dense FFN 17,408 x top-8 / 64 experts = 2,176, so 8 x 2,176 = 17,408 exactly',
+  ),
+  denseFfnPerLayer: fact(
+    MOE_BUDGET.denseFfnPerLayer,
+    'parameters per layer',
+    'derived',
+    '3 x 5,120 x 17,408 — gate, up and down matrices of the gated FFN',
+  ),
+  activeFfnPerLayer: fact(
+    MOE_BUDGET.activeFfnPerLayer,
+    'parameters per layer',
+    'derived',
+    '8 experts x 3 x 5,120 x 2,176 — identical to the dense layer, by construction',
+  ),
+  storedFfnPerLayer: fact(
+    MOE_BUDGET.storedFfnPerLayer,
+    'parameters per layer',
+    'derived',
+    '64 experts x 3 x 5,120 x 2,176; 8x the dense layer = experts / topK',
+  ),
+  storedFfnTotal: fact(
+    MOE_BUDGET.storedFfnTotal,
+    'parameters',
+    'derived',
+    '2,139,095,040 per layer x 64 layers',
+  ),
+  routerParamsPerLayer: fact(
+    MOE_BUDGET.routerParamsPerLayer,
+    'parameters per layer',
+    'derived',
+    '64 logits x 5,120 hidden, one router row per expert (bias omitted)',
+  ),
+  routerParamsTotal: fact(MOE_ROUTER_TOTAL, 'parameters', 'derived', '327,680 x 64 layers'),
+  nonExpertParams: fact(
+    MOE_NON_EXPERT,
+    'parameters',
+    'derived',
+    '27e9 total minus 64 x 267,386,880 dense feed-forward parameters',
+  ),
+  totalStored: fact(
+    MOE_TOTAL,
+    'parameters',
+    'derived',
+    'non-expert 9,887,239,680 + experts 136,902,082,560 + routers 20,971,520',
+  ),
+  storedOverDense: fact(
+    MOE_TOTAL / QWEN.paramsTotal.value,
+    'times the dense model',
+    'derived',
+    '146,810,293,760 / 27e9 = 5.4374x',
+  ),
+  weightsGbBf16: fact(
+    MOE_TOTAL * 2e-9,
+    'GB',
+    'derived',
+    '146,810,293,760 parameters x 2 B, against the dense model\'s 54 GB',
+  ),
+  dispatchBytesPerTokenPerLayer: fact(
+    MOE_DISPATCH_PER_LAYER,
+    'bytes per token',
+    'derived',
+    'top-8 copies x 5,120 values x 2 B = 81,920 B = 80 KiB, dispatch only',
+  ),
+  dispatchBytesPerToken: fact(
+    MOE_DISPATCH_PER_LAYER * QWEN.layers.value,
+    'bytes per token',
+    'derived',
+    '80 KiB x 64 layers = 5 MiB, one way, before the combine returns',
+  ),
+  dispatchBytesMicroBatch2048: fact(
+    MOE_DISPATCH_PER_LAYER * QWEN.layers.value * 2048,
+    'bytes per forward',
+    'derived',
+    '5,242,880 B per token x 2,048 tokens = 10 GiB, dispatch only',
+  ),
+  expertsInt4Gb: fact(
+    MOE_EXPERTS_INT4_BYTES * 1e-9,
+    'GB',
+    'derived',
+    'routed experts at 4 bits: 136,902,082,560 x 0.5 B',
+  ),
+  servingGbExpertsInt4: fact(
+    (MOE_EXPERTS_INT4_BYTES + MOE_REST_BF16_BYTES) * 1e-9,
+    'GB',
+    'derived',
+    'experts at 4 bits + attention, embeddings and routers in bf16 (9,908,211,200 x 2 B)',
+  ),
 } as const satisfies Record<string, ModelFact>
 
 /**
