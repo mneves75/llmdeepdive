@@ -82,8 +82,11 @@ const PHRASES = {
     ],
     'Store eight times more, pay the same': (locale) =>
       locale === 'pt-br'
-        ? [`cada um com ${group(BUDGET.expertWidth, locale)} de largura`]
-        : [`each ${group(BUDGET.expertWidth, locale)} wide`],
+        ? [
+            `cada um com ${group(BUDGET.expertWidth, locale)} de largura`,
+            'cerca de 27 bilhões são ativos',
+          ]
+        : [`each ${group(BUDGET.expertWidth, locale)} wide`, 'about 27 billion are active'],
   },
   '5-pretraining-at-scale/5.14-keeping-experts-busy.mdx': {
     'The loss-free bias': (locale) =>
@@ -107,7 +110,7 @@ const COUNTS = {
     '17.11': 1, '146.8': 1, '5.44': 2, '293.6': 1, '54': 1, '327,680': 1, '6,500': 1,
     '0.711': 2, '0.289': 1, '0.506': 2, '0.494': 1, '0.530': 1, '0.470': 1, '28.6': 1,
     '5.4': 1, '0.42': 1, '0.984': 1, '0.961': 1, '2.83': 1,
-    '8x': 1, '0.71': 2, '0.51': 2,
+    '8x': 1, '0.71': 2, '0.51': 2, '0.98': 1, '0.96': 1,
   },
   '5-pretraining-at-scale/5.14-keeping-experts-busy.mdx': { '4.13': 1, '0.13': 1, '0.50': 1 },
   '5-pretraining-at-scale/5.15-upcycling-and-moe-stability.mdx': { '17,408': 1, '2,176': 1 },
