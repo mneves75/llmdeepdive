@@ -161,9 +161,19 @@ test('the serving reads separate storage from what a decoded token touches', () 
   close((budget.storedFfnTotal + rest) * 0.5e-9, 73.4051, 1e-4)
 })
 
+test('the expert width follows the active budget, not the expert count', () => {
+  // 32 experts at top-4 must be exactly as wide as 64 at top-8: the width is
+  // denseFfn / topK. Deriving it as denseFfn * topK / experts agreed at 64/8 by
+  // coincidence (64 = 8 squared) and halved it here.
+  const coarse = moeParameterBudget({ hidden: 5120, denseFfn: 17408, layers: 64, experts: 32, topK: 4 })
+  assert.equal(coarse.expertWidth, 4352)
+  assert.equal(coarse.activeFfnPerLayer, 267_386_880)
+  assert.equal(coarse.storedFfnPerLayer, 2_139_095_040)
+})
+
 test('the expert width must divide the dense FFN exactly', () => {
   assert.throws(
-    () => moeParameterBudget({ hidden: 8, denseFfn: 10, layers: 1, experts: 3, topK: 1 }),
+    () => moeParameterBudget({ hidden: 8, denseFfn: 10, layers: 1, experts: 3, topK: 3 }),
     /divide/,
   )
 })

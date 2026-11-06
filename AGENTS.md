@@ -700,9 +700,16 @@ Mixture of experts lives in lessons 4.18 (router and expert budget), 5.14
 2026-11-06). **It has no licence**: cite its facts and measurements, never copy
 its prose or figures. Every number in those lessons is either a `MOE` derived
 fact, a `moe-math` result, or a cited measurement, and
-`tests/moe-content.test.mjs` checks the prose against the module. Flags were
+`tests/moe-content.test.mjs` checks the prose of 4.18, 5.16 and 7.14 against
+the module, in both locales. Flags were
 checked against Megatron-LM at `d6316eb45`, the handbook's pin; teach the
-mechanism and name the flag as a dated example, never the reverse.
+mechanism and name the flag as a dated example, never the reverse. The prose
+itself is checked for copying by `pnpm content:overlap`, which needs a local
+copy of the chapters (`HANDBOOK_DIR=… pnpm content:overlap`) because the source
+cannot be vendored; it scans for shared 12-word sequences and ignores YAML
+frontmatter, where citation titles must stay verbatim. The page the Space serves
+is an iframe shell, so the readable text lives at
+`huggingface-moe-blogpost.hf.space`.
 
 The Kimi K3 implementation reference is
 [Kimi K3 in C](https://github.com/FareedKhan-dev/kimi-k3-in-c). For the streaming

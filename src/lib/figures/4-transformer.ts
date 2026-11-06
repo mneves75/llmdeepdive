@@ -158,16 +158,16 @@ export const TRACK_4_FIGURES = {
         {
           label: { en: 'Dense FFN, one layer', 'pt-br': 'FFN denso, uma camada' },
           detail: {
-            en: `3 × 5,120 × 17,408 = ${millions(MOE.denseFfnPerLayer.value, 'en')}M, all used`,
-            'pt-br': `3 × 5.120 × 17.408 = ${millions(MOE.denseFfnPerLayer.value, 'pt-br')} M, todo usado`,
+            en: `3 × ${QWEN.hiddenSize.value.toLocaleString('en-US')} × ${QWEN.ffnIntermediate.value.toLocaleString('en-US')} = ${millions(MOE.denseFfnPerLayer.value, 'en')}M, all used`,
+            'pt-br': `3 × ${QWEN.hiddenSize.value.toLocaleString('pt-BR')} × ${QWEN.ffnIntermediate.value.toLocaleString('pt-BR')} = ${millions(MOE.denseFfnPerLayer.value, 'pt-br')} M, todo usado`,
           },
           pigment: 'accent',
         },
         {
-          label: { en: 'Cut into 64 experts', 'pt-br': 'Cortado em 64 especialistas' },
+          label: { en: 'Cut into 64 experts', 'pt-br': 'Cortado em 64 experts' },
           detail: {
-            en: `3 × 5,120 × 2,176 = ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'en')}M each`,
-            'pt-br': `3 × 5.120 × 2.176 = ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'pt-br')} M cada`,
+            en: `3 × ${QWEN.hiddenSize.value.toLocaleString('en-US')} × ${MOE.expertWidth.value.toLocaleString('en-US')} = ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'en')}M each`,
+            'pt-br': `3 × ${QWEN.hiddenSize.value.toLocaleString('pt-BR')} × ${MOE.expertWidth.value.toLocaleString('pt-BR')} = ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'pt-br')} M cada`,
           },
           pigment: 'caution',
         },
@@ -195,7 +195,7 @@ export const TRACK_4_FIGURES = {
     lesson: '4.18-mixture-of-experts',
     title: { en: 'A confident router under three gates', 'pt-br': 'Um router confiante sob três gates' },
     caption: {
-      en: 'One token, the second expert fixed at logit 3.2, the horizontal axis pulling the top expert away from it. Softmax compares the two and hands the top expert almost all the weight. Sigmoid has already saturated at both logits, so even a confident router gives its top two nearly equal shares. sqrt(softplus) sits between them. Every point is computed from the router arithmetic in src/lib/moe-math.ts.',
+      en: 'One token, the second expert fixed at logit 3.2, the horizontal axis pulling the top expert away from it. Softmax compares the two and hands the top expert almost all the weight. Sigmoid has already saturated at both logits, so even a confident router gives its top two nearly equal shares. sqrt(softplus) sits between them. Every point comes from the same router arithmetic the lesson uses.',
       'pt-br': 'Um token, o segundo especialista fixo no logit 3,2, e o eixo horizontal afastando o primeiro dele. O softmax compara os dois e entrega quase todo o peso ao primeiro. O sigmoid já saturou nos dois logits, então mesmo um router confiante dá aos dois primeiros pesos quase iguais. O sqrt(softplus) fica entre eles. Cada ponto é calculado pela aritmética de src/lib/moe-math.ts.',
     },
     body: {

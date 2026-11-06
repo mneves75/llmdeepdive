@@ -22,11 +22,11 @@ quiz:
     correctIndex: 1
     explanation: "With flat probabilities the auxiliary loss collapses to 1 for any load, so it cannot distinguish this batch from a perfectly even one. The mean load is 8, the busiest expert has 32, so MaxVio is 32/8 - 1 = 3."
   - question: "What does the loss-free balancing bias change?"
-    options: ["The router's probabilities, through a small gradient", "The expert weights, by scaling their outputs", "Which experts are selected, not the weights of those selected", "The learning rate of the router, per expert"]
+    options: ["The router's probabilities, through a small gradient", "The expert weights, by scaling their outputs", "Which experts are selected, not their weights", "The learning rate of the router, per expert"]
     correctIndex: 2
     explanation: "The bias is added to each expert's score before the top-k and left out when the selected scores become weights, so it moves selections without contributing a gradient. Moving the probabilities is what the auxiliary loss does; the bias never touches expert weights or the optimizer's rate."
   - question: "Why can balancing over the global batch lower perplexity but slow the step?"
-    options: ["It lets experts specialize by domain while each GPU's share stays uneven", "It removes the all-to-all from the critical path", "It gives every expert exactly the same number of tokens per step", "It reduces the memory each expert needs for activations"]
+    options: ["It lets experts specialize while each GPU stays uneven", "It removes the all-to-all from the critical path", "It gives every expert exactly the same number of tokens per step", "It reduces the memory each expert needs for activations"]
     correctIndex: 0
     explanation: "A global-batch scope lets code tokens crowd onto a few experts as long as other domains fill the rest, which is what lets experts specialize. The same freedom leaves each micro-batch uneven, so the busiest GPU waits and the step slows — the handbook reports about 5.8% for one 43B model."
 citations:
@@ -50,8 +50,8 @@ citations:
     authors: "Moonshot AI"
     year: 2026
     url: "https://arxiv.org/abs/2607.24653"
-  - title: "Quantile Balancing for Mixture-of-Experts Load Balancing"
-    authors: "Jianlin Su et al."
+  - title: "ID Balancing: Stable Training of Extremely Sparse MoE via PID-Based Load Control"
+    authors: "Peng Jin et al."
     year: 2026
     url: "https://arxiv.org/abs/2609.39137"
   - title: "The Ultimate MoE Training Handbook"
@@ -73,7 +73,7 @@ $$
 \mathrm{MaxVio} = \frac{\max_e c_e}{\frac{1}{E}\sum_e c_e} - 1
 $$
 
-Work it on four experts with counts 2, 2, 4, 0. The mean is 2, the busiest has 4, so MaxVio is $4/2 - 1 = 1$: the busiest expert takes twice the average. The zero-count expert stays in the mean — that is what makes a dead expert visible instead of invisible. An even load gives 0, and there is no upper bound.
+Work it on four experts with counts 2, 2, 4, 0. The mean is 2, the busiest has 4, so MaxVio is $4/2 - 1 = 1$: the busiest expert takes twice the average. The zero-count expert stays in the mean — that is what makes a dead expert visible instead of invisible. An even load gives 0, and the ceiling is $E - 1$: the busiest expert cannot hold more than every token.
 
 ## The auxiliary loss, and the number that lies
 
@@ -84,26 +84,26 @@ Here is the trap, worked exactly. Take eight experts, 64 tokens, top-1, and a ro
 Now compute the same loss for a perfectly even load: each share is 1/8, each probability is 1/8, the sum is $8 \times \tfrac{1}{64} = \tfrac{1}{8}$, and the loss is again 1. **The auxiliary loss reads 1 for both**, while MaxVio reads 3 for the first and 0 for the second. Megatron logs this value with the coefficient divided out, which is why "the aux loss is 1" is what a run reports — and why a run can report it while half its tokens sit on two experts.
 
 :::warning
-Never read balance from the auxiliary loss. Read it from token counts, per layer. The loss can also reach its minimum by making the probabilities flat while the load stays skewed — the handbook reports a small model where exactly that happened in the lower layers. A metric that improves when the router stops caring is not a balance metric.
+Never read balance from the auxiliary loss. Read it from token counts, per layer. The loss can also fall while the load stays skewed: the handbook reports a small model whose lower layers flattened the probabilities and lowered the loss without spreading the tokens. A metric that improves when the router stops caring is not a balance metric.
 :::
 
-The coefficient is the other half. At 1e-3 the loss pulls rarely; at 1e-2 it balances but costs language-model quality. The handbook reports one ablation on a 10B model where the busiest expert still took about 13.6 times the tokens of the least used one at 1e-4, while 1e-2 balanced the load and raised test loss. That trade-off is the aux loss's defining property: it buys balance with gradient interference.
+The coefficient is the other half. At 1e-3 the loss pulls rarely; at 1e-2 it balances but costs language-model quality. The handbook reports a 10B ablation: at 1e-4 the least-used expert still received roughly a fourteenth of what the busiest got, and only at 1e-2 did the load even out — with test loss rising to match. That trade-off is the aux loss's defining property: it buys balance with gradient interference.
 
 ## Scope: which tokens count as balanced
 
 The loss has to count over some set of tokens, and the choice changes what "balanced" means.
 
 - **Micro-batch**, the default. Each micro-batch's load is even, which keeps each GPU's work even. The cost is that a micro-batch packed with one domain, say all code, spreads its tokens over every expert, so no expert can specialize in code.
-- **Sequence.** The tightest scope: every sequence spreads over all experts even when the batch mixes domains. DeepSeek-V3 keeps a small sequence-wise loss (coefficient 1e-4) beside its bias, to stop one sequence from piling onto a few experts while the batch looks fine.
-- **Global batch.** Counts accumulate across micro-batches and data-parallel replicas. This is what lets experts specialize by domain, and it lowers perplexity in the study that compared the three. The GPUs pay for it: inside each micro-batch the load is uneven again, and the handbook reports about 5.8% slower steps for a 43B model, about 1% of it communication and the rest the uneven load.
+- **Sequence.** The tightest scope: every sequence spreads over all experts even when the batch mixes domains. DeepSeek-V3 carries a small sequence-wise loss (coefficient 1e-4) alongside its bias, so a single sequence cannot crowd a few experts while the batch as a whole looks even.
+- **Global batch.** Counts accumulate across micro-batches and data-parallel replicas. This is what lets experts specialize by domain, and it lowers perplexity in the study that compared the three. The cost lands on the hardware: within each micro-batch the distribution is uneven again. The handbook measures about 5.8% slower steps on a 43B model, of which roughly one point is communication and the rest idle time from uneven work.
 
 :::note
-Balance at the scope you chose, not at a different one. A batch can be perfectly balanced globally while each GPU's share is badly uneven; averaging micro-batch MaxVio values does not give global-batch MaxVio, because the imbalance and the load move in opposite directions.
+Balance at the scope you chose, not at a different one. A batch can be even over all its tokens while one GPU's slice is badly skewed. Micro-batch MaxVio values cannot be averaged into the global one: the two quantities move in opposite directions.
 :::
 
 ## The loss-free bias
 
-The auxiliary loss changes the router's probabilities, which is what makes its gradient compete with the language model's. The **loss-free bias** avoids that competition entirely. Each expert gets a bias, added to its score *before* the top-k and left out when the selected scores become weights. Once per training step, every bias moves by the same fixed amount: up if its expert was underloaded, down if it was overloaded.
+The auxiliary loss changes the router's probabilities, which is what makes its gradient compete with the language model's. The **loss-free bias** avoids that competition entirely. Every expert carries a bias. It enters the score *before* the top-k, and it is excluded when the winning scores are turned into weights. Once per training step, every bias moves by the same fixed amount: up if its expert was underloaded, down if it was overloaded.
 
 Take four experts with counts 7, 4, 3, 2 and a step of 0.01. The mean is 4. Expert 1 is over the mean, so its bias falls by 0.01. Expert 2 is exactly at the mean, so it does not move. Experts 3 and 4 rise by 0.01 each. Megatron compares integers (`total - counts x experts`) rather than floats against a mean, so an exactly even expert stays put — a float comparison would have moved it by rounding noise.
 
@@ -113,13 +113,17 @@ The bias has three knobs worth knowing:
 - **The fixed step's limit.** The step has to suit the expert count. The handbook reports a sweep where, at an update rate of 1e-3, the busiest expert's load grew with the expert count to about 50 times the mean at 1,024 experts, and above 128 experts the bias also hurt language-model quality.
 - **Drift.** If the per-step changes do not sum to zero, the mean of all biases drifts. That changes no selection, because adding the same number to every score leaves the top-k unchanged, but it costs precision where the bias is stored in bf16. Moonlight and Trinity Mini subtract the mean of the steps; DeepSeek-V3's released biases sit at a per-layer mean between 2.2 and 8.0, while Moonlight's average zero.
 
+The lab on this page runs that loop with the router frozen, so the only thing moving is the selection bias. Its default batch starts at MaxVio 4.13, reaches 0.13 at step 39 and ends at 0.50 at step 40: the fixed step walked past the target and came back. A larger step falls faster and settles worse, which is the trade the figure shows.
+
+<Figure id="moe-maxvio" />
+
 ## Quantile balancing
 
-The bias steps toward the right value. **Quantile balancing** solves for it instead. For each expert, rank the micro-batch's tokens by their score for that expert and read off the quantile that only the expert's target share of tokens beats. That quantile sets the bias directly, for the next batch.
+The bias steps toward the right value. **Quantile balancing** solves for it instead. For each expert, rank the micro-batch's tokens by their score for that expert and read off the quantile that only the expert's target share of tokens beats. That quantile sets the bias directly, for the next batch. What Kimi K3 ranks precisely is each token's margin over its own (k+1)-th best score rather than the raw score, because the margin is what decides whether the expert wins a slot.
 
-It balances sooner than a fixed step at about the same loss in the study that introduced it (a 19B model with 768 experts), halving average MaxVio. Kimi K3 uses it over the whole global batch, reading each expert's quantile from a histogram summed across GPUs, after balancing became harder once its routed pool reached 896 experts per layer. The price is real: every micro-batch now does a top-k per expert on top of the usual top-k per token, and Megatron refuses the method next to any auxiliary loss, router fusion or group-limited routing.
+It balances sooner than a fixed step at about the same loss in the comparison study at 19B parameters with 768 experts, halving average MaxVio. Kimi K3 uses it over the whole global batch, reading each expert's quantile from a histogram summed across GPUs, after balancing became harder once its routed pool reached 896 experts per layer. The price is real: every micro-batch now needs an extra ranking per expert, overlaying the per-token top-k, and Megatron refuses the method next to any auxiliary loss, router fusion or group-limited routing.
 
-The subtlety is the gap between global and local. A bias fitted on the whole batch can make the batch look even while one GPU's micro-batch is badly skewed. In a 7.5B run the handbook cites, the rank-averaged quantile balanced the global batch to MaxVio 0.92 while the worst layer's busiest expert in an expert-parallel micro-batch still took about seven times its fair share, a local MaxVio of 5.96. Solving for the exact global quantile lowered both. Report both numbers, or the global one will hide the one that sets the step.
+The subtlety is the distance between the two counts. A bias fitted over all the batch's tokens can flatten the total while a single GPU's share remains lopsided. In the 7.5B run the handbook cites, the rank-averaged quantile took the global MaxVio to 0.92, yet the busiest expert in the worst layer's expert-parallel micro-batch still carried about seven times an even share — a local MaxVio of 5.96. Computing the exact global quantile instead brought both figures down. Report both numbers, or the global one will hide the one that sets the step.
 
 ## Choosing
 
@@ -129,7 +133,7 @@ The subtlety is the gap between global and local. A bias fitted on the whole bat
 | Loss-free bias | Selections only | A fixed step lags, and is too coarse above ~128 experts | When no gradient may be pulled; pair with a tiny sequence loss |
 | Quantile | Selections, solved per batch | A per-expert top-k; local imbalance can hide | When the fixed step is too slow; global bias, check local MaxVio |
 
-One comparison to treat carefully: on the handbook's five router configurations, quantile balancing reached the highest median throughput over the last 20 of 120 iterations (139 TFLOP/s against 125 for the aux loss and 99 for a bias-only setting), and also ended with the highest training loss. That is one seed and 120 iterations. A throughput ranking that does not reach the same loss is not a faster training run.
+One comparison to treat carefully: on the handbook's five router configurations, quantile balancing posted the best median throughput across the final 20 of 120 iterations — 139 TFLOP/s, next to 125 for the auxiliary loss and 99 for a bias-only configuration — and finished with the highest training loss as well. That is one seed and 120 iterations. A throughput ranking that does not reach the same loss is not a faster training run.
 
 :::insight
 The one setting to keep out of a real run is the one that looks best in a benchmark: forced-even routing replaces the router's logits with random ones. It is a control that tells you how much imbalance costs, and the handbook is explicit that it is never a way to train.

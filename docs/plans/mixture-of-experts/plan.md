@@ -146,8 +146,8 @@ Sections:
    is a synchronization point; the parallel and shortcut blocks exist to hide it.
 7. **What this does not establish.**
 
-Figures: `moe-stored-versus-active` (grid, from `model-facts`),
-`moe-router-weights` (plot + table, the three gates on the same logits).
+Figures: `moe-stored-versus-active` (flow, from `model-facts`),
+`moe-router-weights` (plot, the three gates on one token's logits).
 
 ### 5.14 — Keeping every expert busy
 
@@ -178,8 +178,10 @@ Sections:
    never a training setting.
 7. **What this does not establish.**
 
-Figures: `moe-maxvio` (plot: MaxVio against update steps for the sign rule),
-`moe-balancers` (stack: what each balancer touches).
+Figures: `moe-maxvio` (plot: MaxVio against update steps for the sign rule).
+**Deviation:** `moe-balancers` was dropped — the gate functions differ in what
+they change and what they cost, which a Markdown table states exactly and a
+stack cannot; the lesson carries that table instead.
 
 Lab: `moe-balance` (calculator, 12 KB) — the sign-update loop on a frozen router.
 
@@ -204,7 +206,11 @@ Lab: `moe-balance` (calculator, 12 KB) — the sign-update loop on a frozen rout
    median in the cited layer). The loss can stay flat through all three.
 6. **What this does not establish.**
 
-Figures: `moe-upcycle-slices` (stack), `moe-failure-signals` (table).
+Figures: `moe-upcycle-slices` (flow).
+**Deviation:** `moe-failure-signals` was dropped — the three failures differ in
+which measurement moves, which is a table of words and thresholds, not a grid of
+numbers (a grid bins values and would have hidden the 0.05-of-median dead expert
+beside the 5,700-of-median rogue one). The lesson carries the table.
 
 ### 5.16 — The all-to-all tax
 
@@ -228,7 +234,11 @@ Figures: `moe-upcycle-slices` (stack), `moe-failure-signals` (table).
    the router stays fp32.
 8. **What this does not establish.**
 
-Figures: `moe-all-to-all-bytes` (flow), `moe-exposed-communication` (stack).
+Figures: `moe-all-to-all-bytes` (flow).
+**Deviation:** `moe-exposed-communication` was dropped: the exposed share is a
+single measured percentage per wiring (33% → 7%, 25.3% → 8.4%) from a source
+figure this plan may not reproduce, and a stack of illustrative durations would
+have presented an invented shape as data.
 
 ### 7.14 — Serving an MoE
 
@@ -250,7 +260,10 @@ Figures: `moe-all-to-all-bytes` (flow), `moe-exposed-communication` (stack).
    in at least one layer; replay, and the contested reward evidence.
 7. **What this does not establish.**
 
-Figures: `moe-serving-memory` (stack), `moe-serving-k` (table).
+Figures: `moe-serving-memory` (flow).
+**Deviation:** `moe-serving-k` was dropped — the served-k result is a table of
+one model's MMLU deltas by denominator, already a Markdown table in the lesson;
+a figure would restate it with the same numbers.
 
 ### Assessment
 
@@ -369,3 +382,22 @@ added; a gate never seen red is not a gate.
 | T6 | Lesson 7.14, EN + pt-BR, figures | `feat(moe): teach serving an MoE` |
 | T7 | Counts, docs, CHANGELOG, version | `chore(release): 0.16.0 with MoE coverage` |
 | T8 | Review fixes, then deploy staging → production | tag `v0.16.0` after `verify:live` on production |
+
+## Deviations from this plan, as shipped
+
+- **Four figures became prose or tables**, with the reasons recorded beside each
+  lesson above. Six figures ship, and the changelog lists exactly those.
+- **The lab's defaults are quoted in 5.14** ("MaxVio 4.13, 0.13 at step 39, 0.50
+  at step 40"), so the server-rendered defaults and the prose are the same run;
+  `tests/moe-balance-lab.test.mjs` checks the built HTML against the function.
+- **`tests/moe-content.test.mjs` reads both locales.** The plan assumed
+  `content:parity` compared prose numbers across locales; it compares math spans
+  and frontmatter, so the test now asserts the localised strings itself.
+- **Two attributions were corrected by the evidence audit**: the 4-bit expert
+  reads are 8.6 GB, not 17.1 GB (a quarter, not half), and the DeepSeek serving
+  EP numbers are DeepSeek's deployment notes as the handbook reports them, not
+  the KV-cache paper they sat beside.
+- **The audit found one wrong citation title** (`2609.39137` is "ID Balancing",
+  not "Quantile Balancing") and one wrong report title (the Megatron Core MoE
+  report). Both are fixed in the lessons; the lessons still cite
+  `2609.39137` for the balancing comparison, which is what its abstract covers.

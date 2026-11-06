@@ -65,6 +65,8 @@ updated: "2026-11-06"
 
 A [aula 4.9](/pt-br/lessons/4-transformer/4.9-feed-forward-block/) contou o bloco feed-forward do Qwen3.8-27B: três matrizes de 5.120 por 17.408, cerca de 267 milhões de parâmetros em cada uma das 64 camadas. Todo token passa por todos esses parâmetros. É o que "denso" significa aqui, e também a fraqueza do bloco. Para o modelo saber mais, você adiciona largura ou profundidade, e todo token paga o acréscimo.
 
+A medição de abertura do handbook dá a escala: 18 dos 20 modelos de pesos abertos com maior pontuação no índice da Artificial Analysis são mixtures of experts.
+
 Um **mixture-of-experts** (MoE) rompe esse vínculo. A camada guarda muitas redes feed-forward pequenas, os **experts** (especialistas), e um **router** pequeno e aprendido escolhe alguns deles para cada token. A contagem de parâmetros *armazenados* cresce com o número de experts; a contagem *ativa*, o trabalho de um token, cresce com quantos o router escolhe. Esta aula monta a contabilidade e depois abre o router.
 
 :::note
@@ -92,7 +94,7 @@ Duas consequências saem daí imediatamente, e o resto do curso volta às duas.
 
 ## O router: duas decisões de uma matriz
 
-O router é uma única matriz $W_r$ com uma linha por expert: 64 por 5.120 aqui, 327.680 parâmetros por camada, cerca de um milésimo dos experts que coordena. Para um vetor de token $x$ ela produz um **logit** por expert, $W_r x$. Um logit é um score sem limite, maior significando "este expert serve mais a este token". Depois acontecem duas coisas:
+O router é uma única matriz $W_r$ com uma linha por expert: 64 por 5.120 aqui, 327.680 parâmetros por camada — uma parte em 6.500 do que os experts guardam. Para um vetor de token $x$ ela produz um **logit** por expert, $W_r x$. Um logit é um score sem limite, maior significando "este expert serve mais a este token". Depois acontecem duas coisas:
 
 1. **Seleção.** Os $k$ maiores logits escolhem os experts. Com $k = 8$, o token vai a oito dos sessenta e quatro.
 2. **Ponderação.** Uma **função de gate** transforma esses logits em pesos, e a camada devolve a soma das saídas dos experts escolhidos multiplicadas pelos pesos:
@@ -107,11 +109,11 @@ Termos que esta aula usa e o resto do curso assume: **top-k** são os k maiores 
 
 Três gates estão em uso. No mesmo token, com logits 4,1 e 3,2 para os dois experts melhores, eles discordam sobre quanto cada expert conta:
 
-| Gate | Peso do primeiro | Peso do segundo |
+| Gate (8 experts, top-2) | Peso do primeiro | Peso do segundo |
 |---|---|---|
-| softmax sobre os 64, renormalizado sobre o top-8 | 0,711 | 0,289 |
-| sigmoid, renormalizado sobre o top-8 | 0,506 | 0,494 |
-| sqrt(softplus), renormalizado sobre o top-8 | 0,530 | 0,470 |
+| softmax sobre os 8, renormalizado sobre o top-2 | 0,711 | 0,289 |
+| sigmoid, renormalizado sobre o top-2 | 0,506 | 0,494 |
+| sqrt(softplus), renormalizado sobre o top-2 | 0,530 | 0,470 |
 
 A ordem é idêntica nos três; os pesos não. O softmax compara experts entre si, então uma diferença de 0,9 no logit vira uma diferença de 0,42 no peso. O sigmoid pontua cada expert sozinho, e com logits desse tamanho já saturou: 0,984 e 0,961 são quase o mesmo número, então um router *confiante* entrega aos dois melhores fatias quase iguais. O sqrt(softplus) fica entre eles.
 
@@ -119,9 +121,9 @@ A ordem é idêntica nos três; os pesos não. O softmax compara experts entre s
 
 Essa diferença é escolha de projeto, não detalhe. Um gate sigmoid saturado faz a camada tirar a média dos seus melhores experts; um gate softmax afiado deixa um expert dominar. Para ler qual dos dois um modelo treinado realmente faz, você precisa dos pesos, não dos logits — e a [aula 5.14](/pt-br/lessons/5-pretraining-at-scale/5.14-keeping-experts-busy/) mostra como capturá-los.
 
-:::insight
-Os pesos do router fazem dois trabalhos: escolhem os experts e misturam as saídas. O gate decide quanto cada expert escolhido conta contra os outros, mas não quanto eles contam juntos, e a próxima seção é sobre esse segundo número.
-:::
+Os mesmos números servem a dois propósitos: escolher os experts e misturar o que eles devolvem. O gate decide a divisão entre os experts escolhidos; não decide o tamanho da contribuição combinada. Essa segunda quantidade é a próxima seção.
+
+Duas escolhas mudam quem faz a seleção. O **token choice**, padrão, deixa cada token manter seus k melhores experts — e é exatamente isso que permite a carga entortar. O **expert choice** inverte a direção: cada expert guarda seus próprios melhores tokens. A carga se uniformiza, a um preço — o destino de um token passa a depender de tokens mais adiante na sequência, que ainda não existem na inferência. **Hash layers** dispensam o router aprendido: o conjunto de experts vem de uma consulta ao id do token. O DeepSeek-V4 usou uma nas três primeiras camadas MoE e a V4.1 a abandonou; o handbook relata que uma tabela hash espalha tokens frequentes tão bem quanto uma aleatória, e que o roteamento aprendido escala melhor conforme mais camadas viram MoE. O DeepSeek-V4.1 mantém o Engram, uma consulta por id de token que soma embeddings de n-gramas em vez de escolher experts, em duas camadas enquanto seu router escolhe os experts de todas.
 
 ## Qual é o tamanho da saída da mistura?
 
@@ -129,7 +131,7 @@ O softmax dá aos pesos do top-k uma soma abaixo de 1, e a soma muda de token pa
 
 Renormalizar conserta a soma, não a magnitude. Tome k experts com peso igual e saídas não correlacionadas de mesmo RMS (root mean square, uma medida do tamanho típico de um vetor). A soma ponderada tem RMS $1/\sqrt{k}$ da de um expert, porque contribuições independentes somam em quadratura, não linearmente. Com $k = 8$ isso é um fator de 2,83.
 
-Por isso as implementações multiplicam a saída roteada por um **fator de escala roteado**, muitas vezes perto de $\sqrt{k}$. O DeepSeek-V3 usa 2,5 com $k = 8$; o Kimi K2 usava 2,827 $\approx \sqrt{8}$; o Kimi K3 usa 1,0 com $k = 16$ (Moonshot AI, 2026). O valor não está assentado entre os modelos publicados, e ele muda a fatia do ramo roteado contra qualquer expert compartilhado, o que também importa na próxima seção.
+Por isso as implementações multiplicam a saída roteada por um **fator de escala roteado**, muitas vezes perto de $\sqrt{k}$. O DeepSeek-V3 usa 2,5 com $k = 8$; o Kimi K2 usava 2,827 $\approx \sqrt{8}$; o Kimi K3 renormaliza sem fator extra com $k = 16$, como o handbook lê a config dele. O valor não está assentado entre os modelos publicados, e ele muda a fatia do ramo roteado contra qualquer expert compartilhado, o que também importa na próxima seção.
 
 :::caveat
 $\sqrt{k}$ restaura o RMS apenas sob as premissas acima: pesos iguais, RMS iguais, nenhuma correlação. Um router treinado viola as três. Trate $\sqrt{k}$ como a razão de o fator existir, não como o valor a copiar.
@@ -150,8 +152,8 @@ Com o orçamento de parâmetros fixo, mais experts significa experts mais estrei
 Três variações são comuns o bastante para o curso nomeá-las:
 
 - **Um expert compartilhado** é uma FFN fora do router que processa todo token. O DeepSeekMoE o introduziu para que padrões comuns não precisem ser duplicados entre experts roteados. Se os pesos roteados são renormalizados para um fator de escala $s$, o expert compartilhado fica com $1/(1+s)$ da saída de cada token — 28,6% com $s = 2.5$. O ganho medido é pequeno e inconsistente: o handbook relata 0,01–0,02 de loss menor em dois modelos, e nada ou um pouco pior em outros dois.
-- **Latent MoE** projeta cada token para uma largura menor $\ell$ antes do despacho e de volta depois dos experts. Cada cópia na rede encolhe de $d$ para $\ell$, o que compra $d/\ell$ vezes mais experts e um top-k proporcionalmente maior com o mesmo tráfego. A ablação de 73B-A8B da NVIDIA marcou 4,6 pontos a mais no MMLU-Pro com o mesmo tamanho; o custo são duas projeções extras por token, e o Kimi K3 precisou de uma normalização antes da projeção de volta para se manter estável.
-- **Compute variável** deixa o número de experts, ou a largura deles, diferir por token enquanto a média fica fixa. O LongCat-Flash mistura 512 experts comuns com 256 caminhos identidade que não computam nada, e mira uma média de 8 por token. É um projeto real, não o padrão: as multiplicações agrupadas do Megatron assumem uma única largura de expert.
+- **Latent MoE** projeta cada token para uma largura menor $\ell$ antes do despacho e de volta depois dos experts. Cada cópia na rede encolhe de $d$ para $\ell$, o que compra $d/\ell$ vezes mais experts e um top-k proporcionalmente maior com o mesmo tráfego. o handbook relata a ablação de 73B-A8B da NVIDIA marcando 4,6 pontos a mais no MMLU-Pro com o mesmo tamanho; o custo são duas projeções extras por token, e o Kimi K3 precisou de uma normalização antes da projeção de volta para se manter estável.
+- **Compute variável** deixa o número de experts, ou a largura deles, diferir por token enquanto a média fica fixa. O LongCat-Flash seleciona 12 entre 512 experts comuns mais 256 caminhos identidade que não computam nada, mirando uma média de 8 experts comuns por token. É um projeto real, não o padrão: as multiplicações agrupadas do Megatron assumem uma única largura de expert.
 
 Todo expert até aqui usa a mesma ativação de uma FFN densa, com um acréscimo que vale conhecer. A saída de um expert pode crescer sem limite enquanto a loss fica plana — o handbook relata um expert chegando a 5.700 vezes a norma mediana da camada — então alguns modelos limitam a ativação (DeepSeek-V4.1-Flash em 10, Step 3.5 Flash em 7) ou trocam por uma variante suavemente limitada (o SiTU-GLU do Kimi K3). Limitar não removeu todo pico de loss nos estudos que o handbook cita; ele limita um caminho de crescimento conhecido.
 

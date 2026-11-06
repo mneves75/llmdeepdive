@@ -59,8 +59,8 @@ export const TRACK_5_FIGURES = {
     lesson: '5.15-upcycling-and-moe-stability',
     title: { en: 'Upcycling cuts the dense FFN into equal slices', 'pt-br': 'O upcycling corta a FFN densa em fatias iguais' },
     caption: {
-      en: `The arithmetic is lesson 4.18's: ${MOE.expertWidth.value.toLocaleString('en-US')} times eight is the dense width, so one dense block splits into eight slices of ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'en')}M parameters. Each slice is copied into eight experts, and the 64 experts together store ${millions(MOE.storedFfnPerLayer.value, 'en')}M. At initialization the copies make the MoE compute the dense function; what changes afterwards is which tokens each copy sees.`,
-      'pt-br': `A aritmética é a da aula 4.18: ${MOE.expertWidth.value.toLocaleString('pt-BR')} vezes oito é a largura densa, então um bloco denso se divide em oito fatias de ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'pt-br')} M de parâmetros. Cada fatia é copiada para oito experts, e os 64 experts juntos guardam ${millions(MOE.storedFfnPerLayer.value, 'pt-br')} M. Na inicialização as cópias fazem o MoE computar a função densa; o que muda depois é quais tokens cada cópia vê.`,
+      en: `The arithmetic is lesson 4.18's: ${MOE.expertWidth.value.toLocaleString('en-US')} times eight is the dense width, so one dense block splits into eight slices of ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'en')}M parameters. Each slice is copied into eight experts, and the 64 experts together store ${millions(MOE.storedFfnPerLayer.value, 'en')}M. At initialization the eight slices together hold the dense block, provided the router draws one from each group; what changes afterwards is which tokens each copy sees.`,
+      'pt-br': `A aritmética é a da aula 4.18: ${MOE.expertWidth.value.toLocaleString('pt-BR')} vezes oito é a largura densa, então um bloco denso se divide em oito fatias de ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'pt-br')} M de parâmetros. Cada fatia é copiada para oito experts, e os 64 experts juntos guardam ${millions(MOE.storedFfnPerLayer.value, 'pt-br')} M. Na inicialização as oito fatias juntas guardam o bloco denso, desde que o router tire um expert de cada grupo; o que muda depois é quais tokens cada cópia vê.`,
     },
     body: {
       kind: 'flow',
@@ -68,16 +68,16 @@ export const TRACK_5_FIGURES = {
         {
           label: { en: 'Dense FFN, one layer', 'pt-br': 'FFN densa, uma camada' },
           detail: {
-            en: `17,408 wide, ${millions(MOE.denseFfnPerLayer.value, 'en')}M parameters`,
-            'pt-br': `17.408 de largura, ${millions(MOE.denseFfnPerLayer.value, 'pt-br')} M de parâmetros`,
+            en: `${QWEN.ffnIntermediate.value.toLocaleString('en-US')} wide, ${millions(MOE.denseFfnPerLayer.value, 'en')}M parameters`,
+            'pt-br': `${QWEN.ffnIntermediate.value.toLocaleString('pt-BR')} de largura, ${millions(MOE.denseFfnPerLayer.value, 'pt-br')} M de parâmetros`,
           },
           pigment: 'accent',
         },
         {
           label: { en: 'Cut into eight slices', 'pt-br': 'Cortada em oito fatias' },
           detail: {
-            en: `2,176 wide each, ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'en')}M each`,
-            'pt-br': `2.176 de largura cada, ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'pt-br')} M cada`,
+            en: `${MOE.expertWidth.value.toLocaleString('en-US')} wide each, ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'en')}M each`,
+            'pt-br': `${MOE.expertWidth.value.toLocaleString('pt-BR')} de largura cada, ${millions(MOE.activeFfnPerLayer.value / MOE.topK.value, 'pt-br')} M cada`,
           },
           pigment: 'caution',
         },
@@ -129,7 +129,10 @@ export const TRACK_5_FIGURES = {
         },
         {
           label: { en: '64 layers, one token', 'pt-br': '64 camadas, um token' },
-          detail: { en: '5 MiB', 'pt-br': '5 MiB' },
+          detail: {
+            en: `${(MOE.dispatchBytesPerToken.value / 1024 ** 2).toFixed(0)} MiB`,
+            'pt-br': `${(MOE.dispatchBytesPerToken.value / 1024 ** 2).toFixed(0)} MiB`,
+          },
           pigment: 'caution',
         },
         {

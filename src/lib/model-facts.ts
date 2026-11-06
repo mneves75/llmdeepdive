@@ -27,7 +27,7 @@
  */
 
 /** Where a number came from, so a reviewer can check it without leaving the file. */
-import { moeParameterBudget } from './moe-math'
+import { dispatchBytes, moeParameterBudget } from './moe-math'
 
 export type FactSource = 'config' | 'card' | 'derived' | 'measured'
 export interface ModelFact {
@@ -188,8 +188,14 @@ const MOE_NON_EXPERT = QWEN.paramsTotal.value - MOE_DENSE_FFN_TOTAL
 const MOE_TOTAL = MOE_NON_EXPERT + MOE_BUDGET.storedFfnTotal + MOE_ROUTER_TOTAL
 
 /** Bytes one token sends in one layer: top-k copies of the hidden state, bf16. */
-const MOE_DISPATCH_PER_LAYER =
-  MOE_SHAPE.topK * QWEN.hiddenSize.value * QWEN.bytesPerElement.value
+const MOE_DISPATCH = {
+  tokens: 1,
+  layers: 1,
+  topK: MOE_SHAPE.topK,
+  hidden: QWEN.hiddenSize.value,
+  bytesPerElement: QWEN.bytesPerElement.value,
+} as const
+const MOE_DISPATCH_PER_LAYER = dispatchBytes(MOE_DISPATCH)
 
 /** The 4-bit case: routed experts at half a byte, everything else in bf16. */
 const MOE_EXPERTS_INT4_BYTES = MOE_BUDGET.storedFfnTotal * 0.5
@@ -237,6 +243,12 @@ export const MOE = {
     '64 logits x 5,120 hidden, one router row per expert (bias omitted)',
   ),
   routerParamsTotal: fact(MOE_ROUTER_TOTAL, 'parameters', 'derived', '327,680 x 64 layers'),
+  denseFfnTotal: fact(
+    MOE_DENSE_FFN_TOTAL,
+    'parameters',
+    'derived',
+    '64 layers x 267,386,880 — the feed-forward share of the dense model',
+  ),
   nonExpertParams: fact(
     MOE_NON_EXPERT,
     'parameters',
@@ -268,13 +280,13 @@ export const MOE = {
     'top-8 copies x 5,120 values x 2 B = 81,920 B = 80 KiB, dispatch only',
   ),
   dispatchBytesPerToken: fact(
-    MOE_DISPATCH_PER_LAYER * QWEN.layers.value,
+    dispatchBytes({ ...MOE_DISPATCH, layers: QWEN.layers.value }),
     'bytes per token',
     'derived',
     '80 KiB x 64 layers = 5 MiB, one way, before the combine returns',
   ),
   dispatchBytesMicroBatch2048: fact(
-    MOE_DISPATCH_PER_LAYER * QWEN.layers.value * 2048,
+    dispatchBytes({ ...MOE_DISPATCH, tokens: 2048, layers: QWEN.layers.value }),
     'bytes per forward',
     'derived',
     '5,242,880 B per token x 2,048 tokens = 10 GiB, dispatch only',

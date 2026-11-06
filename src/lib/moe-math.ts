@@ -277,9 +277,13 @@ export interface MoeBudget {
  * active width.
  *
  * The factor 3 is the gate, up and down matrices of a gated FFN (SwiGLU and
- * friends). `expertWidth` is derived, not chosen: `denseFfn * topK / experts`,
- * which is what makes the active feed-forward identical to the dense layer's and
- * lets a reader check the identity by hand (8 x 2,176 = 17,408).
+ * friends). `expertWidth` is `denseFfn / topK`: that is what makes the active
+ * feed-forward identical to the dense layer's, and it lets a reader check the
+ * identity by hand (8 x 2,176 = 17,408). The expert COUNT is a separate, free
+ * choice; stored over active is `experts / topK`. Deriving the width from the
+ * count instead (`denseFfn * topK / experts`) happens to agree at 64/8 and is
+ * wrong everywhere else: 32 experts at top-4 would come out half as wide as the
+ * active budget allows.
  *
  * @throws RangeError when the shape cannot divide exactly, when a count is not a
  * positive integer, or when topK exceeds the expert count.
@@ -291,11 +295,10 @@ export const moeParameterBudget = (input: MoeBudgetInput): MoeBudget => {
     throw new RangeError('moeParameterBudget needs positive integer shapes')
   }
   if (topK > experts) throw new RangeError('moeParameterBudget needs topK <= experts')
-  const numerator = denseFfn * topK
-  if (numerator % experts !== 0) {
+  if (denseFfn % topK !== 0) {
     throw new RangeError('the expert width must divide the dense FFN exactly')
   }
-  const expertWidth = numerator / experts
+  const expertWidth = denseFfn / topK
   const denseFfnPerLayer = 3 * hidden * denseFfn
   const perExpert = 3 * hidden * expertWidth
 

@@ -14,15 +14,15 @@ teachBack:
   modelAnswer: "O upcycling copia uma FFN densa treinada para os experts, então o MoE começa onde a execução densa parou em vez de em pesos aleatórios. O avanço é o compute já gasto no modelo denso, e uma execução do zero acaba alcançando: a execução do zero do OLMoE alcançou depois de 500B tokens, um quarto dos 2T do modelo denso, enquanto outro estudo precisou de 120% do compute do modelo denso. Uma execução curta então embolsa o avanço; uma longa paga por ele e termina no mesmo lugar. O AdamW divide a atualização de cada peso pelo histórico de gradiente daquele peso, então um expert que vê poucos tokens recebe um passo pequeno e ruidoso. O Muon ortogonaliza a atualização e a escala pela forma da matriz, então o tamanho do passo não encolhe com o gradiente, e o momentum carrega o expert por um passo sem tokens. A norma média de saída de um expert morto cai muito abaixo da mediana da camada; a de um expert fora de escala sobe muito acima. O MaxVio pega colapso de roteamento, que nenhuma das duas normas mostra sozinha."
 quiz:
   - question: "Quando o upcycling de um checkpoint denso treinado vale claramente a pena?"
-    options: ["Sempre que o MoE for treinar por menos tokens do que a execução densa treinou", "Sempre, porque começar de pesos treinados só pode ajudar", "Só quando o modelo denso e o MoE têm contagens de parâmetros idênticas", "Nunca, porque o estado do otimizador não pode ser reaproveitado"]
+    options: ["Quando a execução MoE é curta frente à densa que gerou o checkpoint", "Sempre, porque começar de pesos treinados só pode ajudar", "Só quando o modelo denso e o MoE têm contagens de parâmetros idênticas", "Nunca, porque o estado do otimizador não pode ser reaproveitado"]
     correctIndex: 0
     explanation: "O avanço vale o compute já gasto, então compensa quando a execução MoE é curta em relação à densa. Uma execução do zero alcança — em 25% dos tokens densos num estudo e 120% do compute em outro — então uma execução longa termina no mesmo lugar e a cópia não comprou nada. As contagens de parâmetros não precisam bater, e o Megatron começa o MoE com otimizador novo de qualquer forma."
   - question: "Por que o Muon mantém um expert raramente roteado em movimento quando o AdamW o deixa estagnar?"
-    options: ["O Muon aplica taxa de aprendizado maior a experts com menos tokens", "O Muon ortogonaliza a atualização e a escala pela forma, então o tamanho dela não segue o gradiente", "O Muon pula os experts que não receberam tokens naquele passo", "O Muon guarda os gradientes do expert em fp32 em vez de bf16"]
+    options: ["O Muon aplica taxa de aprendizado maior a experts com menos tokens", "O Muon ortogonaliza a atualização e a escala pela forma", "O Muon pula os experts que não receberam tokens naquele passo", "O Muon guarda os gradientes do expert em fp32 em vez de bf16"]
     correctIndex: 1
     explanation: "O AdamW normaliza o passo de cada peso pelo próprio histórico de gradiente, então um gradiente fino e ruidoso produz um passo pequeno. O Muon empurra os valores singulares da atualização para um e multiplica por uma escala que depende da forma, então o tamanho do passo é definido pela matriz e não pelo gradiente, e o momentum o carrega por um passo sem tokens. Ele não pula experts, e a precisão não é o mecanismo."
   - question: "A loss está plana. Qual par de medições separa um expert morto de um expert fora de escala?"
-    options: ["MaxVio e a loss de balanceamento", "Tokens por expert e a taxa de aprendizado", "As normas mínima e máxima de saída dos experts contra a mediana da camada", "A norma do gradiente e a norma dos parâmetros"]
+    options: ["MaxVio, já que expert morto e expert fora de escala sobem o mesmo número na mesma camada", "Tokens por expert e a taxa de aprendizado", "As menores e maiores normas de expert contra a mediana", "A norma do gradiente e a norma dos parâmetros"]
     correctIndex: 2
     explanation: "A norma de saída de um expert morto colapsa muito abaixo da mediana da camada; a de um expert fora de escala sobe muito acima — cerca de 5.700 vezes a mediana no caso que o handbook relata. O MaxVio mostra colapso de roteamento, que é outra falha e pode acompanhar um expert morto sem identificá-lo, e normas de execução não dizem nada sobre um expert."
 citations:
@@ -61,7 +61,7 @@ updated: "2026-11-06"
 
 Um MoE pode começar de pesos aleatórios, como qualquer modelo, ou de um checkpoint denso cujos blocos feed-forward já funcionam. A segunda opção é o **upcycling**: cortar cada FFN densa em pedaços, copiar os pedaços para os experts e continuar treinando.
 
-A [aula 4.18](/pt-br/lessons/4-transformer/4.18-mixture-of-experts/) escolheu uma forma em que os pedaços cabem exatamente. A FFN densa tem 17.408 de largura e os experts têm 2.176, então um bloco denso se divide em oito fatias, e cada fatia é copiada para oito dos 64 experts. O MoE agora computa, na inicialização, a mesma função do modelo denso de onde veio: oito cópias idênticas de uma fatia, executadas juntas, cobrem a largura que o bloco denso tinha.
+Na inicialização o MoE carrega o conhecimento do bloco denso: as oito fatias juntas cobrem a largura antiga, desde que o router tire um expert de cada grupo de oito.
 
 <Figure id="moe-upcycle-slices" />
 
@@ -77,23 +77,23 @@ O avanço é o compute já gasto na execução densa. Uma execução do zero aca
 
 No OLMoE, um MoE do zero alcançou o upcyclado depois de 500B tokens, um quarto dos 2T de tokens em que o modelo denso treinou. Nas execuções de sparse upcycling de Komatsuzaki et al., alcançar levou 120% do compute do checkpoint denso — mais do que simplesmente treinar o modelo denso tinha custado. Então a troca é: faça upcycling quando a execução MoE é curta em relação à densa, e espere que uma execução longa pague a conta inteira de qualquer forma.
 
-A mesma ideia vale para crescer um MoE existente: copie experts e suas linhas de router para ir de 32 a 64. Cópias exatas empatam, e um token então escolhe um expert e seu clone com o mesmo peso — um expert distinto em vez de dois. Perturbar a cópia dá gradiente ao router entre o par; experts novos aleatórios evitam o empate mas põem peso de roteamento em experts não treinados. Os dois já foram usados, e o handbook nomeia qual modelo usou qual.
+Uma cópia sem perturbação empata com o original, então um token divide o peso entre duas funções idênticas e não ganha nada. Perturbar a cópia quebra o empate e dá ao router algo a aprender; experts novos aleatórios evitam o empate mas começam sem treino.
 
 ## O otimizador vê outro problema
 
 Cada expert vê só os tokens roteados para ele. Num lote de milhões de tokens, um expert raro pode ver um punhado. Essa assimetria é onde AdamW e Muon se comportam diferente.
 
-O **AdamW** divide a atualização de cada peso pelo histórico de gradiente daquele peso. Um expert com poucos tokens produz um gradiente fino e ruidoso, e seu passo encolhe junto. O **Muon** ortogonaliza a atualização — empurrando seus valores singulares não nulos para um — e depois multiplica por uma escala definida só pela forma da matriz. O tamanho do passo deixa de seguir a magnitude do gradiente, e o momentum carrega o expert por um passo em que ele não recebeu token algum.
+O **Muon** primeiro ortogonaliza a atualização, nivelando seus valores singulares não nulos em um, e depois aplica um fator que depende só das dimensões da matriz.
 
-O Moonlight, um MoE com 3B ativos e 16B totais, teve desempenho significativamente melhor com Muon do que seu gêmeo AdamW nos mesmos ajustes, comparados a cerca de 1,2T tokens. Dois cuidados vêm junto. Sob Muon, experts podem colapsar, e uma escala de atualização grande demais pode fazer a execução divergir; o handbook relata que a escala padrão do Megatron, 1,0, divergiu em um denso de 7B nos testes de uma equipe, e que começar em 0,2 era mais seguro.
+O Moonlight — 3B ativos, 16B totais — superou seu gêmeo AdamW por margem clara nos mesmos ajustes, a cerca de 1,2T tokens.
 
-O router é uma questão separada que os adotantes respondem de formas diferentes. O DeepSeek-V4 mantém seu router em Muon. O Qwen3.8-Next moveu o router para AdamW depois que Muon desestabilizou o router no início do treino. Uma comparação pequena achou AdamW no router um pouco pior que atualizações de router normalizadas por linha ou espectrais à esquerda. Não há resposta assentada; se você adotar Muon, decida o otimizador do router de propósito, não por herança.
+O router é uma questão separada, e a prática se divide: o handbook relata o DeepSeek-V4 deixando o router em Muon, enquanto o Qwen3.8-Next o mudou para AdamW quando atualizações iniciais de Muon tornaram o roteamento instável. Uma comparação pequena achou AdamW no router um pouco pior que atualizações normalizadas por linha ou espectrais à esquerda. Não há resposta assentada; se você adotar Muon, decida o otimizador do router de propósito, não por herança.
 
 ## Multi-token prediction
 
-A **multi-token prediction** (MTP) adiciona uma camada transformer por token extra a prever. A camada extra recebe o estado oculto do modelo junto com o embedding do *próximo* token, projeta a concatenação de volta à largura oculta e prevê o token seguinte através da mesma cabeça de saída que o modelo principal usa. O DeepSeek-V3 a achou melhor na maioria dos benchmarks nas duas escalas que testou, e a camada extra pode ser descartada na inferência.
+A **multi-token prediction** (MTP) adiciona uma camada transformer por token extra a prever. A camada extra recebe o estado oculto do modelo junto com o embedding do *próximo* token, projeta a concatenação de volta à largura oculta e prevê o token seguinte através da mesma cabeça de saída que o modelo principal usa. O DeepSeek-V3 relata ganhos na maioria dos benchmarks em duas escalas, e a profundidade extra pode ser removida antes de servir.
 
-Ela custa tempo de passo, e o custo cai num lugar só. Sob paralelismo de pipeline o passo espera pelo estágio mais lento, então uma camada adicionada a um estágio custa a fatia dela do trabalho daquele estágio, não a fatia muito menor dela do modelo inteiro. A menos que um layout de pipeline a mova, o Megatron põe a camada MTP no último estágio, que já guarda a cabeça de saída. O handbook relata passos iniciais cerca de 37% mais longos com uma camada MTP nas suas execuções de 256 nós, e espalhar o modelo por oito estágios de pipeline não fechou a diferença; um MoE de 14B em outro lugar relata 7%. O DeepSeek-V3 pesou a loss MTP em 0,3 nos primeiros 10T tokens e 0,1 depois.
+Ela custa tempo de passo, e o custo cai num lugar só. O ritmo de um passo de pipeline é ditado pelo estágio mais lento, então o custo da camada extra é a fatia dela daquele estágio — bem mais do que a fatia dela do modelo. Sem um layout próprio, o Megatron atribui a camada MTP ao estágio final, onde a cabeça de saída já está. O handbook relata passos iniciais cerca de 37% mais longos com uma camada MTP nas suas execuções de 256 nós, e espalhar o modelo por oito estágios de pipeline não fechou a diferença; um MoE de 14B em outro lugar relata 7%. O DeepSeek-V3 pesou a loss MTP em 0,3 nos primeiros 10T tokens e 0,1 depois.
 
 ## Três falhas silenciosas
 
