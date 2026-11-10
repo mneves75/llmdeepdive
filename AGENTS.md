@@ -43,7 +43,7 @@ pnpm verify:live --target staging       # what the edge serves == dist/; --self-
 ```
 
 `--target staging` reads its URL from `BENCH_STAGING_URL` because the staging
-Worker sits on an account-specific `*.workers.dev` subdomain. `production` and
+Worker has `workers_dev: false` and no route, so it has no public URL. `production` and
 `local` are fixed; `--base <url>` overrides any of them.
 
 ## Verification
@@ -163,7 +163,7 @@ Two rules the geometry has already broken once each:
   is a teaching product. Silhouette-similarity scores against a generated
   reference are not a gate; the tests and `/explore/` are.
 
-**5. No `any`.** `unknown` plus a type guard. `ast-grep scan` blocks commits.
+**5. No `any`.** `unknown` plus a type guard. `ast-grep scan` (`pnpm lint`) fails CI; no commit hook is installed.
 
 **6. The CSP lives on one `_headers` line with a hard 2,000-character limit.**
 Cloudflare *drops* a `_headers` line above 2,000 characters, and the site then
