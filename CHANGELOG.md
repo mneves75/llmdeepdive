@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-11-02
+
+### Fixed
+
+- **Benchmark provenance & single source of truth (`src/lib/model-facts.ts`,
+  `Home.astro`, lessons `11.4` and `11.5` in EN and pt-BR):** centralized
+  TensorFold `v1.2.1` benchmark strings in `TENSORFOLD_BENCHMARKS` inside
+  `src/lib/model-facts.ts`, attributed the `201.4 tok/s` 8-stream aggregate
+  figure to the 64 GB Apple M5 Pro (`--parallel 8`, TensorFold 0.3.5.1 Python +
+  MLX) per upstream `docs/recipes/qwen3.8-27b.md` rather than M5 Ultra, and
+  distinguished `--parallel N` (concurrent decode lanes) from `--max-inflight N`
+  (admission limit).
+- **Scroll-entrance contrast (`src/styles/global.css`):** `@keyframes arrive`
+  animates `translate` only and keeps text at `opacity: 1`, so `--ink-faint`
+  never drops below 4.5:1 AA contrast during scroll entrance.
+- **Browser & pin verification (`scripts/render-check.mjs`,
+  `tests/content-pins.test.mjs`, `tests/course-player.test.mjs`):** `render:check`
+  now drives all three `.mechanics` stages on `/` and `/pt-br/` at 320px with
+  JavaScript disabled and verifies 320px end-scroll reachability on `.steps ol`
+  and `.index__list` (with `--self-test` defect injection); `content-pins.test.mjs`
+  enforces exact immutable tags across Tracks 11–13, `Home.astro`, and
+  `README.md`, rejecting bare or floating branch URLs.
+
 ## [0.15.0] — 2026-11-02
 
 ### Added
