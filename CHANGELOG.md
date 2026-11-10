@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `CLAUDE.md` imports `AGENTS.md` (a link left the canonical guidance out of Claude Code's context). `AGENTS.md`
+  says the staging Worker has no public URL (`workers_dev: false`, no route) and that `ast-grep scan` fails CI
+  rather than blocking commits, since no commit hook is installed.
+- `.claude/settings.json` (new): editing `wrangler.jsonc` and any production deploy ask first; a Stop hook runs
+  `typecheck`, `lint` and `test` when the tree changed since the last green run.
+
 ## [0.16.0] — 2026-11-06
 
 ### Added

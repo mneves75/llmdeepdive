@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-See **[AGENTS.md](./AGENTS.md)** — it is the canonical guidance for this repo and
+@AGENTS.md
+
+That import is the canonical guidance for this repo and
 covers commands, invariants, the performance gate, Cloudflare rules, the search
 metadata contract (structured data, social cards, `llms.txt`), the Signal
 Observatory's procedural material contract, the live “View lesson” deployment
