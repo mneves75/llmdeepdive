@@ -1,6 +1,6 @@
 ---
 name: llmdeepdive
-description: A printed star atlas of how language models work, in a desk edition and a field edition.
+description: A bilingual learning workspace for language models, with an interactive opening experiment and a star atlas for exploring the curriculum.
 colors:
   plate: "light-dark(#ffffff, #121212)"
   plate-raised: "light-dark(#f2f5fb, #1c1c1c)"
@@ -29,11 +29,11 @@ colors:
 typography:
   display:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
-    fontSize: "clamp(2.75rem, min(4.8vw, 8.6vh), 5rem)"
+    fontSize: "clamp(2.5rem, 5.8vw, 6rem)"
     fontWeight: 860
-    lineHeight: 0.94
-    letterSpacing: "-0.035em"
-    fontVariation: "'wdth' 92"
+    lineHeight: 0.99
+    letterSpacing: "-0.055em"
+    fontVariation: "'wdth' 89"
   numeral:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
     fontSize: "clamp(4rem, 3rem + 5vw, 7.5rem)"
@@ -168,10 +168,21 @@ components:
 
 ## Overview
 
-**Creative North Star: "The Two-Edition Star Atlas"**
+**Learning starts with a model prediction**
 
-The curriculum is a sky you learn to read. Every lesson is a star, every track
-a constellation, the course order is the line joining them, and the place you
+The home page pairs a small worked example with the first action a learner
+can take. A temperature control changes the distribution over three
+illustrative next-token candidates. The same sampling function serves the
+example and the lesson lab. The default distribution and explanation work
+without JavaScript. Entry cards take learners directly to the first track of
+each part. A returning learner can reopen their last lesson.
+
+The worked example follows the [IES learning practice guide](https://ies.ed.gov/ncee/WWC/PracticeGuide/1).
+Bilingual navigation and a usable HTML baseline follow the inclusion
+principles of the [Charter for Public Digital Learning Platforms](https://www.unesco.org/en/articles/unesco-unicef-and-itu-launch-charter-public-digital-learning-platforms).
+
+The optional curriculum map shows each lesson as a star and each track as
+a constellation. The course order is the line joining them, and the place you
 stopped carries a crimson reticle. The site is printed as an atlas in two
 editions with the same meanings: the desk edition is black stars on a white
 plate, the field edition is white stars on a night plate. A third surface, the
@@ -370,10 +381,10 @@ Sections are separated by a hairline rule and `6rem` of padding (`4rem` below
 `42rem`). The masthead is `4rem` tall, sticky, on an 88% plate with a 14px
 backdrop blur; anchors land below it through `scroll-padding-top`.
 
-- **Home:** the hero is a two-column grid (`0.78fr` copy, `1.22fr` sky) that
-  stacks below `70rem`. The atlas is taller than the copy, so the grid aligns to
-  the top and the copy is sticky below the masthead; stacked, the sky caps at
-  `46rem` wide. The catalog and the tracks index group tracks under a heading
+- **Home:** the introduction and the temperature experiment share a grid that
+  stacks below `53rem`. The three study entry cards follow. The home and
+  tracks index tuck the atlas inside native disclosures. The catalog and the
+  tracks index group tracks under a heading
   per course part. The five-step loop runs across in five columns, three
   below `70rem`, and down the page below `50rem`. The catalog is ruled rows:
   a `13rem` constellation figure, the text, and an `11rem` facts column; below
@@ -382,7 +393,8 @@ backdrop blur; anchors land below it through `scroll-padding-top`.
   reading column up to `46rem`, and a `13rem` sticky step list. From `58rem`
   the syllabus becomes a drawer. Below `58rem` the step list becomes the one
   sticky horizontal strip, masked at its trailing edge, with the syllabus
-  button. Below `50rem` the masthead scrolls away.
+  button. The opening outline offers direct links to the lesson sections,
+  including the lab when available. Below `50rem` the masthead scrolls away.
 - **Explorer:** a component index above, the stage (`2fr`) beside the
   evidence drawer (`minmax(18rem, 0.72fr)`), and five reading lenses below.
   Below `1180px` they stack; below `42rem` the index becomes one swipeable,

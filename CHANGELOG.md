@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Both language editions now open with a next-token prediction experiment. Adjusting temperature changes the probabilities, and the example links to the full sampling lab.
+- Learners can enter the course by goal, expand the curriculum map on demand, jump to a lesson section, and open the first lesson of each roadmap level directly.
+
 ## [0.17.0] — 2026-11-21
 
 ### Added

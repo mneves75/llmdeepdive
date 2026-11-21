@@ -412,8 +412,81 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
     failures.push(...explorer.failures)
     if (explorer.covered) explorerEngines.push(name)
     failures.push(...await mechanicsAndStripFailures(browser, name, base))
+    failures.push(...await learningStudioFailures(browser, name, base))
   } finally {
     await browser.close()
+  }
+  return failures
+}
+
+async function learningStudioFailures(browser, name, base) {
+  const failures = []
+  for (const prefix of ['', '/pt-br']) {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' })
+    try {
+      await page.goto(`${base}${prefix}/`)
+      const experiment = page.locator('[data-sampling-preview]')
+      const lead = experiment.locator('[data-preview-probability]').first()
+      const cold = await lead.textContent()
+      const slider = experiment.getByRole('slider')
+      await slider.press('End')
+      const warm = await lead.textContent()
+      if (!cold || !warm || Number.parseFloat(cold) <= Number.parseFloat(warm)) throw new Error('warmer temperature must flatten the distribution')
+      if (!(await slider.getAttribute('aria-valuetext'))?.includes(warm)) throw new Error('temperature control did not announce the changed probability')
+      await slider.press('Home')
+      if (await lead.textContent() !== cold) throw new Error('temperature did not restore the worked example')
+      const home = `${base}${prefix}/`
+      const paths = page.locator('[data-study-path]')
+      const destinations = await paths.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
+      if (destinations.length !== 3 || new Set(destinations).size !== 3) throw new Error('expected three distinct study paths')
+      await experiment.getByRole('link').click()
+      await page.locator('[data-lab-id="token-sampling"]').waitFor()
+      if (!page.url().endsWith('#lab-heading')) throw new Error('sampling link did not open the lab section')
+      const labPath = new URL(page.url()).pathname
+      await page.goto(home)
+      await page.locator('[data-continue-link]').click()
+      await page.locator('[data-lesson-progress]').waitFor()
+      if (new URL(page.url()).pathname !== labPath) throw new Error('continue did not reopen the last lesson')
+      for (const [index, href] of destinations.entries()) {
+        if (!href?.startsWith(`${prefix}/tracks/`)) throw new Error(`unlocalized track: ${href}`)
+        await page.goto(home)
+        await paths.nth(index).click()
+        await page.locator('#track-outline').waitFor()
+        if (new URL(page.url()).pathname !== href) throw new Error(`path opened the wrong track: ${href}`)
+        await page.locator('.track__actions a.button').click()
+        await page.locator('[data-lesson-progress]').waitFor()
+        await page.locator('.lesson-launch a[href="#concept-heading"]').click()
+        if (!page.url().endsWith('#concept-heading')) throw new Error('lesson outline failed to jump to the concept')
+      }
+      await page.goto(`${base}${prefix}/tracks/`)
+      await page.locator('.tracks__jump a[href="#part-engineering"]').click()
+      if (!page.url().endsWith('#part-engineering')) throw new Error('track index did not jump to engineering')
+      await page.locator('.tracks__sky summary').click()
+      if (await page.locator('.tracks__sky').getAttribute('open') === null) throw new Error('course map did not open')
+      await page.goto(`${base}${prefix}/roadmap/`)
+      await page.locator('[data-roadmap-start]').first().click()
+      await page.locator('[data-lesson-progress]').waitFor()
+      await page.goto(`${base}${prefix}/explore/`)
+      await page.locator('a[href="#transformer-components"]').click()
+      if (!page.url().endsWith('#transformer-components')) throw new Error('explorer did not jump to the component index')
+    } catch (error) {
+      failures.push(`${name} ${prefix || '/'} learning studio: ${error.message}`)
+    } finally {
+      await page.close()
+    }
+  }
+  const fallback = await browser.newPage({ javaScriptEnabled: false })
+  try {
+    await fallback.goto(base + '/pt-br/')
+    const experiment = fallback.locator('[data-sampling-preview]')
+    if (!await experiment.locator('[data-preview-probability]').first().isVisible()) throw new Error('missing worked example')
+    if (await experiment.getByRole('slider').isVisible()) throw new Error('inert slider is visible')
+    await experiment.locator('summary').click()
+    if (!await experiment.locator('details p').isVisible()) throw new Error('explanation did not open')
+  } catch (error) {
+    failures.push(`${name} /pt-br/ learning studio without JavaScript: ${error.message}`)
+  } finally {
+    await fallback.close()
   }
   return failures
 }
