@@ -104,15 +104,22 @@ async function layoutFailures(page) {
     // WCAG 4.1.2: a narrow layout once hid the syllabus button's only text and
     // left an unnamed icon. Charts are aria-hidden duplicates of the lesson
     // lists, so their links are outside the accessibility tree and need no name.
-    const shown = (element) =>
-      element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden' && !element.closest('[aria-hidden="true"], [inert]')
+    const shown = (element) => {
+      if (!element.checkVisibility({ visibilityProperty: true }) || element.closest('[aria-hidden="true"], [inert]')) return false
+      // Some WebKit builds retain layout boxes in a closed details panel.
+      // Only the first summary and its descendants are exposed.
+      for (let panel = element.closest('details:not([open])'); panel; panel = panel.parentElement?.closest('details:not([open])')) {
+        if (!panel.querySelector(':scope > summary')?.contains(element)) return false
+      }
+      return element.getClientRects().length > 0
+    }
     const nameOf = (element) =>
       (element.getAttribute('aria-label') ??
         (element.getAttribute('aria-labelledby') ?? '').split(/\s+/u).map((id) => document.getElementById(id)?.textContent ?? '').join(' ')).trim() ||
       textNodes(element).map((node) => node.textContent).join('').trim() ||
       [...element.querySelectorAll('img[alt]')].filter((image) => !image.closest('[aria-hidden="true"]')).map((image) => image.alt).join(' ').trim() ||
       (element.getAttribute('title') ?? '').trim()
-    for (const element of [...document.querySelectorAll('button, a[href], [role="button"]')].filter((control) => shown(control) && !nameOf(control)).slice(0, 5)) {
+    for (const element of [...document.querySelectorAll('button, a[href], [role="button"]')].filter((control) => shown(control) && !nameOf(control))) {
       failures.push(`unnamed control: ${element.outerHTML.slice(0, 80)}`)
     }
     // WCAG 1.4.1: a link inside running text must not differ by colour alone.
@@ -387,6 +394,8 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
           // Each planted control and link must be reported on its own.
           const planted = document.createElement('div')
           planted.innerHTML = [
+            '<details><summary>Closed example</summary><button data-planted="closed-panel"><svg></svg></button></details>',
+            '<details open><summary>Open example</summary><button data-planted="open-panel"><svg></svg></button></details>',
             '<button data-planted="icon"><svg width="16" height="16" aria-hidden="true"></svg></button>',
             '<button data-planted="hidden-glyph"><span aria-hidden="true">×</span></button>',
             '<p>Read <a href="#" style="text-decoration: none">planted direct link</a> first.</p>',
@@ -514,6 +523,7 @@ try {
     const expected = engines.flatMap((engine) => [
       `${engine} ${checked[0]}: page overflows`,
       `${engine} ${checked[0]}: unnamed control: <button data-planted="icon"`,
+      `${engine} ${checked[0]}: unnamed control: <button data-planted="open-panel"`,
       `${engine} ${checked[0]}: unnamed control: <button data-planted="hidden-glyph"`,
       `${engine} ${checked[0]}: link in running text without an underline: planted direct link`,
       `${engine} ${checked[0]}: link in running text without an underline: planted wrapped link`,
@@ -533,9 +543,11 @@ try {
         : []),
     ])
     const missed = expected.filter((prefix) => !failures.some((failure) => failure.startsWith(prefix)))
-    if (missed.length) {
+    const falsePositives = failures.filter((failure) => failure.includes('unnamed control: <button data-planted="closed-panel"'))
+    if (missed.length || falsePositives.length) {
       console.error('render:check SELF-TEST FAIL — injected defects went undetected:')
       for (const miss of missed) console.error('- ' + miss)
+      for (const falsePositive of falsePositives) console.error('- hidden control incorrectly reported: ' + falsePositive)
       process.exitCode = 1
     } else {
       console.log(`render:check SELF-TEST PASS — every injected defect was caught in ${engines.join(', ')} (${explorerNote})`)
