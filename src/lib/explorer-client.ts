@@ -177,7 +177,19 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     bundle.stage.invalidate()
   }
 
-  for (const btn of root.querySelectorAll<HTMLButtonElement>('[data-component]')) {
+  // The static index links straight to lessons. Install panel buttons only
+  // once their selection behavior is available, independently of WebGL.
+  for (const link of root.querySelectorAll<HTMLAnchorElement>('a[data-component]')) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = link.className
+    button.dataset.component = link.dataset.component
+    button.dataset.lessonHref = link.pathname
+    button.setAttribute('aria-current', String(link.dataset.component === componentId))
+    button.append(...link.childNodes)
+    link.replaceWith(button)
+  }
+  for (const btn of root.querySelectorAll<HTMLButtonElement>('button[data-component]')) {
     on(btn, 'click', () => setComponent(btn.dataset.component ?? ''))
   }
 

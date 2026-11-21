@@ -64,8 +64,8 @@ attention drawn as arcs that thicken with the attention weight, one gold
 feed-forward core and porcelain side meridians for the two residual bypasses
 make the architecture read as a scientific instrument rather than a stack of
 coloured boxes; every 12 seconds a token climbs the axis, pausing at each layer.
-Twelve numbered
-ports keep every library component selectable. Each opens through five lenses:
+Twelve numbered ports keep every library component selectable. With JavaScript
+disabled, the component index links directly to the corresponding lessons. Each opens through five lenses:
 maths, architectural differences, a token's journey, **how it fails**, and
 where it sits in the stack.
 

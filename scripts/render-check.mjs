@@ -581,6 +581,17 @@ async function learningStudioFailures(browser, name, base) {
       const width = await fallback.evaluate(() => document.documentElement.scrollWidth)
       if (width > 320) throw new Error(`token journey overflows at the ${stage} stage`)
     }
+    for (const prefix of ['', '/pt-br']) {
+      await fallback.goto(base + prefix + '/explore/')
+      const links = fallback.locator('#transformer-components a[href]')
+      if (await links.count() !== 12) throw new Error('static component index is incomplete')
+      const lesson = links.nth(4)
+      const href = await lesson.getAttribute('href')
+      await lesson.click()
+      if (new URL(fallback.url()).pathname !== href || !href?.startsWith(prefix + '/lessons/')) {
+        throw new Error('static component index failed to open the localized lesson')
+      }
+    }
   } catch (error) {
     failures.push(`${name} /pt-br/ learning studio without JavaScript: ${error.message}`)
   } finally {
