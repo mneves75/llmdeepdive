@@ -1,0 +1,123 @@
+---
+id: "29.2-retrieval-and-generation-metrics"
+track: "29-llm-and-rag-evaluations"
+order: 2
+title: "Retrieval & Generation Metrics: Recall to NDCG"
+summary: "Separate retrieval quality from generation faithfulness using Recall@k, Precision@k, MRR, and NDCG@k, then verify rank-sensitivity interactively in the RAG evaluation calculator."
+tier: "core"
+locale: "en"
+prerequisites: ["27.5-bm25-hybrid-search-and-rrf", "29.1-error-analysis-and-failure-taxonomies"]
+unlocks: ["29.5-offline-to-online-eval-flywheels"]
+analogy: "Evaluating a RAG system without separating retrieval from generation is like grading a chef and a grocery shopper with one combined score. If the shopper forgot to bring garlic, the chef cannot make garlic bread; if the shopper brought perfect ingredients and the chef burned the dish, firing the shopper will not fix dinner. Recall@k, MRR, and NDCG@k audit the shopper's bag and packing order, while faithfulness and answer relevance audit the chef's plate. The comparison stops at interaction: an overstuffed grocery bag of forty irrelevant items actually distracts the chef."
+teachBack:
+  prompt: "Suppose a corpus holds 5 relevant chunks for a query, and your retriever returns 8 chunks with relevant hits at ranks 2, 4, 5, and 8. Evaluated at cutoff k = 5, compute Recall@5, Precision@5, MRR, and NDCG@5, and explain what changes if a reranker moves the rank-2 hit up to rank 1."
+  modelAnswer: "Inside the top 5 ranks there are 3 hits (at ranks 2, 4, and 5; rank 8 falls outside the cutoff). Recall@5 is 3/5 = 60.0% and Precision@5 is 3/5 = 60.0%. The first hit is at rank 2, so MRR is 1/2 = 0.500. DCG@5 sums 1/log2(3) + 1/log2(5) + 1/log2(6) = 0.631 + 0.431 + 0.387 = 1.448, while IDCG@5 for all 5 ideal hits is 1 + 0.631 + 0.500 + 0.431 + 0.387 = 2.948, giving NDCG@5 = 1.448 / 2.948 = 0.491. Moving the rank-2 hit to rank 1 leaves Recall@5 and Precision@5 unchanged at 60.0%, while doubling MRR from 0.500 to 1.000 and lifting NDCG@5 because rank 1 carries the full discount weight of 1.000."
+quiz:
+  - question: "A corpus has 5 relevant chunks for a query. A retriever returns hits at ranks 2, 4, 5, and 8, evaluated at k = 5. A new reranker promotes the rank-2 hit to rank 1 while keeping the hits at ranks 4 and 5 unchanged. What happens to Recall@5 and MRR?"
+    options: ["Recall@5 increases from 60.0% to 80.0% while MRR stays at 0.500", "Recall@5 increases to 80.0% and MRR increases to 0.750", "Recall@5 drops to 40.0% while MRR stays unchanged", "Recall@5 stays identical at 60.0% because the same 3 hits remain inside top-5, while MRR doubles from 0.500 to 1.000"]
+    correctIndex: 3
+    explanation: "Recall@5 ignores rank order inside the top 5 (still 3 of 5 relevant chunks = 60.0%), whereas MRR depends on the reciprocal rank of the very first hit, jumping from 1/2 = 0.500 to 1/1 = 1.000."
+  - question: "Why does DCG@k divide each relevant hit at rank i by log2(i + 1)?"
+    options: ["To weight top ranks more heavily than lower ranks while still crediting deeper hits", "To guarantee that DCG@k can never exceed 1.0 even before dividing by IDCG@k across multi-hit queries", "To penalize retrievers whenever a corpus holds over 5 relevant chunks", "To force Recall@k and Precision@k to match"]
+    correctIndex: 0
+    explanation: "Logarithmic discounting assigns full weight 1/log2(2) = 1.000 to rank 1 and smoothly decreasing credit to lower ranks (0.631 at rank 2, 0.500 at rank 3), matching how both users and context-window attention value top slots."
+  - question: "A RAG pipeline logs 97% faithfulness on generation checks yet users still receive unhelpful answers on half of all support questions. What is the most likely diagnosis?"
+    options: ["The temperature setting is far too low to generate accurate paraphrases of the retrieved support passages", "The generator is inventing facts missing from context", "Retrieval misses key chunks, so the model faithfully summarizes off-topic text", "NDCG@5 is too high, leaving too few distractors"]
+    correctIndex: 2
+    explanation: "Faithfulness only verifies that the answer sticks to the supplied chunks. If retrieval misses the needed policy or fetches the wrong section, a faithful model still fails answer correctness and relevance."
+lab:
+  id: "rag-eval"
+  kind: "calculator"
+  budgetKb: 12
+citations:
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+  - title: "ColBERT: Efficient and Effective Passage Search via Contextualized Late Interaction over BERT"
+    authors: "Omar Khattab and Matei Zaharia"
+    year: 2020
+    url: "https://arxiv.org/abs/2004.12832"
+  - title: "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection"
+    authors: "Akari Asai et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.11511"
+updated: "2026-11-20"
+---
+
+The error audit in [lesson 29.1](/lessons/29-llm-and-rag-evaluations/29.1-error-analysis-and-failure-taxonomies/) showed why a single end-to-end score hides bugs: retrieval failures and generation failures need separate meters. If hybrid search from [lesson 27.5](/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/) misses the right passage, no prompt edit can save the reply; if retrieval brings the exact clause and the generator contradicts it, rebuilding the vector index wastes a week. This lesson derives the core information-retrieval (IR) metrics from one worked run—matching the interactive calculator on this page—and pairs them with generation-side grounding metrics.
+
+## One worked retrieval run by hand
+
+Suppose a query has $R = 5$ genuinely relevant chunks anywhere in the corpus. Your retriever returns 8 candidate chunks, and human relevance labels show hits at **ranks 2, 4, 5, and 8** (`[miss, hit, miss, hit, hit, miss, miss, hit]`). Because your context assembly budget keeps only the top $k = 5$ chunks, evaluate the list at cutoff $k = 5$.
+
+Count the hits inside the top 5 slots first: ranks 2, 4, and 5 are relevant, while rank 8 falls outside the cutoff, giving $\text{Hits@5} = 3$.
+
+1. **Recall@5** measures what fraction of *all* relevant corpus chunks made it into the top $k$ window:
+   $$
+   \text{Recall@5} = \frac{3}{5} = 60.0\%.
+   $$
+2. **Precision@5** measures what fraction of the $k$ returned slots are actually relevant (signal-to-noise inside the prompt):
+   $$
+   \text{Precision@5} = \frac{3}{5} = 60.0\%.
+   $$
+3. **Mean Reciprocal Rank (MRR)** looks strictly at the rank $r_1$ of the *first* relevant hit. Here the first hit sits at rank 2:
+   $$
+   \text{MRR} = \frac{1}{2} = 0.500.
+   $$
+4. **Discounted Cumulative Gain (DCG@5)** rewards every relevant hit inside top $k$ while discounting deeper ranks by $1 / \log_2(\text{rank} + 1)$. Rank 1 gets weight $1/\log_2(2) = 1.000$, rank 2 gets $1/\log_2(3) \approx 0.631$, rank 3 gets $1/\log_2(4) = 0.500$, rank 4 gets $1/\log_2(5) \approx 0.431$, and rank 5 gets $1/\log_2(6) \approx 0.387$. Summing our hits at ranks 2, 4, and 5 gives:
+   $$
+   \text{DCG@5} = \frac{1}{\log_2(3)} + \frac{1}{\log_2(5)} + \frac{1}{\log_2(6)} = 0.631 + 0.431 + 0.387 = 1.448.
+   $$
+5. **Ideal DCG (IDCG@5)** is the maximum possible DCG@5 if all $\min(R, k) = 5$ relevant chunks sat at ranks 1 through 5:
+   $$
+   \text{IDCG@5} = 1 + 0.631 + 0.500 + 0.431 + 0.387 = 2.948.
+   $$
+6. **Normalized DCG (NDCG@5)** divides actual DCG@5 by IDCG@5 so scores stay between 0 and 1 across queries with different numbers of relevant chunks:
+   $$
+   \text{NDCG@5} = \frac{1.448}{2.948} = 0.491.
+   $$
+
+<Figure id="29-2-ir-metrics-grid" />
+
+Test this exact run in the interactive lab below. Toggle rank 2 off and rank 1 on: Recall@5 and Precision@5 stay frozen at 60.0% because three hits still sit inside top 5, while MRR doubles from 0.500 to 1.000 and NDCG@5 jumps sharply because rank 1 carries the full weight of 1.000.
+
+## The general retrieval formulas and when each matters
+
+Across an evaluation set $Q$ of queries, let $y_i \in \{0, 1\}$ denote whether rank $i$ is relevant for a query with $R$ total relevant chunks in the corpus, and let $r_1$ be the rank of the first relevant hit:
+
+$$
+\text{Recall@}k = \frac{1}{R}\sum_{i=1}^{k} y_i, \qquad \text{Precision@}k = \frac{1}{k}\sum_{i=1}^{k} y_i, \qquad \text{MRR} = \frac{1}{|Q|}\sum_{q \in Q}\frac{1}{r_1(q)},
+$$
+
+$$
+\text{DCG@}k = \sum_{i=1}^{k} \frac{y_i}{\log_2(i + 1)}, \qquad \text{NDCG@}k = \frac{\text{DCG@}k}{\text{IDCG@}k}.
+$$
+
+Each metric guards a different stage of a RAG pipeline (Lewis et al., 2020; Khattab & Zaharia, 2020):
+
+- **Stage-1 hybrid search optimizes Recall@50 (or Recall@20):** if a relevant chunk misses the stage-1 candidate pool, no downstream reranker can recover it.
+- **Stage-2 reranking optimizes MRR and NDCG@5:** once the right chunks are in the pool, pushing them into top slots protects against truncation and lost-in-the-middle dilution.
+- **Multi-fact synthesis tracks Recall@k at the final prompt cutoff:** when an answer requires three separate policy clauses, MRR can hit 1.000 from the first clause alone while Recall@5 exposes that the other two clauses never arrived.
+
+## Generation metrics: faithfulness versus answer correctness
+
+Once retrieval puts the right evidence into the prompt, grade generation along two orthogonal axes (mirroring the support and utility checks in Asai et al., 2023):
+
+- **Faithfulness (groundedness):** break the generated answer into atomic claims and measure what share of claims are directly entailed by the retrieved chunks. A model that invents a fee amount fails faithfulness even if that fee happens to be true in the real world.
+- **Answer correctness and relevance:** verify whether the answer actually addresses the user's question and matches the ground-truth answer or rubric. A reply that faithfully quotes an unrelated refund paragraph scores 100% on faithfulness and 0% on answer correctness.
+- **Abstention precision and recall:** on unanswerable queries, track both how often the model abstains when evidence is missing and how rarely it refuses answerable queries.
+
+## Reading retrieval and generation scores together
+
+Putting both halves in one table turns guesswork into diagnosis:
+
+| Recall@5 | Faithfulness | Answer correctness | Likely root cause |
+|---|---|---|---|
+| Low (45%) | High (96%) | Low (42%) | Retrieval or chunking bottleneck; generator is obeying bad context |
+| High (92%) | Low (64%) | Low (58%) | Grounding failure; tighten citations, context order, or model strength |
+| High (92%) | High (96%) | Low (60%) | Prompt or task mismatch; model summarizes faithfully without answering the question |
+
+:::note
+Always report $k$ and corpus size alongside every retrieval metric. "Recall = 85%" means nothing until you know whether $k = 5$ or $k = 50$, and whether the relevance labels came from real user queries or easy synthetic keyword matches.
+:::

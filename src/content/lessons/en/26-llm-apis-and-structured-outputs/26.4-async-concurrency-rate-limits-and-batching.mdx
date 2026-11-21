@@ -1,0 +1,91 @@
+---
+id: "26.4-async-concurrency-rate-limits-and-batching"
+track: "26-llm-apis-and-structured-outputs"
+order: 4
+title: "Async Concurrency, Rate Limits & Batch Queues"
+summary: "Launching hundreds of parallel LLM calls trips token-per-minute ceilings long before request caps. Size concurrency with Little's Law, pace with dual token buckets, and separate real-time lanes from batch jobs."
+tier: "foundations"
+locale: "en"
+prerequisites: ["26.2-streaming-sse-and-cancellation", "24.2-retries-and-circuit-breakers"]
+unlocks: ["31.1-end-to-end-latency-budgets"]
+analogy: "Calling a rate-limited LLM API with an unbounded async loop is like sending two hundred delivery trucks into a toll plaza that clears only fifty tons of cargo per minute. Even though ten lanes are open, the weight scale stops ninety percent of the trucks at the gate, and every driver backing up to try again clogs the highway worse. The comparison stops at upfront reservation: many API providers reserve your full max_tokens budget the moment a request enters the gate, refunding unused output tokens only after the truck exits."
+teachBack:
+  prompt: "A data pipeline must classify 5,000 support tickets against an API limited to 600 RPM and 120,000 TPM. Each ticket takes 2,400 total tokens and 3.0 s end to end. Compute which quota binds first, the maximum sustainable request rate, and the steady-state concurrency, then explain why setting max_tokens to 8,192 on a 20-token classifier hurts throughput."
+  modelAnswer: "The RPM limit allows 600 / 60 = 10.0 req/s, whereas the TPM limit allows 120,000 / 2,400 = 50 req/min, or 0.833 req/s—twelve times tighter than RPM. By Little's Law, optimal in-flight concurrency is 0.833 × 3.0 = 2.5, so running 2 to 3 concurrent requests maximizes throughput without triggering 429 errors. Setting max_tokens to 8,192 when the answer only needs 20 tokens hurts throughput because many providers reserve input_tokens + max_tokens against your TPM bucket at admission time, artificially capping how many concurrent requests can enter before actual usage is reconciled."
+quiz:
+  - question: "Your provider tier allows 500 RPM and 100,000 TPM. Each request consumes 2,000 total tokens and takes 2.0 s end to end. What is the maximum sustainable steady-state concurrency?"
+    options: ["About 17 concurrent calls, governed by 500 RPM divided across 60 seconds times 2.0 s", "About 50 concurrent calls, matching the number of requests that fit inside one minute of TPM", "About 200 concurrent calls, because asyncio I/O wait hides network latency across sockets", "About 2 concurrent calls, because 100,000 TPM caps arrival rate at 0.833 req/s and Little's Law gives 1.67 in flight"]
+    correctIndex: 3
+    explanation: "At 2,000 tokens per call, 100,000 TPM allows at most 50 requests per minute (0.833 req/s), far below the 500 RPM cap (8.33 req/s). Applying Little's Law, L = 0.833 req/s × 2.0 s = 1.67 concurrent requests in flight—so pacing around 2 workers avoids 429 storms."
+  - question: "A classification script only outputs a 15-token JSON object, yet it hits HTTP 429 errors at half the expected throughput after someone raises max_tokens from 64 to 4,096. Why?"
+    options: ["Higher max_tokens switches the endpoint automatically from HTTP/2 multiplexing to blocking HTTP/1.1", "Providers commonly reserve input plus max_tokens against the TPM bucket before generation finishes", "Increasing max_tokens multiplies the prefill prompt size by the output ceiling before computing attention", "Higher max_tokens disables full-jitter backoff inside standard HTTP client retry adapters"]
+    correctIndex: 1
+    explanation: "Because the server does not know the exact output length when admitting a request, many rate limiters deduct input_tokens + max_tokens from your TPM allowance upfront and credit back unused output tokens after completion. Tight max_tokens bounds keep admission capacity accurate."
+  - question: "Your team runs both an interactive customer chat and a nightly backfill of 200,000 product descriptions under one provider account. What queue architecture protects interactive latency while minimizing cost?"
+    options: ["Send both workloads through one shared asyncio semaphore so unused chat capacity fills instantly", "Double the retry limit on the nightly backfill so failed calls eventually preempt interactive traffic", "Route the nightly backfill to a Batch API or a separate capped worker lane below interactive quota", "Disable streaming on interactive chat during the nightly window so both jobs use identical HTTP timeouts"]
+    correctIndex: 2
+    explanation: "Bulk offline workloads tolerate 24-hour completion windows and fit provider Batch APIs (which run on separate quota pools and typically cost 50% less) or a strictly capped low-priority queue. Sharing an uncapped pool lets batch traffic exhaust TPM and stall live users."
+citations:
+  - title: "RFC 9110: HTTP Semantics (Section 15.5.29 & Retry-After)"
+    authors: "Roy T. Fielding, Mark Nottingham, Julian Reschke"
+    year: 2022
+    url: "https://www.rfc-editor.org/rfc/rfc9110"
+  - title: "Exponential Backoff And Jitter"
+    authors: "Marc Brooker, Amazon Web Services"
+    year: 2015
+    url: "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
+updated: "2026-11-20"
+---
+
+Because an LLM request spends most of its life waiting on remote GPUs, writing a sequential `for` loop over 1,000 documents wastes minutes on idle network wait. Switching to `asyncio.gather` or `Promise.all` fixes the wait—and immediately triggers a wall of `HTTP 429 Too Many Requests` errors. Fast, reliable LLM clients do not maximize raw concurrency; they pace traffic to match both request and token quotas.
+
+## Dual rate limits and Little's Law
+
+Unlike ordinary REST APIs that throttle only by requests per second, LLM providers enforce **dual rate limits**: **Requests Per Minute (RPM)** and **Tokens Per Minute (TPM)**, often split further into separate input-TPM and output-TPM buckets plus a concurrent-connections cap. Whichever bucket empties first stops your pipeline.
+
+Work through a concrete example before jumping to the general formula. Suppose your tier allows `RPM = 500` and `TPM = 100,000`. Each API call uses `2,000` total tokens (input plus reserved output) and takes `2.0 s` end to end (matching the prefill plus decode duration from [Streaming SSE, Cancellation & Partial Output](/lessons/26-llm-apis-and-structured-outputs/26.2-streaming-sse-and-cancellation/)).
+
+- The RPM ceiling allows `500 / 60 = 8.33` requests per second.
+- The TPM ceiling allows `100,000 / 2,000 = 50` requests per minute, or `50 / 60 = 0.833` requests per second—ten times tighter than RPM.
+
+How many requests should be in flight at once? **Little's Law** from queueing theory links steady-state concurrency $C^*$ to arrival rate $\lambda$ and average service time $W$: $C^* = \lambda \cdot W$. Plugging in $\lambda = 0.833\text{ req/s}$ and $W = 2.0\text{ s}$ gives $C^* = 0.833 \times 2.0 = 1.67$ requests in flight. Running `2` concurrent workers saturates your entire quota smoothly. Launching `50` workers sends a burst of 100,000 tokens in the first second, blows past the minute budget instantly, and spends the next 58 seconds fighting 429 retries.
+
+In general, for mean token cost per request $\bar{T}$ and mean end-to-end latency $W$ (in seconds), the effective throughput cap $\lambda_{\max}$ (requests per second) and target concurrency $C^*$ are:
+
+$$\lambda_{\max} = \min\!\left(\frac{\text{RPM}}{60},\; \frac{\text{TPM}}{60 \cdot \bar{T}}\right), \qquad C^* = \lambda_{\max} \cdot W$$
+
+## Client-side pacing: semaphores and token buckets
+
+Relying on server 429 responses as your primary throttle is expensive: failed attempts waste TCP handshakes, inflate p99 latency, and burn through your retry budget. Pace requests *before* they leave your process using two lightweight primitives:
+
+- **A concurrency semaphore** bounds the maximum number of simultaneous open sockets (useful for memory, streaming buffers, and provider connection limits).
+- **Dual client-side token buckets** track both RPM and TPM locally. Before dispatching a request, estimate its token budget (`estimated_input_tokens + max_tokens`), wait until both the request bucket and token bucket have room, and reconcile the token bucket once the real `usage` arrives in the response.
+
+Notice why `max_tokens` matters even when your model only writes 30 words. Many gateways deduct `input_tokens + max_tokens` at admission time because they cannot predict output length upfront, refunding the unused remainder only after completion. Leaving `max_tokens` at `4,096` for a short classifier can shrink effective admission throughput by more than half.
+
+:::insight
+Read provider rate-limit headers (`x-ratelimit-remaining-tokens`, `x-ratelimit-reset-tokens`, and RFC 9110 `Retry-After`) on every response. When a shared API key serves multiple workers, server headers tell each worker when global quota is nearly empty before a 429 even fires.
+:::
+
+## Coordinating retries without retry storms
+
+Even well-paced clients see occasional `429` or `503` spikes when another tenant bursts or a GPU node restarts. Pair your pacer directly with the resilience controls from [Retries and Circuit Breakers](/lessons/24-agent-resilience-and-fallbacks/24.2-retries-and-circuit-breakers/):
+
+- Honor `Retry-After` strictly when present; otherwise apply exponential backoff with full jitter (Brooker 2015) so workers spread out instead of hammering the boundary of the next minute window together.
+- Enforce a process-wide retry budget so a prolonged provider outage degrades fast instead of multiplying outbound load.
+- Add **adaptive concurrency** (additive increase, multiplicative decrease): when 429s appear, halve the local worker ceiling temporarily and ramp back up gradually after a clean window.
+
+:::warning
+Never retry non-idempotent requests blindly after a timeout without tracking whether the server charged tokens or executed side effects. Distinguish pre-dispatch `429` rejections (zero tokens consumed, safe to retry) from mid-stream disconnects after partial generation.
+:::
+
+## Real-time lanes versus asynchronous Batch APIs
+
+Not every LLM call has a human waiting on a spinner. Mixing offline bulk jobs—nightly classification, synthetic dataset generation, embedding backfills, or evaluation sweeps—into the same quota pool as live user traffic is a classic production outage pattern: one backfill script consumes the account's TPM and freezes customer chat.
+
+Split workloads into two explicit lanes:
+
+- **Interactive lane** reserves dedicated API keys or project quotas, uses streaming SSE with tight timeouts, and keeps latency-sensitive requests isolated.
+- **Batch lane** uses asynchronous **Batch APIs** (uploading a JSONL file of requests for completion within a 24-hour window, typically at a 50% token discount on separate quota pools) or a bounded background worker queue throttled to a small fraction of spare TPM.
+
+Separating interactive and batch traffic lets you hit tight latency budgets for users while paying half price on background processing.

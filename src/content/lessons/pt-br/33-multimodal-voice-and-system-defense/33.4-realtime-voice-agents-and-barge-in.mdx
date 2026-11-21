@@ -1,0 +1,125 @@
+---
+id: "33.4-realtime-voice-agents-and-barge-in"
+track: "33-multimodal-voice-and-system-defense"
+order: 4
+title: "Agentes de Voz em Tempo Real, VAD e os 500 ms"
+summary: "Por que pipelines de voz em cascata passam de 1.170 ms e soam robóticos, como speech-to-speech nativo via WebRTC atinge 460 ms abaixo do teto de 500 ms e como funciona o cancelamento de barge-in."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["31.1-end-to-end-latency-budgets", "33.3-audio-tokens-whisper-stt-and-tts"]
+unlocks: ["33.5-applied-fine-tuning-and-engineering-defense"]
+analogy: "Pense em conversar por rádio walkie-talkie contra conversar cara a cara. No walkie-talkie, você termina a frase, espera o bipe, espera a outra pessoa apertar o botão e não consegue interrompê-la no meio se ela entendeu errado—toda pausa fica rígida e artificial. Ligações humanas funcionam em full-duplex com trocas abaixo de meio segundo e interrupção instantânea quando alguém diz 'Espera, eu quis dizer quinta-feira'. A comparação para na memória de contexto: um humano sabe na hora qual metade da frase nunca chegou a dizer, enquanto um agente de voz precisa truncar explicitamente o histórico no milissegundo exato em que a reprodução parou."
+teachBack:
+  prompt: "Abra o orçamento exato de latência de um pipeline de voz em cascata (1.170 ms) contra um pipeline nativo speech-to-speech em streaming sobre WebRTC (460 ms), explique por que WebSockets sobre TCP prejudicam voz em tempo real sob perda de pacotes frente ao WebRTC e descreva os três passos que cliente e servidor executam durante um barge-in."
+  modelAnswer: "No pipeline em cascata, as etapas se empilham em série antes que o usuário ouça um som: detecção de fim de fala VAD (300 ms) + finalização STT (220 ms) + TTFT do LLM (380 ms) + primeiro áudio TTS (180 ms) + RTT de rede (90 ms) = 1.170 ms—mais que o dobro do limiar conversacional humano de 500 ms. Uma arquitetura nativa speech-to-speech por streaming sobre WebRTC elimina os saltos separados de STT e TTS gerando tokens de áudio diretamente: endpointing semântico VAD (180 ms) + primeiro quadro nativo áudio-a-áudio (210 ms) + RTT de transporte WebRTC (70 ms) = 460 ms, ficando abaixo de 500 ms e economizando 710 ms por turno. O WebRTC roda sobre UDP (com áudio Opus, buffers de jitter e cancelamento acústico de eco embutido), então um pacote perdido vira uma microfalha mascarada em vez de bloqueio head-of-line do TCP em WebSockets, que trava todo o stream aguardando retransmissão. Quando o usuário interrompe no meio da fala (barge-in), três passos rodam na hora: (1) o cliente esvazia o buffer local de reprodução em ~50 ms para o bot parar de falar por cima, (2) o servidor cancela o stream ativo de LLM/TTS parando a cobrança dos tokens restantes e (3) o histórico da conversa é truncado no timestamp exato do áudio efetivamente reproduzido para que o modelo saiba o que o usuário não ouviu."
+quiz:
+  - question: "No nosso orçamento resolvido de latência, quanto silêncio um pipeline nativo speech-to-speech em streaming via WebRTC (460 ms) economiza por turno em relação ao pipeline em cascata VAD + STT + LLM + TTS (1.170 ms)?"
+    options: ["380 ms, igual ao TTFT do LLM em cascata", "400 ms, poupando só as etapas de STT e TTS", "500 ms, levando a latência exatamente ao limite humano", "710 ms, reduzindo o turno de 1.170 ms para 460 ms"]
+    correctIndex: 3
+    explanation: "O pipeline em cascata soma 300 + 220 + 380 + 180 + 90 = 1.170 ms. O pipeline nativo em streaming soma 180 + 210 + 70 = 460 ms. A diferença é 1.170 - 460 = 710 ms economizados em cada turno da conversa."
+  - question: "Durante uma ligação, o bot começa a ditar um código de confirmação de 12 dígitos, e o cliente interrompe no 4º dígito dizendo 'Calma, deixa eu pegar uma caneta'. Que bug ocorre se o servidor cancelar o áudio mas deixar o texto completo pré-gerado no histórico do LLM?"
+    options: ["O WebRTC derruba a conexão UDP porque os timestamps de áudio divergem", "O modelo acredita que já leu os 12 dígitos e deixa de repeti-los depois", "O cancelador de eco reproduz os 8 dígitos restantes dentro do microfone", "O VAD para de disparar nos turnos seguintes até os 12 dígitos terminarem"]
+    correctIndex: 1
+    explanation: "A geração do LLM corre mais rápido que a fala humana, então o modelo já tinha gerado os 12 dígitos enquanto o alto-falante só tocou os dígitos 1 a 4 antes do barge-in. Se o servidor não truncar o turno do assistente no timestamp de reprodução reportado pelo cliente, o modelo presume que o cliente ouviu tudo."
+  - question: "Por que o WebRTC supera WebSockets sobre TCP em chamadas bidirecionais de voz ao vivo sobre redes móveis?"
+    options: ["O WebRTC comprime a fala para tokens de texto de 1 bit no navegador", "O WebRTC elimina a necessidade de endpointing VAD e tratamento de barge-in", "O WebRTC roda sobre UDP com cancelamento de eco, evitando bloqueio head-of-line do TCP", "O WebRTC garante zero perda de pacotes em redes celulares por retransmissão automática"]
+    correctIndex: 2
+    explanation: "O TCP garante entrega em ordem, então um pacote perdido trava todos os quadros de áudio mais novos atrás dele (bloqueio head-of-line), gerando engasgos de centenas de milissegundos. O WebRTC usa UDP com ocultação de perda no Opus, buffer adaptativo de jitter e cancelamento acústico de eco nativo."
+citations:
+  - title: "WebRTC: Real-Time Communication in Browsers"
+    authors: "W3C WebRTC Working Group"
+    year: 2024
+    url: "https://www.w3.org/TR/webrtc/"
+  - title: "High Fidelity Neural Audio Compression (EnCodec)"
+    authors: "Alexandre Défossez, Jade Copet, Gabriel Synnaeve, Yossi Adi"
+    year: 2022
+    url: "https://arxiv.org/abs/2210.13438"
+updated: "2026-11-20"
+---
+
+Um chatbot de texto pode levar 1,2 segundo para mostrar a primeira palavra e ainda parecer rápido. Um agente de voz que leva 1,2 segundo parece quebrado. A conversa humana tem um ritmo físico apertado: interlocutores trocam de turno com cerca de **200 a 500 ms** de intervalo. Quando o silêncio passa de 700 a 1.000 ms, quem ligou acha que a linha caiu, repete "Alô?" e atropela a resposta atrasada do bot.
+
+Esta aula aplica a disciplina de orçamento de latência da [aula 31.1](/pt-br/lessons/31-ai-system-design-and-caching/31.1-end-to-end-latency-budgets/) às representações de fala da [aula 33.3](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.3-audio-tokens-whisper-stt-and-tts/), provando com aritmética exata por que pipelines de voz em cascata reprovam no teste dos 500 ms e como speech-to-speech em streaming, WebRTC e barge-in tornam agentes de voz naturais.
+
+## Exemplo resolvido: 1.170 ms em cascata contra 460 ms em streaming nativo
+
+Todo turno de voz é uma cadeia serial de atrasos desde o instante em que a pessoa termina de falar até o primeiro milissegundo da resposta chegar ao ouvido dela:
+
+$$
+T_{\text{turn}} = T_{\text{VAD}} + T_{\text{STT}} + T_{\text{LLM}} + T_{\text{TTS}} + T_{\text{RTT}}
+$$
+
+Primeiro precifique um **pipeline de voz em cascata** típico (serviços separados de Speech-to-Text, LLM de texto e Text-to-Speech encadeados):
+
+- **Detecção de fim de fala VAD** ($T_{\text{VAD}} = 300\ \text{ms}$): o detector de atividade de voz espera 300 ms de silêncio para confirmar que o usuário parou de falar em vez de pausar entre palavras.
+- **Finalização STT** ($T_{\text{STT}} = 220\ \text{ms}$): o reconhecedor de fala estabiliza as últimas palavras em uma transcrição final.
+- **TTFT do LLM** ($T_{\text{LLM}} = 380\ \text{ms}$): o modelo de linguagem faz prefill do histórico e emite tokens iniciais suficientes para formar a primeira cláusula falável.
+- **Primeiro áudio TTS** ($T_{\text{TTS}} = 180\ \text{ms}$): o sintetizador converte essa primeira cláusula no quadro de áudio inicial.
+- **RTT de rede** ($T_{\text{RTT}} = 90\ \text{ms}$): pacotes de áudio sobem até o servidor e voltam ao aparelho.
+
+Some a cadeia em cascata:
+
+$$
+T_{\text{cascaded}} = 300 + 220 + 380 + 180 + 90 = 1{,}170\ \text{ms}
+$$
+
+Em **1.170 ms**, o bot fica mudo por mais de um segundo inteiro a cada turno—mesmo antes de incluir qualquer chamada de ferramenta ou busca RAG.
+
+Agora precifique um **pipeline nativo speech-to-speech em streaming** sobre WebRTC, em que um único modelo multimodal ingere tokens de áudio em streaming e emite tokens de áudio diretamente (eliminando os saltos separados de finalização STT e primeiro bloco TTS):
+
+- **Endpointing semântico VAD** ($T_{\text{VAD}} = 180\ \text{ms}$): um modelo leve de detecção de turno usa entonação e sintaxe—não apenas tempo bruto de silêncio—para identificar pensamentos concluídos mais cedo.
+- **Primeiro quadro nativo áudio-a-áudio** ($T_{\text{LLM}} = 210\ \text{ms}$, com $T_{\text{STT}} = 0$ e $T_{\text{TTS}} = 0$): o modelo gera os quadros iniciais do codec neural de áudio diretamente.
+- **RTT de transporte WebRTC** ($T_{\text{RTT}} = 70\ \text{ms}$): rota de mídia UDP direta na borda.
+
+Some a cadeia nativa em streaming:
+
+$$
+T_{\text{streaming}} = 180 + 0 + 210 + 0 + 70 = 460\ \text{ms}
+$$
+
+O streaming nativo reduz o silêncio do turno para **460 ms**—abaixo da meta conversacional de **500 ms**, economizando **710 ms** ($1{,}170 - 460 = 710\ \text{ms}$) em cada turno.
+
+<Figure id="33-4-voice-latency-stack" />
+
+## Endpointing: temporizadores de silêncio versus detecção semântica
+
+Repare que só o **endpointing VAD** consumiu 300 ms na pilha em cascata. Por que não baixar logo o limiar de silêncio para 80 ms? Porque humanos pausam por 200 a 400 ms no meio da frase ("O número do meu pedido é... deixa eu ver... 4829"). Um temporizador ingênuo de silêncio corta o usuário toda vez que ele respira ou pensa.
+
+O **endpointing semântico** resolve esse dilema observando prosódia acústica (queda de entonação ao fim de uma pergunta contra tom plano no meio da frase) junto com palavras parciais ("O número do meu pedido é..." está gramaticalmente incompleto). Quando a frase termina e a entonação cai, o modelo dispara em ~180 ms; quando a frase está inacabada, ele aguarda com paciência por 800 a 1.200 ms sem atropelar quem fala.
+
+## Transporte: por que WebRTC vence WebSockets em voz
+
+Muitos protótipos enviam o áudio do microfone ao backend por **WebSocket** porque WebSockets são simples de ligar em Node ou Python. No Wi-Fi limpo do escritório, parecem ótimos. Em um celular real no 4G/5G com 2% de perda de pacotes, degradam rápido.
+
+WebSockets rodam sobre **TCP**, que impõe entrega estritamente ordenada. Se o pacote de áudio #41 se perder, o TCP congela os pacotes #42, #43 e #44 no buffer do kernel até o #41 ser retransmitido—criando **bloqueio head-of-line** que transforma um soluço de 20 ms em um travamento de 350 ms e quebra a fluidez da conversa.
+
+O **WebRTC** (W3C WebRTC 1.0) trafega mídia em tempo real sobre **UDP** com três recursos de áudio integrados que você teria de reimplementar na mão:
+
+- **Ocultação de perda de pacotes (codec Opus)**: um pacote perdido de 20 ms é interpolado localmente em vez de segurar pacotes mais recentes atrás dele.
+- **Buffers adaptativos de jitter**: suavizam chegadas irregulares de rede sem acumular filas de centenas de milissegundos.
+- **Cancelamento Acústico de Eco (AEC)**: subtrai a saída do alto-falante do bot do sinal captado pelo microfone para que o bot não ouça a própria voz nem interrompa a si mesmo.
+
+## Barge-in e truncamento do estado de reprodução
+
+Em ligações reais, pessoas interrompem o tempo todo ("Na verdade, cancela isso e confere terça-feira"). Suportar **barge-in** (deixar o usuário interromper o agente no meio da frase) exige coordenação estreita entre cliente e servidor:
+
+1. **Silenciamento local imediato (< 50 ms)**: no instante em que o VAD local (após o AEC) detecta fala do usuário, o cliente interrompe a reprodução e descarta os quadros de áudio enfileirados.
+2. **Cancelamento do stream no servidor**: o cliente envia um evento `barge_in` com o deslocamento exato `played_ms`; o servidor aborta imediatamente o stream ativo de LLM/TTS para parar de pagar pelos tokens não falados.
+3. **Truncamento do histórico**: como a geração corre muito mais rápido que a fala em tempo real 1x, o LLM pode ter gerado 8 segundos de resposta enquanto o usuário ouviu apenas 1,5 segundo antes de interromper. O servidor precisa cortar a transcrição gravada do assistente na marca de 1,5 segundo. Sem truncamento, o agente age depois como se já tivesse dito fatos que o usuário nunca ouviu.
+
+:::warning
+Nunca ignore o Cancelamento Acústico de Eco ao ativar barge-in em viva-voz. Sem AEC, a própria voz do bot vaza de volta para o microfone, dispara o VAD como "fala do usuário" e provoca um laço infinito de autointerrupção logo após a primeira sílaba.
+:::
+
+## Mantendo chamadas de ferramentas e conformidade intactas
+
+Modelos nativos speech-to-speech atingem 460 ms com folga em diálogo puro, mas fluxos corporativos ainda exigem consultas RAG, gravações em banco e transcrições auditáveis. Dois padrões práticos ligam os dois mundos:
+
+- **Confirmação de preenchimento durante ferramentas lentas**: quando uma chamada de ferramenta leva 900 ms (consultar um voo ou pedido), emita uma confirmação breve e natural ("Vou conferir esse pedido agora") antes de executar a ferramenta de forma assíncrona para evitar silêncio morto.
+- **Log paralelo de transcrição e guardrails**: registre a transcrição sincronizada ao lado de spans OpenTelemetry do turno de áudio (incluindo `vad_ms`, `first_audio_ms` e `barge_in_count`) para que auditorias de conformidade e avaliações offline continuem funcionando igual a agentes de texto.
+
+:::caveat
+Pipelines em cascata STT + LLM + TTS continuam sendo a escolha certa quando você precisa impor guardrails determinísticos rígidos, redação exata de PII ou dicionários específicos de pronúncia *entre* a fala do usuário e o modelo—ou quando o orçamento exige rotear perguntas simples para um LLM textual barato. Otimize pilhas em cascata com parciais de STT em streaming, TTS por cláusula e transporte WebRTC, trazendo a latência em cascata para a faixa de 650 a 800 ms.
+:::
+
+Construímos até aqui cada peça da engenharia de IA moderna—de APIs e RAG híbrido até observabilidade, economia de nuvem, RAG visual, geração e voz em tempo real. A última aula, 33.5, amarra tudo: servir muitos adaptadores ajustados de forma eficiente com S-LoRA e defender qualquer arquitetura de IA em produção sob incidentes reais e testes extremos de escala.

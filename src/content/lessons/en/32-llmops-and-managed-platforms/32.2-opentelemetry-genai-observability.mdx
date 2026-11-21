@@ -1,0 +1,114 @@
+---
+id: "32.2-opentelemetry-genai-observability"
+track: "32-llmops-and-managed-platforms"
+order: 2
+title: "OpenTelemetry GenAI Tracing & Observability"
+summary: "How distributed traces using OpenTelemetry GenAI semantic conventions expose retrieval bottlenecks, token spend, finish reasons and privacy boundaries without locking you into one vendor."
+tier: "advanced"
+locale: "en"
+prerequisites: ["32.1-coupled-versioning-and-release-artifacts"]
+unlocks: ["32.3-shadow-canary-and-incident-rollbacks"]
+analogy: "Think of a parcel tracking log versus a single 'delivered' stamp. Knowing only that a package took five days tells you nothing about whether it sat at customs, missed a sorting truck, or waited at the local depot. A distributed trace breaks one user request into timed child spans—retrieval, reranking, guardrail check, model call, tool call—so you see which exact leg burned the budget. The comparison stops at payload sensitivity: a shipping barcode carries no secrets, whereas an LLM trace can leak customer PII if prompts and completions are logged raw."
+teachBack:
+  prompt: "A RAG endpoint's p95 latency jumps from 750 ms to 2,100 ms, while the model provider's dashboard shows stable 400 ms TTFT. Explain how an OpenTelemetry GenAI trace isolates the culprit, name four standard `gen_ai.*` attributes you inspect first, and explain how to avoid leaking user PII into the telemetry backend."
+  modelAnswer: "Standard HTTP latency metrics only measure the outer request wrapper, hiding whether time was spent in vector retrieval, reranking, tool retries, or decoding a long answer. A distributed trace splits the request into a parent span and child spans (embedding, vector search, reranker, guardrail, and `gen_ai.client.operation` inference), showing both wall-clock duration and token counts per step. First, I check `gen_ai.usage.output_tokens` and `gen_ai.response.finish_reasons` to see if the model started generating far longer answers or hitting `length` truncation even with steady TTFT. Second, I check `gen_ai.request.model` and `gen_ai.response.model` alongside our `release_id` tag to confirm no unexpected snapshot or retry loop fired. Third, I inspect child span durations for retrieval, reranking, and tool retries, where an unindexed filter or repeated 429 retry can add over a second before the model even runs. To protect PII, I keep `gen_ai.content.prompt` and `gen_ai.content.completion` off by default in third-party observability SaaS, logging structural attributes (token counts, latency, release ID, finish reason, redacted hashes) while storing sensitive text only inside an access-controlled, encrypted audit store with short retention."
+quiz:
+  - question: "A single RAG trace records four sequential child spans: embedding + vector search (45 ms), cross-encoder rerank (35 ms), input guardrail (20 ms), and LLM call (600 ms with 220 ms TTFT). If you cut retrieval time in half, how much does total trace latency drop?"
+    options: ["22.5 ms, cutting total latency from 700 ms to 677.5 ms", "110 ms, because retrieval sits inside the model's TTFT span", "350 ms, because halving retrieval halves the downstream context size", "220 ms, because the LLM cannot start prefill until the cache warms"]
+    correctIndex: 0
+    explanation: "The total sequential latency is 45 + 35 + 20 + 600 = 700 ms. Halving the 45 ms retrieval span saves 22.5 ms, lowering total duration to 677.5 ms. The trace immediately shows that the 600 ms generation span—specifically its 380 ms decode tail—dominates the budget."
+  - question: "Why adopt the OpenTelemetry GenAI semantic conventions instead of a proprietary vendor tracing SDK?"
+    options: ["OpenTelemetry compresses prompt strings better than proprietary collectors", "Standard `gen_ai.*` spans let you switch telemetry backends without rewrites", "Proprietary SDKs cannot record `input_tokens` and `output_tokens` on streaming calls", "OpenTelemetry automatically blocks prompt injections before spans reach the collector"]
+    correctIndex: 1
+    explanation: "OpenTelemetry defines vendor-neutral span names and attribute keys (`gen_ai.operation.name`, `gen_ai.usage.input_tokens`, `gen_ai.response.finish_reasons`). Exporting OTLP lets you route the same telemetry to open-source or commercial backends without rewriting instrumentation."
+  - question: "On a production dashboard, `gen_ai.usage.output_tokens` spikes by 80% for one `release_id` and `gen_ai.response.finish_reasons` shifts from `stop` to `length` on 18% of traces. What does this signal?"
+    options: ["The vector database is returning empty chunks, causing the model to exit early", "Network packet loss is cutting off SSE streams mid-response", "The release is hitting `max_output_tokens`, truncating answers mid-reply", "Prompt caching stopped hitting, which doubles the reported output token counter"]
+    correctIndex: 2
+    explanation: "A `finish_reason` of `length` means generation stopped because it hit the output token ceiling rather than emitting an end-of-turn stop token. Combined with an 80% output-token surge tied to one `release_id`, it indicates a verbose prompt change or runaway formatting loop that both truncates answers and inflates cost."
+citations:
+  - title: "OpenTelemetry GenAI Semantic Conventions"
+    authors: "OpenTelemetry Authors"
+    year: 2025
+    url: "https://github.com/open-telemetry/semantic-conventions-genai"
+  - title: "OpenTelemetry Semantic Conventions for Generative AI"
+    authors: "OpenTelemetry Project"
+    year: 2025
+    url: "https://opentelemetry.io/docs/specs/semconv/gen-ai/"
+updated: "2026-11-20"
+---
+
+When a traditional REST endpoint slows down, an application performance monitor points to a slow SQL query or a saturated thread pool. When an AI endpoint slows down or starts returning bad answers, standard HTTP metrics only tell you that `POST /ask` returned status 200 in 1.4 seconds. They hide whether the time went into vector search, a reranker, a retry after a rate limit, or a model that suddenly started writing three times as many tokens.
+
+This lesson shows how to instrument an AI pipeline with **OpenTelemetry** (an open-source observability standard for traces, metrics, and logs) using its **GenAI Semantic Conventions** (the shared schema for LLM calls, tokens, tools, and agents) so every latency millisecond, dollar spent, and quality failure maps back to the exact `release_id` from [lesson 32.1](/lessons/32-llmops-and-managed-platforms/32.1-coupled-versioning-and-release-artifacts/).
+
+## Reading a concrete RAG trace
+
+A **distributed trace** records one end-to-end user request as a tree of timed operations called **spans**. Each span carries a start time, a duration, a parent ID, and structured key-value **attributes**.
+
+Trace a single support question flowing through a RAG pipeline:
+
+- `rag.request` (root span, `700 ms`, `release_id = "rel-2026-11-20-a4f2"`): the full user-visible turn.
+- `retrieval.search` (child span, `45 ms`, `top_k = 20`, `index_revision = "kb-rev-42"`): embeds the query and searches the vector index.
+- `retrieval.rerank` (child span, `35 ms`, `candidates = 20`, `kept = 5`): scores and trims chunks.
+- `guardrail.input` (child span, `20 ms`, `verdict = "allow"`): checks policy rules.
+- `chat claude-sonnet-4-5` (child span, `600 ms`, `gen_ai.usage.input_tokens = 1850`, `gen_ai.usage.output_tokens = 240`, `gen_ai.response.finish_reasons = ["stop"]`): runs inference, with `220 ms` to first token and `380 ms` decoding the remaining tokens.
+
+Add the sequential child spans:
+
+$$
+T_{\text{total}} = 45 + 35 + 20 + 600 = 700\ \text{ms}
+$$
+
+Now ask a practical engineering question: should the team spend two weeks optimizing the vector database to cut `retrieval.search` in half? Looking at the span tree answers it in ten seconds. Halving 45 ms saves 22.5 ms—a 3.2% reduction on a 700 ms turn—whereas the 600 ms model span accounts for 85.7% of the wall-clock time. Without child spans, teams routinely spend weeks optimizing the 6% slice they know how to tune while ignoring the 86% slice.
+
+## OpenTelemetry GenAI semantic conventions
+
+Early AI teams built custom logging wrappers or tied their code directly to one observability vendor's proprietary SDK. Switching backends later meant rewriting instrumentation across every service and agent loop.
+
+The **OpenTelemetry GenAI Semantic Conventions** (published by the OpenTelemetry project in 2025) solve that portability problem by standardizing span names, attributes, and metrics across providers and frameworks. Your application emits **OTLP** (OpenTelemetry Protocol) data once, and any compliant collector can route it to Prometheus, Grafana Tempo, Jaeger, Honeycomb, Datadog, or an internal warehouse.
+
+The core attributes worth requiring on every LLM span are small and concrete:
+
+| Attribute | Example value | What it diagnoses |
+| --- | --- | --- |
+| `gen_ai.operation.name` | `chat`, `embeddings`, `execute_tool` | Separates generation from retrieval and tool execution |
+| `gen_ai.system` | `anthropic`, `openai`, `aws.bedrock` | Attributes outages or rate limits to the exact provider |
+| `gen_ai.request.model` / `gen_ai.response.model` | `model-2026-08-15` | Proves which snapshot actually served the request |
+| `gen_ai.usage.input_tokens` / `output_tokens` | `1850` / `240` | Drives per-feature cost attribution and verbosity alerts |
+| `gen_ai.response.finish_reasons` | `["stop"]` or `["length"]` | Catches silent truncation and refusal spikes |
+| `gen_ai.server.time_to_first_token` | `0.22` (seconds) | Splits prefill/queue delay from decode speed |
+
+Pair those standard fields with two custom application attributes—`app.release_id` (from lesson 32.1) and `app.cache_hit` (`none`, `exact`, `prefix`, `semantic`)—and your dashboards can immediately slice cost, TTFT, and truncation rates by release version.
+
+## Metrics, traces, and logs: what belongs where
+
+Recording every token of every request forever is expensive and unnecessary. Observability works best as three complementary layers with different retention budgets:
+
+- **Metrics (100% of requests, low cardinality)**: aggregated histograms and counters for latency (`gen_ai.client.operation.duration`), token totals (`gen_ai.client.token.usage`), error rates, and cache hit rates grouped by `release_id` and route. Never put `user_id` or `request_id` as a metric label, or cardinality explodes your time-series bill.
+- **Structural traces (sampled or tail-sampled)**: full span trees with timings, token counts, finish reasons, and retrieval IDs. **Tail-based sampling** keeps 100% of slow traces (for example p95+), 100% of errors or `length` truncations, 100% of user thumbs-down feedback, and a small random sample (say 5%) of healthy traffic.
+- **Content audit logs (opt-in, tightly governed)**: raw prompts, retrieved chunk texts, and completions, stored only where policy permits and separated from general engineering telemetry.
+
+Check the sampling arithmetic on a service handling 1,000,000 requests per month. Suppose 2% are errors or slow outliers and you keep 5% of the remaining 98% healthy requests. Total stored traces are:
+
+$$
+N_{\text{traces}} = 1{,}000{,}000 \times (0.02 + 0.98 \times 0.05) = 69{,}000\ \text{traces/month}
+$$
+
+You retain every single failure and tail-latency outlier while cutting trace storage volume by 93.1% compared with logging everything.
+
+:::warning
+The OpenTelemetry GenAI specification explicitly marks prompt and completion bodies as opt-in because they frequently carry customer PII, credentials, or confidential documents. Never enable raw `gen_ai.content.prompt` or `gen_ai.content.completion` capture to a third-party SaaS telemetry vendor without redaction and legal sign-off. Default to structural metadata in OTel spans, and keep sensitive text inside a redacted, encrypted store with explicit retention TTLs.
+:::
+
+## Closing the loop to quality alerts
+
+Latency and token counts catch operational bugs, but an AI system can still fail silently with fast spans and status 200. Attach asynchronous quality signals back onto the same `trace_id`:
+
+- **Explicit user signals**: thumbs-up/down clicks, regeneration clicks, copy-to-clipboard events, or support escalations attached as span events on the original `trace_id`.
+- **Online sample evaluators**: an asynchronous worker reads a 2% sample of traces (joined with redacted text inside your secure boundary), runs calibrated graders, and emits `eval.groundedness` and `eval.schema_valid` metrics labeled by `release_id`.
+
+:::caveat
+Do not run LLM-as-a-judge evaluators synchronously inside the user-facing request path. A synchronous judge adds 300–900 ms of latency and doubles token spend on every user turn. Emit the trace asynchronously, evaluate sampled traces out of band, and feed regressions into your alerting and rollout controller.
+:::
+
+With coupled release manifests in place and OpenTelemetry GenAI traces lighting up every span, you now have the telemetry required to roll changes out safely. Lesson 32.3 uses these exact trace signals to drive shadow deployments, canary traffic shifts, and automated rollbacks.

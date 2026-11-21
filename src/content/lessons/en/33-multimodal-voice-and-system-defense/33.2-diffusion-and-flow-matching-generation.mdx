@@ -1,0 +1,123 @@
+---
+id: "33.2-diffusion-and-flow-matching-generation"
+track: "33-multimodal-voice-and-system-defense"
+order: 2
+title: "Image & Video Generation: Diffusion & Flow Matching"
+summary: "How latent diffusion (DDPM), Diffusion Transformers and Flow Matching turn Gaussian noise into sharp images and video frames, and how step counts and CFG drive inference latency."
+tier: "frontier"
+locale: "en"
+prerequisites: ["10.1-how-video-models-see-time"]
+unlocks: ["33.5-applied-fine-tuning-and-engineering-defense"]
+analogy: "Think of carving a statue out of fog in 40 small passes versus sliding straight along a laser guide in 8 steps. Classical diffusion (DDPM) takes many tiny, curved noise-removal steps because the path from random static to a clean photograph bends as details emerge. Flow Matching trains the model to predict a straight-line velocity field directly from noise to data, so an ordinary ODE solver reaches the same crisp image in far fewer steps. The comparison stops at randomness: there is no single statue waiting inside the fog—each prompt defines a whole distribution of valid images, and the starting noise seed chooses which one materializes."
+teachBack:
+  prompt: "Explain why modern image and video generators operate in a VAE latent space rather than raw RGB pixels, trace one Flow Matching interpolation and velocity target from noise `x_0 = -1.0` to data `x_1 = 3.0` at `t = 0.25`, and explain why Classifier-Free Guidance (CFG) doubles the compute of every denoising step."
+  modelAnswer: "Running attention directly over raw pixels is computationally prohibitive: a 512x512 RGB image has 786,432 values, and video multiplies that by dozens of frames. A Variational Autoencoder (VAE) compresses spatial dimensions by 8x each (to 64x64x4 = 16,384 latent values, a 48x reduction) before diffusion or flow matching runs, and decodes the final latent back to pixels once at the end. In Flow Matching (Lipman et al., 2022), linear interpolation defines `x_t = (1 - t) * x_0 + t * x_1`. At `t = 0.25` with `x_0 = -1.0` and `x_1 = 3.0`, we get `x_0.25 = 0.75 * (-1.0) + 0.25 * 3.0 = 0.0`, and the constant target velocity is `v = x_1 - x_0 = 3.0 - (-1.0) = 4.0`. Because trajectories are straighter than DDPM's curved stochastic paths, solvers reach sharp outputs in fewer steps (often 8–20 instead of 50–1,000). Classifier-Free Guidance (CFG) sharpens prompt adherence by running the denoiser twice per step—once conditioned on the text prompt and once unconditionally (empty prompt)—and extrapolating `v_cfg = v_uncond + w * (v_cond - v_uncond)`, which doubles FLOPs per step unless distilled into a guidance-embedded model."
+quiz:
+  - question: "In linear Flow Matching from noise x_0 = -1.0 to target data x_1 = 3.0, what is the interpolated state x_t at t = 0.25 and the target velocity v?"
+    options: ["x_t = 0.0 and v = 2.0", "x_t = 0.0 and v = 4.0", "x_t = 1.0 and v = 4.0", "x_t = 2.0 and v = -4.0"]
+    correctIndex: 1
+    explanation: "Linear interpolation gives x_t = (1 - 0.25) * (-1.0) + 0.25 * 3.0 = -0.75 + 0.75 = 0.0, and the constant velocity field pointing from x_0 to x_1 is v = x_1 - x_0 = 3.0 - (-1.0) = 4.0."
+  - question: "A 512 × 512 × 3 RGB image (786,432 values) is encoded by an 8x-downsampling VAE into a 64 × 64 × 4 latent tensor. By what factor did the VAE shrink the number of tensor elements entering the denoiser?"
+    options: ["8x, because only height and width are halved three times", "16x, because 4 channels replace 3 RGB channels across half the area", "48x, shrinking from 786,432 RGB values down to 16,384 latent values", "64x, because spatial downsampling of 8x on both axes always drops channels too"]
+    correctIndex: 2
+    explanation: "The raw image has 512 * 512 * 3 = 786,432 values. The latent tensor has 64 * 64 * 4 = 16,384 values. Dividing 786,432 by 16,384 gives exactly 48x fewer values for the diffusion or flow-matching backbone to process at every step."
+  - question: "Why does standard Classifier-Free Guidance (CFG with guidance scale w > 1) double the compute cost of each denoising step?"
+    options: ["It runs conditioned and unconditional forward passes at every denoising step", "It decodes the VAE back to RGB pixels after every step to score prompt similarity with CLIP", "It doubles the number of spatial patches inside the Diffusion Transformer to prevent blur", "It executes every ODE step twice with two different random noise seeds and averages the pixels"]
+    correctIndex: 0
+    explanation: "Standard CFG computes v_uncond + w * (v_cond - v_uncond), requiring both a text-conditioned forward pass and an unconditional (null-prompt) forward pass at every sampling step. Modern guidance-distilled checkpoints bake the scale w into a single forward pass to recover that 2x speed."
+citations:
+  - title: "Denoising Diffusion Probabilistic Models"
+    authors: "Jonathan Ho, Ajay Jain, Pieter Abbeel"
+    year: 2020
+    url: "https://arxiv.org/abs/2006.11239"
+  - title: "Flow Matching for Generative Modeling"
+    authors: "Yaron Lipman, Ricky T. Q. Chen, Heli Ben-Hamu, Maximilian Nickel, Matt Le"
+    year: 2022
+    url: "https://arxiv.org/abs/2210.02747"
+updated: "2026-11-20"
+---
+
+Language models generate text one discrete token at a time from left to right. Images and video frames do not have a natural left-to-right order—a cloud at the top left must match the reflection in a lake at the bottom right, and consecutive frames in [lesson 10.1](/lessons/10-video-and-world-models/10.1-how-video-models-see-time/) must keep objects consistent across time. Rather than predicting pixels one by one, modern image and video generators sculpt the entire spatial or spatiotemporal canvas in parallel across a handful of iterative refinement passes.
+
+This lesson explains the two mathematical engines behind that process—**Denoising Diffusion Probabilistic Models (DDPM)** and **Flow Matching**—along with the latent compression and guidance levers that control production latency and GPU cost.
+
+## Why generation happens in latent space
+
+Running a neural network repeatedly over raw RGB pixels wastes almost all its compute on high-frequency texture imperceptible to human eyes. Take a modest $512 \times 512$ RGB image: it holds $512 \times 512 \times 3 = 786{,}432$ numbers.
+
+Modern pipelines first pass training images through a pretrained **Variational Autoencoder (VAE)**—an encoder-decoder pair trained to compress images spatially (commonly by 8x on height and 8x on width) into a compact **latent tensor** of shape $64 \times 64 \times 4 = 16{,}384$ numbers:
+
+$$
+\text{Compression ratio} = \frac{512 \times 512 \times 3}{64 \times 64 \times 4} = \frac{786{,}432}{16{,}384} = 48\times
+$$
+
+All iterative denoising runs inside that 48x-smaller latent space (typically on a **Diffusion Transformer**, or DiT, operating on latent patches, or spatiotemporal 3D patches for video). Only after the final step finishes does the VAE decoder run *once* to turn the clean latent back into visible pixels.
+
+## DDPM: learning to reverse gradual noise
+
+**Denoising Diffusion Probabilistic Models** (Ho et al., 2020) frame image generation as reversing a corruption process. During training, take a real image latent $x_0$, sample standard Gaussian noise $\epsilon \sim \mathcal{N}(0, I)$, pick a random timestep $t$, and mix them according to a noise schedule $\bar{\alpha}_t$:
+
+$$
+x_t = \sqrt{\bar{\alpha}_t}\, x_0 + \sqrt{1 - \bar{\alpha}_t}\, \epsilon
+$$
+
+At small $t$, $x_t$ looks almost like the clean image; at large $t$, it is indistinguishable from pure static. The neural network $\epsilon_\theta(x_t, t, c)$—conditioned on timestep $t$ and text prompt embedding $c$—learns one regression task: **predict the noise $\epsilon$ that was added**, minimizing mean-squared error $\|\epsilon - \epsilon_\theta(x_t, t, c)\|^2$.
+
+At inference time, start from pure Gaussian noise and subtract a small fraction of the predicted noise step by step. Original DDPM required up to 1,000 steps because its stochastic reverse paths curve sharply; later deterministic ODE samplers (like DDIM and DPM-Solver) cut that to 20–50 steps, yet the underlying noise schedule still bends trajectories near the start and end.
+
+## Worked example: Flow Matching straightens the path
+
+**Flow Matching** (Lipman et al., 2022) replaces DDPM's curved noise schedule with direct straight-line transport from a noise sample $x_0 \sim \mathcal{N}(0, I)$ at $t = 0$ to a data latent $x_1$ at $t = 1$.
+
+Trace a concrete 1D example before looking at the general vector equation. Suppose our noise draw is $x_0 = -1.0$ and our target data value is $x_1 = 3.0$. At time $t = 0.25$ (one quarter of the way from noise to data), linear interpolation puts the point at:
+
+$$
+x_{0.25} = (1 - 0.25)(-1.0) + 0.25(3.0) = -0.75 + 0.75 = 0.0
+$$
+
+What speed and direction carry $x_0 = -1.0$ straight to $x_1 = 3.0$ in unit time $\Delta t = 1$? A constant velocity:
+
+$$
+v = x_1 - x_0 = 3.0 - (-1.0) = 4.0
+$$
+
+Now write the general **Rectified Flow / Conditional Flow Matching** training pair for any latent tensor:
+
+$$
+x_t = (1 - t)\, x_0 + t\, x_1, \qquad v_{\text{target}} = x_1 - x_0
+$$
+
+The model $v_\theta(x_t, t, c)$ predicts the **velocity vector** $v_{\text{target}}$ at every point along the straight path. At inference, an ordinary Euler solver steps forward from pure noise $x_0$ with step size $\Delta t = 1/N$:
+
+$$
+x_{t + \Delta t} = x_t + \Delta t \cdot v_\theta(x_t, t, c)
+$$
+
+Because straighter velocity fields incur far less discretization error per step than curved diffusion trajectories, Flow Matching architectures (adopted across 2024–2026 frontier image and video DiT models) reach high visual fidelity in fewer sampling steps—and distill cleanly down to 4–8 steps for interactive products.
+
+## Classifier-Free Guidance and the inference cost budget
+
+A conditional generator trained solely on prompt-image pairs often plays it safe, producing bland average images that partially ignore rare details in the prompt. **Classifier-Free Guidance (CFG)** fixes this at inference time by running the denoiser *twice* per step: once with the user's text prompt ($v_{\text{cond}}$) and once with an empty prompt ($v_{\text{uncond}}$), then pushing the prediction further along the prompt direction by a guidance scale $w > 1$:
+
+$$
+v_{\text{cfg}} = v_{\text{uncond}} + w\,(v_{\text{cond}} - v_{\text{uncond}})
+$$
+
+Watch what that costs in production. Suppose one forward pass of your image DiT takes 35 ms on an H100 GPU:
+
+- **30 steps with standard CFG ($2\times$ passes/step)**: $30 \times 2 \times 35\ \text{ms} = 2{,}100\ \text{ms}$ (plus ~80 ms VAE decode = ~2.18 s).
+- **8 steps with a guidance-distilled Flow Matching checkpoint ($1\times$ pass/step)**: $8 \times 1 \times 35\ \text{ms} = 280\ \text{ms}$ (plus ~80 ms VAE decode = ~360 ms—a 6x speedup).
+
+:::warning
+Cranking CFG scale $w$ too high (for example $w = 15$ when the model expects $w = 5$–$7$) does not make the model "obey harder." It overshoots the learned data manifold, causing oversaturated colors, burnt contrast, and ringing artifacts around edges. Always sweep step count and $w$ together on a held-out prompt evaluation set.
+:::
+
+## Production tradeoffs for image versus video
+
+Extending Flow Matching from images to video turns 2D spatial patches into 3D space-time patches (width × height × frames, as [lesson 10.1](/lessons/10-video-and-world-models/10.1-how-video-models-see-time/) introduced). Because self-attention scales quadratically with total patch count, a 5-second clip at 24 frames per second carries an order of magnitude more latent tokens than a still image—pushing generation from hundreds of milliseconds to tens of seconds and making asynchronous job queues, progress streaming, and watermark/provenance metadata mandatory in production APIs.
+
+:::caveat
+Fast 4-step distilled image generators cut GPU cost dramatically, but distillation narrows sample diversity and can lose fine typography or multi-object spatial accuracy compared with a 20–30 step teacher checkpoint. Route interactive previews to a 4-step distilled model and final print/marketing renders to the full-step checkpoint.
+:::
+
+We have now covered visual understanding and visual generation. Next, lesson 33.3 moves into the third major modality—audio—explaining how waveforms become spectrograms and discrete neural codec tokens for speech recognition and synthesis.

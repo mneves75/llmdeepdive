@@ -1,0 +1,93 @@
+---
+id: "28.5-grounding-citations-abstention-and-graph-rag"
+track: "28-production-rag-architectures"
+order: 5
+title: "Grounding, Citations, Abstention & GraphRAG"
+summary: "Verify grounded claims with structured citations, calibrate abstention thresholds when evidence is missing, and decide when GraphRAG community summaries justify their indexing cost."
+tier: "core"
+locale: "en"
+prerequisites: ["26.3-structured-outputs-and-constrained-decoding", "28.3-reranking-cross-encoders-and-colbert", "28.4-query-transformation-and-routing"]
+unlocks: ["29.1-error-analysis-and-failure-taxonomies", "30.2-corpus-poisoning-and-indirect-injection"]
+analogy: "A courtroom brief cites exhibit numbers next to every factual sentence, and a judge checks two things: does Exhibit C exist in the binder, and does Exhibit C actually say what the lawyer claims? Grounded RAG enforces both checks and prefers 'the record does not answer this' over speculation. GraphRAG adds a master index of who dealt with whom across all 2,000 exhibits so you can summarize patterns across the whole case. The comparison stops at cost: building that master index across thousands of documents requires reading every page upfront before the first question is asked."
+teachBack:
+  prompt: "A RAG system returns a structured answer with three claims citing chunk IDs c1, c7, and c2 while only chunks c1 through c5 were passed in the prompt. Explain the two separate verification layers needed to audit those citations, why a reranker abstention threshold matters, and why standard top-8 vector RAG fails on 'What are the top five root causes across all 2,000 Q3 incident reports?'"
+  modelAnswer: "First, a deterministic check catches c7 immediately because c7 is not in the supplied set {c1..c5}. Second, valid syntax does not prove faithfulness: a separate entailment or judge check must verify that c1 and c2 actually support their attached claims rather than contradicting them. A reranker abstention threshold prevents the model from falling back on parametric guesses when no retrieved chunk is relevant. Finally, standard top-8 vector RAG reads at most 8 out of 2,000 reports (0.4% of the corpus), making global pattern aggregation across all incidents impossible without pre-aggregated community summaries such as GraphRAG."
+quiz:
+  - question: "Which defect can deterministic post-processing catch immediately without calling another LLM?"
+    options: ["A fabricated chunk ID absent from the prompt", "A subtle contradiction inside a valid chunk ID", "An outdated policy written into the source PDF", "A missing multi-hop link across three documents"]
+    correctIndex: 0
+    explanation: "Checking whether every emitted citation ID belongs to the set of evidence IDs passed into the prompt is an exact O(1) hash-set lookup. Checking semantic entailment requires a verifier model or NLI classifier."
+  - question: "In a legal-compliance RAG assistant, a hallucinated claim costs 10 times as much as an explicit abstention. The reranker scores all retrieved chunks below 0.35 for a new user question. What should the pipeline do?"
+    options: ["Drop the citation requirement so the model can answer cleanly directly from pretraining weights", "Lower the reranker cutoff to 0.05 and inject 25 chunks to force an answer", "Abstain explicitly, stating no indexed evidence covers the question", "Rewrite the user question five times until one chunk exceeds 0.35"]
+    correctIndex: 2
+    explanation: "When false answers carry much higher error cost than refusals and retrieval confidence falls below threshold, explicit abstention protects users from fluent hallucinations grounded in parametric memory."
+  - question: "Why does GraphRAG (Edge et al., 2024) outperform chunk-level vector RAG on global sensemaking queries such as 'List the recurring themes across 2,000 customer postmortems'?"
+    options: ["GraphRAG replaces transformer attention with a deterministic SQL join across every raw text document", "GraphRAG builds entity graphs and community summaries across the full corpus", "GraphRAG compresses all 2,000 postmortems into one dense embedding vector", "GraphRAG skips offline indexing and reads all 2,000 files per request"]
+    correctIndex: 1
+    explanation: "Chunk-level top-k search sees only a tiny slice of 2,000 documents. GraphRAG builds an entity-relation graph and pre-computes hierarchical community summaries offline so global queries can map-reduce across every community."
+citations:
+  - title: "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection"
+    authors: "Akari Asai et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2310.11511"
+  - title: "From Local to Global: A Graph RAG Approach to Query-Focused Summarization"
+    authors: "Darren Edge et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2404.16130"
+  - title: "Efficient Guided Generation for Large Language Models"
+    authors: "Brandon T. Willard and Rémi Louf"
+    year: 2023
+    url: "https://arxiv.org/abs/2307.09702"
+updated: "2026-11-20"
+---
+
+Retrieval, reranking from [lesson 28.3](/lessons/28-production-rag-architectures/28.3-reranking-cross-encoders-and-colbert/), and query routing from [lesson 28.4](/lessons/28-production-rag-architectures/28.4-query-transformation-and-routing/) can place crisp evidence inside the prompt—yet a language model can still blend that evidence with outdated parametric memory, attach fake citations, or guess confidently when the corpus has no answer at all. Production RAG treats *grounding* (tying every factual claim to retrieved evidence) and *abstention* (refusing cleanly when evidence is missing) as explicit engineering contracts, and switches to *GraphRAG* only when a query truly demands corpus-wide synthesis.
+
+## Two layers of citation verification
+
+Asking a model to "include `[1]` citations" in free-form prose looks trustworthy while hiding silent errors. Using constrained decoding from [lesson 26.3](/lessons/26-llm-apis-and-structured-outputs/26.3-structured-outputs-and-constrained-decoding/) (Willard & Louf, 2023), bind the generator to a structured output schema that pairs each factual claim with an array of chunk IDs drawn from the current prompt—plus a boolean `abstained` flag.
+
+Walk through a concrete 3-claim audit when the prompt supplied five chunks `["c1", "c2", "c3", "c4", "c5"]`:
+
+- **Claim 1 cites `["c1"]`:** ID exists in `{c1..c5}`, and `c1` states `"EU returns are accepted within 14 days"`. Both syntax and support pass.
+- **Claim 2 cites `["c7"]`:** ID `c7` does not exist in `{c1..c5}`. Deterministic code catches this invalid reference in microseconds without another model call.
+- **Claim 3 cites `["c2"]`:** ID `c2` exists, yet `c2` covers hardware warranties while Claim 3 states a rule for software subscriptions. Syntax passes, while *faithfulness* (whether the cited passage actually entails the claim) fails.
+
+That concrete case proves why grounding needs two distinct checks: deterministic referential integrity (every cited ID must exist in the prompt and non-abstained claims cannot carry empty evidence arrays) followed by semantic entailment verification (an NLI classifier or calibrated LLM verifier, mirroring the `ISSUP` support check in Asai et al., 2023). Neither check replaces the other.
+
+## Calibrated abstention when evidence is missing
+
+Most base assistants are trained to be helpful, which biases them toward answering even when the retrieved chunks miss the question. When no chunk supports an answer, the model reaches into pretraining weights and produces a fluent, wrong reply.
+
+Make abstention an explicit branch driven by error asymmetry. Suppose a legal-compliance assistant serves 1,000 queries where a fabricated answer costs 10 error units (manual review plus liability risk) while a clean abstention (`"I could not find a policy covering this topic in the indexed documents"`) costs 1 unit (escalating to a human analyst). Compare two policies on 100 unanswerable questions:
+
+- **Always guess (80% wrong):** $80 \times 10 = 800$ error units.
+- **Abstain when top reranker score $< 0.35$ (catches 85 of 100 unanswerable cases, with 5 false abstentions on answerable cases):** $15 \times 10 + 90 \times 1 = 240$ error units.
+
+Abstention works best as a two-gate funnel. Gate 1 is upstream: if the top reranker score falls below a calibrated threshold (tuned on held-out answerable and unanswerable queries), skip generation and return the abstention template directly, saving tokens and eliminating hallucination risk. Gate 2 is in the prompt and schema: instruct the model to set `abstained: true` whenever the supplied chunks lack the specific condition or entity asked for, and verify that abstention rate in offline evals so the model neither guesses recklessly nor refuses answerable questions.
+
+## When chunk RAG hits a wall: GraphRAG
+
+Chunk-level retrieval excels at *local* questions whose answer lives inside 1 to 5 passages (`"What is the EU refund window?"`). Now ask a *global sensemaking* question over 2,000 quarterly incident postmortems:
+
+`"What are the five recurring root causes across all 2,000 Q3 incidents?"`
+
+Even with perfect embeddings and reranking, sending 8 retrieved chunks into the prompt exposes at most:
+
+$$
+\frac{8}{2{,}000} = 0.004 = 0.4\%\ \text{of the corpus}.
+$$
+
+No top-k chunk retriever can count themes across the other 99.6% of incidents. Edge et al. (2024) introduced *GraphRAG* specifically for this failure mode. During offline indexing, an LLM extracts entities (services, failure modes, teams) and directed relationships from every chunk to build a knowledge graph. A community-detection algorithm (such as Leiden clustering) groups tightly connected nodes into hierarchical communities, and the pipeline pre-generates a structured summary for each community.
+
+At query time, global questions run a *map-reduce* pass over community summaries: each community summary produces a partial answer scored for relevance, and a final reduce step synthesizes the highest-scoring partials into a corpus-wide answer with provenance pointers back to the source communities. Local multi-hop questions (`"Which downstream services depend on the auth service maintained by Team B?"`) traverse graph neighbors instead of hoping two distant chunks share embedding similarity.
+
+## Budgeting GraphRAG before adopting it
+
+GraphRAG is not a universal drop-in upgrade for baseline RAG—its indexing cost is orders of magnitude higher. Extracting entities and relationships across 2,000 documents averaging 1,500 tokens each sends 3,000,000 input tokens plus extraction and community-summary outputs through an LLM *before the first user ever asks a question*, and every large corpus update requires incremental graph and community maintenance.
+
+Use chunk-level hybrid RAG plus reranking for localized lookups and fast-changing corpora. Reach for GraphRAG (or a simpler structured metadata/SQL summary table) only when real user queries demand cross-corpus thematic synthesis or multi-hop relational traversal that top-k chunk retrieval structurally cannot see.
+
+:::caveat
+Structured citation JSON proves that the model pointed to a real chunk ID, never that the claim is truthful. Always pair ID validation with faithfulness checks—and in the next track, build the evaluation harness that measures retrieval, faithfulness, and abstention systematically.
+:::

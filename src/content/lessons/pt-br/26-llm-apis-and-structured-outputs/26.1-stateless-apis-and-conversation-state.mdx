@@ -1,0 +1,98 @@
+---
+id: "26.1-stateless-apis-and-conversation-state"
+track: "26-llm-apis-and-structured-outputs"
+order: 1
+title: "APIs Stateless de LLM e Estado de Conversa"
+summary: "A maioria dos endpoints HTTP de LLM não guarda memória entre chamadas. Sua aplicação mantém o histórico, paga crescimento quadrático de tokens de entrada e define como resumir ou cortar turnos."
+tier: "foundations"
+locale: "pt-br"
+prerequisites: ["0.7-python-numpy-pytorch", "7.1-what-actually-happens-when-you-hit-send"]
+unlocks: ["26.2-streaming-sse-and-cancellation", "26.3-structured-outputs-and-constrained-decoding"]
+analogy: "Conversar com um endpoint stateless de LLM é como consultar um especialista que sofre amnésia completa assim que você sai da sala. Toda vez que você volta com uma pergunta de acompanhamento, precisa entregar a pasta inteira com as anotações anteriores para que ele releia desde a página um antes de responder. Você decide o que fica na pasta e o que vira resumo, mas pastas mais grossas levam mais tempo para ler. A comparação para no cache: um servidor de inferência moderno mantém o estado processado de um prefixo inalterado quente em memória por minutos, enquanto um humano ainda precisa folhear as páginas."
+teachBack:
+  prompt: "Um app de suporte mantém um prompt de sistema de 600 tokens, média de 100 tokens por mensagem do usuário e 300 tokens por resposta do assistente, reenviando o histórico completo sem cache a cada turno. Calcule quantos tokens de entrada a 10ª requisição envia, explique por que o custo total de entrada cresce mais rápido que o número de turnos e cite duas formas de limitar esse crescimento sem quebrar a coerência multi-turno."
+  modelAnswer: "No 10º turno o cliente envia os 600 tokens do sistema, os 9 turnos anteriores de 400 tokens cada (3.600 tokens) e a nova mensagem de 100 tokens do usuário, somando 4.300 tokens de entrada nessa única chamada. O total de entrada em N turnos cresce de forma quadrática porque cada mensagem antiga é reenviada em todos os turnos seguintes, escalando com N(N - 1)/2. Para limitar o crescimento, mantenha uma janela deslizante com os turnos mais recentes mais um resumo periódico das decisões antigas, ou descarte payloads longos de ferramentas após extrair os campos necessários preservando o prefixo estável."
+quiz:
+  - question: "Um cliente de chat envia um prompt de sistema de 400 tokens, 100 tokens por mensagem do usuário e recebe 200 tokens por resposta do assistente. Reenviando o histórico inteiro a cada turno, quantos tokens de entrada são cobrados nos turnos 1 a 10 somados?"
+    options: ["18.500 tokens de entrada, pois cada turno reenvia os turnos anteriores e o prompt de sistema", "3.200 tokens de entrada, pois o provedor cobra apenas o tamanho total do contexto no último turno", "5.000 tokens de entrada, pois só o prompt de sistema e as mensagens do usuário entram na cobrança", "21.500 tokens de entrada, pois a resposta do assistente já entra como entrada no mesmo turno"]
+    correctIndex: 0
+    explanation: "O turno 1 envia 500 tokens de entrada e cada turno seguinte soma 300 (100 do usuário + 200 do assistente), chegando a 3.200 no turno 10. A soma 500 + 800 + ... + 3.200 dá 10 × 500 + 300 × (10 × 9 / 2) = 5.000 + 13.500 = 18.500 tokens de entrada. As respostas dos turnos 1 a 9 só viram entrada nos turnos posteriores que as reenviam."
+  - question: "Seu backend troca o envio explícito do array de mensagens por um ID de thread gerenciado no servidor do provedor. Que responsabilidade muda e o que permanece igual?"
+    options: ["O servidor elimina automaticamente o crescimento quadrático de tokens porque turnos salvos nunca passam pelo prefill de novo", "O cliente deixa de precisar validar saídas do assistente porque objetos de thread garantem aderência ao schema", "O provedor guarda e reenvia o histórico por você, mas o custo de contexto continua e o replay entre provedores fica preso", "O servidor garante respostas idênticas entre versões de modelo porque IDs de thread congelam pesos e sementes"]
+    correctIndex: 2
+    explanation: "IDs de thread ou resposta no servidor transferem o armazenamento do histórico para o fornecedor e reduzem o payload de rede, mas o modelo continua processando o contexto acumulado em cada turno e seu estado fica acoplado àquela API. Históricos no cliente seguem portáteis, auditáveis e fáceis de reproduzir em outro modelo."
+  - question: "Um chat longo de diagnóstico se aproxima do limite de contexto no turno 25. Qual política de corte preserva melhor a continuidade da tarefa e o reaproveitamento do cache de prefixo?"
+    options: ["Remover a mensagem mais antiga a cada turno para manter o contexto colado no teto de tokens", "Preservar o prompt de sistema intacto, manter a janela recente e resumir turnos antigos em lotes periódicos", "Reescrever o prompt de sistema a cada turno para embutir fatos novos antes do restante das mensagens", "Retirar todas as respostas do assistente do array e enviar apenas a sequência cronológica do usuário"]
+    correctIndex: 1
+    explanation: "Condensar turnos antigos em resumos periódicos mantendo o prompt de sistema intacto limita o contexto sem alterar o prefixo a cada chamada. Descartar uma mensagem por turno desloca todos os bytes após o sistema em toda requisição, destruindo o cache de prefixo, e apagar respostas do assistente apaga os compromissos que o modelo assumiu."
+citations:
+  - title: "RFC 9110: HTTP Semantics"
+    authors: "Roy T. Fielding, Mark Nottingham, Julian Reschke"
+    year: 2022
+    url: "https://www.rfc-editor.org/rfc/rfc9110"
+  - title: "Conversation State — OpenAI API Documentation"
+    authors: "OpenAI"
+    year: 2025
+    url: "https://platform.openai.com/docs/guides/conversation-state"
+updated: "2026-11-20"
+---
+
+Quando um desenvolvedor constrói seu primeiro chatbot, o bug mais surpreendente aparece logo no segundo turno: o modelo não tem ideia do que foi dito dez segundos antes. Isso não é esquisitice de um SDK específico. Endpoints de inferência sobre HTTP (*Hypertext Transfer Protocol*) são *stateless* (sem estado) por projeto, o que significa que cada requisição `POST` não guarda memória de nenhuma chamada anterior. Para sustentar uma conversa, sua aplicação armazena a transcrição e reenvia o histórico relevante a cada requisição, pagando novamente por esses tokens salvo quando um cache acerta.
+
+## Por que endpoints HTTP de LLM são stateless
+
+Em [O que realmente acontece quando você aperta enviar](/pt-br/lessons/7-inference-and-efficiency/7.1-what-actually-happens-when-you-hit-send/), você viu que um transformer executa uma passagem direta sobre uma sequência de IDs de tokens e prevê o próximo token apenas a partir dessa sequência. Os pesos do modelo ficam congelados entre requisições; o motor não grava o nome do seu usuário nos parâmetros. Como define a RFC 9110 para interações HTTP sem estado, manter cada chamada autossuficiente permite que um balanceador de carga envie o turno 1 ao cluster de GPU A e o turno 2 ao cluster B sem migrar gigabytes de memória de sessão entre máquinas.
+
+A consequência prática é uma fronteira clara de responsabilidade. Seu banco de dados ou armazenamento de sessão em memória (montado com listas e dicionários como em [Python, NumPy e PyTorch](/pt-br/lessons/0-orientation-and-foundations/0.7-python-numpy-pytorch/)) guarda a lista ordenada de mensagens. Cada mensagem traz um `role` (papel)—em geral `system` ou `developer`, `user`, `assistant` ou `tool`—e um `content`. Quando o usuário envia o turno $t$, o backend anexa a nova mensagem, serializa o array em JSON, envia tudo por HTTPS e grava a resposta do assistente assim que a chamada termina.
+
+<Figure id="26-1-stateless-request-cycle" />
+
+Como sua aplicação controla o array, você ganha depuração determinística. Se o turno 7 gerar uma resposta errada, basta salvar o JSON exato enviado naquele turno e reproduzi-lo localmente contra um prompt ou modelo novo, sem depender de reconstruir estado oculto no servidor.
+
+## Crescimento quadrático de tokens no chat multi-turno
+
+Reenviar o histórico parece barato no turno 2, mas o volume cresce mais depressa do que a maioria das equipes prevê. Veja um caso concreto de atendimento com 10 turnos antes da fórmula geral.
+
+Suponha um prompt de sistema estático de `400` tokens, média de `100` tokens por mensagem do usuário e `200` tokens por resposta do assistente. Cada turno concluído adiciona `100 + 200 = 300` tokens ao histórico.
+
+- O turno 1 envia `400 + 100 = 500` tokens de entrada.
+- O turno 2 envia `500 + 300 = 800` tokens de entrada.
+- O turno 3 envia `800 + 300 = 1.100` tokens de entrada.
+- O turno 10 envia `400 + 100 + 9 × 300 = 3.200` tokens de entrada.
+
+Somando as dez chamadas, você paga `500 + 800 + 1.100 + ... + 3.200 = 18.500` tokens de entrada na conversa, embora a transcrição final tenha apenas `3.400` tokens (`3.200` de entrada mais os `200` da última resposta). A uma tarifa de `USD 3,00` por milhão de tokens sem cache, dez turnos custam `USD 0,0555`; estenda o mesmo chat para 50 turnos e o total de entrada sem cache dispara para `392.500` tokens (`USD 1,18` por sessão).
+
+De forma geral, em $N$ turnos com prompt de sistema $s$, mensagem do usuário $u$ e resposta do assistente $a$, o acumulado de tokens de entrada segue uma progressão aritmética:
+
+$$T_{\text{in}}(N) = N \cdot (s + u) + (u + a)\frac{N(N - 1)}{2}$$
+
+Substituindo $s = 400$, $u = 100$, $a = 200$ e $N = 10$, obtemos $10 \cdot 500 + 300 \cdot 45 = 5{,}000 + 13{,}500 = 18{,}500$. Repare no termo $N(N - 1)/2$: dobrar o número de turnos aproximadamente quadruplica os tokens de entrada sem cache. O cache de prefixo—detalhado adiante nesta trilha—dá desconto sobre o trecho repetido, mas mesmo um desconto de 90% ainda bate no teto da janela de contexto se o histórico crescer sem freio.
+
+:::insight
+Dimensione produtos interativos pelo acumulado de tokens de entrada, não só pelo tamanho final do contexto. Um loop de agente com 30 passos que anexa 1.500 tokens de saída de ferramenta por passo pode ultrapassar 650.000 tokens acumulados numa única sessão.
+:::
+
+## Histórico no cliente versus threads no servidor
+
+Vários provedores oferecem hoje endpoints com estado—como objetos de thread ou encadeamento via `previous_response_id`—nos quais você envia apenas a nova mensagem e um identificador do servidor. Por baixo do formato de rede, o transformer continua lendo os tokens acumulados em cada turno. A troca é operacional, não matemática:
+
+- **Arrays gerenciados pelo cliente** mantêm uma fonte única da verdade no seu banco, permitem failover imediato para outro provedor ou modelo aberto e tornam trivial editar ou redigir um turno antigo.
+- **APIs com estado no servidor** reduzem o tráfego de upload em clientes móveis e tiram de você a persistência do histórico, mas prendem a conversa ao ciclo de retenção e aos endpoints de exclusão de um único fornecedor.
+
+Se o sistema exige portabilidade entre provedores, controle rigoroso de residência de dados ou replay offline em avaliações, guarde a transcrição canônica no seu banco e trate a API como função pura de mensagens para resposta.
+
+## Como limitar o estado sem perder o fio da conversa
+
+Como toda janela de contexto tem limite e históricos longos diluem a atenção e encarecem cada turno, aplicações em produção adotam uma política explícita de estado em vez de concatenar tudo indefinidamente.
+
+1. **Janela deslizante por orçamento de tokens.** Mantenha o prompt de sistema fixo e empilhe turnos do mais recente para o mais antigo até atingir um teto (por exemplo, 8.000 tokens). Corte sempre em fronteiras completas de turno para nunca deixar uma resposta de ferramenta órfã sem sua chamada correspondente.
+2. **Resumo periódico em lotes.** Quando turnos antigos passam de um limite (por exemplo, a cada 8 turnos), execute uma chamada dedicada que condensa os turnos 1 a 8 numa nota estruturada—fatos confirmados, decisões e restrições abertas—e substitua o bloco antigo de uma vez. Atualizar em lotes em vez de todo turno mantém o prefixo estável para cache.
+3. **Compactação de artefatos.** Saídas de ferramentas (JSONs grandes, resultados de busca, stack traces) costumam responder por 80% dos tokens do histórico. Salve o payload bruto em armazenamento de objetos sob um ID, mantenha só os campos extraídos no array ativo e consulte de novo pelo ID se o usuário pedir detalhes.
+
+:::warning
+Nunca sobrescreva em silêncio mensagens antigas no log de auditoria ao compactar o contexto. Guarde uma tabela imutável com a transcrição bruta para depuração e conformidade, e gere a janela enviada ao modelo como uma projeção derivada desse log.
+:::
+
+## Persistência idempotente de turnos
+
+Quedas de rede acontecem entre o servidor concluir a geração e o cliente gravar a resposta. Atribua a cada envio do usuário um `turn_id` gerado no cliente e salve a mensagem do usuário antes de chamar o LLM. Se a requisição HTTP expirar ou cair antes do registro da resposta, sua lógica de retry verifica se já existe resposta para aquele `turn_id` em vez de duplicar a mesma fala do usuário em `messages[]`. A alternância limpa (`user` → `assistant` → `user`) evita confusão de formato e preserva a integridade do estado após falhas.

@@ -1,0 +1,90 @@
+---
+id: "31.2-multi-layer-caching-and-semantic-risk"
+track: "31-ai-system-design-and-caching"
+order: 2
+title: "Exact, Prefix & Semantic Caching Tradeoffs"
+summary: "Layer exact response caches, KV-cache prefix reuse, and guarded semantic caches while scoping every key by tenant, ACL hash, model version, and corpus epoch."
+tier: "advanced"
+locale: "en"
+prerequisites: ["26.5-prompt-engineering-hierarchy-and-caching", "31.1-end-to-end-latency-budgets"]
+unlocks: ["31.4-unit-economics-at-scale"]
+analogy: "A busy coffee shop speeds up morning lines in three ways: pouring pre-brewed drip coffee for identical plain-black orders (exact cache), keeping steamed milk pitchers ready for every latte variant that shares the same base (prefix cache), and guessing that a customer who mutters 'something iced and sweet' wants the same caramel brew the last customer ordered (semantic cache). The first two never hand anyone the wrong drink when labeled cleanly; the third saves time only until a customer with a nut allergy gets almond milk. The comparison stops at key hygiene: coffee cups have a customer's name written on the side, whereas a shared AI cache without tenant and policy hashes silently hands one company's answer to another."
+teachBack:
+  prompt: "Compare exact caching, KV prefix caching, and semantic caching across hit rate, latency reduction, and correctness risk. Explain why putting a live timestamp in line 1 of a system prompt destroys KV prefix caching, and name four mandatory fields in any production RAG response cache key."
+  modelAnswer: "Exact caching matches normalized identical inputs and gives zero false hits with ~10–20 ms lookups, though hit rates are modest on open-ended chat. Prefix caching reuses prefilled attention KV blocks across requests that share an identical leading token sequence, cutting TTFT and input token spend by 50–90% with zero correctness risk even when every user question is unique. Semantic caching matches by embedding similarity, boosting hit rates on paraphrased FAQs but introducing false hits whenever two nearly identical vectors differ on a negation, date, or account state. Putting a live timestamp on line 1 changes the very first tokens on every request, invalidating the entire KV prefix tree. Every RAG response cache key must include tenant_id, an ACL/role hash, the coupled prompt+model version, and the corpus/index epoch (or TTL)."
+quiz:
+  - question: "A team enables provider prompt caching on a 6,000-token system prompt + tool schema, yet billing shows a 0% cache hit rate. Inspecting the request payload reveals `Current time: 2026-11-20T14:22:08Z` on line 2 of the system prompt. Why did prefix caching miss every single call?"
+    options: ["ISO-8601 date strings contain colons that force tokenizers to reset the attention mask", "Provider prompt caches only activate when system prompts exceed 32,768 tokens in length", "KV prefix caches require byte-identical leading token sequences, so an early changing timestamp invalidates the whole suffix", "Prompt caching works only on user messages and skips system messages by default"]
+    correctIndex: 2
+    explanation: "Attention is causal: every token's cached key and value vectors depend on all tokens before it. Changing a single token near the start of the prompt changes every subsequent hidden state, forcing full prefill recomputation. Move dynamic values like timestamps to the end of the prompt, after the static prefix."
+  - question: "Two users ask a banking assistant: \"Did my wire transfer settle today?\" and \"Did my wire transfer fail today?\" Their dense embeddings have cosine similarity 0.94, above a naive semantic cache threshold of 0.92. What happens if the cache serves the stored answer?"
+    options: ["A semantic false hit returns the wrong status because dense embeddings cluster antonyms", "The embedding model automatically inverts the sign of the similarity score for negation words", "Prefix KV caching overrides the semantic cache and recomputes the answer from the ledger", "The LLM reranks both questions inside Redis before returning the cached string"]
+    correctIndex: 0
+    explanation: "Standard sentence embeddings map sentences sharing the same domain vocabulary ('wire transfer', 'today') very close together even when a single polarity word ('settle' vs 'fail', 'cancel' vs 'renew') flips the meaning. Semantic caches should never front stateful, account-specific, or negation-sensitive queries without intent gating and entity checks."
+  - question: "Which set of fields must be hashed into an exact or semantic RAG response cache key to prevent stale answers and cross-tenant data leaks?"
+    options: ["Only the lowercased user query string so hit rates stay as high as possible", "The user query plus the client browser User-Agent and IP geolocation header", "The user query plus the wall-clock timestamp rounded to the nearest millisecond", "Normalized query, tenant_id, ACL hash, prompt/model version, and corpus epoch"]
+    correctIndex: 3
+    explanation: "Omitting tenant_id or ACL hash leaks restricted documents between users. Omitting prompt/model version serves answers from retired behavior after a release. Omitting corpus epoch serves outdated facts after documents change. Hashing User-Agent or millisecond timestamps destroys hit rate without adding safety."
+citations:
+  - title: "SGLang: Efficient Execution of Structured Language Model Programs"
+    authors: "Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Sun, Jeff Huang, Cody Hao Yu, Shiyi Cao, Christos Kozyrakis, Ion Stoica, Joseph E. Gonzalez, Clark Barrett, and Ying Sheng"
+    year: 2024
+    url: "https://arxiv.org/abs/2312.07104"
+  - title: "Prompt Cache: Modular Attention Reuse for Low-Latency Inference"
+    authors: "In Gim, Guojun Chen, Seung-seob Lee, Nikhil Sarda, Anurag Khandelwal, and Lin Zhong"
+    year: 2024
+    url: "https://arxiv.org/abs/2311.04934"
+updated: "2026-11-20"
+---
+
+In [lesson 31.1](/lessons/31-ai-system-design-and-caching/31.1-end-to-end-latency-budgets/), a 35% cache hit rate dropped mean latency from 4,537 ms to 2,955 ms and cut monthly spend by USD 1,575—but also produced 70 wrong answers per 10,000 requests when semantic false hits ran at 2%. Not all caches carry that risk. Production AI stacks combine three distinct caching layers—**exact**, **prefix (KV)**, and **semantic**—each operating at a different stage of the pipeline with very different correctness and invalidation guarantees.
+
+## Three caching layers and where each sits
+
+Trace a request from ingress to GPU to see how the three layers stack:
+
+- **Layer 1 — Exact response cache (application edge, 5–20 ms):** Hashes the normalized request (whitespace folded, canonical parameter order) and returns a stored answer immediately. False-hit risk is zero when the cache key captures all state dependencies. Exact caches excel on repeated dashboard summaries, scheduled classifications, identical FAQ clicks, and deterministic tool lookups, often yielding 10–25% hits with zero model cost.
+- **Layer 2 — Prefix / KV cache (inference engine, cuts TTFT & input cost by 50–90%):** As introduced in [lesson 26.5](/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/) and formalized by RadixAttention in SGLang (Zheng et al., 2024) and Prompt Cache (Gim et al., 2024), inference servers retain prefilled attention key-value tensors for identical prompt prefixes across requests. Even when 100% of user questions are brand new, sharing a stable 4,000-token system prompt, tool definitions, and few-shot examples avoids re-prefilling those 4,000 tokens. Correctness risk is zero because decoding still runs freshly for every user question.
+- **Layer 3 — Semantic response cache (vector lookup before LLM, 15–35 ms):** Embeds the incoming query, searches recent cached queries by cosine similarity, and returns the cached completion if similarity exceeds a threshold $\tau$ (for example, $\tau = 0.95$). It captures paraphrases ("reset MFA device" vs "how do I reconfigure two-factor auth?") that miss an exact cache, but introduces **semantic false hits**.
+
+## Designing prompts so prefix caching actually hits
+
+Causal self-attention computes each token's key and value states as a function of every token that came earlier. If token 12 changes, tokens 13 through 8,000 all change too, invalidating the entire KV prefix.
+
+Run a quick cost example on a 6,000-token prompt where 5,000 tokens are static instructions + reference policy and 1,000 tokens are per-request user data + retrieved chunks. Suppose uncached input tokens cost USD 2.50 per million and cached prefix reads cost USD 0.25 per million (a 90% discount, typical of major 2026 provider APIs):
+
+- **Unstable prefix** (a request ID or live timestamp placed at line 1): all 6,000 tokens miss the prefix cache, costing $(6{,}000 / 10^6) \times 2.50 = \text{USD } 0.0150$ per call.
+- **Stable prefix** (static instructions + sorted tool schemas first; user ID, timestamp, and retrieved chunks last): 5,000 tokens hit at USD 0.25/M and 1,000 tokens miss at USD 2.50/M:
+
+$$
+\text{Input Cost}_{\text{prefix}} = \frac{5{,}000}{10^6} \times 0.25 + \frac{1{,}000}{10^6} \times 2.50 = 0.00125 + 0.00250 = \text{USD } 0.00375.
+$$
+
+Ordering the prompt cleanly cuts input token cost by $75\%$—a $4\times$ reduction—while dropping prefill latency sharply and keeping 100% exact generation fidelity. Also sort JSON tool definitions deterministically and avoid mutating few-shot examples dynamically per turn so every worker emits the exact same prefix byte sequence.
+
+## Containing semantic false hits and cache poisoning
+
+Semantic caching fails in predictable ways because dense embeddings encode topical closeness rather than logical equivalence:
+
+- **Polarity and negation flips:** "Can I cancel my plan without penalty?" and "Can I cancel my plan with a penalty?" frequently score above $0.93$ cosine similarity.
+- **Entity and number swaps:** "What is the deductible on Plan A?" vs "What is the deductible on Plan B?" differ by one character, producing cosine similarity near $0.97$ while requiring completely different answers.
+- **User-state dependence:** "What is my invoice balance?" must never be semantically cached across users or across billing updates.
+
+To keep semantic false hits below a strict budget (such as under 0.2% of hits), apply four guardrails before accepting a semantic match:
+
+1. **Intent allowlist:** Enable semantic caching only on stateless, public or tenant-wide FAQ intents; bypass it completely for account-specific, transactional, or tool-calling turns.
+2. **Entity and negation verification:** Extract numbers, plan codes, dates, and negation tokens (`not`, `without`, `never`, `except`) from both queries and require an exact match before serving a cached hit.
+3. **Cross-encoder or NLI paraphrase check:** For high-similarity hits (say $0.90$–$0.97$), run a 15 ms lightweight natural-language-inference (NLI) equivalence check confirming both queries entail the same question.
+4. **Strict similarity calibration on held-out pairs:** Measure false-hit rate empirically across candidate thresholds $\tau \in \{0.90, 0.93, 0.96, 0.98\}$ on real production queries before turning the cache on.
+
+:::caveat
+Never insert an unverified or flagged LLM response into a shared cache. If an attacker tricks the assistant into emitting a poisoned answer once and the gateway caches it under a popular query, every subsequent benign user receives the poisoned payload—turning a single prompt injection into persistent **cache poisoning**. Only cache responses that passed output guardrails and grounding checks.
+:::
+
+## Cache keys, invalidation, and corpus epochs
+
+Every response cache entry (exact or semantic) must be partitioned by a composite key:
+
+`cache_key = hash(tenant_id, acl_set_hash, prompt_version, model_id, corpus_epoch, normalized_query)`
+
+Incrementing `corpus_epoch` whenever a tenant's underlying documents update—or scoping `corpus_epoch` per document collection—invalidates stale RAG answers instantaneously without running expensive key-by-key scans across Redis. Combined with short time-to-live (TTL) bounds for fast-moving data and tenant-scoped namespaces, your cache delivers fast, cheap answers without ever leaking another customer's documents or serving yesterday's pricing policy.

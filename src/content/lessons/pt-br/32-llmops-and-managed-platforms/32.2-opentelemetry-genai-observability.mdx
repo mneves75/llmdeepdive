@@ -1,0 +1,114 @@
+---
+id: "32.2-opentelemetry-genai-observability"
+track: "32-llmops-and-managed-platforms"
+order: 2
+title: "Tracing OpenTelemetry GenAI e Observabilidade"
+summary: "Como traces distribuídos com as convenções semânticas OpenTelemetry GenAI expõem gargalos de recuperação, gasto de tokens, motivos de parada e limites de privacidade sem aprisionamento."
+tier: "advanced"
+locale: "pt-br"
+prerequisites: ["32.1-coupled-versioning-and-release-artifacts"]
+unlocks: ["32.3-shadow-canary-and-incident-rollbacks"]
+analogy: "Pense no rastreamento etapa por etapa de uma encomenda contra um único carimbo de 'entregue'. Saber apenas que o pacote levou cinco dias não revela se ele travou na alfândega, perdeu o caminhão de triagem ou esperou na agência local. Um trace distribuído divide a requisição do usuário em spans filhos cronometrados—recuperação, reranking, guardrail, chamada do modelo e ferramentas—mostrando qual perna queimou o orçamento. A comparação para na sensibilidade da carga: o código de barras não carrega segredos, mas um trace de LLM pode vazar PII de clientes se prompts e respostas forem gravados crus."
+teachBack:
+  prompt: "A latência p95 de um endpoint RAG salta de 750 ms para 2.100 ms, enquanto o painel do provedor do modelo mostra TTFT estável em 400 ms. Explique como um trace OpenTelemetry GenAI isola o culpado, cite quatro atributos `gen_ai.*` que você inspeciona primeiro e explique como evitar vazamento de PII na telemetria."
+  modelAnswer: "Métricas HTTP comuns medem só o envelope externo da requisição e escondem se o tempo foi gasto na busca vetorial, no reranker, em retries de ferramentas ou decodificando uma resposta longa. Um trace distribuído divide o pedido em um span pai e spans filhos (embedding, busca vetorial, reranker, guardrail e inferência `gen_ai.client.operation`), expondo duração real e contagem de tokens por etapa. Primeiro, olho `gen_ai.usage.output_tokens` e `gen_ai.response.finish_reasons` para ver se o modelo passou a gerar respostas bem mais longas ou bater em truncamento `length` mesmo com TTFT estável. Segundo, confiro `gen_ai.request.model` e `gen_ai.response.model` junto com nossa tag `release_id` para garantir que nenhum snapshot inesperado ou laço de retry disparou. Terceiro, inspeciono as durações dos spans filhos de busca, reranking e retries de ferramentas, onde um filtro sem índice ou retries 429 adicionam mais de um segundo antes do modelo rodar. Para proteger PII, mantenho `gen_ai.content.prompt` e `gen_ai.content.completion` desligados por padrão em SaaS de observabilidade de terceiros, enviando só metadados estruturais (tokens, latência, release ID, motivo de parada e hashes) enquanto textos sensíveis ficam em um cofre auditado e cifrado com retenção curta."
+quiz:
+  - question: "Um trace RAG registra quatro spans filhos em sequência: embedding + busca vetorial (45 ms), rerank cross-encoder (35 ms), guardrail de entrada (20 ms) e chamada ao LLM (600 ms com TTFT de 220 ms). Cortar o tempo de recuperação pela metade reduz a latência total em quanto?"
+    options: ["22,5 ms, baixando a latência total de 700 ms para 677,5 ms", "110 ms, porque a recuperação roda dentro do span de TTFT do modelo", "350 ms, porque cortar a recuperação pela metade reduz pela metade o contexto", "220 ms, porque o LLM não inicia o prefill antes do aquecimento do cache"]
+    correctIndex: 0
+    explanation: "A latência sequencial total é 45 + 35 + 20 + 600 = 700 ms. Cortar o span de recuperação de 45 ms pela metade economiza 22,5 ms, levando o total para 677,5 ms. O trace mostra na hora que o span de geração de 600 ms—em especial a cauda de decodificação de 380 ms—domina o orçamento."
+  - question: "Por que adotar as convenções semânticas OpenTelemetry GenAI em vez de um SDK proprietário de tracing?"
+    options: ["O OpenTelemetry comprime prompts melhor do que coletores proprietários", "Spans padronizados `gen_ai.*` permitem trocar de backend sem reescrever", "SDKs proprietários não conseguem registrar `input_tokens` e `output_tokens` em streaming", "O OpenTelemetry bloqueia injeções de prompt antes que os spans cheguem ao coletor"]
+    correctIndex: 1
+    explanation: "O OpenTelemetry padroniza nomes de spans e chaves de atributos (`gen_ai.operation.name`, `gen_ai.usage.input_tokens`, `gen_ai.response.finish_reasons`). Exportar via OTLP permite rotear a mesma telemetria para backends abertos ou comerciais sem refazer a instrumentação."
+  - question: "Em um painel de produção, `gen_ai.usage.output_tokens` sobe 80% para um `release_id` específico e `gen_ai.response.finish_reasons` muda de `stop` para `length` em 18% dos traces. O que isso indica?"
+    options: ["O banco vetorial está devolvendo chunks vazios, fazendo o modelo parar cedo", "Perda de pacotes na rede está cortando os streams SSE no meio da resposta", "O release está batendo em `max_output_tokens`, truncando respostas no meio", "O cache de prefixo parou de acertar, o que dobra o contador de tokens de saída"]
+    correctIndex: 2
+    explanation: "Um `finish_reason` igual a `length` significa que a geração parou ao atingir o teto de tokens de saída em vez de emitir o token natural de fim de turno. Somado à alta de 80% nos tokens de saída ligada a um `release_id`, aponta para um prompt verboso ou loop de formatação que trunca respostas e encarece a decodificação."
+citations:
+  - title: "OpenTelemetry GenAI Semantic Conventions"
+    authors: "OpenTelemetry Authors"
+    year: 2025
+    url: "https://github.com/open-telemetry/semantic-conventions-genai"
+  - title: "OpenTelemetry Semantic Conventions for Generative AI"
+    authors: "OpenTelemetry Project"
+    year: 2025
+    url: "https://opentelemetry.io/docs/specs/semconv/gen-ai/"
+updated: "2026-11-20"
+---
+
+Quando um endpoint REST tradicional fica lento, o monitor de desempenho aponta uma consulta SQL travada ou um pool de threads saturado. Quando um endpoint de IA fica lento ou começa a errar respostas, métricas HTTP comuns dizem apenas que `POST /ask` retornou status 200 em 1,4 segundo. Elas escondem se o tempo foi para a busca vetorial, para o reranker, para um retry depois de rate limit ou para um modelo que passou a escrever o triplo de tokens.
+
+Esta aula mostra como instrumentar um pipeline de IA com **OpenTelemetry** (um padrão aberto de observabilidade para traces, métricas e logs) usando suas **Convenções Semânticas GenAI** (o esquema comum para chamadas de LLM, tokens, ferramentas e agentes) para que cada milissegundo, centavo gasto e falha de qualidade aponte de volta para o `release_id` exato da [aula 32.1](/pt-br/lessons/32-llmops-and-managed-platforms/32.1-coupled-versioning-and-release-artifacts/).
+
+## Lendo um trace RAG concreto
+
+Um **trace distribuído** registra uma requisição de ponta a ponta como uma árvore de operações cronometradas chamadas **spans**. Cada span carrega horário de início, duração, ID do pai e **atributos** estruturados em chave-valor.
+
+Acompanhe uma única pergunta de suporte passando por um pipeline RAG:
+
+- `rag.request` (span raiz, `700 ms`, `release_id = "rel-2026-11-20-a4f2"`): o turno completo visível ao usuário.
+- `retrieval.search` (span filho, `45 ms`, `top_k = 20`, `index_revision = "kb-rev-42"`): gera o embedding da consulta e busca no índice vetorial.
+- `retrieval.rerank` (span filho, `35 ms`, `candidates = 20`, `kept = 5`): reordena e filtra os chunks.
+- `guardrail.input` (span filho, `20 ms`, `verdict = "allow"`): verifica regras de política.
+- `chat claude-sonnet-4-5` (span filho, `600 ms`, `gen_ai.usage.input_tokens = 1850`, `gen_ai.usage.output_tokens = 240`, `gen_ai.response.finish_reasons = ["stop"]`): executa a inferência, com `220 ms` até o primeiro token e `380 ms` decodificando o restante.
+
+Some os spans filhos sequenciais:
+
+$$
+T_{\text{total}} = 45 + 35 + 20 + 600 = 700\ \text{ms}
+$$
+
+Agora faça uma pergunta prática de engenharia: vale investir duas semanas otimizando o banco vetorial para reduzir `retrieval.search` pela metade? Olhar a árvore de spans responde em dez segundos. Cortar 45 ms pela metade economiza 22,5 ms—uma queda de 3,2% em um turno de 700 ms—enquanto o span de 600 ms do modelo responde por 85,7% do tempo total. Sem spans filhos, equipes gastam semanas afinando a fatia de 6% que sabem ajustar e ignoram a fatia de 86%.
+
+## Convenções semânticas OpenTelemetry GenAI
+
+As primeiras equipes de IA criavam wrappers próprios de log ou acoplavam o código ao SDK proprietário de um único fornecedor de observabilidade. Trocar de backend depois exigia reescrever a instrumentação em cada serviço e laço de agente.
+
+As **Convenções Semânticas OpenTelemetry GenAI** (publicadas pelo projeto OpenTelemetry em 2025) resolvem essa portabilidade padronizando nomes de spans, atributos e métricas entre provedores e frameworks. Sua aplicação emite dados em **OTLP** (OpenTelemetry Protocol) uma única vez, e qualquer coletor compatível encaminha para Prometheus, Grafana Tempo, Jaeger, Honeycomb, Datadog ou um data warehouse interno.
+
+O núcleo de atributos obrigatório em todo span de LLM é curto e objetivo:
+
+| Atributo | Exemplo de valor | O que diagnostica |
+| --- | --- | --- |
+| `gen_ai.operation.name` | `chat`, `embeddings`, `execute_tool` | Separa geração de recuperação e execução de ferramentas |
+| `gen_ai.system` | `anthropic`, `openai`, `aws.bedrock` | Atribui quedas ou rate limits ao provedor exato |
+| `gen_ai.request.model` / `gen_ai.response.model` | `model-2026-08-15` | Prova qual snapshot realmente atendeu a requisição |
+| `gen_ai.usage.input_tokens` / `output_tokens` | `1850` / `240` | Alimenta atribuição de custo por recurso e alertas de verbosidade |
+| `gen_ai.response.finish_reasons` | `["stop"]` ou `["length"]` | Captura truncamentos silenciosos e picos de recusa |
+| `gen_ai.server.time_to_first_token` | `0.22` (segundos) | Separa atraso de prefill/fila da velocidade de decodificação |
+
+Combine esses campos padrão com dois atributos da sua aplicação—`app.release_id` (da aula 32.1) e `app.cache_hit` (`none`, `exact`, `prefix`, `semantic`)—e seus painéis passam a fatiar custo, TTFT e taxa de truncamento por versão de release.
+
+## Métricas, traces e logs: o que fica em cada camada
+
+Gravar cada token de cada requisição para sempre sai caro e é desnecessário. A observabilidade funciona melhor em três camadas complementares com orçamentos diferentes de retenção:
+
+- **Métricas (100% das requisições, baixa cardinalidade)**: histogramas e contadores agregados para latência (`gen_ai.client.operation.duration`), totais de tokens (`gen_ai.client.token.usage`), taxas de erro e acertos de cache agrupados por `release_id` e rota. Nunca coloque `user_id` ou `request_id` como rótulo de métrica, ou a cardinalidade explode a fatura de séries temporais.
+- **Traces estruturais (amostrados ou tail-sampled)**: árvores completas de spans com tempos, tokens, motivos de parada e IDs de chunks recuperados. A **amostragem na cauda** (*tail-based sampling*) guarda 100% dos traces lentos (por exemplo p95+), 100% dos erros ou truncamentos por `length`, 100% dos feedbacks negativos dos usuários e uma amostra aleatória pequena (digamos 5%) do tráfego saudável.
+- **Logs de auditoria de conteúdo (opt-in, com governança rígida)**: prompts crus, textos de chunks recuperados e respostas, gravados apenas onde a política permite e separados da telemetria geral de engenharia.
+
+Confira a aritmética de amostragem em um serviço com 1.000.000 de requisições por mês. Suponha que 2% sejam erros ou picos lentos e você guarde 5% dos 98% saudáveis restantes. O total de traces armazenados fica em:
+
+$$
+N_{\text{traces}} = 1{,}000{,}000 \times (0.02 + 0.98 \times 0.05) = 69{,}000\ \text{traces/month}
+$$
+
+Você preserva todas as falhas e todos os casos de latência na cauda enquanto reduz em 93,1% o volume de armazenamento em comparação com gravar tudo.
+
+:::warning
+A especificação OpenTelemetry GenAI marca explicitamente corpos de prompt e resposta como opt-in porque eles carregam com frequência PII de clientes, credenciais ou documentos confidenciais. Nunca ative a captura crua de `gen_ai.content.prompt` ou `gen_ai.content.completion` para um fornecedor SaaS de telemetria sem redação prévia e aprovação jurídica. Adote metadados estruturais por padrão nos spans OTel e mantenha textos sensíveis dentro de um repositório redigido e cifrado com TTL explícito.
+:::
+
+## Fechando o ciclo para alertas de qualidade
+
+Latência e contagem de tokens pegam bugs operacionais, mas um sistema de IA ainda pode falhar em silêncio com spans rápidos e status 200. Associe sinais assíncronos de qualidade ao mesmo `trace_id`:
+
+- **Sinais explícitos do usuário**: cliques de curtir/não curtir, cliques em regenerar resposta, cópias para a área de transferência ou escaladas para atendimento humano gravados como eventos no `trace_id` original.
+- **Avaliadores online por amostra**: um worker assíncrono lê uma amostra de 2% dos traces (cruzada com o texto redigido dentro da sua fronteira segura), roda avaliadores calibrados e emite métricas `eval.groundedness` e `eval.schema_valid` marcadas por `release_id`.
+
+:::caveat
+Não execute avaliadores LLM-as-a-judge de forma síncrona no caminho da requisição do usuário. Um juiz síncrono soma 300 a 900 ms de latência e dobra o gasto de tokens em todo turno. Emita o trace de forma assíncrona, avalie traces amostrados fora de banda e alimente regressões no seu sistema de alertas e controle de rollout.
+:::
+
+Com manifestos acoplados em vigor e traces OpenTelemetry GenAI iluminando cada span, você tem agora a telemetria necessária para liberar mudanças com segurança. A aula 32.3 usa exatamente esses sinais de trace para conduzir deploys shadow, fatias canary e rollbacks automáticos.

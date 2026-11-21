@@ -1,0 +1,90 @@
+---
+id: "29.3-llm-as-a-judge-and-calibration"
+track: "29-llm-and-rag-evaluations"
+order: 3
+title: "LLM-as-a-Judge Biases & Cohen's Kappa"
+summary: "Diagnose position, verbosity, and self-enhancement biases in LLM judges, and calibrate every judge against human labels with Cohen's kappa so imbalanced raw agreement never fools you."
+tier: "core"
+locale: "en"
+prerequisites: ["29.1-error-analysis-and-failure-taxonomies", "23.4-calibrate-the-graders"]
+unlocks: ["29.5-offline-to-online-eval-flywheels"]
+analogy: "Using an uncalibrated LLM judge on a skewed dataset is like hiring a building inspector who stamps 'APPROVED' on every elevator in a city where 94% of elevators already work. On paper the inspector matches human experts 91% of the time, yet they miss almost every broken cable. Cohen's kappa strips out the easy agreement you get from guessing the majority class and measures only the skill above chance. The comparison stops at human labels: if two human experts themselves disagree on half the edge cases, no automated judge can out-calibrate an ambiguous rubric."
+teachBack:
+  prompt: "Compare two LLM judges evaluated against 100 human labels: Judge A has tp=42, fp=8, fn=6, tn=44; Judge B has tp=90, fp=5, fn=4, tn=1. Show why Judge B has higher raw agreement (91% vs 86%) yet fails calibration completely under Cohen's kappa (0.135 vs 0.720), and name two systematic biases from Zheng et al. (2023) that you must control when designing a judge."
+  modelAnswer: "For Judge A, observed agreement is Po = (42 + 44)/100 = 86%, expected chance agreement is Pe = 0.50 × 0.48 + 0.50 × 0.52 = 50.0%, and Cohen's kappa is (0.86 - 0.50)/(1 - 0.50) = 0.720 (with Precision = 84.0%, Recall = 87.5%, F1 = 0.857). For Judge B, Po = (90 + 1)/100 = 91%, yet both judge (95%) and human labels (94%) are overwhelmingly positive, so chance agreement alone is Pe = 0.95 × 0.94 + 0.05 × 0.06 = 89.6%, collapsing kappa to (0.91 - 0.896)/(1 - 0.896) = 0.135—it catches only 1 of 6 true failures. Two systematic biases from Zheng et al. (2023) are position bias (preferring the first or second candidate in pairwise comparisons, mitigated by position swapping) and verbosity bias (preferring longer answers even when padded, mitigated by explicit binary rubrics)."
+quiz:
+  - question: "An LLM judge tested on 100 human-labeled RAG replies produces tp=90, fp=5, fn=4, tn=1. Its raw agreement is 91%. Why is this judge dangerous to ship as a CI gate?"
+    options: ["Chance agreement is 89.6%, leaving kappa at 0.135 while missing 5 of 6 failures", "91% raw agreement always proves the judge inverted pass and fail labels on every negative item in the set", "Cohen's kappa requires 10,000 labeled traces to detect false positives", "Raw agreement ignores true positives once tp exceeds 50"]
+    correctIndex: 0
+    explanation: "When 94% of examples pass, a rubber-stamp judge that passes 95% achieves 91% raw agreement almost purely by chance (Pe = 89.6%). Its kappa is only 0.135, and it catches just 1 of the 6 actual failures (fp=5, tn=1)."
+  - question: "Which mitigation directly detects and neutralizes position bias during pairwise LLM-as-a-judge evaluation?"
+    options: ["Replacing binary pass/fail labels with a 1-to-10 numerical slider across every evaluation rubric item", "Using the exact same model family as both generator and judge", "Prompting the judge to prefer answers over 200 words", "Swapping A/B order twice and treating flips as ties or failures"]
+    correctIndex: 3
+    explanation: "Position bias makes a judge favor whichever answer appears first (or second). Swapping A and B order exposes order-dependent verdicts so they are downgraded to ties or flagged for review."
+  - question: "Why should you split human-labeled judge examples into a prompt-iteration set and a held-out calibration test set?"
+    options: ["To double the observed raw agreement percentage on the final release report", "To prevent judge-prompt overfitting", "To eliminate the need for human annotators during rubric design", "To avoid computing expected chance agreement when labels are skewed"]
+    correctIndex: 1
+    explanation: "Iterating on a judge prompt until it gets 100% on one labeled file memorizes those exact edge cases. Measuring final kappa on a held-out test split proves the rubric generalizes to unseen traces."
+citations:
+  - title: "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena"
+    authors: "Lianmin Zheng et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2306.05685"
+  - title: "A Coefficient of Agreement for Nominal Scales"
+    authors: "Jacob Cohen"
+    year: 1960
+    url: "https://doi.org/10.1177/001316446002000104"
+updated: "2026-11-20"
+---
+
+Deterministic code catches broken JSON, missing citation IDs, and stale policy tags, yet code cannot read a paragraph and decide whether a claim genuinely follows from chunk `c2`. That semantic gap is where *LLM-as-a-judge*—a language model grading another model's trace against a narrow rubric—enters the pipeline. As [lesson 23.4](/lessons/23-agent-evaluation-and-ci/23.4-calibrate-the-graders/) established for agent graders, an uncalibrated judge is worse than no judge because it emits reassuring green dashboards while rubber-stamping failures. This lesson contrasts a balanced judge against an imbalanced trap using exact confusion-matrix arithmetic, then unpacks the judge biases you must control in production.
+
+## Why raw agreement hides a rubber-stamp judge
+
+Compare two binary judges (`pass` vs `fail`) audited on 100 human-labeled traces drawn from the failure taxonomy of [lesson 29.1](/lessons/29-llm-and-rag-evaluations/29.1-error-analysis-and-failure-taxonomies/).
+
+First, inspect a **balanced judge** on 100 cases containing 48 human passes and 52 human failures: true positives $\text{tp} = 42$, false positives $\text{fp} = 8$, false negatives $\text{fn} = 6$, and true negatives $\text{tn} = 44$.
+
+- **Observed agreement** $p_o = (42 + 44) / 100 = 0.86$ (86%).
+- **Marginal rates:** the judge predicts pass on $(42 + 8)/100 = 0.50$ and fail on $0.50$; humans label pass on $(42 + 6)/100 = 0.48$ and fail on $0.52$.
+- **Expected chance agreement** $p_e = 0.50 \times 0.48 + 0.50 \times 0.52 = 0.240 + 0.260 = 0.500$ (50.0%).
+- **Cohen's kappa** (Cohen, 1960) measures agreement *beyond chance*:
+  $$
+  \kappa = \frac{p_o - p_e}{1 - p_e} = \frac{0.86 - 0.50}{1 - 0.50} = \frac{0.36}{0.50} = 0.720.
+  $$
+- **Classification balance:** $\text{Precision} = 42 / (42 + 8) = 84.0\%$, $\text{Recall} = 42 / (42 + 6) = 87.5\%$, and $F_1 = 2 \times 0.840 \times 0.875 / (0.840 + 0.875) = 0.857$.
+
+Now inspect the **imbalanced rubber-stamp trap** on 100 production traces where 94 pass and only 6 fail: $\text{tp} = 90$, $\text{fp} = 5$, $\text{fn} = 4$, $\text{tn} = 1$.
+
+- **Observed agreement** $p_o = (90 + 1) / 100 = 0.91$ (91%)—five points *higher* than the balanced judge!
+- **Marginal rates:** the judge predicts pass on $95/100 = 0.95$ and fail on $0.05$; humans label pass on $94/100 = 0.94$ and fail on $0.06$.
+- **Expected chance agreement** $p_e = 0.95 \times 0.94 + 0.05 \times 0.06 = 0.893 + 0.003 = 0.896$ (89.6%).
+- **Cohen's kappa** exposes the collapse immediately:
+  $$
+  \kappa = \frac{0.91 - 0.896}{1 - 0.896} = \frac{0.014}{0.104} = 0.135.
+  $$
+
+Despite boasting 91% raw agreement, the rubber-stamp judge caught only 1 of the 6 true failures (`tn = 1`, `fp = 5`). Any release gate relying on raw agreement above 90% would deploy a blind grader to production.
+
+<Figure id="29-3-kappa-confusion-grid" />
+
+## Three systematic biases in LLM judges
+
+Zheng et al. (2023) studied frontier models acting as judges on MT-Bench and Chatbot Arena and documented three recurring biases that distort automated scoring if left uncontrolled:
+
+- **Position bias:** in pairwise comparisons (`"Is Answer A or Answer B better?"`), judges systematically favor whichever answer sits in the first (or sometimes second) slot, especially when quality is close. Mitigation: run every pairwise item twice with A and B swapped, and count a win only when both orders agree.
+- **Verbosity bias:** judges reward longer, more elaborately formatted responses even when extra sentences add zero factual support or quietly introduce unsupported filler. Mitigation: grade narrow binary predicates (`"Does every claim appear in the cited chunks?"`) rather than holistic quality, and include concise passing examples plus verbose failing examples in calibration.
+- **Self-enhancement bias:** models tend to assign higher scores to outputs generated by their own model family than to equally strong outputs from another family. Mitigation: separate generator and judge model families whenever possible, and calibrate strictly against human ground truth—never against another model's votes.
+
+## Building a calibration loop that does not overfit
+
+A disciplined judge-calibration workflow mirrors supervised machine learning:
+
+1. **Balance the calibration sample:** do not pull 100 random traces when production fails only 4% of the time; oversample known failures and near-misses so the human-labeled set carries roughly 40% to 50% negatives across every taxonomy bucket.
+2. **Measure human-to-human agreement first:** have two domain reviewers label an overlapping slice (for instance, 30 items). If human inter-annotator kappa is only 0.45, rewrite the rubric before blaming the LLM—no model can match an ambiguous standard.
+3. **Split dev and held-out test sets:** inspect errors on a development split to sharpen rubric wording and add 2 to 3 boundary few-shot examples, then report final $\kappa$, precision, and recall on an untouched held-out split.
+4. **Require structured verdicts with short rationales:** ask the judge for a concise evidence quote and a binary `PASS` or `FAIL` field via structured output, treating malformed replies as failures rather than silent passes.
+
+:::warning
+Re-calibrate your judge whenever you change the judge model version, update the rubric, or shift the underlying product domain. A judge that reached $\kappa = 0.720$ on refund policy traces can drift silently when applied to technical troubleshooting logs.
+:::

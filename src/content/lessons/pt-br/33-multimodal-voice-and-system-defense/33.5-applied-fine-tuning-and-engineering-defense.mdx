@@ -1,0 +1,102 @@
+---
+id: "33.5-applied-fine-tuning-and-engineering-defense"
+track: "33-multimodal-voice-and-system-defense"
+order: 5
+title: "Serving de Adaptadores e Defesa de Arquitetura"
+summary: "Como o S-LoRA serve centenas de adaptadores LoRA concorrentes sobre um único modelo base, como depurar quatro incidentes clássicos de IA em produção e como defender escala e cortes de custo."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["28.1-rag-vs-long-context-vs-fine-tuning", "31.5-production-system-design-case-studies", "32.3-shadow-canary-and-incident-rollbacks", "32.5-enterprise-tenancy-residency-and-portability", "33.1-visual-document-rag-and-cross-modal-search", "33.2-diffusion-and-flow-matching-generation", "33.4-realtime-voice-agents-and-barge-in", "25.5-defend-and-publish-deliberately"]
+unlocks: []
+analogy: "Pense em uma orquestra acompanhando 100 cantores de ópera diferentes na mesma noite. Você não contrata 100 orquestras separadas de 80 músicos deixando 99 paradas no corredor; você mantém uma orquestra fixa no palco (os pesos congelados do modelo base) e entrega a cada cantor a sua partitura fina de arranjo (o adaptador LoRA) na hora de ir ao microfone. Defender uma arquitetura em produção funciona como revisão de prontidão de voo: avaliadores não pedem definições decoradas—eles desligam um motor (corte de 50% de orçamento), aumentam o vento em 100x (escala 100x) ou injetam falha de sensor (queda silenciosa de RAG) e observam qual telemetria e quais controles mantêm o avião voando."
+teachBack:
+  prompt: "Uma empresa SaaS B2B tem 100 tenants corporativos, cada um precisando de um adaptador LoRA customizado (~60 MB cada) sobre um modelo base de 54 GB. Compare a memória de GPU de 100 cópias fundidas contra serving multi-adaptador com S-LoRA, depois percorra seu protocolo de depuração para uma queda súbita de 12 pontos na fidelidade do RAG e seu plano exato se a diretoria exigir corte de 50% no custo de inferência sem perder confiabilidade de esquema."
+  modelAnswer: "Fundir e servir 100 cópias separadas de um modelo base de 54 GB exigiria 100 * 54 = 5.400 GB de VRAM de GPU—completamente inviável. Com o S-LoRA (Sheng et al., 2023), um único modelo base congelado de 54 GB permanece residente na GPU enquanto os 100 adaptadores LoRA de rank 16 (~60 MB cada) somam apenas 6 GB em pools de Unified Paging (carregando adaptadores ativos dinamicamente da RAM do host e executando kernels GEMM em lote para o adaptador de cada requisição), totalizando ~60 GB em vez de 5.400 GB—uma redução de 90x na memória de pesos. Para uma queda súbita de 12 pontos na fidelidade do RAG com HTTP 200, sigo um protocolo estruturado: (1) fatiar traces OpenTelemetry por `release_id` para ver se um manifesto de prompt, snapshot, embedding ou índice acabou de entrar; (2) inspecionar spans de recuperação (Recall@k, contagem de chunks, buscas vazias, bugs de pré-filtro ACL) contra spans de geração (`finish_reasons`, formato de citações); (3) isolar se a busca parou de achar evidência ou o modelo parou de obedecer citações; e (4) reverter o ponteiro do manifesto imutável atomicamente antes de virar o trace em caso de regressão permanente no CI. Para cortar 50% do custo mantendo confiabilidade de esquema, preservo decodificação restrita, aplico cascata roteando ~70% das consultas simples para um modelo 8x mais barato, aperto cache de prefixo e cache exato isolado por tenant, limito tokens de saída verbosos e valido cada passo na suíte reservada—recusando explicitamente cortar ACLs de tenant, guardrails de segurança ou validação de esquema."
+quiz:
+  - question: "Uma plataforma atende 100 tenants corporativos, cada um com um adaptador LoRA de 60 MB sobre um modelo base de 54 GB. Quanta memória total de pesos exigem 100 cópias completas fundidas contra uma base compartilhada no S-LoRA mais 100 adaptadores?"
+    options: ["5.400 GB para 100 cópias completas contra 60 GB (54 GB base + 6 GB adaptadores) com S-LoRA", "540 GB para 100 cópias completas contra 600 GB com S-LoRA porque adaptadores duplicam o cache KV", "6.000 GB para 100 cópias completas contra 540 GB com S-LoRA porque cada adaptador pede 10% da base", "1.080 GB para 100 cópias completas contra 114 GB com S-LoRA porque LoRA reduz a precisão pela metade"]
+    correctIndex: 0
+    explanation: "100 cópias fundidas exigem 100 * 54 GB = 5.400 GB de pesos. Compartilhar uma base de 54 GB e armazenar 100 adaptadores de 60 MB cada (6 GB no total) consome 54 + 6 = 60 GB—uma redução de 90x na pegada de pesos."
+  - question: "Durante um plantão, o gasto horário de tokens do seu agente triplica enquanto o tráfego de usuários fica estável. Quais sinais OpenTelemetry identificam primeiro um loop descontrolado de agente?"
+    options: ["Um aumento de 15 ms na latência de busca HNSW do banco vetorial em todas as rotas", "Alta de spans `execute_tool` por trace junto com retries repetidos de erro e salto em `output_tokens`", "Uma variação de 2% nos buffers de jitter WebRTC de navegadores em sessões móveis", "Uma queda no tempo diário de execução dos testes offline de CI no branch de staging"]
+    correctIndex: 1
+    explanation: "Um loop descontrolado mantém o volume de requisições estável enquanto multiplica turnos de modelo e ferramenta dentro de cada trace individual. Inspecionar spans por `trace_id` expõe na hora falhas repetidas em `execute_tool`, retries sem limite e explosão de `gen_ai.usage.output_tokens`."
+  - question: "Em uma defesa de arquitetura, o avaliador propõe: 'Seu desenho funciona a 10.000 requisições/dia—agora corte 50% do custo de inferência sem subir alucinações silenciosas.' Qual combinação é a resposta de engenharia mais sólida?"
+    options: ["Desligar todos os guardrails de entrada e remover validação de JSON Schema para poupar prefill", "Colocar todos os tenants em um cache semântico global sem chave para alcançar 80% de economia", "Zerar o top-k da recuperação para o modelo responder toda pergunta corporativa só de memória", "Combinar roteamento em cascata, cache de prefixo e teto de saída validados em evals reservados"]
+    correctIndex: 3
+    explanation: "Cortar custo com segurança elimina desperdício em vez de segurança ou embasamento: rotear pedidos rotineiros para um modelo menor, maximizar acertos de cache exato e de prefixo e podar respostas verbosas costumam reduzir gastos em 40% a 65% enquanto avaliações reservadas comprovam a manutenção da fidelidade e dos esquemas."
+citations:
+  - title: "S-LoRA: Serving Thousands of Concurrent LoRA Adapters"
+    authors: "Ying Sheng, Shiyi Cao, Dacheng Li, Coleman Hooper, Nicholas Lee, Shuo Yang, Christopher Chou, Banghua Zhu, Lianmin Zheng, Kurt Keutzer, Joseph E. Gonzalez, Ion Stoica"
+    year: 2023
+    url: "https://arxiv.org/abs/2311.03285"
+  - title: "Demystifying evals for AI agents"
+    authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
+    year: 2026
+    url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
+updated: "2026-11-20"
+---
+
+Ao longo da Parte 3, você aprendeu a chamar LLMs de forma confiável, recuperar texto e páginas visuais, medir qualidade com rigor, proteger isolamento de tenants, orçar latência e economia unitária, operar rollouts de LLMOps e construir agentes de voz abaixo de 500 ms. Duas realidades separam quem domina cada peça isolada do engenheiro de IA sênior que sustenta sistemas em produção: **servir modelos ajustados sob medida sem explodir a fatura de GPUs** e **defender uma arquitetura completa sob incidentes reais, crescimento de 100x e cortes agressivos de orçamento**.
+
+Esta aula final cobre serving multi-adaptador com S-LoRA, um manual de depuração para quatro incidentes clássicos e o roteiro de defesa de arquitetura que estende a [aula 25.5](/pt-br/lessons/25-agent-capstone-and-portfolio/25.5-defend-and-publish-deliberately/) para todos os sistemas em produção da Parte 3.
+
+## Serving multi-adaptador: a conta de memória do S-LoRA
+
+Na [aula 28.1](/pt-br/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/), você viu quando o fine-tuning vence prompts ou RAG—por exemplo travar um estilo rígido de domínio, uma sintaxe especializada de extração ou um classificador compacto destilado. Assim que o fine-tuning funciona para um cliente corporativo, a área comercial pede na hora um modelo sob medida para 100 tenants.
+
+Veja o muro de memória se você fundir os pesos LoRA de cada tenant em uma cópia completa separada de um modelo base de 54 GB (bf16):
+
+$$
+M_{\text{merged}} = 100 \times 54\ \text{GB} = 5{,}400\ \text{GB}
+$$
+
+Você precisaria de cerca de 68 GPUs dedicadas de 80 GB paradas só para segurar os pesos na VRAM antes de atender um único token.
+
+O **S-LoRA** (Sheng et al., 2023) derruba esse muro separando o modelo base congelado compartilhado das pequenas matrizes de adaptador de posto baixo ($A$ e $B$). Suponha que o adaptador LoRA de posto $r = 16$ de cada tenant ocupe **60 MB** em bf16. Mantenha **um** modelo base de 54 GB fixo na memória da GPU e guarde os 100 adaptadores em um pool de **Unified Paging** (a mesma ideia de memória paginada do PagedAttention, estendida para fatias de adaptadores de posto variável ao lado das páginas de cache KV, paginando adaptadores frios da RAM da CPU sob demanda):
+
+$$
+M_{\text{S-LoRA}} = 54\ \text{GB} + 100 \times 0.06\ \text{GB} = 54 + 6 = 60\ \text{GB}
+$$
+
+A memória total de pesos cai **90x**, de 5.400 GB para 60 GB—cabendo com folga em uma única GPU da classe de 80 GB enquanto kernels em lote calculam a projeção base compartilhada uma vez para o lote misto e aplicam em paralelo os deltas $A, B$ do adaptador de cada requisição. Combinado ao roteamento isolado por tenant ([aula 32.5](/pt-br/lessons/32-llmops-and-managed-platforms/32.5-enterprise-tenancy-residency-and-portability/)), um único cluster sustenta centenas de customizações independentes.
+
+## Manual de depuração de incidentes em produção
+
+Quando um sistema de IA falha às 2h da manhã, chutar desperdiça horas. Ligue cada sintoma a uma triagem disciplinada guiada por traces nos quatro incidentes clássicos de IA:
+
+| Sintoma do incidente | Primeira telemetria a inspecionar | Causas-raiz mais comuns | Contenção imediata |
+| --- | --- | --- | --- |
+| **Queda súbita de fidelidade em RAG** (HTTP 200) | `release_id` OTel, contagem de chunks recuperados, distribuição do rerank | Desalinhamento embedding/índice, regressão no parser de PDF, bug de pré-filtro ACL | Rollback atômico para o manifesto imutável anterior ([aula 32.3](/pt-br/lessons/32-llmops-and-managed-platforms/32.3-shadow-canary-and-incident-rollbacks/)) |
+| **Loop descontrolado de agente / fatura 3x** | Spans por `trace_id`, taxas de erro em `execute_tool`, `output_tokens` | Ferramenta devolvendo erros ambíguos gerando retries sem fim, falta de teto de passos | Disparar circuit breaker / baixar teto de passos, isolar rota afetada |
+| **Pico de latência p95 na cauda** | Fatiar spans filhos OTel: busca vs guardrail vs TTFT vs decode vs retries 429 | Backoff de rate limit do provedor, filtro sem índice, prompt verboso (`finish_reason=length`) | Cortar retries não críticos, transbordar para modelo/PAYG reserva, limitar `max_output_tokens` |
+| **Regressão em adaptador ajustado** | Delta de eval offline vs ao vivo por `adapter_id`, falhas de esquema | Esquecimento catastrófico em casos de borda, base atualizada sob adaptador antigo | Fixar adaptador à revisão exata da base; voltar ao adaptador anterior ou manifesto base+prompt |
+
+Todo incidente encerrado termina com um passo obrigatório do guia de avaliações da Anthropic: **converter o trace real que falhou (sem PII) em um caso de teste determinístico permanente** na sua suíte offline de CI para que aquele defeito exato nunca volte a subir.
+
+## Quadro branco estruturado de arquitetura
+
+Seja diante de um comitê de engenharia sênior ou defendendo um projeto de portfólio, arquitetos claros seguem a mesma sequência de cinco passos em ordem—nunca começando pelo nome de um framework:
+
+1. **Restrições e SLAs primeiro**: declare volume de tráfego (requisições por dia/mês, razão pico/média), orçamento duro de latência (por exemplo < 2 s em RAG textual, < 500 ms em voz pela [aula 33.4](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.4-realtime-voice-agents-and-barge-in/)), piso de acurácia e teto de custo unitário.
+2. **Fronteira de dados, privacidade e residência**: aponte o que é sensível (PII, ACLs multi-tenant, residência regional), onde roda a redação e como o isolamento envolve índices, caches e adaptadores.
+3. **Modalidade central e pipeline de recuperação**: justifique por que RAG híbrido textual, RAG visual de documentos ([aula 33.1](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.1-visual-document-rag-and-cross-modal-search/)), filas assíncronas de difusão/flow matching ([aula 33.2](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.2-diffusion-and-flow-matching-generation/)) ou speech-to-speech em streaming cabem na carga—comparando explicitamente contra o baseline mais simples.
+4. **Avaliação, observabilidade e gates de rollout**: especifique taxonomia de erros, métricas de busca e geração, spans OpenTelemetry `gen_ai.*` presos a manifestos acoplados, janelas shadow/canary e gatilhos automáticos de rollback.
+5. **Modos de falha e economia unitária**: apresente a aritmética da fatura mensal ([aula 31.5](/pt-br/lessons/31-ai-system-design-and-caching/31.5-production-system-design-case-studies/) e trilha 32) e nomeie as três principais formas pelas quais o sistema degrada com segurança se um provedor ou banco cair.
+
+## Defendendo choques de escala 100x e corte de 50% no custo
+
+Revisões sênior sempre terminam com dois choques deliberados. Prepare aritmética concreta em vez de frases vagas:
+
+- **Choque 1 — "O tráfego cresce 100x no próximo trimestre"**: diga *o que quebra primeiro* com números. Rate limits da API direta (RPM/TPM) saturam primeiro, exigindo reservas de vazão provisionada com transbordo multirregional ou multiproveedor. Em seguida, a RAM de um nó único HNSW bate no teto, pedindo quantização escalar/binária e sharding particionado por tenant. Ao mesmo tempo, o ponto de equilíbrio vira: em 100x de volume, capacidade provisionada de alta utilização ou clusters self-hosted com S-LoRA costumam bater o PAYG em 40% a 60%.
+- **Choque 2 — "Corte 50% do custo de inferência este mês"**: priorize alavancas sem arrependimento em ordem estrita—(1) rotear 60% a 75% dos pedidos rotineiros para um modelo menor e mais barato em cascata, (2) maximizar cache de prefixo e cache exato isolado por tenant, (3) enxugar top-k de contexto e limitar `max_output_tokens` em rotas verbosas e (4) destilar um adaptador LoRA pequeno para extração estruturada de alto volume. Igualmente importante, diga **o que você se recusa a cortar**: pré-filtros ACL de tenant, validação restrita de esquema e o gate de avaliação reservado provando que a fidelidade não colapsou em silêncio.
+
+:::warning
+Nunca responda a um desafio de corte de 50% removendo guardrails, desligando chaves de tenant no cache ou apagando avaliações offline. Essas "economias" escondem passivos catastróficos de segurança ou conformidade atrás de uma fatura menor de tokens.
+:::
+
+:::caveat
+Toda decisão de arquitetura tem prazo de validade. Preços de modelos de fronteira, janelas de contexto multimodais e recursos de plataformas gerenciadas continuarão mudando depois de 2026. A habilidade duradoura que você construiu ao longo de todas as 34 trilhas não é decorar o catálogo de fornecedores de hoje—é derivar orçamentos de latência, tetos de memória, métricas de recuperação, janelas estatísticas de rollout e economia unitária a partir de primeiros princípios sempre que a próxima geração de modelos chegar.
+:::
+
+Com a aula 33.5 concluída, você encerrou a Parte 3—Engenharia de IA em Produção—e o currículo completo de 34 trilhas do `llmdeepdive.com`, de um único parâmetro e uma fusão BPE até internos de transformers, agentes autônomos e sistemas multimodais de IA em produção.

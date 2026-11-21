@@ -1,0 +1,115 @@
+---
+id: "32.1-coupled-versioning-and-release-artifacts"
+track: "32-llmops-and-managed-platforms"
+order: 1
+title: "Coupled Versioning: Prompts, Models & Indexes"
+summary: "Why prompt templates, JSON schemas, model snapshots, embeddings and vector indexes fail when deployed independently, and how one immutable release manifest makes rollbacks atomic."
+tier: "advanced"
+locale: "en"
+prerequisites: ["26.5-prompt-engineering-hierarchy-and-caching", "29.5-offline-to-online-eval-flywheels"]
+unlocks: ["32.2-opentelemetry-genai-observability", "32.3-shadow-canary-and-incident-rollbacks"]
+analogy: "Think of a compiled binary and its database schema migration. If you deploy application code that expects a new column before the migration runs, or roll back the code while leaving the incompatible schema in place, the service breaks even though both pieces looked fine in isolation. An AI feature has five moving parts instead of two, and every pair can drift apart unless one manifest locks their versions together. The comparison stops at determinism: a database mismatch raises a loud SQL error right away, whereas a mismatched embedding model or prompt template still returns HTTP 200 with degraded answers."
+teachBack:
+  prompt: "A team updates its system prompt to request a new `confidence_band` JSON field, keeps an unpinned model alias (`prod-fast`), and re-indexes half its corpus with a new embedding model while leaving the query encoder on the old version. Explain the three failure modes this creates and design the release manifest that prevents them."
+  modelAnswer: "Three independent failures stack together. First, the unpinned model alias lets the provider swap weights underneath the prompt without a deployment, so prompt sensitivity changes accuracy unpredictably and reproduces nothing in CI. Second, updating the prompt for `confidence_band` without shipping the matching JSON schema and parser in the same artifact breaks structured decoding or leaves downstream callers reading null fields. Third, indexing chunks with embedding model B while querying with embedding model A puts queries and documents in incompatible vector spaces, so cosine similarity drops toward noise and retrieval collapses while returning HTTP 200. The fix is one immutable release manifest identified by a content hash (for example `rel-2026-11-20-a4f2`) that pins the prompt template hash, JSON schema version, exact dated model snapshot ID, embedding model ID, vector index revision, and guardrail policy version. CI evaluates that exact bundle offline before rollout, and any rollback reverts the single manifest pointer so all five components move atomically."
+quiz:
+  - question: "A RAG service swaps its document ingestion job to a newer embedding model (`embed-v3`) while the live query service still encodes user questions with `embed-v2`. What happens in production?"
+    options: ["The vector database refuses the query with a dimension mismatch error in every case", "The LLM detects the mismatched vectors in attention and falls back to keyword search", "Retrieval degrades because queries and stored chunks now live in incompatible vector spaces", "Latency rises slightly while the database re-projects old vectors into the new embedding space"]
+    correctIndex: 2
+    explanation: "Different embedding models—even when they share the exact same vector dimension such as 1,536—learn different coordinate rotations and geometries. Cosine similarity between vectors from `embed-v2` and `embed-v3` becomes near-random, so retrieval returns irrelevant chunks without raising any HTTP or schema error."
+  - question: "Why should a production release manifest pin a dated model snapshot ID instead of a floating vendor alias like `latest`?"
+    options: ["Floating aliases bill at a higher per-token rate than dated snapshots", "Floating aliases disable streaming SSE and constrained JSON decoding", "Dated snapshots skip provider rate limits during traffic bursts", "Dated snapshots prevent silent vendor weight swaps from altering prompt behavior between deployments"]
+    correctIndex: 3
+    explanation: "As lesson 26.5 showed, small changes in weights or formatting shift prompt accuracy. A floating alias allows the provider to silently route traffic to a new checkpoint, breaking reproducibility in offline CI and creating regressions with no code commit in your repository."
+  - question: "Your team shipped manifest `v14` (new prompt + new JSON schema + new chunk index) and sees groundedness fall by 6 percentage points. What is the safest immediate recovery?"
+    options: ["Flip the active release pointer back to immutable manifest `v13` so every piece reverts clean", "Edit only the prompt string in a live config dashboard while keeping the `v14` schema and index", "Delete the `v14` index immediately and rebuild `v13` chunks live against production traffic", "Leave `v14` live and raise temperature to compensate for the narrower prompt instructions"]
+    correctIndex: 0
+    explanation: "Because prompt, schema, model snapshot, and index revision were validated together as manifest `v13`, switching the single active pointer back to `v13` restores a known-good combination atomically in seconds. Editing one piece live re-introduces version skew."
+citations:
+  - title: "Release Engineering, in Site Reliability Engineering"
+    authors: "Dinah McNutt (Google; O'Reilly Media)"
+    year: 2016
+    url: "https://sre.google/sre-book/release-engineering/"
+  - title: "Demystifying evals for AI agents"
+    authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
+    year: 2026
+    url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
+updated: "2026-11-20"
+---
+
+In conventional web software, a release is usually one container image tagged with a Git commit SHA. If an endpoint starts returning errors after a deploy, rolling back that single image restores the previous behavior. Production AI systems break that assumption. Even if your application code does not change by a single line, an edit to a prompt template in a dashboard, a silent model alias update by a vendor, or a re-indexed embedding table can drop answer quality overnight while every server still returns HTTP 200.
+
+This lesson explains why an AI release is a **coupled artifact** (a bundle of interdependent files and versions that only work as a verified set), how to pin every component in one immutable manifest, and how to make rollbacks atomic.
+
+## Why independent deploys create silent drift
+
+Picture a customer-support RAG assistant serving 10,000 queries per day. Five separate artifacts determine what the user sees on every request:
+
+- **Prompt template and system instructions**: the exact wording, few-shot examples, and formatting rules from [lesson 26.5](/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/).
+- **Output schema and parser**: the JSON Schema enforcing structured fields and tool signatures.
+- **Model snapshot and decoding parameters**: the pinned checkpoint ID (for example `model-2026-08-15`, not a floating alias), temperature, and max-token cap.
+- **Embedding model and retrieval index revision**: the exact encoder and chunked snapshot used to search documents.
+- **Guardrail and router configuration**: classifier thresholds, allowlists, and fallback routes.
+
+Now trace what happens when a team manages those five pieces independently. Suppose each component changes once per week on its own schedule. On Monday, an engineer edits a prompt in a web UI to add a `refund_tier` field. On Tuesday, the data pipeline upgrades the document encoder from `embed-v2` to `embed-v3` (both producing 1,536-dimensional vectors, so the database accepts the writes without complaint), while the online API keeps encoding user queries with `embed-v2`. On Wednesday, the model provider quietly shifts the `fast-latest` alias to a new checkpoint.
+
+By Thursday, groundedness on support tickets has fallen from 91% to 74%. No crash alert fired. No CI job failed because the prompt edit bypassed Git, the index update bypassed the API repo, and the model swap happened outside your cluster. When an engineer tries to roll back Monday's prompt edit, the quality stays broken because the query encoder and document index are still living in two incompatible vector spaces.
+
+<Figure id="32-1-coupled-release-flow" />
+
+## Counting the coupling surface
+
+A small calculation shows why ad-hoc tracking collapses as soon as a product grows. If $k$ components each have $v$ independently toggled versions in production, the number of distinct runtime combinations is:
+
+$$
+N_{\text{configs}} = v^{k}
+$$
+
+With $k = 5$ components and just $v = 3$ active versions each (say previous, current, and canary), there are $3^{5} = 243$ possible runtime states. Your offline evaluation suite from [lesson 29.5](/lessons/29-llm-and-rag-evaluations/29.5-offline-to-online-eval-flywheels/) tested at most one or two of those 243 combinations. The other 241 states are untested production software.
+
+Pinning all five references into a single **release manifest** (an immutable JSON or YAML document identified by a cryptographic digest) collapses $v^{k}$ loose combinations down to one named bundle per release. You never deploy "prompt v18" or "index rev 42" in isolation. You deploy manifest `rel-042`, whose digest proves the exact prompt, schema, model snapshot, embedding model, index revision, and guardrail policy that passed CI together.
+
+```json
+{
+  "release_id": "rel-2026-11-20-a4f2",
+  "prompt_sha256": "9c31b8e0...7d4a",
+  "schema_version": "support-reply.v4",
+  "model_snapshot": "claude-sonnet-4-5-20250929",
+  "decoding": { "temperature": 0.0, "max_output_tokens": 800 },
+  "embedding_model": "text-embed-v3-2026-04",
+  "index_revision": "kb-chunks-20261119-02",
+  "guardrail_policy": "policy-v9"
+}
+```
+
+Google's release engineering guidance makes hermetic, reproducible builds the bedrock of safe operations: if you cannot reconstruct the exact inputs that produced a binary, you cannot debug or roll it back reliably. For AI systems, the prompt, schema, model snapshot, and index revision *are* part of the binary.
+
+## Handling index migrations and blue-green snapshots
+
+Code and prompts are cheap to version in Git because they are kilobytes of text. A vector index containing 2,000,000 document chunks is gigabytes of state, so you cannot copy it on every commit. Teams avoid version skew between embeddings and indexes with **blue-green index revisions** (keeping the previous index revision readable alongside the newly built one until the rollout succeeds).
+
+Suppose manifest `rel-041` points at `embedding_model: embed-v2` and `index_revision: kb-rev-41`. To upgrade to `embed-v3`:
+
+1. An offline batch job embeds the corpus with `embed-v3` and writes a brand-new immutable collection `kb-rev-42`. Production traffic still hits `kb-rev-41`.
+2. A pull request creates manifest `rel-042`, changing `embedding_model` and `index_revision` together in one commit.
+3. CI runs the full offline evaluation suite against `rel-042` pointing at `kb-rev-42`, checking Recall@k, schema validity, and groundedness before merge.
+4. Production rolls out `rel-042` via shadow and canary traffic while `kb-rev-41` remains warm and untouched.
+5. Only after `rel-042` holds steady at 100% traffic for the retention window (say 72 hours) does a cleanup job retire `kb-rev-41`.
+
+Because `kb-rev-41` stays intact throughout the rollout, rolling back from `rel-042` to `rel-041` takes one atomic pointer flip and zero re-indexing wait time.
+
+:::warning
+Prompt-management dashboards that edit live production prompts directly—outside Git, code review, and offline evaluation—violate coupled versioning. Use a prompt registry to browse traces or draft experiments, never as an unreviewed backdoor into live traffic. Every change that reaches users must compile into a new immutable manifest and pass the same CI gate.
+:::
+
+## Tagging every trace with the manifest ID
+
+A manifest only pays off during an incident if you can see which bundle produced each answer. Every request handler should attach `release_id` as a mandatory field on every log line, metric label, and distributed trace span.
+
+When a user reports a hallucinated refund policy at 14:32 UTC, the on-call engineer reads `release_id: rel-2026-11-20-a4f2` from the trace, checks out that exact manifest from Git, replays the user's input against the identical model snapshot and index revision, and confirms whether the failure is a regression introduced by `rel-042` or an existing gap in the knowledge base. Without coupled versioning, debugging turns into archaeology across four separate dashboards.
+
+:::caveat
+Pinning a vendor's dated snapshot protects you from silent mid-week weight swaps, not from eventual vendor deprecation. Providers retire dated snapshots on a 6-to-18-month cycle. Track snapshot sunset dates inside the manifest metadata and run an automated reminder 60 days ahead so migrations happen through your normal CI evaluation pipeline rather than during an emergency cutoff.
+:::
+
+Now that a release is a single reproducible artifact, the next step is seeing what happens inside each step of a live request. Lesson 32.2 instruments that bundle with OpenTelemetry GenAI traces so latency, tokens, cost, and retrieval quality attach directly to `release_id`.
