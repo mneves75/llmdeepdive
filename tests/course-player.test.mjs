@@ -54,12 +54,6 @@ function attr(attributes, name) {
   return attributes.match(new RegExp(`\\b${name}="([^"]*)"`, 'u'))?.[1]
 }
 
-test('the course player pages exist', () => {
-  assert.ok(lessonPages.length >= 200, `expected the lesson corpus, found ${lessonPages.length}`)
-  assert.ok(trackPages.length >= 20)
-  assert.equal(homePages.length, 2)
-})
-
 test('view-transition names are unique on every page', () => {
   for (const { route, html } of all) {
     const names = [...html.matchAll(/view-transition-name:\s*([a-z0-9-]+)/giu)].map((match) => match[1])

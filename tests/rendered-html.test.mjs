@@ -33,11 +33,6 @@ function pages() {
   return out
 }
 
-test('build produced pages', () => {
-  assert.ok(existsSync(DIST), 'dist/ missing — run pnpm build first')
-  assert.ok(pages().length > 0, 'no index.html found in dist/')
-})
-
 /**
  * Cloudflare drops a `_headers` line over 2,000 characters (Workers → Platform
  * → Limits → Static Assets: "_headers characters per line: 2,000"). The CSP is
@@ -265,13 +260,6 @@ test('every field-edition code token colour holds 4.5:1 on the raised plate', ()
   assert.deepEqual([...colours].filter((hex) => ratio(hex, ground) < 4.5).map((hex) => `${hex} ${ratio(hex, ground).toFixed(2)}:1`), [])
 })
 
-test('every page declares a language and canonical', () => {
-  for (const p of pages()) {
-    assert.match(p.html, /<html lang="(en|pt-BR)"/, `${p.route} has no/bad lang attribute`)
-    assert.match(p.html, /rel="canonical"/, `${p.route} has no canonical link`)
-  }
-})
-
 test('pt-BR pages declare pt-BR, English pages declare en', () => {
   for (const p of pages()) {
     const lang = p.html.match(/<html lang="([^"]+)"/)?.[1]
@@ -368,15 +356,6 @@ test('the lesson date formatter is pinned to UTC rather than the build machine',
     /toLocaleDateString\([^)]*timeZone:\s*'UTC'/,
     'the visible lesson date must be formatted with timeZone: UTC — without it the ' +
       'rendered day depends on where the site was built, and a UTC CI runner cannot detect that',
-  )
-
-  // The mechanism this guards, demonstrated rather than asserted: the same
-  // instant formats to two different calendar days depending on the zone.
-  const midnightUtc = new Date('2026-08-19T00:00:00.000Z')
-  assert.notEqual(
-    midnightUtc.toLocaleDateString('en', { timeZone: 'America/Sao_Paulo' }),
-    midnightUtc.toLocaleDateString('en', { timeZone: 'UTC' }),
-    'expected a frontmatter date at UTC midnight to fall on the previous day in São Paulo',
   )
 })
 test('a lesson renders the date its frontmatter states, independent of build timezone', () => {

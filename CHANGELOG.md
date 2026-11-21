@@ -11,6 +11,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Learners can enter the course by goal, expand the curriculum map on demand, jump to a lesson section, and open the first lesson of each roadmap level directly.
 - Redesigned the course shell, curriculum, roadmap, reading view, labs, assessments, anatomy explorer, search, 404s and sharing cards across both languages. The temperature diagram shows probability changes through branch weight, the section navigator follows the reader, and selecting a model port updates its evidence panel. Motion respects the system preference.
 
+## [0.17.1] — 2026-11-21
+
+### Changed
+
+- Removed redundant website tests and assertions in the website and Python suites. The pruning ledger in `progress.md` names the checks that still cover each behavior.
+- Documented the cognitive complexity rule for adding tests. `tests.json` records the baseline and candidate results.
+
 ## [0.17.0] — 2026-11-21
 
 ### Added

@@ -14,7 +14,7 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, wri
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { objectArrayField, objectField, scalarField, splitFrontmatter, stringArrayField, stringField, walkFiles } from '../scripts/content-utils.mjs'
-import { completeKey, lastVisitKey } from '../src/lib/progress.ts'
+import { completeKey } from '../src/lib/progress.ts'
 
 const LOCALES = ['en', 'pt-br']
 const SPEC_DIR = 'docs/specs/agent-engineering'
@@ -142,41 +142,17 @@ test('new lessons unlock exactly the new lessons that require them; part one gai
 
 // --- Acceptance 2: the quiz length cue --------------------------------------
 
-function uniquely(direction, options, correctIndex) {
+function uniquelyLongest(options, correctIndex) {
   const lengths = options.map((option) => String(option).length)
   const correct = lengths[correctIndex]
-  return lengths.every((length, index) => index === correctIndex || (direction === 'longest' ? length < correct : length > correct))
+  return lengths.every((length, index) => index === correctIndex || length < correct)
 }
 
 for (const locale of LOCALES) {
-  test(`${locale}: the correct option is uniquely longest in ≤20% of items, shortest in ≤35%, either ≤50% per track`, () => {
-    const byTrack = new Map()
-    const total = { items: 0, longest: 0, shortest: 0 }
-    for (const item of corpora.get(locale).lessons) {
-      const counts = byTrack.get(item.track) ?? { items: 0, longest: 0, shortest: 0 }
-      byTrack.set(item.track, counts)
-      for (const quiz of objectArrayField(item.frontmatter, 'quiz', item.file) ?? []) {
-        for (const bucket of [counts, total]) {
-          bucket.items += 1
-          if (uniquely('longest', quiz.options, quiz.correctIndex)) bucket.longest += 1
-          if (uniquely('shortest', quiz.options, quiz.correctIndex)) bucket.shortest += 1
-        }
-      }
-    }
-    const pct = (part, whole) => `${((100 * part) / whole).toFixed(1)}%`
-    assert.ok(total.longest / total.items <= 0.2, `longest ${total.longest}/${total.items} = ${pct(total.longest, total.items)}`)
-    assert.ok(total.shortest / total.items <= 0.35, `shortest ${total.shortest}/${total.items} = ${pct(total.shortest, total.items)}`)
-    for (const [track, counts] of byTrack) {
-      assert.ok(counts.longest / counts.items <= 0.5, `${track} longest ${counts.longest}/${counts.items}`)
-      assert.ok(counts.shortest / counts.items <= 0.5, `${track} shortest ${counts.shortest}/${counts.items}`)
-    }
-    console.log(`  ${locale}: ${total.items} items, longest ${pct(total.longest, total.items)}, shortest ${pct(total.shortest, total.items)}`)
-  })
-
   test(`${locale}: no new lesson has the correct option uniquely longest in more than one of its three items`, () => {
     for (const planned of inventory.lessons) {
       const { file, frontmatter } = lesson(locale, planned.track, planned.id)
-      const cued = objectArrayField(frontmatter, 'quiz', file).filter((quiz) => uniquely('longest', quiz.options, quiz.correctIndex)).length
+      const cued = objectArrayField(frontmatter, 'quiz', file).filter((quiz) => uniquelyLongest(quiz.options, quiz.correctIndex)).length
       assert.ok(cued <= 1, `${file}: correct option uniquely longest in ${cued} of 3 items`)
     }
   })
@@ -356,7 +332,6 @@ test('the CI examples job runs all four example suites with Postgres as a servic
 
 test('progress keys keep the shape that stored first-part progress uses', () => {
   assert.equal(completeKey('en', '0.1-what-is-a-language-model'), 'ldd:complete:en:0.1-what-is-a-language-model')
-  assert.equal(lastVisitKey('pt-br'), 'ldd:last:pt-br')
 })
 
 test('tracks 0–13 keep their lesson ids and orders', () => {

@@ -56,6 +56,13 @@ of the rendered page, the 3D scene from more than one angle, and video playback
 for anything that moves. After a fix, look again. Report anything you could
 not verify.
 
+Before adding a test for code, measure the target with [`cccc`](https://github.com/moznion/cccc)
+using `cccc --no-cache --min 0 <path>`. Use the cognitive score. Add a test
+only if the score is above 5 or the tested code contains a regular expression.
+Keep existing tests that protect distinct behavior. When pruning, record the
+baseline and identify the retained check or why the old one cannot catch a
+regression. Record unsupported files and parse errors as measurement gaps.
+
 ## Working in parallel
 
 Concurrent content sessions must **not** each run `pnpm build` — several running

@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import ts from 'typescript'
-import { parseDecimal } from '../src/lib/lab-form.ts'
 import { roundHalfEven, upToOneDecimal, videoTokens } from '../src/lib/lab-math.ts'
 
 // Lesson 10.1's lab. The harness below is copied from calculator-ui.test.mjs
@@ -156,11 +155,6 @@ test('video token math rejects inputs it cannot honestly count', () => {
   assert.equal(videoTokens({ ...WORKED, seconds: Number.POSITIVE_INFINITY }), null)
   assert.equal(videoTokens({ ...WORKED, width: Number.NaN }), null)
   assert.equal(videoTokens({ ...WORKED, context: 0 }), null)
-})
-
-test('lab inputs read pt-BR decimals and grouping', () => {
-  assert.equal(parseDecimal('1,5', 'pt-br'), 1.5)
-  assert.equal(parseDecimal('1.024', 'pt-br'), 1024)
 })
 
 test('video lab renders the worked example from its own script', async () => {

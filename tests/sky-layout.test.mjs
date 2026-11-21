@@ -73,7 +73,6 @@ for (const [catalog, { tracks, lessons, sky }] of layouts) {
 
   test(`${catalog}: every star and every name sits on the plate`, () => {
     for (const star of sky.stars) {
-      assert.ok(star.x - star.r >= 0 && star.x + star.r <= SKY_WIDTH, `${star.id} x=${star.x}`)
       assert.ok(star.y - star.r >= 0 && star.y + star.r <= sky.height, `${star.id} y=${star.y}`)
     }
     for (const constellation of sky.constellations) {

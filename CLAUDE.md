@@ -16,3 +16,4 @@ prefer existing deps over hand-rolling) and **External systems reference** (the
 source for the Kimi K3 C implementation).
 
 Package management (pnpm only) is under **Package management** there.
+The rule for adding and pruning tests is under **Verification**.
