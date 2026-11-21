@@ -144,6 +144,7 @@ function quizHarness({ answers, correct, stored = null, setItem }) {
       correct: JSON.stringify(correct),
       right: 'Correct',
       wrong: 'Not yet',
+      missing: 'Answer every question before checking.',
       summary: '{n} of {m} correct.',
       passed: 'Correct.',
       unsaved: 'Correct, but this device could not save it.',
@@ -188,13 +189,16 @@ test('a correct quiz that cannot be saved does not complete the lesson', () => {
   assert.deepEqual(quiz.events.at(-1)?.detail, { lessonKey: 'en:lesson', valid: false })
 })
 
-test('checking a quiz with nothing chosen writes nothing and revokes nothing', () => {
-  const quiz = quizHarness({ answers: [null, null], correct: [0, 2], stored: 'true' })
-  quiz.check()
+test('checking an incomplete quiz asks for the missing answers without grading or revoking progress', () => {
+  for (const answers of [[null, null], [0, null]]) {
+    const quiz = quizHarness({ answers, correct: [0, 2], stored: 'true' })
+    quiz.check()
 
-  assert.deepEqual(quiz.writes, [])
-  assert.deepEqual(quiz.events, [])
-  assert.equal(quiz.status.textContent, '0 of 2 correct.')
+    assert.deepEqual(quiz.writes, [])
+    assert.deepEqual(quiz.events, [])
+    assert.deepEqual(quiz.fieldsets.map((f) => f.verdict.textContent), ['', ''])
+    assert.equal(quiz.status.textContent, 'Answer every question before checking.')
+  }
 })
 
 test('quiz explanations stay hidden until their own question is answered right', () => {
@@ -403,7 +407,7 @@ test('scroll wrappers are named focusable regions only while they overflow', () 
     observe() {}
   }
   const document = {
-    querySelectorAll: (selector) => selector === '.math-scroll, .table-scroll, .fig-scroll' ? [wide, narrow] : [],
+    querySelectorAll: (selector) => selector === '.katex, .table-scroll, .fig-scroll' ? [wide, narrow] : [],
     addEventListener: () => {},
   }
 

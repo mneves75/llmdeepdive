@@ -87,7 +87,7 @@ async function layoutFailures(page) {
     const ids = [...document.querySelectorAll('[id]')].map((element) => element.id)
     const duplicates = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))]
     if (duplicates.length) failures.push(`duplicate ids: ${duplicates.slice(0, 5).join(', ')}`)
-    const wrong = [...document.querySelectorAll('.math-scroll, .table-scroll')]
+    const wrong = [...document.querySelectorAll('.katex, .table-scroll')]
       .filter((region) => (region.scrollWidth > region.clientWidth + 1) !== (region.getAttribute('role') === 'region'))
     if (wrong.length) failures.push(`${wrong.length} scroll wrapper(s) with region semantics that disagree with their overflow`)
     // Text an accessible name or a sentence is made of: rendered (checkVisibility
@@ -188,6 +188,8 @@ async function openExplorer(browser, base, handleChunk) {
   await page.route(STAGE_CHUNK, handleChunk)
   const requested = page.waitForRequest(STAGE_CHUNK, { timeout: 15_000 }).then(() => 'loading', () => 'neither')
   await page.goto(base + '/explore/', { waitUntil: 'load' })
+  // On phones, the worked example precedes the lazy-loaded instrument.
+  await page.locator('[data-stage-canvas]').evaluate((canvas) => canvas.parentElement.scrollIntoView({ block: 'center' }))
   const noWebgl = page.waitForSelector('[data-nowebgl]:not([hidden])', { timeout: 15_000 }).then(() => 'no-webgl', () => 'neither')
   return { page, logged, outcome: await Promise.race([requested, noWebgl]) }
 }
@@ -439,9 +441,31 @@ async function learningStudioFailures(browser, name, base) {
       await topLink.focus()
       await topLink.press('Enter')
       await page.waitForFunction(() => document.activeElement === document.body && window.scrollY < 2)
+      const indexModule = /\/pagefind\/pagefind\.js(?:\?|$)/u
+      const fragments = /\.pf_fragment$/u
+      const failRequest = (route) => route.abort()
+      const searchInput = page.locator('[data-search-input]')
+      const searchResults = page.locator('[data-search-results] a')
+      const unavailable = prefix ? 'A busca está indisponível. Tente novamente.' : 'Search is unavailable. Try again.'
+      const waitForSearchStatus = (message) => page.waitForFunction(
+        (text) => document.querySelector('[data-search-status]')?.textContent === text,
+        message,
+      )
+      await page.route(indexModule, failRequest)
       await page.locator('[data-search-open]').click()
-      await page.locator('[data-search-input]').fill('token')
-      await page.locator('[data-search-results] a').first().waitFor()
+      await waitForSearchStatus(unavailable)
+      await page.unroute(indexModule, failRequest)
+      await searchInput.fill('token')
+      await searchResults.first().waitFor()
+      await page.route(fragments, failRequest)
+      await searchInput.fill(prefix ? 'atenção' : 'attention')
+      await waitForSearchStatus(unavailable)
+      if (await searchResults.count()) throw new Error('failed search keeps results from the previous query')
+      await page.unroute(fragments, failRequest)
+      await searchInput.press('Enter')
+      await searchResults.first().waitFor()
+      await searchInput.fill('zzqvx')
+      await waitForSearchStatus(prefix ? 'Nada encontrado.' : 'No results.')
       await page.keyboard.press('Escape')
       if (!await page.locator('[data-search-open]').evaluate((button) => document.activeElement === button)) throw new Error('closing search did not return focus')
       for (const size of [{ width: 568, height: 320 }, { width: 320, height: 256 }]) {
@@ -513,6 +537,24 @@ async function learningStudioFailures(browser, name, base) {
       await page.locator('[data-roadmap-start]').first().click()
       await page.locator('[data-lesson-progress]').waitFor()
       await page.goto(`${base}${prefix}/explore/`)
+      const journey = page.locator('[data-token-journey]')
+      const steps = journey.getByRole('radio')
+      if (await steps.count() !== 4 || !await steps.first().isChecked()) throw new Error('token journey did not start at the prompt')
+      const visibleStep = journey.locator('[data-token-step]:visible')
+      for (const [index, stage] of ['prompt', 'tokens', 'context', 'output'].entries()) {
+        if (index > 0) await steps.nth(index - 1).press('ArrowRight')
+        await visibleStep.and(journey.locator(`[data-token-step="${stage}"]`)).waitFor()
+        if (await visibleStep.count() !== 1) throw new Error(`token journey did not show just the ${stage} stage`)
+        if (await visibleStep.locator('[data-token-motion]').first().evaluate((element) => getComputedStyle(element).animationName) !== 'none') {
+          throw new Error('token journey animated under reduced motion')
+        }
+      }
+      const probabilities = await visibleStep.locator('[data-token-probability]').allTextContents()
+      if (probabilities.length !== 4 || probabilities.reduce((sum, text) => sum + Number.parseInt(text, 10), 0) !== 100) {
+        throw new Error('token journey did not show a complete next-token probability distribution')
+      }
+      await steps.last().press('ArrowLeft')
+      await visibleStep.and(journey.locator('[data-token-step="context"]')).waitFor()
       await page.locator('a[href="#transformer-components"]').click()
       if (!page.url().endsWith('#transformer-components')) throw new Error('explorer did not jump to the component index')
     } catch (error) {
@@ -521,7 +563,7 @@ async function learningStudioFailures(browser, name, base) {
       await page.close()
     }
   }
-  const fallback = await browser.newPage({ javaScriptEnabled: false })
+  const fallback = await browser.newPage({ javaScriptEnabled: false, viewport: { width: 320, height: 740 } })
   try {
     await fallback.goto(base + '/pt-br/')
     const experiment = fallback.locator('[data-sampling-preview]')
@@ -529,6 +571,16 @@ async function learningStudioFailures(browser, name, base) {
     if (await experiment.getByRole('slider').isVisible()) throw new Error('inert slider is visible')
     await experiment.locator('summary').click()
     if (!await experiment.locator('details p').isVisible()) throw new Error('explanation did not open')
+    await fallback.goto(base + '/pt-br/explore/')
+    const journey = fallback.locator('[data-token-journey]')
+    const panels = journey.locator('[data-token-step]:visible')
+    for (const stage of ['prompt', 'tokens', 'context', 'output']) {
+      await journey.locator(`label[for="token-step-${stage}"]`).click()
+      await panels.and(journey.locator(`[data-token-step="${stage}"]`)).waitFor()
+      if (await panels.count() !== 1) throw new Error(`token journey did not show just the ${stage} stage`)
+      const width = await fallback.evaluate(() => document.documentElement.scrollWidth)
+      if (width > 320) throw new Error(`token journey overflows at the ${stage} stage`)
+    }
   } catch (error) {
     failures.push(`${name} /pt-br/ learning studio without JavaScript: ${error.message}`)
   } finally {
