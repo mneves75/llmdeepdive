@@ -430,8 +430,9 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
 
 async function learningStudioFailures(browser, name, base) {
   const failures = []
+  const viewport = { width: 390, height: 844 }
   for (const prefix of ['', '/pt-br']) {
-    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' })
+    const page = await browser.newPage({ viewport, reducedMotion: 'reduce' })
     try {
       await page.goto(`${base}${prefix}/`)
       const topLink = page.locator('footer a[href="#site-start"]')
@@ -443,6 +444,25 @@ async function learningStudioFailures(browser, name, base) {
       await page.locator('[data-search-results] a').first().waitFor()
       await page.keyboard.press('Escape')
       if (!await page.locator('[data-search-open]').evaluate((button) => document.activeElement === button)) throw new Error('closing search did not return focus')
+      for (const size of [{ width: 568, height: 320 }, { width: 320, height: 256 }]) {
+        await page.setViewportSize(size)
+        await page.locator('[data-search-open]').click()
+        await page.locator('[data-search-input]').fill(prefix ? 'atenção' : 'attention')
+        for (const [index, key] of ['Enter', 'ArrowDown'].entries()) {
+          await page.keyboard.press(key)
+          await page.locator('[data-search-results] a:focus').waitFor()
+          await settle(page)
+          const visible = await page.locator('[data-search-results] a').nth(index).evaluate((result) => {
+            const title = result.querySelector('.search__title')?.getBoundingClientRect()
+            const region = result.closest('[data-search-results]')?.getBoundingClientRect()
+            return result === document.activeElement && title && region &&
+              title.top >= region.top - 1 && title.bottom <= region.bottom + 1
+          })
+          if (!visible) throw new Error(`search result title clipped after ${key} at ${size.width}×${size.height}`)
+        }
+        await page.keyboard.press('Escape')
+      }
+      await page.setViewportSize(viewport)
       const experiment = page.locator('[data-sampling-preview]')
       const lead = experiment.locator('[data-preview-probability]').first()
       const cold = await lead.textContent()
@@ -475,6 +495,14 @@ async function learningStudioFailures(browser, name, base) {
         await page.locator('[data-lesson-progress]').waitFor()
         await page.locator('[data-lesson-steps] a[href="#concept-heading"]').click()
         if (!page.url().endsWith('#concept-heading')) throw new Error('lesson outline failed to jump to the concept')
+        if (index === 0) {
+          for (const heading of ['#analogy-heading', '#sources-heading', '#analogy-heading', '#concept-heading', '#sources-heading']) {
+            await page.locator(`[data-rail-link][href="${heading}"]`).press('Enter')
+            await page.locator(`[data-rail-link][href="${heading}"][aria-current="true"]`).waitFor()
+          }
+          await topLink.press('Enter')
+          await page.waitForFunction(() => window.scrollY < 2 && !document.querySelector('[data-rail-link][aria-current]'))
+        }
       }
       await page.goto(`${base}${prefix}/tracks/`)
       await page.locator('.tracks__jump a[href="#part-engineering"]').click()

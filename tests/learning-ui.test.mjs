@@ -273,6 +273,7 @@ test('the lesson records completion for track pages and withdraws it', () => {
 function searchHarness() {
   class FakeHTMLElement {}
   const listeners = new Map()
+  const frames = []
   const document = {
     activeElement: null,
     querySelector: () => null,
@@ -281,12 +282,30 @@ function searchHarness() {
   class Focusable extends FakeHTMLElement {
     focus() { document.activeElement = this }
   }
+  class FakeAnchor extends Focusable {
+    rowBounds = { top: 100, bottom: 140 }
+    titleBounds = { top: 108, bottom: 130 }
+    getBoundingClientRect() { return this.rowBounds }
+    querySelector(selector) {
+      return selector === '.search__title' ? { getBoundingClientRect: () => this.titleBounds } : null
+    }
+    focus() {
+      super.focus()
+      listeners.get('list:focusin')?.({ target: this })
+    }
+  }
   const input = new Focusable()
   input.addEventListener = () => {}
-  const links = Array.from({ length: 8 }, () => new Focusable())
-  const list = { innerHTML: '', querySelectorAll: () => links, querySelector: () => links[0] ?? null }
-  const status = { textContent: '' }
+  const links = Array.from({ length: 8 }, () => new FakeAnchor())
   const listenerOn = (prefix) => ({ addEventListener: (type, listener) => listeners.set(`${prefix}:${type}`, listener) })
+  const list = {
+    ...listenerOn('list'),
+    scrollTop: 100,
+    getBoundingClientRect: () => ({ top: 100, bottom: 200 }),
+    querySelectorAll: () => links,
+    querySelector: () => links[0] ?? null,
+  }
+  const status = { textContent: '' }
   const dialog = {
     dataset: { empty: 'No results.', hint: 'Type to search', countOne: '1 result', countOther: '{n} results' },
     open: true,
@@ -307,11 +326,13 @@ function searchHarness() {
 
   execute(componentScript('src/components/Search.astro'), {
     HTMLElement: FakeHTMLElement,
+    HTMLAnchorElement: FakeAnchor,
     document,
     location: { href: 'https://example.test/', origin: 'https://example.test' },
+    requestAnimationFrame: (callback) => frames.push(callback),
     window: { clearTimeout: () => {}, setTimeout: () => 1 },
   })
-  return { listeners, document, input, links, dialog, opener }
+  return { listeners, document, input, links, list, dialog, opener, frames }
 }
 
 test('ArrowUp from the search input focuses the last result', () => {
@@ -328,7 +349,7 @@ test('Enter in the search field moves to the first result and keeps the dialog o
   const { listeners, document, input, links, dialog, opener } = searchHarness()
   document.activeElement = input
   const submit = listeners.get('form:submit')
-  assert.ok(submit, 'the form must handle submit: its only button would otherwise close the dialog')
+  assert.ok(submit, 'Enter must be handled before the dialog form can submit')
   let prevented = false
   submit({ preventDefault: () => { prevented = true } })
   assert.equal(prevented, true)
@@ -338,6 +359,28 @@ test('Enter in the search field moves to the first result and keeps the dialog o
   listeners.get('close:click')()
   assert.equal(dialog.closed, true)
   assert.equal(document.activeElement, opener)
+})
+
+test('the search result title returns into view after native focus scrolling', () => {
+  const { frames, input, links, list } = searchHarness()
+  const result = links[1]
+  result.focus()
+  result.rowBounds = { top: 80, bottom: 260 }
+  result.titleBounds = { top: 88, bottom: 112 }
+  assert.equal(list.scrollTop, 100)
+  frames.shift()()
+  assert.equal(list.scrollTop, 80)
+
+  result.focus()
+  result.rowBounds = { top: 180, bottom: 360 }
+  result.titleBounds = { top: 188, bottom: 212 }
+  frames.shift()()
+  assert.equal(list.scrollTop, 160)
+
+  result.focus()
+  input.focus()
+  frames.shift()()
+  assert.equal(list.scrollTop, 160)
 })
 
 test('scroll wrappers are named focusable regions only while they overflow', () => {

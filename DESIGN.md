@@ -50,11 +50,11 @@ typography:
     fontVariation: "'wdth' 118"
   lesson-title:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
-    fontSize: "clamp(2.1rem, 1.4rem + 2.6vw, 3.5rem)"
+    fontSize: "clamp(2.5rem, 1.7rem + 3.35vw, 5.4rem)"
     fontWeight: 760
-    lineHeight: 1.02
+    lineHeight: 0.99
     letterSpacing: "-0.03em"
-    fontVariation: "'wdth' 96"
+    fontVariation: "'wdth' 90"
   title:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
     fontSize: "1.5rem"
@@ -63,9 +63,9 @@ typography:
     letterSpacing: "-0.03em"
   plate-name:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
-    fontWeight: 640
-    letterSpacing: "0.14em"
-    fontVariation: "'wdth' 125"
+    fontWeight: 760
+    letterSpacing: "-0.03em"
+    fontVariation: "'wdth' 100"
   body:
     fontFamily: "Avenir Next, Segoe UI, system-ui, -apple-system, Roboto, Arial, sans-serif"
     fontSize: "1rem"
@@ -106,8 +106,8 @@ spacing:
   3xl: "96px"
 components:
   button-primary:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.plate}"
+    backgroundColor: "{colors.reticle}"
+    textColor: "{colors.chart-blue-ink}"
     typography: "{typography.label}"
     rounded: "{rounded.sm}"
     padding: "0.7rem 1.05rem"
@@ -145,10 +145,9 @@ components:
     rounded: "{rounded.md}"
     padding: "24px 24px 16px"
   lab-panel:
-    backgroundColor: "{colors.plate-raised}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.md}"
-    padding: "32px"
+    backgroundColor: "{colors.night}"
+    textColor: "{colors.ink-on-night}"
+    padding: "clamp(1rem, 3.5vw, 2rem)"
   night-plate:
     backgroundColor: "{colors.night}"
     textColor: "{colors.ink-on-night}"
@@ -348,8 +347,7 @@ fallback face.
 - **Headline** (760, `clamp(2rem, 1.2rem + 3vw, 3.75rem)`, width 118%): home
   section headings. Lesson part headings are the same voice at
   `clamp(1.5rem, 1.2rem + 1.6vw, 2.75rem)`.
-- **Lesson title** (760, `clamp(2.1rem, 1.4rem + 2.6vw, 3.5rem)`, 1.02, width
-  96%): a lesson's h1.
+- **Lesson title** (760, width 90%, line height 0.99) scales up to `5.4rem`.
 - **Title** (760, `1.5rem`, 1.1): loop steps, explorer port names; next-lesson
   titles use 640 at `1.1875rem`.
 - **Plate name** (760, normal width, tight tracking) preserves the track title's
@@ -598,8 +596,9 @@ On navigation the old page drops out at once (no animation, opacity 0), and
 so does any named element with no partner on the new page. The new page
 fades in over 260ms while named elements (the masthead, a track's chart, a
 lesson's star, the syllabus) travel to their new place over 520ms, so two
-pages' text never overlaps. Sections fade
-up into view only where scroll-driven animation exists. Under reduced motion
+pages' text never overlaps. A deep link lands directly on the chosen lesson
+heading, which briefly takes the reticle colour. Sections settle into view
+where scroll-driven animation exists. Under reduced motion
 every duration is zero, the comet and breathing stop, and the 3D sky settles
 straight onto its dome.
 
