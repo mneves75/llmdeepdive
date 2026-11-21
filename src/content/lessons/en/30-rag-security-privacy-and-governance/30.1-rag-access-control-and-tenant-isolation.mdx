@@ -1,0 +1,106 @@
+---
+id: "30.1-rag-access-control-and-tenant-isolation"
+track: "30-rag-security-privacy-and-governance"
+order: 1
+title: "RAG Access Control & Tenant Isolation"
+summary: "Enforce tenant partitions and document access-control lists before vector scoring runs, so restricted chunks never enter top-k retrieval or the model context window."
+tier: "advanced"
+locale: "en"
+prerequisites: ["27.4-ann-vector-indexes-and-hnsw", "16.4-enforce-least-privilege"]
+unlocks: ["30.2-corpus-poisoning-and-indirect-injection", "30.3-pii-redaction-and-data-boundaries"]
+analogy: "Think of a shared courthouse archive where two rival law firms store case files. Handing a clerk every folder in the building and asking them not to read the other firm's pages out loud still lets restricted pages cross the table. Giving each firm a locked vault and checking a visitor's badge before opening any drawer guarantees unauthorized files never reach the desk. The comparison stops at graph traversal: in a shared vector index, locking out most folders inside one vault can also break the hallways connecting the remaining shelves unless the index is partitioned or built for filtered search."
+teachBack:
+  prompt: "A multi-tenant knowledge base stores 200,000 chunks across 40 customers in one shared HNSW index and post-filters top-20 results by tenant_id. Explain why an engineer from a small customer with 1,000 chunks sees empty answers even when matching documents exist, why moving the check into the system prompt is worse, and how pre-filtering with per-tenant partitions fixes both."
+  modelAnswer: "With post-filtering, the HNSW index first scores all 200,000 chunks globally and returns only the top 20 vectors by similarity. Because the small customer owns just 0.5% of the index (1,000 of 200,000 chunks), other tenants' close chunks routinely occupy all 20 slots, so filtering by tenant_id afterward discards everything and yields zero candidates. Moving the rule into the system prompt is worse because unauthorized chunks enter the LLM context window, where indirect injection or simple rephrasing can leak restricted text. Pre-filtering restricts candidate eligibility using the authenticated principal's tenant_id and group ACLs before similarity scoring runs, and isolating each tenant in its own physical partition keeps HNSW graph connectivity intact so every top-k slot comes strictly from authorized chunks."
+quiz:
+  - question: "A shared index holds 100,000 chunks: 98,000 belong to Tenant A and 2,000 belong to Tenant B. A user in Tenant B queries with post-filtering at k = 10, and all 10 nearest global neighbors belong to Tenant A. What happens?"
+    options: ["Post-filtering drops all 10 rows and returns empty context despite matching Tenant B docs", "The index automatically expands k until 10 Tenant B chunks appear with identical recall", "The reranker restores Tenant B's missing documents by re-scoring the discarded graph nodes", "The LLM recovers Tenant B's facts from its pretraining weights without losing grounding"]
+    correctIndex: 0
+    explanation: "Post-filtering applies the permission predicate only after top-k retrieval finishes. When another tenant's dense vectors dominate those k slots, filtering strips the entire candidate set to zero. Expanding k helps only heuristically, a reranker can only score candidates it receives, and pretraining weights hold no private tenant documents."
+  - question: "Why does placing \"Only answer using documents owned by tenant_id=42\" in the system prompt fail as an access-control boundary?"
+    options: ["System prompts are truncated first whenever retrieved context exceeds half the context window", "Restricted chunks already enter the model context, so prompt text cannot enforce isolation", "Vector databases ignore system prompt strings because embeddings drop punctuation characters", "Tokenizers merge tenant identifiers with adjacent words, turning 42 into unrelated token IDs"]
+    correctIndex: 1
+    explanation: "An instruction in the prompt is evaluated by the same model that sees the unauthorized retrieved text. Once secret chunks sit in context, rephrasing, summarization, or indirect injection can extract them. Access control must execute deterministically in the retrieval layer before context assembly."
+  - question: "An enterprise moves from per-request post-filtering to single-index bitset pre-filtering for a finance team whose ACL covers 0.4% of a 5-million-chunk HNSW graph. Latency spikes and recall drops sharply. What causes this degradation?"
+    options: ["Bitset masks double the floating-point precision of every stored embedding vector during search", "Group membership tokens exceed the HTTP header limit whenever an ACL covers under 1% of rows", "Cosine similarity loses numerical stability when fewer than 50,000 vectors remain in a query", "Sparse allowlists break HNSW neighbor hops, forcing long graph detours or fallback scans"]
+    correctIndex: 3
+    explanation: "In an HNSW graph built over all documents, most outgoing edges from an authorized node point to unauthorized nodes. When selectivity is very low (0.4%), the greedy search gets trapped in disconnected pockets or falls back to scanning far more nodes, raising latency and hurting recall. Dedicated tenant partitions or filter-aware indexes solve this."
+citations:
+  - title: "The Protection of Information in Computer Systems, Proceedings of the IEEE 63(9)"
+    authors: "Jerome H. Saltzer and Michael D. Schroeder"
+    year: 1975
+    url: "https://web.mit.edu/Saltzer/www/publications/protection/"
+  - title: "Efficient and Robust Approximate Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs"
+    authors: "Yu A. Malkov and Dmitry A. Yashunin"
+    year: 2016
+    url: "https://arxiv.org/abs/1603.09320"
+  - title: "OWASP Top 10 for Large Language Model Applications"
+    authors: "OWASP Foundation"
+    year: 2025
+    url: "https://genai.owasp.org/llm-top-10/"
+updated: "2026-11-20"
+---
+
+A support engineer at Customer B asks the company's Retrieval-Augmented Generation (RAG) assistant for "the Q3 enterprise discount policy." Five seconds later, the assistant quotes Customer A's confidential pricing schedule verbatim. Nobody hacked the vector database or stole an admin password. The pipeline indexed every customer's PDFs into one collection, retrieved the top 8 chunks by cosine similarity, and relied on a system-prompt instruction telling the model not to reveal other customers' files. Preventing that leak requires treating retrieval as a strict security boundary, never as a formatting hint for the model.
+
+## Why prompt rules and post-filtering fail
+
+In [lesson 16.4](/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/), we applied Saltzer and Schroeder's principle of complete mediation: every access to every object must be checked for authority before the caller sees the data. In a RAG pipeline, the objects are indexed chunks and the caller is an authenticated **principal** (the verified `tenant_id`, `user_id`, and group memberships derived from the application's session token, never from text inside the prompt).
+
+Teams commonly try two shortcuts before implementing true retrieval access control, and both break under realistic workloads:
+
+- **Prompt-level filtering** retrieves unrestricted chunks and instructs the Large Language Model (LLM) to ignore anything outside the user's tenant. Because the restricted text is already inside the prompt context, the model can paraphrase it, leak it under adversarial phrasing, or echo it through indirect injection.
+- **Post-filtering** runs an unrestricted Approximate Nearest Neighbor (ANN) search for $k$ chunks and then drops rows whose Access Control List (ACL, the list of users or groups allowed to read a document) does not match the caller.
+
+Work through a small numerical example to see why post-filtering collapses. Suppose a shared index stores $N = 100{,}000$ chunks across 20 tenants, where a small tenant owns $1{,}000$ chunks (a selectivity of $s = 0.01$, meaning 1% of the index is authorized). If an unrestricted search fetches $k = 10$ global nearest neighbors and the topic vocabulary overlaps across tenants, the expected number of surviving authorized chunks when relevance is spread uniformly is:
+
+$$
+E[\text{kept}] = k \cdot s = 10 \times 0.01 = 0.1\ \text{chunks}.
+$$
+
+Even when the small tenant's own chunks rank ten times better than random, most of the 10 slots still go to larger tenants. Post-filtering discards the unauthorized rows, returning zero or one chunk and collapsing answer recall. Over-fetching $k = 500$ to compensate multiplies network transfer and still fails whenever a narrow ACL covers $0.1\%$ of the corpus.
+
+## Pre-filtering, partitions, and HNSW selectivity
+
+**Pre-filtering** evaluates the principal's authorization predicate before or during vector scoring so unauthorized chunks are ineligible for top-$k$. Every chunk carries immutable metadata fields such as `tenant_id` and `allowed_principals` (group IDs and user IDs). The runtime builds a filter predicate from the verified session token—never from LLM-generated tool arguments—and passes that predicate to the search engine.
+
+<Figure id="30-1-acl-prefilter-flow" />
+
+Pre-filtering guarantees zero cross-tenant exposure, but its interaction with Hierarchical Navigable Small World (HNSW) graphs from [lesson 27.4](/lessons/27-retrieval-and-hybrid-search/27.4-ann-vector-indexes-and-hnsw/) depends strongly on **filter selectivity** $s$, the fraction of indexed vectors that pass the ACL check.
+
+Let $M$ be the average number of outgoing neighbor links per node in an HNSW graph. When a search traverses the graph while ignoring unauthorized nodes, the expected number of valid neighbors at each hop shrinks proportionally to selectivity:
+
+$$
+E[\text{valid neighbors}] \approx M \cdot s.
+$$
+
+Plug in concrete numbers. With $M = 16$ links per node and a broad department ACL covering $s = 0.25$ of the index, each node still has roughly $16 \times 0.25 = 4$ reachable authorized neighbors, so graph traversal stays fast and accurate. Now shrink selectivity to a single tenant or private folder covering $s = 0.01$ of the corpus. Each node has an expected $16 \times 0.01 = 0.16$ authorized neighbors. Nearly every outgoing edge hits a forbidden node, trapping the greedy search in dead ends unless the engine falls back to a brute-force scan of the authorized bitset.
+
+Production architectures resolve this tension by splitting coarse tenancy from fine-grained document ACLs:
+
+- **Physical or logical tenant partitioning** places each tenant in its own collection, index shard, or dedicated HNSW subgraph (for example, namespace-per-tenant in managed vector stores or partitioned tables in PostgreSQL with `pgvector`). Inside a tenant's partition, tenant selectivity is $1.0$, eliminating cross-tenant noise and preserving graph connectivity.
+- **Bitset pre-filtering inside the tenant** handles group and folder ACLs within that tenant's smaller corpus. When a user's authorized bitset drops below a threshold (often 5,000–20,000 chunks), switching from HNSW traversal to an exact SIMD scan over only those authorized vectors delivers 100% recall in single-digit milliseconds.
+- **Hybrid parity** enforces the exact same `tenant_id` and ACL predicate on both the dense vector query and the lexical BM25 query before fusion, so a keyword match can never bypass a vector filter.
+
+## Permission drift and real-time revocation
+
+Access control does not end at ingestion time. Suppose an employee leaves the finance group at 10:00 AM, yet their old group membership was baked into a stale cache or the document's `allowed_principals` array in the vector index is only refreshed during a nightly batch job. For the next 14 hours, the former team member can still retrieve sensitive financial memos.
+
+Two architectural patterns control **permission drift** (the lag between an upstream access change in Google Drive, SharePoint, or an Identity Provider and its enforcement in search):
+
+- **Push-based ACL sync via change data capture (CDC):** Listen to permission-change webhooks and update only the metadata payload (`allowed_principals`) without re-embedding the chunk's vector. Separating metadata updates from embedding generation cuts revocation lag from hours to seconds.
+- **Late-binding authorization check on source IDs:** When regulations demand immediate revocation (zero-second lag), pre-filter on `tenant_id` and cached groups during retrieval, then verify the final top-$k$ document IDs against the live authorization service (such as an OpenFGA or Zanzibar-style relation store) before handing text to the LLM.
+
+:::caveat
+Late-binding checks protect against revocation lag only when paired with pre-filtering, never as a replacement for it. If you rely on late checks over an unpartitioned index, you recreate the post-filtering recall collapse while adding an extra network round-trip to every query.
+:::
+
+## Metadata leakage and cache isolation
+
+Even with strict pre-filtering on the vector store, secondary subsystems routinely leak tenant boundaries if they omit the principal from their keys:
+
+- **Semantic and exact response caches** must include `tenant_id` and an ACL-set hash in every cache key. Without it, Tenant B asking the same question as Tenant A receives Tenant A's cached answer without ever touching the vector database.
+- **Document counts and error messages** can act as an existence oracle. Returning "Access denied to Q3 Acquisition Plan" tells an unauthorized caller that an acquisition plan exists; return a uniform "no matching documents found" state instead.
+- **Deletion and offboarding** require hard-deleting a tenant's partition, inverted-index terms, and cached summaries when a customer terminates service. Dropping a dedicated tenant shard takes milliseconds and avoids leaving residual vectors or BM25 inverse-document-frequency statistics behind.
+
+Build every retrieval boundary around one invariant: the authenticated principal enters from the runtime outside the model, partitions the index physically by tenant, pre-filters every dense and lexical candidate by live ACLs, and scopes every downstream cache with the same identity key.

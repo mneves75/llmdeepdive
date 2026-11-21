@@ -1,0 +1,84 @@
+---
+id: "27.4-ann-vector-indexes-and-hnsw"
+track: "27-retrieval-and-hybrid-search"
+order: 4
+title: "Bancos Vetoriais, HNSW e Busca ANN Filtrada"
+summary: "Dimensione índices HNSW em RAM antes de subir para produção: as arestas do grafo ficam fixas enquanto a quantização reduz a memória em mais de 16x. Ajuste M, efConstruction e efSearch e evite o colapso de pós-filtragem."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["27.3-dense-embeddings-and-matryoshka"]
+unlocks: ["27.5-bm25-hybrid-search-and-rrf", "30.1-rag-access-control-and-tenant-isolation"]
+analogy: "Navegar um grafo Hierarchical Navigable Small World é como atravessar o país para chegar a um endereço: você pega um voo longo na camada superior esparsa para pousar na cidade certa, desce para uma rodovia regional na camada intermediária até o bairro e só caminha quarteirão por quarteirão na camada densa de ruas lá embaixo. A comparação para nos filtros de metadados: se apenas um por cento das casas da rua pertence ao seu tenant, andar só pelas casas permitidas pode desconectar o mapa salvo se o planejador considerar as permissões durante a travessia."
+teachBack:
+  prompt: "Você vai indexar 1.000.000 de vetores de 1.536 dimensões em HNSW com M = 16. Calcule a RAM necessária para fp32, int8 e quantização binária de 1 bit (separando bytes dos vetores dos 12 * M bytes de arestas do grafo), explique por que a quantização de 1 bit não reduz a RAM total em 32x e diga por que pós-filtragem quebra quando um tenant detém apenas 1% do corpus."
+  modelAnswer: "Com M = 16, o custo das arestas do grafo é 12 × 16 = 192 B/vet, ou 0,18 GiB para 1.000.000 de vetores, independentemente da quantização. Em fp32 (4 B/dim), os vetores usam 5,72 GiB mais 0,18 GiB do grafo = 5,90 GiB no total (6.336 B/vet). Em int8 (1 B/dim), os vetores caem para 1,43 GiB mais 0,18 GiB do grafo = 1,61 GiB no total (1.728 B/vet). Em binário de 1 bit (0,125 B/dim), os vetores encolhem 32x para 0,18 GiB, mas somando os 0,18 GiB fixos do grafo restam 0,36 GiB no total (384 B/vet)—redução de cerca de 16,4x em vez de 32x porque os ponteiros do grafo não são quantizados. A pós-filtragem quebra num tenant de 1% porque buscar o top-20 global rende em média apenas 0,2 documento permitido, devolvendo frequentemente zero resultados mesmo havendo centenas de documentos relevantes do tenant."
+quiz:
+  - question: "Para 1.000.000 de vetores de 1.536 dimensões em HNSW (M = 16), comprimir vetores de fp32 para binário de 1 bit corta o armazenamento vetorial em 32× (de 5,72 GiB para 0,18 GiB). Por que a RAM total ainda é 0,36 GiB em vez de 0,18 GiB?"
+    options: ["As listas de adjacência do grafo HNSW continuam ocupando 192 B/vet (0,18 GiB), sem encolher com a quantização", "A quantização binária exige guardar duas cópias completas de cada vetor de bits para distância de Hamming simétrica", "O HNSW dobra M de 16 para 32 automaticamente sempre que os vetores caem abaixo de 1 byte por dimensão", "Todo vetor binário de 1 bit ainda reserva 192 bytes para o texto UTF-8 do chunk dentro do mesmo nó HNSW"]
+    correctIndex: 0
+    explanation: "Com M = 16, a tabela de arestas do grafo HNSW custa cerca de 12 × M = 192 bytes por nó (0,18 GiB em 1.000.000 de vetores). A quantização comprime as coordenadas de 5,72 GiB para 1,43 GiB (int8) ou 0,18 GiB (1 bit), mas os 0,18 GiB do grafo ficam fixos—somando 0,36 GiB no total."
+  - question: "Seu índice HNSW em produção tinha recall alto em testes pequenos, mas recall@10 caiu de 0,96 para 0,84 com consultas mais difíceis. Qual parâmetro único você pode aumentar em tempo de consulta sem reconstruir o índice?"
+    options: ["M, o grau máximo de arestas bidirecionais por nó nas camadas superiores do grafo", "efConstruction, a largura do feixe de candidatos explorada durante a inserção offline", "bytesPerDim, alternando vetores gravados de int8 de volta para fp32 dinamicamente por chamada", "efSearch, o tamanho da lista dinâmica de candidatos explorada na travessia da consulta"]
+    correctIndex: 3
+    explanation: "M e efConstruction definem a topologia gravada na construção e exigem reconstrução para mudar. Aumentar efSearch amplia a fila de prioridade explorada durante uma consulta, trocando alguns milissegundos extras de latência por maior recall imediatamente."
+  - question: "Um índice vetorial multi-tenant guarda 1.000.000 de chunks divididos igualmente entre 100 tenants (1% cada). Um desenvolvedor faz busca HNSW global top-20 e aplica WHERE tenant_id = 'acme' depois (pós-filtragem). O que falha?"
+    options: ["O HNSW recusa percorrer a camada 0 sempre que um índice mistura mais de 64 tenant IDs distintos", "O banco vaza métricas de latência porque a pós-filtragem dispara varredura exata nos 1.000.000 de registros", "Quase todos os 20 vizinhos globais pertencem a outros tenants, sobrando zero ou poucos resultados após o filtro", "Similaridades de cosseno viram negativas quando strings de tenant_id passam por hash em baldes de metadados"]
+    correctIndex: 2
+    explanation: "Com seletividade de 1%, apenas 0,2 dos 20 vizinhos globais pertence ao tenant 'acme' em média, fazendo a pós-filtragem devolver listas vazias ou incompletas. Motores em produção usam travessia HNSW sensível a filtro em estágio único (avaliando predicados durante os saltos) ou caem para varredura exata / particionamento por tenant quando a seletividade é muito baixa."
+citations:
+  - title: "Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs"
+    authors: "Yu. A. Malkov, D. A. Yashunin"
+    year: 2016
+    url: "https://arxiv.org/abs/1603.09320"
+updated: "2026-11-20"
+---
+
+Quando seu acervo tem 10.000 chunks, você nem precisa de um índice vetorial especializado: um produto escalar exato por força bruta sobre 10.000 vetores normalizados vindos de [Embeddings Densos, Geometria e Matryoshka](/pt-br/lessons/27-retrieval-and-hybrid-search/27.3-dense-embeddings-and-matryoshka/) termina em poucos milissegundos com 100% de recall exato. Em 1.000.000 ou 50.000.000 de chunks, varrer cada vetor a cada busca explode a latência e o uso de CPU. Índices de **Vizinhos Mais Próximos Aproximados (ANN, *Approximate Nearest Neighbor*)** trocam uma pequena fração de recall (por exemplo, 98% em vez de 100%) por buscas top-k em poucos milissegundos.
+
+## Como o HNSW navega milhões de vetores em milissegundos
+
+A estrutura ANN padrão nos bancos vetoriais modernos é o **Hierarchical Navigable Small World (HNSW)**, proposto por Malkov e Yashunin (2016). Pense numa *skip list* generalizada para geometria de alta dimensão:
+
+- Todo vetor mora na **camada 0**, conectado a até `2 × M` vizinhos próximos.
+- Uma fração geometricamente menor dos nós também aparece em **camadas superiores** (camada 1, camada 2 e assim por diante), cada um ligado a até `M` vizinhos que cruzam longas distâncias pelo espaço.
+- Na hora da busca, a travessia parte de um único ponto de entrada na camada mais alta, salta de forma gulosa para nós mais próximos até chegar a um mínimo local, desce uma camada e repete. Só na camada densa 0 ela expande uma fila de prioridade limitada por `efSearch` para coletar os candidatos top-k.
+
+Três parâmetros governam toda implantação HNSW:
+
+- **`M`** (em geral 16 a 32): máximo de arestas por nó nas camadas superiores (`2 × M` na camada 0). Um `M` maior cria um grafo mais denso, elevando o recall em alta dimensão ao custo de mais RAM e construção mais lenta.
+- **`efConstruction`** (em geral 100 a 200): largura do feixe explorada ao inserir nós na construção. Valores maiores geram arestas mais limpas sem gastar RAM extra na consulta, apenas tempo de indexação.
+- **`efSearch`** (em geral 32 a 256): largura do feixe explorada durante a busca. Você pode ajustar `efSearch` por requisição sem reconstruir o índice para trocar latência por recall.
+
+## Orçamento exato de RAM: vetores versus arestas do grafo
+
+Como o HNSW salta aleatoriamente por ponteiros de memória, manter o grafo ativo e os vetores em RAM é o que garante velocidade. Nunca chute o tamanho do servidor—calcule primeiro os bytes exatos.
+
+Faça a conta para `1.000.000` de vetores de `1.536` dimensões com HNSW `M = 16`. A camada 0 guarda até `2 × M` IDs de nó de 4 bytes e as camadas superiores mais cabeçalhos somam cerca de `M × 4` bytes, dando um orçamento padrão de arestas de `12 × M = 12 × 16 = 192` bytes por vetor—`0,18 GiB` em `1.000.000` de vetores. Agora compare três precisões vetoriais:
+
+- **fp32 (`4 B/dim`):** `1.536 × 4 = 6.144 B` de vetor + `192 B` de grafo = `6.336 B/vet` → `5,72 GiB` de vetores + `0,18 GiB` de grafo = **`5,90 GiB` no total**.
+- **Quantização escalar int8 (`1 B/dim`):** `1.536 × 1 = 1.536 B` de vetor + `192 B` de grafo = `1.728 B/vet` → `1,43 GiB` de vetores + `0,18 GiB` de grafo = **`1,61 GiB` no total**.
+- **Quantização binária de 1 bit (`0,125 B/dim`):** `1.536 × 0,125 = 192 B` de vetor + `192 B` de grafo = `384 B/vet` → `0,18 GiB` de vetores + `0,18 GiB` de grafo = **`0,36 GiB` no total**.
+
+<Figure id="27-4-hnsw-memory-stack" />
+
+De modo geral, para $N$ vetores de dimensão $d$, precisão $b_{\text{dim}}$ bytes por dimensão e parâmetro HNSW $M$:
+
+$$\text{RAM}_{\text{GiB}} = \frac{N \cdot (d \cdot b_{\text{dim}} + 12 M)}{1024^3}$$
+
+Repare na linha de binário de 1 bit: comprimir coordenadas de 32 bits para 1 bit encolhe os bytes vetoriais em `32×` (`5,72 GiB` → `0,18 GiB`), mas a RAM total cai `16,4×` (`5,90 GiB` → `0,36 GiB`) porque os `0,18 GiB` de ponteiros do grafo HNSW não são quantizados. Na prática, índices int8 ou binários fazem sobreamostragem (por exemplo, puxam 60 candidatos quantizados) e repontuam esses 60 finalistas com os vetores em precisão total lidos de disco NVMe, recuperando quase todo o recall de fp32 por uma fração da RAM.
+
+:::note
+Índices orientados a disco como *Inverted File with Product Quantization* (IVF-PQ) ou DiskANN trocam uma latência p95 maior (dezenas de milissegundos em vez de poucos milissegundos) para servir dezenas de milhões de vetores a partir de SSD quando o orçamento de RAM não comporta HNSW.
+:::
+
+## Busca ANN filtrada: por que a pós-filtragem colapsa
+
+Aplicações reais raramente fazem busca global sem filtro—toda consulta filtra por `tenant_id`, `acl_groups`, `language` ou `updated_at`. Filtragem interage mal com grafos de proximidade:
+
+- **Pós-filtragem (*post-filtering*)** roda HNSW global para pegar o top-k (digamos `k = 20`) e descarta depois os registros fora do filtro. Se um tenant detém só 1% de um índice de 1.000.000 de chunks, o número esperado de acertos no top-20 global é `0,2`—e a busca volta vazia mesmo existindo 10.000 chunks do tenant.
+- **Pré-filtragem ingênua** avalia primeiro o predicado SQL e varre cada vetor permitido por força bruta. Funciona bem quando sobram apenas 2.000 registros (exato, rápido, sem distorção de grafo), mas fica lenta quando sobram 500.000 registros.
+- **HNSW sensível a filtro em estágio único (e particionamento por tenant)** avalia o predicado de metadados *durante* a travessia do grafo—ignorando nós proibidos enquanto segue as arestas pela vizinhança—e recua automaticamente para varredura exata quando a seletividade do filtro cai abaixo de um limiar baixo.
+
+:::warning
+Sempre meça o recall *com seus filtros reais de metadados de produção ligados*, nunca só em consultas abertas. Um grafo com 98% de recall sem filtro pode cair em silêncio abaixo de 50% sob filtros seletivos de tenant ou data se a travessia filtrada ou o particionamento por tenant não estiverem ativos.
+:::

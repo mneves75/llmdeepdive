@@ -1,0 +1,81 @@
+---
+id: "27.1-document-ingestion-and-layout-parsing"
+track: "27-retrieval-and-hybrid-search"
+order: 1
+title: "Ingestão de Documentos e Por Que PDFs Quebram RAG"
+summary: "Arquivos PDF guardam coordenadas de desenho em vez de parágrafos. Recuperar ordem de leitura, tabelas e metadados de origem na ingestão define o teto de qualidade de toda busca posterior."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["19.2-ingestion-and-retrieval", "1.2-tokenization-i"]
+unlocks: ["27.2-chunking-strategies-and-boundaries", "33.1-visual-document-rag-and-cross-modal-search"]
+analogy: "Extrair texto de um PDF de forma ingênua é como varrer as peças de madeira de um tabuleiro de Scrabble virado, da esquerda para a direita, esperando que duas palavras de colunas vizinhas continuem fazendo sentido. Um PDF só lembra onde cada glifo foi pintado na página, não a qual parágrafo ou célula de tabela ele pertence. A comparação para em arquivos híbridos: ao contrário das peças de Scrabble que são sempre letras físicas, uma página PDF pode misturar texto vetorial com imagens escaneadas que não têm código de caractere nenhum até passar por OCR."
+teachBack:
+  prompt: "Uma equipe monta um assistente RAG sobre 500 PDFs financeiros em duas colunas usando um extrator simples de texto, e usuários reclamam que números de tabelas trimestrais saem errados mesmo quando a página certa é recuperada. Explique por que o formato PDF causa essa falha, calcule quanto ruído cabeçalhos repetidos de 30 palavras injetam num relatório de 40 páginas e cite quatro campos de origem e controle de acesso que você anexaria a cada unidade parseada."
+  modelAnswer: "O PDF armazena glifos em coordenadas (x, y) de desenho em vez de parágrafos ou tabelas lógicas, então um extrator esquerda-para-direita emenda texto de colunas vizinhas e achata tabelas em sequências soltas de números descolados dos cabeçalhos de linha e coluna. Repetir 30 palavras de cabeçalho e rodapé ao longo de 40 páginas injeta 30 × 40 = 1.200 palavras repetitivas no meio dos parágrafos, corrompendo fronteiras de chunks e embeddings. Cada unidade canônica deve levar doc_id, número da página (ou caminho da seção), tenant_id e grupos de ACL, e content_hash com updated_at para resolver citações com precisão, filtrar chunks sem permissão e manter reindexação incremental confiável."
+quiz:
+  - question: "Por que a extração ingênua da esquerda para a direita costuma corromper PDFs em duas colunas antes mesmo do chunking ou dos embeddings?"
+    options: ["Arquivos PDF criptografam metadados de coluna salvo quando abertos por leitor licenciado", "PDFs guardam coordenadas de glifos em vez de parágrafos, misturando colunas", "Tokenizadores descartam quebras de linha sempre que o arquivo passa de dez páginas", "O PDF 2.0 proíbe codificação UTF-8 dentro de layouts de múltiplas colunas por norma"]
+    correctIndex: 1
+    explanation: "Conforme especifica a ISO 32000-2, o PDF é um formato de descrição de página que posiciona caracteres por coordenadas (x, y). Sem análise de layout para detectar colunas e ordem de leitura, um extrator simples lê reto atravessando as duas colunas na mesma linha horizontal."
+  - question: "Um PDF corporativo de 40 páginas tem cabeçalho e rodapé somando 30 palavras em cada página e cinco páginas escaneadas salvas como imagens JPEG. O que acontece ao rodar um extrator comum da camada de texto?"
+    options: ["O extrator remove cabeçalhos automaticamente e roda OCR embutido nas cinco páginas escaneadas", "O extrator recusa abrir o arquivo enquanto todas as 40 páginas não usarem tabelas de fonte iguais", "Ele injeta 1.200 palavras repetidas no texto e descarta em silêncio as cinco páginas escaneadas", "Ele dobra a contagem de tokens apenas nas cinco páginas escaneadas mantendo as outras 35 limpas"]
+    correctIndex: 2
+    explanation: "Um leitor simples da camada de texto despeja cabeçalhos repetidos no meio das frases (30 × 40 = 1.200 palavras de ruído) e extrai zero texto de páginas apenas raster, criando pontos cegos silenciosos de recall a menos que o pipeline encaminhe páginas sem texto para OCR ou parsing visual."
+  - question: "Por que hashes de conteúdo e registros de exclusão (tombstones) precisam fazer parte de um pipeline de ingestão em produção?"
+    options: ["Arquivos inalterados pulam re-embedding e documentos removidos saem de forma limpa do índice atual", "Bancos vetoriais não conseguem guardar embeddings normalizados sem uma chave primária SHA-256 por linha", "Hashes de conteúdo convertem tabelas de PDF em Markdown automaticamente sem usar modelo de layout", "Tombstones evitam deriva de tokenização ao trocar um vocabulário BPE por caracteres individuais"]
+    correctIndex: 0
+    explanation: "Calcular o hash de cada documento ou seção canônica permite re-embeddar apenas o que mudou em vez de pagar para reindexar o corpus inteiro, enquanto tombstones apagam chunks obsoletos para que políticas revogadas nunca voltem nas respostas."
+citations:
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, Sebastian Riedel, Douwe Kiela"
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+  - title: "ISO 32000-2:2020 Document Management — Portable Document Format — Part 2 (PDF 2.0)"
+    authors: "International Organization for Standardization"
+    year: 2020
+    url: "https://www.iso.org/standard/75839.html"
+updated: "2026-11-20"
+---
+
+A maioria dos projetos de *Retrieval-Augmented Generation* (RAG) culpa o modelo de embedding ou o LLM quando a resposta cita o número errado de um relatório. Abra o texto bruto guardado no índice e metade das vezes o dado já foi destruído antes de o primeiro vetor ser calculado: duas colunas foram coladas na mesma linha, uma tabela financeira virou uma fila solta de algarismos ou cinco páginas escaneadas desapareceram em silêncio. É na ingestão que a qualidade da busca se decide.
+
+## Por que o PDF é hostil à extração de texto
+
+HTML, Markdown e DOCX armazenam uma árvore lógica de documento—títulos, parágrafos, listas e linhas explícitas de `<table>`. O **Portable Document Format (PDF)**, padronizado na ISO 32000-2, nasceu para outra missão: garantir que uma página saia idêntica em qualquer impressora. Por dentro, uma página PDF é sobretudo uma lista de comandos de desenho dizendo "pinte o glifo `R` na coordenada `(72, 710)` em Helvetica 11 pt". PDFs marcados (*tagged*) podem trazer árvores de estrutura, mas a maior parte dos PDFs corporativos omite ou corrompe essas marcas.
+
+Imagine um relatório trimestral concreto em duas colunas. Na linha horizontal `y = 640`, a coluna A traz `"A receita subiu 14% no ano"` e a coluna B traz `"excluindo a baixa contábil europeia no 4T."` Um extrator ingênuo que ordena glifos por `y` e depois `x` emenda tudo em `"A receita subiu 14% no ano excluindo a baixa contábil europeia no 4T."` Pior ainda, um balanço de 4 colunas perde os cabeçalhos e vira `"2024 41,2 2025 38,9"`—depois de virar tokens (como em [Tokenização I](/pt-br/lessons/1-text-to-tensors/1.2-tokenization-i/)), nem a busca vetorial nem o LLM conseguem saber a qual linha cada número pertence.
+
+Elementos repetidos de página agravam o estrago. Se um PDF de `40` páginas traz cabeçalho e rodapé somando `30` palavras (`"Acme Corp Confidencial — Auditoria FY2025 — Página 12 de 40"`) em cada folha, a extração ingênua enxerta `40 × 30 = 1.200` palavras idênticas de ruído bem no meio de frases que cruzam a quebra de página.
+
+<Figure id="27-1-ingestion-pipeline" />
+
+## Um pipeline de ingestão em quatro etapas sensível a layout
+
+Expandindo o ciclo visto em [Ingestão e recuperação](/pt-br/lessons/19-agent-memory-and-context/19.2-ingestion-and-retrieval/), um pipeline de produção trata o parsing como engenharia de dados estruturados em vez de uma chamada simples a `pdftotext`:
+
+- **Triagem de formato e roteamento para OCR.** Inspecione o tipo MIME e a densidade de caracteres por página. Faça o parse de HTML, Markdown e DOCX direto da árvore nativa. Em PDFs, detecte páginas escaneadas ou dominadas por imagem (baixa razão de texto por área) e encaminhe-as para **Reconhecimento Óptico de Caracteres (OCR, *Optical Character Recognition*)** ou um parser visual em vez de indexar zero tokens em silêncio.
+- **Análise de layout e reconstrução da ordem de leitura.** Segmente cada página em blocos tipados—título, subtítulo, parágrafo, lista, tabela, legenda, cabeçalho/rodapé—com um detector de layout. Descarte cabeçalhos, rodapés e números de página repetitivos; reconstrua a ordem correta entre colunas; e serialize tabelas em Markdown ou HTML enxuto mantendo cada célula ligada ao cabeçalho da linha e da coluna.
+- **Normalização canônica de texto.** Corrija hifens de quebra de linha (`"recupe-\nração"` → `"recuperação"`), normalize ligaduras Unicode (`ﬁ` → `fi`) e preserve blocos de código sem destruir indentação.
+- **Anexo de origem e controle de acesso.** Anexe metadados estruturados a cada bloco antes do chunking: `doc_id`, `source_uri`, `page`, `section_path` (como `"4. Preços > 4.2 Enterprise"`), `tenant_id`, `acl_groups`, `content_hash` e `updated_at`.
+
+:::insight
+Serialize toda tabela com os cabeçalhos preservados e anteponha o título ou legenda próximos. Se uma tabela longa atravessa três páginas, repita a linha de cabeçalho em cada fragmento dividido para que nenhum pedaço vire uma parede órfã de números.
+:::
+
+## Sincronização incremental, deduplicação e tombstones
+
+Corpora reais não são arquivos zip estáticos; políticas mudam, contratos expiram e páginas de wiki são apagadas. Re-embeddar um acervo de 100.000 documentos do zero toda noite desperdiça orçamento e cria janelas de respostas desatualizadas.
+
+Calcule um `content_hash` determinístico sobre o texto canônico parseado somado aos metadados de segurança. A cada sincronização:
+
+- Se `doc_id` já existe com o mesmo `content_hash`, pule chunking e embedding por completo.
+- Se `content_hash` mudou, insira os chunks da versão nova de forma atômica e remova os chunks da versão antiga usando o `version_id` anterior, impedindo que duas edições conflitantes da mesma norma convivam no índice.
+- Se um documento sumiu da origem (ou perdeu permissão), grave um **tombstone** (marca de exclusão) e remova seus chunks imediatamente.
+
+:::warning
+Inspecione visualmente 20 documentos parseados sorteados ao acaso—lado a lado com os PDFs originais—antes de ajustar embeddings ou prompts. Uma auditoria de 30 minutos no parser costuma recuperar mais precisão de busca do que semanas trocando de modelo.
+:::
+
+## Quando extrair texto ainda não basta
+
+Certos documentos corporativos—plantas de engenharia, apresentações densas com setas, formulários escaneados à mão ou gráficos financeiros com múltiplos eixos—carregam informação essencial no arranjo visual, não só no texto corrido. Converter essas páginas apenas em texto descarta relações espaciais. Mais adiante na Parte 3, você verá como o RAG visual indexa imagens de páginas diretamente em complemento ao parsing textual; para todo acervo centrado em texto, o parsing sensível a layout segue como o alicerce que define o teto da busca.

@@ -5,13 +5,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-11-21
+
+### Added
+
+- **Part 3 — AI Engineering in Production (tracks 26–33, 40 bilingual lessons = 80 MDX files):**
+  - Track 26 (`26-llm-apis-and-structured-outputs`): stateless APIs, SSE streaming & cancellation, constrained decoding & JSON Schema, async concurrency/rate limits, prompt hierarchy & prefix caching.
+  - Track 27 (`27-retrieval-and-hybrid-search`): PDF layout parsing, chunking arithmetic & parent-child boundaries, dense & Matryoshka embeddings, HNSW vector indexes & quantization memory math, Okapi BM25 & Reciprocal Rank Fusion.
+  - Track 28 (`28-production-rag-architectures`): RAG vs long context vs fine-tuning economics, baseline RAG & context assembly, cross-encoder & ColBERT reranking, query transformation & routing, grounding citations, abstention & GraphRAG.
+  - Track 29 (`29-llm-and-rag-evaluations`): open-coded error analysis, Recall@k / Precision@k / RR / MRR / NDCG@k + generation faithfulness, LLM-as-a-judge & Cohen’s kappa calibration, benchmark contamination, offline-to-online eval flywheels.
+  - Track 30 (`30-rag-security-privacy-and-governance`): pre-filtered tenant ACL isolation, corpus poisoning & indirect injection, PII redaction & zero-data-retention boundaries, tiered guardrails & latency budgets, AI governance mapping (OWASP LLM Top 10, NIST AI 600-1, EU AI Act Regulation 2024/1689 + Digital Omnibus Annex III / Annex I / Article 50).
+  - Track 31 (`31-ai-system-design-and-caching`): end-to-end latency & tail budgets, exact / KV-prefix / semantic caching & key partitioning, model routing cascades & gateways, unit economics at scale, production system design case studies.
+  - Track 32 (`32-llmops-and-managed-platforms`): coupled versioning & release manifests, OpenTelemetry GenAI observability, shadow/canary rollouts & silent-regression rollbacks, API vs managed cloud vs self-hosted economics, enterprise tenancy, residency & portability.
+  - Track 33 (`33-multimodal-voice-and-system-defense`): visual document RAG (ColPali), continuous image/video diffusion, Flow Matching & discrete masked/block text diffusion (D3PM, MDLM), neural audio codecs / Whisper STT / streaming TTS, realtime voice agents & barge-in under 500 ms, S-LoRA multi-adapter serving & architecture defense.
+- **Three interactive labs** (server-rendered defaults, locale-aware decimal parsing, zero third-party requests, bringing the site to 11 labs):
+  - `token-sampling` (lesson 7.4, `src/lib/sampling-math.ts`): interactive next-token Temperature, Top-K, Top-P (nucleus), and Min-P probability visualizer with entropy and effective-choices (`2^H`) readouts across factual, code, and creative logit presets.
+  - `rag-eval` (lesson 29.2, `src/lib/engineering-math.ts`): interactive Recall@k, Precision@k, single-query Reciprocal Rank (RR), and NDCG@k calculator.
+  - `ai-system-budget` (lesson 31.1, `src/lib/engineering-math.ts`): interactive latency budget (post-TTFT decode for `outputTokens - 1`), semantic-cache false-hit risk per 10k requests, and PAYG vs provisioned monthly economics.
+- **Home 5-stage LLM forward-pass pipeline:** zero-JS interactive walkthrough (`Tokenization → Embeddings → Attention & FFN → Sampling → Generation & tools`) on `/` and `/pt-br/` linking directly to lessons 1.2, 1.5, 4.2, 7.4, 15.1, and `/explore/`.
+- **Twelve zero-JS bilingual figures** across tracks 26–33 (`src/lib/figures/26..33.ts`) derived directly from `src/lib/engineering-math.ts`.
+- **Bilingual `/roadmap/` and `/pt-br/roadmap/`:** 16 progressive levels covering all 34 tracks, a 6-stage 100-day accelerated path, a portfolio proof rubric, 5 project blueprints, and 4 production defense drills, with CSS-only tab switching, native `<details>` animations (`interpolate-size: allow-keywords` + `transition-behavior: allow-discrete`), build-time lesson ID verification, and device-local completion progress.
+
 ### Changed
 
-- `CLAUDE.md` imports `AGENTS.md` (a link left the canonical guidance out of Claude Code's context). `AGENTS.md`
-  says the staging Worker has no public URL (`workers_dev: false`, no route) and that `ast-grep scan` fails CI
-  rather than blocking commits, since no commit hook is installed.
-- `.claude/settings.json` (new): editing `wrangler.jsonc` and any production deploy ask first; a Stop hook runs
-  `typecheck`, `lint` and `test` when the tree changed since the last green run.
+- **Three-part Star Atlas:** extended `PARTS` to `['models', 'agents', 'engineering']`, stacking the three bands (`1000 × 1800`) in both the 2D SVG atlas and 3D WebGL dome across **34 tracks and 230 lessons per locale (460 MDX files)**.
+- **Documentation & tooling:** `CLAUDE.md` imports `AGENTS.md`; `.claude/settings.json` adds edit/deploy guards and a Stop verification hook.
+
+### Fixed
+
+- **3D Signal Observatory & Explorer:** neutral graphite enamel and neutral lighting in `transformer.ts` and `stage.ts`, clean WebGL context release in `webgl.ts`, non-overlapping floating callout placement (`callout-placement.ts`), and still-pointer tap detection (`tap-gesture.ts`).
+- **Search, Quiz, TeachBack & Syllabus UX:** Search flushes pending debounce and awaits the active query before focusing the first result on Enter, decodes HTML entities safely, and separates `transition-behavior: allow-discrete` from `transition` shorthand; Syllabus uses `100dvw` and `scrollbar-gutter: stable`; LessonQuiz preserves completion on empty re-checks; TeachBack deduplicates live-region announcements; FigureBody adds `reversed` on `'up'` stacks and `position: relative` on `.fig-scroll` so `.visually-hidden` labels in masked grid cells cannot widen 320px viewports.
+- **Responsive typography & masthead:** narrow-screen masthead nav wraps cleanly at 320px under wide fallback fonts; Home hero removes decorative `01/02/03` tab badges, fixes ambient motion pause on `.mechanics__pulse`, and restores spacing around systems-reference links; TensorFold benchmark claims in lessons 11.4 and 11.5 carry explicit provenance notes.
 
 ## [0.16.0] — 2026-11-06
 

@@ -1,0 +1,98 @@
+---
+id: "26.2-streaming-sse-and-cancellation"
+track: "26-llm-apis-and-structured-outputs"
+order: 2
+title: "Streaming SSE, Cancelamento e Saída Parcial"
+summary: "O streaming divide uma espera de vários segundos numa pausa curta de prefill seguida de deltas contínuos via Server-Sent Events. Trate buffering de proxy, cancelamento e saídas parciais com segurança."
+tier: "foundations"
+locale: "pt-br"
+prerequisites: ["26.1-stateless-apis-and-conversation-state", "7.3-prefill-vs-decode-two-different-machines"]
+unlocks: ["26.4-async-concurrency-rate-limits-and-batching"]
+analogy: "Uma resposta sem streaming de LLM é como pedir um jantar de quatro pratos em que a cozinha segura tudo sob uma estufa até a sobremesa ficar pronta, deixando você oito segundos diante da mesa vazia. O streaming via Server-Sent Events traz cada porção assim que sai do fogo: você começa a comer logo após o preparo inicial e pode sinalizar ao garçom na metade se veio o prato errado. A comparação para na conta: cancelar no meio do decode interrompe tokens futuros, mas você ainda paga pelo preparo e por tudo o que já saiu do motor."
+teachBack:
+  prompt: "Um backend entrega uma resposta de 300 tokens com TTFT de 400 ms e velocidade de decode de 40 tokens/s. Compare o tempo de espera do usuário sem e com streaming, explique por que um proxy reverso pode quebrar o streaming em produção em silêncio e descreva o que ocorre com cobrança e estado do chat se o usuário clicar em Parar após 100 tokens."
+  modelAnswer: "Sem streaming, o usuário espera 400 ms + (300 / 40) × 1.000 ms = 7.900 ms até ver a primeira palavra. Com streaming, o primeiro token aparece em 400 ms e chega um novo token a cada 25 ms, embora o tempo total continue sendo 7.900 ms. Um proxy reverso pode quebrar o streaming ao acumular o corpo da resposta em buffer até atingir um limite de bytes ou o fim do arquivo, escondendo frames SSE até que o buffering seja desativado. Se o usuário cancelar aos 100 tokens e o cliente fechar a conexão, o provedor encerra o decode logo após notar o socket fechado; o prefill mais cerca de 100 tokens gerados continuam cobrados, e o app precisa salvar o trecho marcado como interrompido ou descartá-lo de forma limpa para não corromper os turnos seguintes."
+quiz:
+  - question: "Um modelo leva 300 ms no prefill e decodifica a 50 tokens/s para responder 400 tokens. Como ativar streaming SSE altera o TTFT e o tempo total de conclusão?"
+    options: ["Tanto o TTFT quanto o tempo total caem para cerca de 300 ms porque o SSE executa prefill e decode juntos", "O TTFT cai para 300 ms e o tempo total segue perto de 8,3 s", "O TTFT continua em 8,3 s enquanto a latência entre tokens cai abaixo de 20 ms após o buffer", "O tempo total cai pela metade porque o servidor elimina o custo de serializar a resposta em JSON"]
+    correctIndex: 1
+    explanation: "O prefill leva 300 ms e decodificar 400 tokens a 50 tokens/s leva 400 / 50 = 8,0 s, somando 8,3 s nos dois modos. O streaming não acelera a GPU; ele apenas entrega o primeiro token logo depois do prefill (300 ms) em vez de segurar todos os 400 tokens até 8,3 s."
+  - question: "Seu stream SSE funciona localmente direto na API do provedor, mas atrás do Nginx em produção o navegador fica 7 segundos vazio e recebe o texto inteiro de uma vez. Qual é a causa mais provável?"
+    options: ["O proxy reverso acumula a resposta upstream em buffer em vez de descarregar cada frame SSE de imediato", "O provedor desativa o streaming automaticamente sempre que as chamadas chegam de um bloco de IP de datacenter", "Clientes EventSource no navegador bloqueiam a renderização UTF-8 até receber o marcador final [DONE]", "A multiplexação do HTTP/2 funde todos os frames Server-Sent Events num único JSON bloqueante por padrão"]
+    correctIndex: 0
+    explanation: "Proxies reversos e CDNs costumam fazer buffer de respostas upstream por padrão para compressão ou eficiência de E/S, segurando pequenos deltas SSE até encher o buffer ou encerrar a conexão. Configurar Cache-Control: no-cache, desativar proxy buffering (como X-Accel-Buffering: no) e desligar compressão em buffer para event-stream restaura a entrega incremental."
+  - question: "Um cliente cancela um stream SSE com AbortController após receber 80 de 400 tokens previstos. Qual afirmação descreve corretamente a cobrança e o tratamento de estado?"
+    options: ["O provedor estorna a chamada inteira porque nenhum frame terminal de finish_reason ou usage chegou", "O provedor cobra todos os 400 max_tokens adiantado mesmo depois de o socket TCP fechar cedo", "O cliente deve omitir o turno cancelado dos registros de custo porque saídas parciais custam zero", "Prefill e tokens gerados seguem cobrados, e o app deve marcar ou descartar o trecho parcial"]
+    correctIndex: 3
+    explanation: "O prefill terminou antes do primeiro token e cada token decodificado antes de o servidor notar o fechamento do socket consumiu GPU e entra na fatura. Como o evento final de usage pode não chegar num abort, o backend deve estimar o consumo localmente e salvar o texto marcado como interrompido ou reverter o turno com limpeza."
+citations:
+  - title: "HTML Living Standard: Server-Sent Events"
+    authors: "WHATWG"
+    year: 2025
+    url: "https://html.spec.whatwg.org/multipage/server-sent-events.html"
+  - title: "RFC 9110: HTTP Semantics"
+    authors: "Roy T. Fielding, Mark Nottingham, Julian Reschke"
+    year: 2022
+    url: "https://www.rfc-editor.org/rfc/rfc9110"
+updated: "2026-11-20"
+---
+
+Aperte enviar numa chamada de LLM sem streaming que gera uma explicação de 400 tokens e o navegador fica congelado por oito segundos. O usuário acha que o sistema travou e clica de novo. O streaming não faz a GPU gerar tokens mais depressa, mas transforma a responsividade percebida ao expor as duas fases distintas que você viu em [Prefill vs Decode: duas máquinas diferentes](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/).
+
+## Por que o streaming muda a experiência sem reduzir o cálculo
+
+Considere uma requisição concreta para a API stateless vista em [APIs Stateless de LLM e Estado de Conversa](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/): o *prefill* processa o prompt em `300 ms`, e o *decode* emite `400` tokens de saída a um ritmo estável de `50` tokens por segundo (`20 ms` por token).
+
+- **Sem streaming**, o servidor HTTP segura a resposta até o token 400 terminar. O usuário espera `300 ms + 8.000 ms = 8.300 ms` (`8,3 s`) olhando para um indicador de carregamento.
+- **Com streaming**, o primeiro token chega em `300 ms`—o **tempo até o primeiro token (TTFT, *time to first token*)**—e cada token seguinte aparece `20 ms` depois—a **latência entre tokens (ITL, *inter-token latency*)**. Um humano lê cerca de 4 a 6 tokens por segundo, então `50` tokens por segundo já superam a velocidade de leitura.
+
+De modo geral, para latência de prefill $\text{TTFT}$, tamanho da saída $N_{\text{out}}$ e vazão de decode $r_{\text{decode}}$ (tokens por segundo), a duração total da geração é:
+
+$$T_{\text{total}} = \text{TTFT} + \frac{N_{\text{out}}}{r_{\text{decode}}}$$
+
+Com $\text{TTFT} = 0.3\text{ s}$, $N_{\text{out}} = 400$ e $r_{\text{decode}} = 50\text{ tokens/s}$, obtemos $0.3 + 8.0 = 8.3\text{ s}$. O streaming derruba a espera até começar a ler de $8.3\text{ s}$ para $0.3\text{ s}$, enquanto $T_{\text{total}}$ permanece igual.
+
+:::note
+Registre TTFT e duração total separadamente na telemetria. Um pico de TTFT aponta para prompts longos, falha de cache ou fila antes do prefill; um pico de ITL aponta para saturação da GPU no decode ou buffering em proxy.
+:::
+
+## Como o Server-Sent Events funciona na rede
+
+A maioria dos provedores faz streaming com **Server-Sent Events (SSE)**, definido no HTML Living Standard da WHATWG, em vez de WebSockets. O motivo é simplicidade: depois que o corpo do `POST` sai do cliente, a geração do LLM é estritamente unidirecional, então o SSE trafega sobre HTTP/1.1 ou HTTP/2 comum, atravessa firewalls corporativos e funciona com balanceadores de carga padrão.
+
+O servidor responde com `Content-Type: text/event-stream` e descarrega blocos UTF-8 separados por uma linha em branco (`\n\n`). Cada evento traz campos opcionais `event:` e `id:` mais uma ou mais linhas `data:` com um delta JSON:
+
+```text
+event: content_block_delta
+data: {"delta":{"text":"O prefill "}}
+
+event: content_block_delta
+data: {"delta":{"text":"roda uma vez."}}
+
+event: message_stop
+data: {"finish_reason":"stop","usage":{"input_tokens":512,"output_tokens":400}}
+```
+
+Três detalhes de protocolo costumam quebrar parsers iniciantes:
+
+- **Pacotes TCP não coincidem com frames SSE.** Uma leitura de rede pode entregar metade de uma linha JSON ou três eventos colados. Acumule bytes em buffer até encontrar o delimitador `\n\n` antes de chamar `JSON.parse`.
+- **Comentários de keep-alive existem.** Provedores enviam linhas iniciadas por dois-pontos (`: ping`) durante pausas longas de prefill ou raciocínio para evitar que proxies derrubem conexões ociosas. Seu parser deve ignorar comentários em silêncio.
+- **Proxies reversos fazem buffer por padrão.** Nginx, gateways em nuvem e filtros gzip costumam acumular de 4 KB a 32 KB antes de enviar ao navegador, convertendo o stream de volta numa espera bloqueante. Desative o buffering de resposta (`X-Accel-Buffering: no`, `Cache-Control: no-cache` e sem compressão em buffer para `text/event-stream`).
+
+## Cancelamento, contrapressão e cobrança parcial
+
+Um ganho concreto do streaming é o cancelamento precoce: se o usuário percebe no token 30 que formulou mal a pergunta e clica em Parar, o frontend aciona `AbortController.abort()`, que faz o backend fechar o stream HTTP upstream. Ao detectar o socket fechado, o motor de inferência retira a sequência do lote ativo de decode e libera vagas na GPU imediatamente.
+
+Tenha clareza sobre o que cancelar economiza e o que não economiza. O prefill já terminou antes de o token 1 sair, portanto todos os tokens de entrada são cobrados integralmente. Todos os tokens de saída gerados antes de o fechamento chegar ao provedor—muitas vezes alguns tokens além do que apareceu na tela por causa de buffers de rede—também entram na fatura. Como um encerramento abrupto impede a chegada do evento final `usage`, seu backend precisa de um contador local aproximado para registrar tokens gerados em chamadas canceladas ou derrubadas pela rede.
+
+:::warning
+Nunca presuma que um stream terminou bem só porque o socket TCP fechou sem exceção. Verifique sempre o campo terminal `finish_reason`: `stop` indica término natural, `length` indica corte abrupto no limite `max_tokens` e ausência de evento terminal indica queda no meio da transmissão.
+:::
+
+## Persistir saídas parciais sem corromper o estado
+
+Respostas incompletas geram bugs difíceis quando tratadas como turnos normais.
+
+- **Texto conversacional.** Se o usuário clicou em Parar de propósito, descarte o par de turnos cancelado ou salve o trecho parcial com um marcador explícito `status: "cancelled"` para que a interface exiba o corte com honestidade e o modelo saiba que foi interrompido no próximo turno.
+- **JSON estruturado ou chamadas de ferramenta.** Nunca passe um delta JSON truncado ao parser da aplicação nem grave meia invocação de ferramenta no histórico. Acumule deltas estruturados até o evento final confirmar `finish_reason: "stop"` (ou `tool_calls`) e falhe ou refaça a chamada se o stream encerrar cedo.
+- **Erros no meio do stream.** Depois que os cabeçalhos HTTP retornam `200 OK` para abrir o SSE, o servidor não pode trocar o código para `500` ou `429` no meio da resposta. Em vez disso, provedores emitem um frame `event: error` dentro do próprio fluxo. Seu parser precisa tratar frames de erro em banda como falhas reais e encaminhá-los ao classificador de erros em vez de salvar uma resposta vazia.

@@ -1,0 +1,88 @@
+---
+id: "31.4-unit-economics-at-scale"
+track: "31-ai-system-design-and-caching"
+order: 4
+title: "AI Unit Economics & 100x Traffic Stress Tests"
+summary: "Model true per-request AI unit cost across input, output, retrieval, and retries, then stress-test gross margins and capacity ceilings when traffic jumps 10x to 100x."
+tier: "advanced"
+locale: "en"
+prerequisites: ["31.2-multi-layer-caching-and-semantic-risk", "31.3-model-routing-cascades-and-gateways", "9.10-cost-per-token"]
+unlocks: ["31.5-production-system-design-case-studies", "32.4-api-managed-cloud-and-self-hosted-economics"]
+analogy: "A bakery that sells a loaf for USD 5 while spending USD 1 on flour looks profitable at 100 loaves a day—until it expands to 10,000 loaves and discovers that custom hand-delivery, oven fuel, and ruined batches cost USD 4.80 per loaf, wiping out the margin. Software engineers used to near-zero marginal cost get caught by the same trap in AI products: every user message consumes real compute, context windows bloat over long threads, and heavy power users can turn a flat monthly subscription upside down. The comparison stops at caching: a baker cannot hand two customers the same loaf, whereas software can reuse cached prefixes and exact answers across thousands of calls."
+teachBack:
+  prompt: "A SaaS product charges USD 20/month per seat. Average users send 400 turns/month, while the top 5% power users send 6,000 turns/month. Each turn averages 4,000 input tokens at USD 3.00/M and 500 output tokens at USD 15.00/M, with 1.2x retry/agent-loop amplification. Compute the cost per turn, the monthly AI COGS for an average user vs a power user, and explain two pricing or architectural levers that restore healthy gross margin at 100x traffic."
+  modelAnswer: "One raw LLM call costs (4,000 / 1,000,000) * 3.00 + (500 / 1,000,000) * 15.00 = USD 0.012 + USD 0.0075 = USD 0.0195. Multiplying by the 1.2x loop/retry factor gives USD 0.0234 per user turn. An average user at 400 turns costs 400 * 0.0234 = USD 9.36/month (53% gross margin before non-AI infra). A power user at 6,000 turns costs 6,000 * 0.0234 = USD 140.40/month against USD 20 revenue—a USD 120.40 monthly loss per power user. Restoring margin at 100x scale requires both architectural levers (prefix caching on static context, routing 70%+ of turns to a small model, and capping conversation context growth via compaction) and pricing alignment (tiered usage quotas or credit-based overages rather than uncapped flat seats)."
+quiz:
+  - question: "A flat-rate USD 25/month AI writing app spends USD 0.015 per user turn. Median users run 200 turns/month, while the top 10% run 4,000 turns/month. What happens to the unit economics of the top 10% cohort?"
+    options: ["Each power user costs USD 60/month against USD 25 revenue, creating a USD 35/month loss", "Each power user costs USD 3/month, matching the median cohort's gross margin closely", "Each power user costs USD 15/month, leaving a healthy 40% gross margin on their seat", "Variable token spend disappears once the cohort exceeds 1,000 monthly requests per user"]
+    correctIndex: 0
+    explanation: "4,000 turns × USD 0.015 = USD 60.00 in monthly AI variable cost against USD 25.00 in subscription revenue—a negative gross margin of minus USD 35.00 per power user. In AI SaaS, skewed usage distributions mean averages hide severe cohort-level losses."
+  - question: "Why does a naive multi-turn chat loop that appends every previous message and retrieved RAG chunk to the prompt cause quadratic cost growth over a long conversation?"
+    options: ["Providers charge a 2x penalty surcharge whenever a conversation exceeds five user turns", "Output token counts automatically double on every turn regardless of max_tokens settings", "Turn t re-sends prior turns 1..t-1 as input, so cumulative input tokens scale as O(T^2)", "Vector databases bill per-chunk royalties every time a cached chunk appears in chat history"]
+    correctIndex: 2
+    explanation: "If each turn adds d tokens to the running transcript and nothing is summarized or pruned, turn 1 sends d input tokens, turn 2 sends 2d, ..., turn T sends Td. The cumulative input tokens billed across T turns equal d × T(T+1)/2, which grows quadratically with conversation length unless bounded by prefix caching and context compaction."
+  - question: "When stress-testing an AI architecture from 1x to 100x traffic, which failure usually breaks production first before raw cloud budget runs out?"
+    options: ["JSON parsers run out of Unicode code points when deserializing 100x concurrent responses", "Provider TPM/RPM rate limits, vector DB connection pools, and unbudgeted retry storms saturate queues", "Cosine similarity formulas overflow 32-bit floats once an index exceeds one million queries", "Transformer weight files corrupt on disk whenever simultaneous GPU utilization passes 80%"]
+    correctIndex: 1
+    explanation: "Scaling 100x hits hard operational ceilings immediately: external API tokens-per-minute (TPM) quotas reject calls with HTTP 429, naive retries multiply traffic into a retry storm, and synchronous DB/reranker pools exhaust connections. Stress tests must model throughput quotas, burst ratios, and degradation modes alongside dollar spend."
+citations:
+  - title: "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance"
+    authors: "Lingjiao Chen, Matei Zaharia, and James Zou"
+    year: 2023
+    url: "https://arxiv.org/abs/2305.05176"
+  - title: "Efficient Memory Management for Large Language Model Serving with PagedAttention"
+    authors: "Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica"
+    year: 2023
+    url: "https://arxiv.org/abs/2309.06180"
+updated: "2026-11-20"
+---
+
+Traditional web SaaS enjoys 80–90% gross margins because serving one more API request costs fractions of a thousandth of a cent. AI systems break that assumption: every user turn moves billions of weights across GPU memory, runs embeddings and rerankers, and triggers multi-step retries. In [lesson 9.10](/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/), we derived the raw cost per token of a single model call. Here we assemble the full **unit economics** of a production AI feature—what one completed user task actually costs across the entire stack—and stress-test what breaks when traffic scales $10\times$ or $100\times$.
+
+## Computing true cost per completed task
+
+Token list prices understate real spend because one user action rarely equals one bare LLM call. Write out the full cost of a single user turn $C_{\text{turn}}$ by summing every variable component and multiplying by the **amplification factor** $\alpha$ (average LLM calls per user turn, including agent loops, rerankers, guardrail judges, and retries):
+
+$$
+C_{\text{turn}} = (1 - h) \cdot \left[ c_{\text{ret}} + \alpha \cdot \left( \frac{N_{\text{in,miss}} p_{\text{in}} + N_{\text{in,hit}} p_{\text{cache}} + N_{\text{out}} p_{\text{out}}}{10^6} \right) \right],
+$$
+
+where $h$ is the response cache hit rate from [lesson 31.2](/lessons/31-ai-system-design-and-caching/31.2-multi-layer-caching-and-semantic-risk/), $c_{\text{ret}}$ is embedding + vector search + rerank cost per uncached query, $N_{\text{in,miss}}$ and $N_{\text{in,hit}}$ are uncached and prefix-cached input tokens, $N_{\text{out}}$ is output tokens, and $p_{\text{in}}$, $p_{\text{cache}}$, $p_{\text{out}}$ are per-million token prices.
+
+Plug in concrete numbers for a realistic customer-facing RAG copilot before optimization ($h = 0$, no prefix caching, $\alpha = 1.3$ due to query rewriting + retries):
+
+- $N_{\text{in,miss}} = 4{,}000$ tokens at $p_{\text{in}} = \text{USD } 3.00 / 1\text{M} \rightarrow \text{USD } 0.0120$.
+- $N_{\text{out}} = 500$ tokens at $p_{\text{out}} = \text{USD } 15.00 / 1\text{M} \rightarrow \text{USD } 0.0075$.
+- Retrieval + rerank $c_{\text{ret}} = \text{USD } 0.0005$.
+- Total per turn: $0.0005 + 1.3 \times (0.0120 + 0.0075) = \text{USD } 0.02585$ (USD 25.85 per 1,000 turns).
+
+Now apply three levers from earlier lessons: exact/semantic caching ($h = 0.25$), stable-prefix caching on 3,000 static tokens ($p_{\text{cache}} = \text{USD } 0.30 / 1\text{M}$), and routing 75% of uncached traffic to a small model costing $1/10$th as much ([lesson 31.3](/lessons/31-ai-system-design-and-caching/31.3-model-routing-cascades-and-gateways/)). Blended cost per turn drops from USD 0.02585 to roughly **USD 0.0046**—an $82\%$ reduction without degrading hard-query quality.
+
+## Quadratic context growth and power-user skew
+
+Two silent multipliers blow up AI budgets after launch even when single-turn spreadsheets look healthy:
+
+- **Quadratic multi-turn history:** In a chat interface that appends every user message, assistant reply, and retrieved chunk without compaction, if each turn adds $d = 1{,}000$ tokens, turn $t$ sends $t \cdot d$ input tokens. Across a $T = 20$-turn session, cumulative input tokens equal:
+
+$$
+\text{Total Input Tokens} = d \cdot \frac{T(T + 1)}{2} = 1{,}000 \times \frac{20 \times 21}{2} = 210{,}000\ \text{tokens}.
+$$
+
+That single 20-turn thread consumes $10.5\times$ more input tokens than 20 independent one-turn queries. Fix this by excluding raw retrieved chunks from historical turns (keep only the grounded answer and source IDs), compacting old turns past a sliding window, and keeping the static prefix cache-aligned.
+
+- **Power-user distribution skew:** Suppose you sell a flat USD 20/month seat. Median users run 250 turns/month (at USD 0.02/turn = USD 5.00 COGS, 75% gross margin). The top 5% power users run 4,000 turns/month (USD 80.00 COGS against USD 20.00 revenue, losing USD 60.00 per user every month). Always compute gross margin by **usage decile**, never just on the mean user. When variance is extreme, align pricing with cost drivers—tiered monthly credits, soft rate throttling into smaller models after a quota, or per-task pricing for heavy agent workflows.
+
+## Running a 100x traffic stress test before launch
+
+Never assume a system that runs smoothly at 10,000 requests/day will survive 1,000,000 requests/day ($100\times$). Walk every subsystem through a quantitative **100x stress test** using peak traffic, not daily averages (enterprise workloads often concentrate 50% of daily traffic inside 3 peak hours, creating a $4\times$ peak-to-average ratio):
+
+- **Peak token throughput (TPM):** At 1,000,000 requests/day ($\approx 11.6$ req/s average, $46$ req/s peak) with 4,500 total tokens per uncached request (65% miss rate $\rightarrow 30$ uncached req/s), peak throughput reaches $30 \times 60 \times 4{,}500 = 8.1\text{ million TPM}$. A single standard API tier capped at 2 million TPM will reject 75% of peak traffic with HTTP 429 errors.
+- **Retry storms:** If clients retry 429s aggressively without exponential backoff, jitter, and a global retry budget (at most 10% extra traffic), a transient dip triples load and locks the service into permanent overload.
+- **Vector index & reranker saturation:** At 46 peak queries/second, a CPU cross-encoder taking 50 ms per query on 4 cores maxes out at 80 queries/second—leaving almost no headroom for index compaction or a 2x marketing spike.
+- **Monthly spend jump:** At USD 4.50 per 1,000 uncached calls (from [lesson 31.1](/lessons/31-ai-system-design-and-caching/31.1-end-to-end-latency-budgets/)), scaling $100\times$ from 100k to 10M monthly requests takes cached PAYG spend from USD 292/month to USD 29,250/month—deep into territory where provisioned throughput, multi-region pools, or self-hosted serving (Kwon et al., 2023) must be evaluated.
+
+:::caveat
+Do not wait for a viral launch day to discover your provider's default TPM quota or your reranker's CPU saturation point. Run a synthetic load test at $3\times$ expected peak concurrency against staging with mock or shadow model endpoints, and verify that rate limits degrade gracefully (routing overflow to a secondary region or fast fallback model) rather than cascading into 500 errors.
+:::
+
+Healthy AI unit economics comes from treating tokens, retries, and peak TPM as first-class architectural constraints alongside latency and accuracy—measuring cost per completed task every week in production just like error rate.

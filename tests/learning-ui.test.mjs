@@ -32,7 +32,7 @@ function teachBackHarness({ savedAnswer = '', setItem, removeItem }) {
     addEventListener: (type, listener) => listeners.set(`clear:${type}`, listener),
   }
   const root = {
-    dataset: { lessonKey: 'en:lesson' },
+    dataset: { checkKey: 'en:lesson' },
     querySelector: (selector) => ({
       textarea,
       '[data-status-text]': statusText,
@@ -140,7 +140,7 @@ function quizHarness({ answers, correct, stored = null, setItem }) {
   })
   const root = {
     dataset: {
-      lessonKey: 'en:lesson',
+      checkKey: 'en:lesson',
       correct: JSON.stringify(correct),
       right: 'Correct',
       wrong: 'Not yet',
@@ -186,6 +186,15 @@ test('a correct quiz that cannot be saved does not complete the lesson', () => {
   assert.equal(quiz.root.dataset.complete, 'false')
   assert.match(quiz.status.textContent, /could not save/iu)
   assert.deepEqual(quiz.events.at(-1)?.detail, { lessonKey: 'en:lesson', valid: false })
+})
+
+test('checking a quiz with nothing chosen writes nothing and revokes nothing', () => {
+  const quiz = quizHarness({ answers: [null, null], correct: [0, 2], stored: 'true' })
+  quiz.check()
+
+  assert.deepEqual(quiz.writes, [])
+  assert.deepEqual(quiz.events, [])
+  assert.equal(quiz.status.textContent, '0 of 2 correct.')
 })
 
 test('quiz explanations stay hidden until their own question is answered right', () => {
@@ -261,7 +270,7 @@ test('the lesson records completion for track pages and withdraws it', () => {
   assert.deepEqual(writes.at(-1), ['ldd:complete:en:lesson', null])
 })
 
-test('ArrowUp from the search input focuses the last result', () => {
+function searchHarness() {
   class FakeHTMLElement {}
   const listeners = new Map()
   const document = {
@@ -275,13 +284,16 @@ test('ArrowUp from the search input focuses the last result', () => {
   const input = new Focusable()
   input.addEventListener = () => {}
   const links = Array.from({ length: 8 }, () => new Focusable())
-  const list = { innerHTML: '', querySelectorAll: () => links }
+  const list = { innerHTML: '', querySelectorAll: () => links, querySelector: () => links[0] ?? null }
   const status = { textContent: '' }
+  const listenerOn = (prefix) => ({ addEventListener: (type, listener) => listeners.set(`${prefix}:${type}`, listener) })
   const dialog = {
     dataset: { empty: 'No results.', hint: 'Type to search', countOne: '1 result', countOther: '{n} results' },
     open: true,
+    closed: false,
     addEventListener: (type, listener) => listeners.set(type, listener),
-    close: () => {},
+    querySelector: (selector) => ({ form: listenerOn('form'), '[data-search-close]': listenerOn('close') })[selector] ?? null,
+    close() { this.closed = true; this.open = false },
   }
   const opener = new Focusable()
   opener.addEventListener = () => {}
@@ -299,13 +311,33 @@ test('ArrowUp from the search input focuses the last result', () => {
     location: { href: 'https://example.test/', origin: 'https://example.test' },
     window: { clearTimeout: () => {}, setTimeout: () => 1 },
   })
+  return { listeners, document, input, links, dialog, opener }
+}
 
+test('ArrowUp from the search input focuses the last result', () => {
+  const { listeners, document, input, links } = searchHarness()
   document.activeElement = input
   let prevented = false
   listeners.get('keydown')({ key: 'ArrowUp', preventDefault: () => { prevented = true } })
 
   assert.equal(prevented, true)
   assert.equal(document.activeElement, links.at(-1))
+})
+
+test('Enter in the search field moves to the first result and keeps the dialog open', () => {
+  const { listeners, document, input, links, dialog, opener } = searchHarness()
+  document.activeElement = input
+  const submit = listeners.get('form:submit')
+  assert.ok(submit, 'the form must handle submit: its only button would otherwise close the dialog')
+  let prevented = false
+  submit({ preventDefault: () => { prevented = true } })
+  assert.equal(prevented, true)
+  assert.equal(dialog.closed, false)
+  assert.equal(document.activeElement, links[0])
+
+  listeners.get('close:click')()
+  assert.equal(dialog.closed, true)
+  assert.equal(document.activeElement, opener)
 })
 
 test('scroll wrappers are named focusable regions only while they overflow', () => {
@@ -328,7 +360,7 @@ test('scroll wrappers are named focusable regions only while they overflow', () 
     observe() {}
   }
   const document = {
-    querySelectorAll: (selector) => selector === '.math-scroll, .table-scroll' ? [wide, narrow] : [],
+    querySelectorAll: (selector) => selector === '.math-scroll, .table-scroll, .fig-scroll' ? [wide, narrow] : [],
     addEventListener: () => {},
   }
 

@@ -1,0 +1,107 @@
+---
+id: "32.3-shadow-canary-and-incident-rollbacks"
+track: "32-llmops-and-managed-platforms"
+order: 3
+title: "Shadow, Canary & Silent-Regression Rollbacks"
+summary: "How shadow traffic, sticky canary slices, sample-size math and automated rollback gates catch AI regressions that return HTTP 200 before they hit 100% of users."
+tier: "advanced"
+locale: "en"
+prerequisites: ["29.5-offline-to-online-eval-flywheels", "32.1-coupled-versioning-and-release-artifacts", "32.2-opentelemetry-genai-observability", "24.5-recovery-drills"]
+unlocks: ["33.5-applied-fine-tuning-and-engineering-defense"]
+analogy: "Think of introducing a new bridge lane next to an existing bridge. First you drive test trucks across the new lane in parallel while commuters keep using the old bridge—that is a shadow rollout, where you inspect structural load without risking a single driver. Next you divert 5% of commuters onto the new lane and measure both crash rates and travel times before opening all lanes—that is a canary. The comparison stops at side effects: a shadow truck leaves the real road untouched, whereas a shadowed AI agent must have every external write tool stubbed out so it never sends duplicate emails or charges a customer twice."
+teachBack:
+  prompt: "Your team wants to promote manifest `rel-043` after running a 5% canary for 20 minutes (40 requests) where 37 passed automated grounding checks (92.5%) versus 92.0% on baseline. Explain why 40 requests cannot detect a 3-percentage-point regression, describe what must be blocked in shadow mode for an agent with write tools, and list three automated rollback triggers for an AI canary."
+  modelAnswer: "Forty requests have massive sampling noise: a single failure swings the rate by 2.5 percentage points, and the standard error at p = 0.92 is roughly 4.3 percentage points, so a real drop from 92% to 89% is completely invisible inside that window. Detecting a 3-percentage-point shift around 92% with reasonable confidence requires roughly 1,600 requests per arm, not 40. Before the canary even begins, shadow mode replays live inputs against `rel-043` without showing answers to users, and every side-effecting tool (billing, emails, database writes, tickets) must be mocked or blocked at the tool boundary so the shadow run never executes real-world mutations. Finally, automated rollback triggers must cover silent quality defects alongside HTTP errors: for example, schema-validation failure rate above 0.5%, `length` truncation or refusal rate rising by more than 2 percentage points, p95 latency or cost per request jumping more than 25%, or online groundedness / user escalation rate breaching the threshold against the pinned baseline manifest."
+quiz:
+  - question: "You deploy a shadow copy of an invoice-processing agent to compare manifest `rel-043` against `rel-042` on live traffic. What critical safeguard must wrap the shadow instance?"
+    options: ["Route shadow traffic through a slower GPU queue so it never shares caches with production", "Lower the shadow model's temperature to 0 while keeping production at 0.3", "Disable OpenTelemetry tracing on the shadow run to avoid double-counting latency metrics", "Stub or block every external write tool to prevent duplicate side effects"]
+    correctIndex: 3
+    explanation: "Shadow traffic duplicates real inputs to observe latency, token cost, schema adherence, and offline quality scores. If the shadow agent holds live write credentials, it will send duplicate emails, create duplicate tickets, or bill users twice."
+  - question: "Why should a canary rollout pin each multi-turn conversation (or user session) to one manifest version instead of flipping every individual turn randomly at 5%?"
+    options: ["Random per-turn flips disable HTTP keep-alive connections to the provider", "Pinned sessions reduce the GPU memory footprint on the provider's cluster", "Per-turn flips mix prompts mid-thread and confound overall session-level metrics", "OpenTelemetry cannot link spans from two different release manifests in the same database"]
+    correctIndex: 2
+    explanation: "If turn 1 uses manifest `v13` and turn 2 switches to `v14`, the conversation history contains assistant output shaped by `v13`'s prompt and schema, breaking prompt-prefix caches and making session-level escalation or satisfaction metrics impossible to attribute."
+  - question: "A canary serves 40 requests with 36 successes (90%) against a 93% baseline. Why is halting or promoting on this sample unreliable?"
+    options: ["Canary percentages below 10% always distort network RTT measurements", "At 40 requests, a 3-point gap is smaller than the sampling noise", "Automated graders cannot score fewer than 100 traces in one batch", "Offline CI gates already guarantee zero regression on live distributions"]
+    correctIndex: 1
+    explanation: "At n = 40 and p = 0.93, one standard error is about 4 percentage points—larger than the 3-point difference you are trying to measure. Promoting or panicking on tiny samples turns rollout decisions into coin flips."
+citations:
+  - title: "Principles of Chaos Engineering"
+    authors: "principlesofchaos.org contributors"
+    year: 2019
+    url: "https://principlesofchaos.org/"
+  - title: "Addressing Cascading Failures, in Site Reliability Engineering"
+    authors: "Mike Ulrich (Google; O'Reilly Media)"
+    year: 2017
+    url: "https://sre.google/sre-book/addressing-cascading-failures/"
+updated: "2026-11-20"
+---
+
+Offline evaluations from [lesson 29.5](/lessons/29-llm-and-rag-evaluations/29.5-offline-to-online-eval-flywheels/) catch obvious breaks before merge, yet they never see everything production throws at a model. Live users paste broken PDFs, switch languages mid-sentence, and ask about policies published twenty minutes ago. Meanwhile, a broken AI deploy rarely crashes with HTTP 500. Instead, it returns HTTP 200 while subtly refusing valid questions, omitting citations, or ballooning output tokens by 60%.
+
+This lesson covers the progressive delivery ladder that catches **silent regressions** (quality, safety, or cost failures hidden behind healthy HTTP status codes): shadow traffic, sticky canary slices, sample-size math, and automated rollback drills building on [lesson 24.5](/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/).
+
+## Stage 1: shadow traffic (dark launches)
+
+In a **shadow deployment** (also called a dark launch), your gateway duplicates a slice of live production requests—say 10%—and forwards the copy asynchronously to the candidate manifest from [lesson 32.1](/lessons/32-llmops-and-managed-platforms/32.1-coupled-versioning-and-release-artifacts/). The user still receives only the baseline manifest's response. The candidate's output goes strictly to your telemetry pipeline ([lesson 32.2](/lessons/32-llmops-and-managed-platforms/32.2-opentelemetry-genai-observability/)) and asynchronous graders.
+
+Shadowing gives you four real-traffic measurements at zero user risk:
+
+- **Schema and parser pass rate**: does the candidate satisfy every JSON constraint on messy live inputs?
+- **Latency and token distribution**: what are the real p95 TTFT, decode length, and `finish_reason = "length"` rates?
+- **Cost delta**: how much more (or less) does the candidate spend per 1,000 live turns?
+- **Side-by-side quality diff**: on a sampled batch, how often do calibrated judges prefer the candidate over the baseline?
+
+Shadow mode carries one strict boundary: **read-only execution**. If the candidate is an agent that calls external tools—sending emails, refunding charges, or updating CRM tickets—the shadow harness must stub every mutating tool at the tool gateway and log the intended call arguments instead of executing them. Otherwise a dark launch silently creates duplicate real-world side effects.
+
+## Stage 2: sticky canary rollouts and sample-size math
+
+Shadowing cannot measure human reactions—whether real users stop clicking "talk to a human", accept suggested edits, or abandon the chat. That requires a **canary rollout**, where a small live slice (commonly 5%, then 25%, then 50%, then 100%) actually receives the candidate's answers.
+
+Always route canaries by **sticky session or tenant hash**, never by coin flip on each turn. If turn 1 of a chat hits `rel-042` and turn 2 flips to `rel-043`, the conversation context mixes two different system prompts, invalidates prefix caches, and corrupts session-level metrics like resolution rate.
+
+The most common canary mistake is promoting after 15 minutes because "it looks green." Check the numbers before setting a promotion window. Suppose your baseline passes an automated groundedness check on $p_0 = 0.92$ (92%) of turns, and you want to detect a drop of $\Delta = 0.03$ (3 percentage points, down to 89%) with 80% statistical power at a 5% significance level. A standard two-proportion sample-size estimate per arm is:
+
+$$
+n \approx \frac{2 \times (1.96 + 0.84)^{2} \times \bar{p}(1 - \bar{p})}{\Delta^{2}}
+$$
+
+Using the midpoint $\bar{p} = 0.905$, where $\bar{p}(1 - \bar{p}) \approx 0.086$:
+
+$$
+n \approx \frac{2 \times 7.84 \times 0.086}{0.03^{2}} \approx \frac{1.348}{0.0009} \approx 1{,}498\ \text{requests per arm}
+$$
+
+Round up to about 1,500 requests in the canary arm. On a service handling 20,000 requests per day, a 5% canary collects 1,000 requests per day, so it needs roughly 36 hours to reach statistical power for a 3-point quality shift. At just 40 requests, a single failure moves the metric by 2.5 percentage points—pure noise.
+
+## Automated rollback gates for silent regressions
+
+A rollback gate watches candidate telemetry against the baseline manifest in real time and flips the active release pointer back to the previous immutable manifest when any guardrail trips. Define two tiers of triggers:
+
+- **Fast hard triggers (minutes, small sample)**: HTTP 5xx rate above 1%, structured JSON parse failures above 0.5%, p95 latency up more than 30%, or average output tokens per request up more than 35% (which catches runaway loops and budget burns immediately).
+- **Quality and product triggers (hours, powered sample)**: `finish_reason = "length"` truncation rate up more than 2 percentage points, guardrail refusal rate up more than 2 percentage points, user thumbs-down or human-escalation rate up more than 2 percentage points, or sampled online groundedness dropping below threshold.
+
+| Signal | Healthy baseline | Automated rollback threshold | Why HTTP 200 misses it |
+| --- | --- | --- | --- |
+| Schema parse failure | 0.1% | > 0.5% over 200 turns | API returns 200 with malformed JSON body |
+| `length` truncation rate | 0.8% | > 2.8% over 500 turns | Reply cuts off mid-sentence with status 200 |
+| Cost per 1,000 turns | USD 3.00 | > USD 3.90 (+30%) | Verbose prompt burns budget silently |
+| Escalation to human | 11.0% | > 13.5% over 1,500 turns | Unhelpful answers push users out of the bot |
+
+:::warning
+Never roll back by manually editing a prompt string or toggling an environment variable during an incident. Manual edits create an unreviewed state that nobody tested. Roll back by reverting the single immutable `release_id` pointer from lesson 32.1 so prompt, schema, model snapshot, and index revision step back in lockstep.
+:::
+
+## Rehearsing the rollback before you need it
+
+Google's SRE guidance on cascading failures notes that an untested recovery path rarely works under pressure, and [lesson 24.5](/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/) proved that rule on agent batches. Run a scheduled rollback drill once a quarter in staging:
+
+1. Deploy a deliberately degraded candidate manifest (for example a prompt missing citation rules or a capped token limit that triggers `length` truncations).
+2. Replay 500 synthetic traces through the canary router.
+3. Verify that OpenTelemetry metrics trip the alert, the controller reverts the pointer to the prior manifest automatically, and recovery completes in under two minutes with zero dropped traffic.
+
+:::caveat
+Canary analysis fails if you keep rolling out three unrelated changes on top of one another. Freeze non-emergency prompt and index promotions while a canary is collecting its powered sample, or keep disjoint feature routes isolated so each manifest is judged cleanly against its own baseline.
+:::
+
+You now know how to package, observe, and safely roll out an AI release. The next question is where to host the models behind that release—direct APIs, managed cloud platforms, or your own GPUs—and how the economics flip at scale. Lesson 32.4 does that arithmetic.

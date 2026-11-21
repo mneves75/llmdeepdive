@@ -124,6 +124,7 @@ export default defineConfig({
         '.lesson-nav',
         '.listing__minutes',
         '.listing__done',
+        '.roadmap__done',
         '.track__back',
         '.track__next',
       ],

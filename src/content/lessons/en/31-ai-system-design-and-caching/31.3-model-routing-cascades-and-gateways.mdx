@@ -1,0 +1,94 @@
+---
+id: "31.3-model-routing-cascades-and-gateways"
+track: "31-ai-system-design-and-caching"
+order: 3
+title: "Model Routing, Cascades & AI Gateways"
+summary: "Cut inference spend without sacrificing hard-task accuracy by combining pre-generation routers (RouteLLM), verified cascades (FrugalGPT), and resilient AI gateways."
+tier: "advanced"
+locale: "en"
+prerequisites: ["31.1-end-to-end-latency-budgets", "24.4-model-cascades-and-budgets"]
+unlocks: ["31.4-unit-economics-at-scale", "31.5-production-system-design-case-studies"]
+analogy: "A hospital emergency room does not send every scraped knee to the chief neurosurgeon, nor does it let a nurse run brain surgery and only call the surgeon if the patient flatlines. A triage nurse routes routine cases to urgent care and severe cases directly to specialists upfront (routing), while lab screening starts with a cheap rapid test and escalates ambiguous swabs to a slower PCR assay (a cascade). The comparison stops at latency visibility: in interactive chat, a failed first attempt in a cascade makes the user wait for two models back to back unless you hide or bound the retry."
+teachBack:
+  prompt: "Distinguish upfront model routing (RouteLLM) from sequential model cascades (FrugalGPT) in terms of latency on hard queries, cost math, and failure modes. Compute the blended cost per 1,000 requests when a small model costs USD 0.60/1k, a frontier model costs USD 9.00/1k, and a router sends 75% of queries to the small model vs a cascade where 75% pass the small model and 25% escalate to the frontier model."
+  modelAnswer: "Upfront routing classifies query difficulty before calling any LLM and dispatches straight to either the small or frontier model, so hard queries pay only one model's latency plus ~20 ms of routing overhead; its risk is misrouting a hard query to the small model without verifying the answer. A sequential cascade always calls the cheap model first, verifies the output, and calls the frontier model only on failure; its strength is output-level verification, while its downside is paying both models' cost and latency on escalated queries. On the numbers: routing costs 0.75 * 0.60 + 0.25 * 9.00 = 0.45 + 2.25 = USD 2.70 per 1,000 requests (70% cheaper than USD 9.00). The cascade pays the small model on 100% of queries plus the frontier model on 25%, costing 0.60 + 0.25 * 9.00 = USD 2.85 per 1,000 requests—only USD 0.15 more per 1,000—while catching small-model errors via the verifier."
+quiz:
+  - question: "A small model costs USD 0.80 per 1,000 requests and a frontier model costs USD 8.00 per 1,000 requests. In a FrugalGPT-style cascade, 80% of requests pass the cheap model's verifier and 20% escalate to the frontier model. What is the blended cost per 1,000 requests?"
+    options: ["USD 1.44 per 1,000 requests, because escalated queries refund the cheap model call", "USD 1.60 per 1,000 requests, because only the 20% escalated queries incur any charge", "USD 4.40 per 1,000 requests, the midpoint between the small and frontier prices", "USD 2.40 per 1,000 requests, paying USD 0.80 on all calls plus 20% of USD 8.00"]
+    correctIndex: 3
+    explanation: "In a sequential cascade, every request calls the cheap model first (1.0 × USD 0.80 = USD 0.80), and the 20% that fail verification also call the frontier model (0.20 × USD 8.00 = USD 1.60), totaling USD 2.40 per 1,000 requests—a 70% savings over always calling the frontier model."
+  - question: "When does upfront routing (RouteLLM) beat a sequential cascade (FrugalGPT) on user-perceived latency?"
+    options: ["On low-volume batch jobs that run overnight without any latency budget", "On hard interactive queries, skipping a doomed cheap-model wait upfront", "On every query where the cheap model always passes with 100% accuracy", "Whenever the router itself runs a frontier LLM prompt before dispatching"]
+    correctIndex: 1
+    explanation: "On hard queries that require the frontier model, a sequential cascade wastes the full small-model TTFT and decode time before escalating. A fast upfront router (~10–25 ms) sends hard queries directly to the frontier model, avoiding stacked tail latency."
+  - question: "An enterprise AI gateway enforces provider failover from Provider A to Provider B during a regional outage. Why must the gateway also pin prompt templates and structured-output tests per fallback target rather than forwarding the raw payload blindly?"
+    options: ["Provider B automatically rejects any HTTP request that contains a JSON schema header", "Fallback models run twice as slow unless every system prompt is compressed to 50 tokens", "Different models diverge on JSON format, refusal rates, and tool syntax without evals", "AI gateways are legally forbidden from forwarding identical prompts to two cloud vendors"]
+    correctIndex: 2
+    explanation: "Swapping base models silently during an outage often breaks JSON adherence, tool-call syntax, or safety refusal calibration unless each fallback target is validated against the same eval suite and carries model-specific adapter settings."
+citations:
+  - title: "FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance"
+    authors: "Lingjiao Chen, Matei Zaharia, and James Zou"
+    year: 2023
+    url: "https://arxiv.org/abs/2305.05176"
+  - title: "RouteLLM: Learning to Route LLMs with Preference Data"
+    authors: "Isaac Ong, Amjad Almahairi, Vincent Wu, Wei-Lin Chiang, Tianhao Wu, Joseph E. Gonzalez, M Waleed Kadous, and Ion Stoica"
+    year: 2024
+    url: "https://arxiv.org/abs/2406.18665"
+updated: "2026-11-20"
+---
+
+Sending every user query—from "summarize this three-line receipt" to "reconcile a multi-jurisdiction tax clause"—to your most expensive frontier model wastes 60% to 85% of your inference budget and inflates latency across routine traffic. In [lesson 24.4](/lessons/24-agent-resilience-and-fallbacks/24.4-model-cascades-and-budgets/), you built a budget-capped sequential cascade for an invoice agent. In full-scale production systems, teams choose between two complementary dispatch patterns—**upfront model routing** and **sequential cascades**—and operate both behind a centralized **AI gateway**.
+
+## Upfront routing vs. sequential cascades
+
+Both techniques pair a fast, inexpensive model ($c_{\text{small}}$, latency $T_{\text{small}}$) with a capable, expensive frontier model ($c_{\text{large}}$, latency $T_{\text{large}}$), but they decide *when* to escalate at different points:
+
+- **Upfront routing (RouteLLM — Ong et al., 2024):** A lightweight classifier or matrix-factorization router inspects the incoming prompt *before* any LLM runs, predicts whether the small model can match the strong model on this query, and sends fraction $p$ directly to the small model and $(1 - p)$ directly to the frontier model. Ong et al. trained routers on preference datasets (such as Chatbot Arena) and showed cost reductions over $2\times$ on benchmarks like MT-Bench and MMLU while preserving over 95% of frontier quality.
+- **Sequential cascade (FrugalGPT — Chen et al., 2023):** Every request goes to the cheap model first. A verifier (a deterministic schema/math check, a groundedness score, or a trained reliability scorer) checks the answer; only the failing fraction $(1 - p)$ escalates to the frontier model.
+
+Compare the exact cost and latency math using small, concrete numbers. Let $c_{\text{small}} = \text{USD } 0.60$ per 1,000 requests, $c_{\text{large}} = \text{USD } 9.00$ per 1,000 requests, $T_{\text{small}} = 900\text{ ms}$, $T_{\text{large}} = 4{,}500\text{ ms}$, router latency $T_{\text{route}} = 20\text{ ms}$, and suppose $p = 0.75$ of queries are handled well by the small model:
+
+- **Frontier only:** Cost = $\text{USD } 9.00 / 1\text{k}$; hard-query latency = $4{,}500\text{ ms}$.
+- **Upfront router ($p = 0.75$):**
+
+$$
+C_{\text{route}} = p \cdot c_{\text{small}} + (1 - p) \cdot c_{\text{large}} = 0.75 \times 0.60 + 0.25 \times 9.00 = \text{USD } 2.70 / 1\text{k}.
+$$
+
+Hard queries pay $T_{\text{route}} + T_{\text{large}} = 4{,}520\text{ ms}$ (only 20 ms overhead).
+
+- **Sequential cascade ($p = 0.75$):**
+
+$$
+C_{\text{cascade}} = c_{\text{small}} + (1 - p) \cdot c_{\text{large}} = 0.60 + 0.25 \times 9.00 = \text{USD } 2.85 / 1\text{k}.
+$$
+
+Hard queries pay $T_{\text{small}} + T_{\text{large}} = 5{,}400\text{ ms}$ (stacking both turns unless the verifier rejects early during streaming).
+
+The tradeoff is clear. Routing preserves tail latency on hard queries from [lesson 31.1](/lessons/31-ai-system-design-and-caching/31.1-end-to-end-latency-budgets/) and works well when difficulty is predictable from the prompt alone (intent classification, language complexity, query length, presence of multi-hop reasoning cues). Cascades win whenever you possess a **cheap, trusted verifier** of the output—JSON schema validation, unit-test execution, SQL syntax + row check, or citation grounding—because the verifier catches mistakes that no pre-generation router could foresee.
+
+## Calibration: choosing the routing threshold without blind spots
+
+A router outputs a probability score $s(x) \in [0, 1]$ estimating the chance that the frontier model outperforms the small model on prompt $x$, and routes to the frontier model when $s(x) \ge \theta$. Sweeping $\theta$ traces a **cost-quality Pareto curve**:
+
+- Lowering $\theta$ sends more traffic to the frontier model (higher quality, higher spend).
+- Raising $\theta$ sends more traffic to the small model (lower spend, steeper quality drop once difficult prompts leak onto the small tier).
+
+Never calibrate $\theta$ on generic public leaderboards alone. A router trained on general chat preferences can score poorly on domain-specific legal citations or internal SQL dialects because distribution shift changes which queries are hard. Collect 500–1,000 real production queries, score both the small and frontier models with your domain eval rubric, and pick the highest $\theta$ that stays inside your acceptable quality delta (for example, within 1 percentage point of frontier-only pass rate). Re-calibrate whenever either model updates.
+
+## What an AI gateway actually owns in production
+
+Once an application talks to multiple models, caches, and providers, scattering SDK calls and retry loops across microservices creates ungovernable spend and inconsistent outages. A centralized **AI gateway** (an internal proxy service sitting between application servers and model providers) consolidates six cross-cutting responsibilities:
+
+- **Unified routing and fallback:** Maps logical model aliases (`support-fast`, `reasoning-high`) to concrete provider endpoints, failing over across regions or secondary providers on HTTP 429/5xx bursts or TTFT circuit-breaker trips.
+- **Per-tenant rate limiting and token quotas:** Enforces requests-per-minute (RPM), tokens-per-minute (TPM), and daily dollar caps per tenant so one runaway script cannot exhaust shared provider quotas.
+- **Virtual keys and secret isolation:** Issues scoped internal tokens to application services while keeping real provider API keys locked inside the gateway.
+- **Semantic/exact caching and PII redaction:** Executes caching and redaction once at the edge instead of duplicating middleware in every service.
+- **Normalized telemetry and cost attribution:** Tags every request with `tenant_id`, `feature`, `prompt_version`, `route_decision`, cached vs uncached input tokens, output tokens, and exact USD cost.
+- **Shadow traffic and canary splits:** Mirrors a small percentage of live requests to a candidate smaller model or updated router threshold so teams compare real quality before shifting production traffic.
+
+:::caveat
+An AI gateway is itself on the critical path of every single LLM call. Keep the gateway lightweight (under 5–10 ms added proxy latency), deploy it redundantly across availability zones, and verify every fallback model against your full eval suite—a blind failover to a weaker model that breaks structured JSON or ignores safety rules causes a silent outage worse than a clean retry.
+:::
+
+Combine all three pieces—a stable-prefix cache for repeated context, an upfront router for predictable difficulty splits, and a verified cascade where deterministic checks exist—behind one observed AI gateway, and you turn model selection from a hardcoded constant into an adjustable engineering dial.

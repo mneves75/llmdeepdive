@@ -58,6 +58,8 @@ export const DIM_OPACITY = 0.12
 export const JOURNEY_SECONDS = 12
 
 /** Underside of the plinth; the stem below it stands on the chart floor. */
+/** How far enamel moves from the plate toward the ink: grey enough to read on the night stage. */
+export const ENAMEL_LIFT = 0.16
 const BASE_Y = -1.94
 const FOOT_Y = -2.08
 const PLINTH_H = 0.14
@@ -130,6 +132,8 @@ const PORTS: ReadonlyArray<{ id: string; deck: string; angle: number; label: str
 ]
 
 const PORT_RADIUS = RIM_RADIUS + 0.04
+/** World-space half-width of a port badge beyond its centre, for label clearance. */
+const PORT_CLEARANCE = 0.14
 
 export function transformerMarkers(): MarkerSpec[] {
   const layout = deckLayout()
@@ -412,7 +416,9 @@ interface Materials {
 }
 
 function materials(palette: ScenePalette): Materials {
-  const enamelColor = new THREE.Color(palette.plate).lerp(new THREE.Color(palette.accent), 0.13)
+  // Neutral graphite: the plate lifted toward the ink. A hue here would tint
+  // a ground, which "The Night Has No Hue" forbids; chart blue stays on lines.
+  const enamelColor = new THREE.Color(palette.plate).lerp(new THREE.Color(palette.ink), ENAMEL_LIFT)
   return {
     // Glazed ceramic: a clear glaze over a near-white body.
     porcelain: new THREE.MeshPhysicalMaterial({
@@ -524,6 +530,30 @@ export function deckSilhouette(camera: THREE.Camera, deckId: string, width: numb
     .addScaledVector(side, -(RIM_RADIUS + 0.05))
     .project(camera)
   return { x: ((point.x + 1) / 2) * width, y: ((1 - point.y) / 2) * height }
+}
+
+/**
+ * Horizontal screen span, in CSS pixels, of the whole instrument as `camera`
+ * sees it, port badges included: a floating label placed outside it covers
+ * no port. Every deck and the plinth are sampled on both sides, because the
+ * nearest deck is the widest on screen under perspective.
+ */
+export function instrumentSpan(camera: THREE.Camera, width: number): { left: number; right: number } {
+  const side = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).setY(0).normalize()
+  const rings: Array<[number, number]> = [[BASE_Y + PLINTH_H / 2, PLINTH_R]]
+  for (const deck of deckLayout().values()) rings.push([deck.y, PORT_RADIUS + PORT_CLEARANCE])
+  let left = Number.POSITIVE_INFINITY
+  let right = Number.NEGATIVE_INFINITY
+  const point = new THREE.Vector3()
+  for (const [y, radius] of rings) {
+    for (const sign of [-1, 1]) {
+      point.set(0, y, 0).addScaledVector(side, sign * radius).project(camera)
+      const x = ((point.x + 1) / 2) * width
+      left = Math.min(left, x)
+      right = Math.max(right, x)
+    }
+  }
+  return { left, right }
 }
 
 // ---- The scene ------------------------------------------------------------------

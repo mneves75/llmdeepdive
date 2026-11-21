@@ -44,17 +44,23 @@ The interface supports light, dark, and operating-system themes.
 
 ## Capabilities and Constraints
 
-- 190 current lessons in each of English and pt-BR across 26 ordered tracks in
-  two parts, with parity enforced at build time. Part one (tracks 0–13) is how
+- 230 current lessons in each of English and pt-BR across 34 ordered tracks in
+  three parts, with parity enforced at build time. Part one (tracks 0–13) is how
   a model works: track 10 covers video models and JEPA-family world models,
   and tracks 11–13 cover running models on a Mac Studio Ultra with MLX, on
   NVIDIA DGX machines with CUDA, and with llama.cpp. Part two (tracks 14–25) is
   building agent systems, with a runnable Python project
   (`examples/agent-engineering/`) whose tests CI runs and whose code the
-  lessons quote verbatim.
-- seven interactive labs (memory budget, cost per token, video tokens, context
-  budget, repair-loop budget, trajectory checker, cost per successful task)
-  that server-render their defaults and stay usable without JavaScript.
+  lessons quote verbatim. Part three (tracks 26–33) is AI engineering in
+  production (LLM APIs, hybrid search, production RAG, evaluations, security and
+  governance, latency budgets and caching, LLMOps, multimodal/voice and system
+  defense), paired with a bilingual `/roadmap/` route mapping all 34 tracks into
+  16 levels, a 100-day path, portfolio blueprints and defense drills.
+- eleven interactive labs (memory budget, cost per token, sampling distribution,
+  video tokens, MoE balancing, context budget, repair-loop budget, trajectory
+  checker, cost per successful task, RAG retrieval metrics, and AI system
+  latency/cost budget) that server-render their defaults and stay usable without
+  JavaScript.
 - quizzes whose correct answer cannot be found by picking the longest or the
   shortest option (a build gate), and lesson completion that remains a
   participation check, not a certification of external project work.

@@ -63,6 +63,8 @@ const cardCopy = {
   en: {
     homeHeadline: 'How LLMs actually work',
     tracksHeadline: 'Learning tracks',
+    roadmapHeadline: 'AI Engineering Roadmap',
+    roadmapKicker: '16-level path & 100-day track',
     exploreHeadline: 'Anatomy of an LLM',
     exploreKicker: 'Interactive 3D explorer',
     track: (n: string) => `Track ${n}`,
@@ -73,6 +75,8 @@ const cardCopy = {
   'pt-br': {
     homeHeadline: 'Como os LLMs realmente funcionam',
     tracksHeadline: 'Trilhas de aprendizagem',
+    roadmapHeadline: 'Roteiro de Engenharia de IA',
+    roadmapKicker: '16 níveis e trilha de 100 dias',
     exploreHeadline: 'Anatomia de um LLM',
     exploreKicker: 'Explorador 3D interativo',
     track: (n: string) => `Trilha ${n}`,
@@ -124,6 +128,11 @@ export function lessonCard(locale: Locale, { lesson, track }: { lesson: CardSubj
 export function exploreCard(locale: Locale): Card {
   const copy = cardCopy[locale]
   return card({ kicker: copy.exploreKicker, headline: copy.exploreHeadline, footer: ui[locale].tagline })
+}
+
+export function roadmapCard(locale: Locale): Card {
+  const copy = cardCopy[locale]
+  return card({ kicker: copy.roadmapKicker, headline: copy.roadmapHeadline, footer: ui[locale].tagline })
 }
 
 // ── Structured data ─────────────────────────────────────────────────────────

@@ -27,15 +27,17 @@ export const GET: APIRoute = async () => {
   const lines = [
     `# ${BRAND}`,
     '',
-    '> A free, open-source course on how large language models work, from first principles to efficient inference and the hardware that runs them. Every lesson exists in English and in Brazilian Portuguese.',
+    '> A free, open-source course on how large language models work, how to build agent systems, and how to ship production AI engineering systems (RAG, evaluations, security, LLMOps, managed platforms, voice and system design). Every lesson exists in English and in Brazilian Portuguese.',
     '',
-    `There are ${lessons} lessons per language in ${tracks} ordered tracks. Each lesson pairs a concept with an analogy, a teach-back and a quiz, and cites its primary sources; one real model, Qwen3.8-27B, is the worked example throughout. A lesson lives at \`/lessons/<track>/<id>/\` in English and at \`/pt-br/lessons/<track>/<id>/\` in Portuguese. Source and content: ${REPO} (MIT licence).`,
+    `There are ${lessons} lessons per language in ${tracks} ordered tracks across three parts. Each lesson pairs a concept with an analogy, a teach-back and a quiz, and cites its primary sources; one real model, Qwen3.8-27B, is the worked example throughout part one. A lesson lives at \`/lessons/<track>/<id>/\` in English and at \`/pt-br/lessons/<track>/<id>/\` in Portuguese. Source and content: ${REPO} (MIT licence).`,
     '',
     '## Start here',
     '',
     `- [Learning tracks](${localeUrl('en', '/tracks/')}): the whole curriculum in order`,
+    `- [AI Engineering Roadmap](${localeUrl('en', '/roadmap/')}): the 16-level AI engineering progression, 100-day accelerated path, portfolio checklist and system-defense guide mapped to lessons`,
     `- [Anatomy of an LLM](${localeUrl('en', '/explore/')}): an interactive 3D transformer whose components link to the lessons that teach them`,
     `- [Trilhas de aprendizagem](${localeUrl('pt-br', '/tracks/')}): the curriculum in Brazilian Portuguese`,
+    `- [Roteiro de Engenharia de IA](${localeUrl('pt-br', '/roadmap/')}): the 16-level roadmap and 100-day path in Brazilian Portuguese`,
   ]
 
   for (const locale of LOCALES) {

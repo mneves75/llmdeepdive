@@ -1,0 +1,90 @@
+---
+id: "29.3-llm-as-a-judge-and-calibration"
+track: "29-llm-and-rag-evaluations"
+order: 3
+title: "Vieses de Juiz LLM e Kappa de Cohen"
+summary: "Diagnostique vieses de posição, verbosidade e autofavorecimento em juízes LLM e calibre cada avaliador contra rótulos humanos com o kappa de Cohen contra armadilhas de concordância bruta."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["29.1-error-analysis-and-failure-taxonomies", "23.4-calibrate-the-graders"]
+unlocks: ["29.5-offline-to-online-eval-flywheels"]
+analogy: "Usar um juiz LLM sem calibração em um conjunto desbalanceado é como contratar um inspetor predial que carimba 'APROVADO' em todo elevador de uma cidade onde 94% dos elevadores já funcionam. No papel o inspetor concorda com especialistas humanos 91% das vezes, mas deixa passar quase todo cabo quebrado. O kappa de Cohen desconta a concordância fácil obtida ao chutar a classe majoritária e mede só a habilidade acima do acaso. A comparação para nos rótulos humanos: se dois especialistas discordam entre si em metade dos casos de fronteira, nenhum juiz automático supera uma rubrica ambígua."
+teachBack:
+  prompt: "Compare dois juízes LLM avaliados contra 100 rótulos humanos: o Juiz A tem tp=42, fp=8, fn=6, tn=44; o Juiz B tem tp=90, fp=5, fn=4, tn=1. Mostre por que o Juiz B tem concordância bruta maior (91% contra 86%) mas reprova completamente no kappa de Cohen (0,135 contra 0,720), e cite dois vieses sistemáticos de Zheng et al. (2023) que precisam ser controlados ao projetar um juiz."
+  modelAnswer: "No Juiz A, a concordância observada é Po = (42 + 44)/100 = 86%, a concordância ao acaso é Pe = 0,50 × 0,48 + 0,50 × 0,52 = 50,0%, e o kappa de Cohen é (0,86 - 0,50)/(1 - 0,50) = 0,720 (com Precisão = 84,0%, Recall = 87,5%, F1 = 0,857). No Juiz B, Po = (90 + 1)/100 = 91%, porém tanto o juiz (95%) quanto os humanos (94%) são amplamente positivos, fazendo o acaso sozinho chegar a Pe = 0,95 × 0,94 + 0,05 × 0,06 = 89,6% e derrubando o kappa para (0,91 - 0,896)/(1 - 0,896) = 0,135—ele detecta apenas 1 de 6 falhas reais. Dois vieses sistemáticos de Zheng et al. (2023) são o viés de posição (preferir o primeiro ou segundo candidato em comparações pareadas, mitigado invertendo a ordem) e o viés de verbosidade (preferir respostas mais longas mesmo inchadas, mitigado com rubricas binárias explícitas)."
+quiz:
+  - question: "Um juiz LLM testado em 100 respostas de RAG rotuladas por humanos produz tp=90, fp=5, fn=4, tn=1. A concordância bruta é de 91%. Por que colocar esse juiz como gate de CI é perigoso?"
+    options: ["O acaso já dá 89,6%, deixando kappa em 0,135 e errando 5 de 6 falhas", "91% de concordância bruta sempre prova que o juiz inverteu rótulos de aprovação e reprovação em cada item negativo", "O kappa de Cohen exige 10.000 rastros para achar falsos positivos", "A concordância bruta ignora tp quando passa de 50"]
+    correctIndex: 0
+    explanation: "Quando 94% dos exemplos passam, um juiz carimbador que aprova 95% alcança 91% de concordância bruta quase só pelo acaso (Pe = 89,6%). Seu kappa é de apenas 0,135, e ele flagra só 1 das 6 falhas reais (fp=5, tn=1)."
+  - question: "Qual mitigação detecta e neutraliza diretamente o viés de posição durante avaliação pareada com LLM-as-a-judge?"
+    options: ["Trocar rótulos binários passa/falha por um controle deslizante numérico de 1 a 10 em toda rubrica de avaliação", "Usar a mesma família de modelo como gerador e como juiz", "Instruir o juiz a preferir textos com mais de 200 palavras", "Inverter a ordem A/B duas vezes e tratar viradas como empate ou falha"]
+    correctIndex: 3
+    explanation: "O viés de posição faz o juiz favorecer quem aparece primeiro (ou segundo). Inverter a ordem entre A e B expõe vereditos dependentes da posição para rebaixá-los a empate ou revisão."
+  - question: "Por que você deve dividir os exemplos rotulados por humanos em um conjunto de ajuste de prompt e um conjunto reservado de teste de calibração?"
+    options: ["Para dobrar a porcentagem de concordância bruta no relatório final", "Para evitar sobreajuste do prompt do juiz", "Para eliminar a necessidade de revisores humanos na rubrica", "Para dispensar o cálculo de concordância esperada ao acaso"]
+    correctIndex: 1
+    explanation: "Ajustar o prompt do juiz até acertar 100% em um único arquivo rotulado memoriza aqueles casos específicos. Medir o kappa final em uma divisão reservada prova que a rubrica generaliza para rastros inéditos."
+citations:
+  - title: "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena"
+    authors: "Lianmin Zheng et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2306.05685"
+  - title: "A Coefficient of Agreement for Nominal Scales"
+    authors: "Jacob Cohen"
+    year: 1960
+    url: "https://doi.org/10.1177/001316446002000104"
+updated: "2026-11-20"
+---
+
+Código determinístico pega JSON quebrado, IDs de citação ausentes e tags de política vencidas, mas código não lê um parágrafo para decidir se uma afirmação decorre de verdade do trecho `c2`. Essa lacuna semântica é onde entra o *LLM-as-a-judge*—um modelo de linguagem avaliando o rastro de outro modelo segundo uma rubrica estreita. Como a [aula 23.4](/pt-br/lessons/23-agent-evaluation-and-ci/23.4-calibrate-the-graders/) estabeleceu para avaliadores de agentes, um juiz sem calibração é pior do que nenhum juiz porque exibe painéis verdes tranquilizadores enquanto carimba falhas. Esta aula contrasta um juiz equilibrado com uma armadilha desbalanceada usando a aritmética exata da matriz de confusão e detalha os vieses de juiz que você precisa controlar em produção.
+
+## Por que a concordância bruta esconde um juiz carimbador
+
+Compare dois juízes binários (`aprovado` vs `reprovado`) auditados em 100 rastros rotulados por humanos, extraídos da taxonomia de falhas da [aula 29.1](/pt-br/lessons/29-llm-and-rag-evaluations/29.1-error-analysis-and-failure-taxonomies/).
+
+Primeiro, examine um **juiz equilibrado** em 100 casos com 48 aprovações humanas e 52 reprovações humanas: verdadeiros positivos $\text{tp} = 42$, falsos positivos $\text{fp} = 8$, falsos negativos $\text{fn} = 6$ e verdadeiros negativos $\text{tn} = 44$.
+
+- **Concordância observada** $p_o = (42 + 44) / 100 = 0.86$ (86%).
+- **Taxas marginais:** o juiz prevê aprovação em $(42 + 8)/100 = 0.50$ e reprovação em $0.50$; os humanos rotulam aprovação em $(42 + 6)/100 = 0.48$ e reprovação em $0.52$.
+- **Concordância esperada ao acaso** $p_e = 0.50 \times 0.48 + 0.50 \times 0.52 = 0.240 + 0.260 = 0.500$ (50,0%).
+- **Kappa de Cohen** (Cohen, 1960) mede a concordância *além do acaso*:
+  $$
+  \kappa = \frac{p_o - p_e}{1 - p_e} = \frac{0.86 - 0.50}{1 - 0.50} = \frac{0.36}{0.50} = 0.720.
+  $$
+- **Equilíbrio de classificação:** $\text{Precision} = 42 / (42 + 8) = 84.0\%$ (84,0%), $\text{Recall} = 42 / (42 + 6) = 87.5\%$ (87,5%) e $F_1 = 2 \times 0.840 \times 0.875 / (0.840 + 0.875) = 0.857$ (0,857), fechando em kappa de Cohen igual a 0,720.
+
+Agora examine a **armadilha do juiz carimbador desbalanceado** em 100 rastros de produção em que 94 passam e apenas 6 falham: $\text{tp} = 90$, $\text{fp} = 5$, $\text{fn} = 4$, $\text{tn} = 1$.
+
+- **Concordância observada** $p_o = (90 + 1) / 100 = 0.91$ (91%)—cinco pontos *acima* do juiz equilibrado!
+- **Taxas marginais:** o juiz prevê aprovação em $95/100 = 0.95$ e reprovação em $0.05$; os humanos rotulam aprovação em $94/100 = 0.94$ e reprovação em $0.06$.
+- **Concordância esperada ao acaso** $p_e = 0.95 \times 0.94 + 0.05 \times 0.06 = 0.893 + 0.003 = 0.896$ (89,6%).
+- **O kappa de Cohen** expõe o colapso de imediato:
+  $$
+  \kappa = \frac{0.91 - 0.896}{1 - 0.896} = \frac{0.014}{0.104} = 0.135.
+  $$
+
+Mesmo exibindo 91% de concordância bruta, o juiz carimbador despenca para kappa de 0,135 e capturou apenas 1 das 6 falhas reais (`tn = 1`, `fp = 5`). Qualquer gate de release baseado em concordância bruta acima de 90% colocaria um avaliador cego em produção.
+
+<Figure id="29-3-kappa-confusion-grid" />
+
+## Três vieses sistemáticos em juízes LLM
+
+Zheng et al. (2023) estudaram modelos de fronteira atuando como juízes no MT-Bench e na Chatbot Arena e documentaram três vieses recorrentes que distorcem avaliações automatizadas sem controle:
+
+- **Viés de posição:** em comparações pareadas (`"A Resposta A ou a Resposta B é melhor?"`), juízes favorecem sistematicamente quem ocupa a primeira (ou às vezes a segunda) posição, sobretudo quando a qualidade é próxima. Mitigação: rode cada par duas vezes invertendo A e B, e conte vitória apenas quando as duas ordens concordam.
+- **Viés de verbosidade:** juízes premiam respostas mais longas e cheias de formatação mesmo quando frases extras não acrescentam suporte factual ou introduzem enchimento sem base. Mitigação: avalie predicados binários estreitos (`"Toda afirmação aparece nos trechos citados?"`) em vez de qualidade genérica, incluindo exemplos concisos aprovados e exemplos prolixos reprovados na calibração.
+- **Viés de autofavorecimento:** modelos tendem a dar notas maiores para saídas geradas pela própria família de modelo do que para saídas igualmente fortes de outra família. Mitigação: separe a família do gerador da família do juiz sempre que possível, e calibre estritamente contra gabarito humano—nunca contra votos de outro modelo.
+
+## Construindo um ciclo de calibração sem sobreajuste
+
+Um fluxo disciplinado de calibração de juiz espelha aprendizado supervisionado clássico:
+
+1. **Equilibre a amostra de calibração:** não sorteie 100 rastros aleatórios quando a produção falha apenas 4% das vezes; sobreamostre falhas conhecidas e casos limítrofes para que o conjunto humano tenha cerca de 40% a 50% de negativos cobrindo toda a taxonomia.
+2. **Meça primeiro a concordância entre humanos:** peça a dois revisores de domínio que rotulem uma fatia sobreposta (por exemplo, 30 itens). Se o kappa entre humanos ficar em 0,45, reescreva a rubrica antes de culpar o LLM—nenhum modelo calibra um critério ambíguo.
+3. **Separe desenvolvimento e teste reservado:** inspecione erros na fatia de desenvolvimento para afinar a redação da rubrica e adicionar 2 ou 3 exemplos de fronteira, e reporte $\kappa$, precisão e recall finais na fatia de teste intocada.
+4. **Exija vereditos estruturados com justificativa curta:** peça ao juiz um trecho curto de evidência e um campo binário `PASS` ou `FAIL` via saída estruturada, tratando saídas malformadas como falhas em vez de aprovações silenciosas.
+
+:::warning
+Recalibre o seu juiz sempre que trocar a versão do modelo avaliador, alterar a rubrica ou mudar o domínio do produto. Um juiz que atingiu $\kappa = 0.720$ em rastros de reembolso pode derivar silenciosamente quando aplicado a logs de suporte técnico.
+:::

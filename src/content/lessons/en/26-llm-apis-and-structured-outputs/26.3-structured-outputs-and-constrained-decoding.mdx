@@ -1,0 +1,87 @@
+---
+id: "26.3-structured-outputs-and-constrained-decoding"
+track: "26-llm-apis-and-structured-outputs"
+order: 3
+title: "Structured Outputs & Constrained Decoding"
+summary: "Asking a model nicely for JSON fails at scale. Constrained decoding compiles a JSON Schema into a state machine that masks illegal token logits before sampling, guaranteeing valid syntax without guaranteeing truth."
+tier: "foundations"
+locale: "en"
+prerequisites: ["26.1-stateless-apis-and-conversation-state", "7.4-sampling"]
+unlocks: ["26.5-prompt-engineering-hierarchy-and-caching", "28.5-grounding-citations-abstention-and-graph-rag"]
+analogy: "Unconstrained prompting for JSON is like asking a driver to stay inside the lane using only a polite sign at the highway entrance. Constrained decoding installs steel guardrails along the exact shape of the road so the steering wheel literally cannot enter an illegal token state. The comparison stops at destination: guardrails guarantee you stay on the pavement, not that you drove to the right address—your application still has to verify semantic facts and business rules after decoding finishes."
+teachBack:
+  prompt: "An invoice extractor uses strict JSON Schema structured outputs with fields {total_usd: number, items: [{name: string, price_usd: number}]}. A colleague claims you can now remove the downstream validation layer because the API guarantees 100% schema compliance. Explain how constrained decoding works during sampling, give two bugs it still cannot prevent, and describe why field order in the schema affects answer quality."
+  modelAnswer: "Constrained decoding compiles the JSON Schema into a finite-state machine and masks the logit of every token that would violate the grammar at the current state to negative infinity before softmax, guaranteeing well-formed JSON with matching types and required keys. It cannot prevent semantic or cross-field bugs—for example, total_usd not equaling the sum of item prices, or a hallucinated item price copied from an invoice number—so domain validation must stay. Field order matters because generation is autoregressive: placing a short reasoning or extraction evidence field before a verdict field lets the model compute before committing, whereas placing verdict first forces an answer before checking the numbers."
+quiz:
+  - question: "At the opening step of a JSON object, only token A ('{\"') is legal under the compiled schema FSM. Raw logits across the 4-token toy vocabulary are A: 2.0, B: 3.5, C: 1.0, D: -0.5. What happens under constrained decoding?"
+    options: ["The server samples B first, detects a JSON syntax error after generation, and silently retries with temperature 0", "The server boosts token A's logit by +10 while leaving B, C, and D at small non-zero probabilities", "The server sets logits for B, C, and D to negative infinity so softmax assigns token A probability 1.0", "The server runs unconstrained decoding and strips out invalid tokens with a regex before returning the payload"]
+    correctIndex: 2
+    explanation: "Constrained decoding applies an additive mask of 0 for allowed tokens and -infinity for disallowed tokens before softmax. Because exp(-infinity) = 0, token A receives probability exp(2.0) / exp(2.0) = 1.0 on the first pass with zero retries."
+  - question: "Your extraction schema requires {approved: boolean, reasoning: string, amount: number} with strict constrained decoding enabled. Which failure can still reach your backend?"
+    options: ["A trailing comma after the amount field that breaks JSON.parse in Node or Python", "A markdown code fence (```json) wrapped around the object by the model", "An amount serialized as the string 'forty-two' instead of a JSON number", "An approved value of true paired with an amount that violates your refund cap"]
+    correctIndex: 3
+    explanation: "The compiled grammar forbids markdown fences, trailing commas, and wrong JSON types because every illegal token is masked during decoding. Business-rule consistency across fields—such as enforcing that approved is false whenever amount exceeds policy limits—is a semantic invariant that requires application-level validation."
+  - question: "Why does placing a brief evidence or reasoning field before a classification label in a strict JSON Schema often improve accuracy?"
+    options: ["Tokens emitted earlier enter the context for later tokens", "JSON Schema validators evaluate keys alphabetically before masking logits", "Putting string fields first eliminates FSM compilation latency on cold starts", "Boolean fields cannot be masked until at least one string token has been sampled"]
+    correctIndex: 0
+    explanation: "Autoregressive models generate strictly left to right: tokens emitted for an earlier reasoning or evidence field become part of the conditioning prefix when the model predicts the verdict field. Key order does not change FSM compilation mechanics or boolean masking."
+citations:
+  - title: "Efficient Guided Generation for Large Language Models"
+    authors: "Brandon T. Willard, Rémi Louf"
+    year: 2023
+    url: "https://arxiv.org/abs/2307.09702"
+  - title: "JSON Schema: A Media Type for Describing JSON Documents (Draft 2020-12)"
+    authors: "Austin Wright, Henry Andrews, Ben Hutton, Greg Dennis"
+    year: 2022
+    url: "https://json-schema.org/draft/2020-12/json-schema-core"
+updated: "2026-11-20"
+---
+
+When an LLM talks to code instead of a human, one stray markdown fence (` ```json `) or missing brace crashes the downstream pipeline. Prompting the model with "Reply ONLY in valid JSON, no preamble" gets you to roughly 95% to 99% syntactic reliability, which still means dozens of broken parses per ten thousand requests. Constrained decoding replaces polite prompting with a mathematical guarantee inside the sampling loop.
+
+## Why prompt-only JSON breaks in production
+
+In [Sampling](/lessons/7-inference-and-efficiency/7.4-sampling/), you saw that at every decode step the model produces a vector of raw scores—**logits**—across its entire vocabulary, converts them into probabilities with softmax, and draws one token. Even when the prompt demands strict JSON, conversational training data still gives non-zero probability to tokens like `"Sure"`, backticks, trailing commas, or unescaped quotes inside string values. Over thousands of calls against the stateless API from [Stateless LLM APIs & Conversation State](/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/), a 1% tail probability turns into constant retry noise and parser exceptions.
+
+## Masking logits with a finite-state machine
+
+Constrained decoding—often exposed as "Structured Outputs" or grammar-guided generation—fixes the failure right before sampling. Before generation starts, the server compiles your **JSON Schema** (a declarative specification of allowed keys, types, enums, and nesting) into a **finite-state machine (FSM)** or pushdown automaton that tracks which characters are syntactically legal next.
+
+Walk through a tiny 4-token vocabulary at step 0, right before the opening brace of a JSON object:
+
+- Token `{"` has raw logit `2.0` (legal next token).
+- Token `true` has raw logit `3.5` (illegal at object start).
+- Token `123` has raw logit `1.0` (illegal).
+- Token `}` has raw logit `-0.5` (illegal).
+
+Without constraints, softmax turns those logits into weights proportional to $e^{2.0} \approx 7.39$, $e^{3.5} \approx 33.12$, $e^{1.0} \approx 2.72$, and $e^{-0.5} \approx 0.61$. Token `true` wins with `75.6%` probability (`33.12 / 43.83`), producing invalid JSON on step 1.
+
+With constrained decoding, the FSM supplies the allowed token set $\mathcal{A}(s) = \{\text{\texttt{\{"}}\}$ for current state $s$ and adds a mask $m_i$ to every logit before softmax:
+
+$$p_i = \frac{\exp(z_i + m_i)}{\sum_{j=1}^{V} \exp(z_j + m_j)}, \qquad m_i = \begin{cases} 0 & \text{if } i \in \mathcal{A}(s) \\ -\infty & \text{if } i \notin \mathcal{A}(s) \end{cases}$$
+
+Because $\exp(-\infty) = 0$, the three illegal tokens drop to probability `0`, and `{"` gets probability `7.39 / 7.39 = 1.0`. After sampling `{"`, the FSM transitions to the "expecting key name" state and loads the next allowed mask.
+
+<Figure id="26-3-constrained-decoding-loop" />
+
+Naive grammar checking at decode time would inspect every token in a 100,000-entry vocabulary on every step, stalling generation. As Willard and Louf (2023) showed in *Efficient Guided Generation*, precomputing a mapping from each FSM state to its allowed token bitmask reduces per-step overhead to an $O(1)$ table lookup during decode. You pay a one-time compilation cost the first time a provider sees a new schema (often tens to hundreds of milliseconds), and subsequent requests reuse the compiled artifact from cache.
+
+## Syntax validity is not semantic truth
+
+Constrained decoding eliminates `JSONDecodeError`—provided generation does not hit `max_tokens` mid-object—yet teams routinely confuse valid syntax with valid data. The grammar mask enforces *shape*, never *meaning*.
+
+- **Cross-field invariants still break.** A schema with `start_date`, `end_date`, and `total_usd` cannot prevent `end_date` from preceding `start_date` or `total_usd` from disagreeing with the sum of line items.
+- **Enums force a choice even when unsure.** If your schema restricts `category` to `["billing", "shipping", "cancel"]` with no escape hatch, an unrelated question still gets forced into one of those three labels. Always include an explicit `"other"` or `"insufficient_evidence"` option plus nullable fields where data may genuinely be absent.
+- **Tight schemas can distort reasoning.** If the model cannot express uncertainty or intermediate arithmetic before emitting a boolean `approved` flag, masking forces it to commit early.
+
+:::caveat
+Keep a real application validator (such as Pydantic or Zod) after every structured LLM call. Let constrained decoding guarantee parseable JSON and types, and let your validator enforce domain math, foreign-key existence, and policy rules.
+:::
+
+## Practical schema design rules
+
+Good schemas work *with* autoregressive left-to-right decoding instead of fighting it:
+
+- **Order keys deliberately.** Place short `evidence` or `reasoning` fields before `label` or `action` fields. Because every emitted token conditions subsequent tokens, the model inspects its own extracted evidence before picking the final classification.
+- **Avoid recursive or wildly dynamic schemas.** Keep objects flat, set `additionalProperties: false`, and cap nesting depth; deeply recursive schemas or complex regex patterns inflate FSM compile latency and hit provider subset limits.
+- **Handle refusal and truncation.** Check `finish_reason` and any provider `refusal` field before parsing. A `length` truncation still produces broken JSON even under strict constrained decoding because decoding stopped before the FSM reached its terminal state.

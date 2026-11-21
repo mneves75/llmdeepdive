@@ -1,0 +1,93 @@
+---
+id: "27.3-dense-embeddings-and-matryoshka"
+track: "27-retrieval-and-hybrid-search"
+order: 3
+title: "Dense Embeddings, Geometry & Matryoshka"
+summary: "Bi-encoder embeddings map whole chunks into fixed vectors so search becomes fast geometry. Compare dot product, cosine, and L2 distance, avoid silent model-mismatch bugs, and compress dimensions with Matryoshka prefixes."
+tier: "core"
+locale: "en"
+prerequisites: ["1.5-embeddings-meaning-as-geometry", "27.2-chunking-strategies-and-boundaries"]
+unlocks: ["27.4-ann-vector-indexes-and-hnsw"]
+analogy: "A Matryoshka embedding is like storing a photograph in progressive resolution layers: the first 256 numbers give you a crisp thumbnail good enough to eliminate ninety-nine percent of unrelated photos in milliseconds, and the full 1,536 numbers sharpen fine detail on the few finalists. Cutting a normal non-Matryoshka embedding to its first 256 coordinates is like tearing off the left sixth of a printed photo and expecting to recognize the whole scene. The comparison stops at normalization: after slicing a Matryoshka prefix, you must re-normalize the shorter vector to unit length before computing cosine similarity or dot products."
+teachBack:
+  prompt: "Given query q = (0.6, 0.8), doc d1 = (0.8, 0.6), and doc d2 = (1.6, 1.2), compute both raw dot product and cosine similarity for each document, explain why unit normalization unifies dot product, cosine, and squared L2 rankings, and describe the two mandatory steps when shrinking a 1,536-dim Matryoshka vector to 256 dims."
+  modelAnswer: "Raw dot product gives q · d1 = 0.6×0.8 + 0.8×0.6 = 0.96 and q · d2 = 0.6×1.6 + 0.8×1.2 = 1.92, unfairly favoring d2 solely because its norm is 2.0 instead of 1.0. Dividing by vector norms gives cosine similarity 0.96 for both d1 and d2 since they point in the exact same direction. When every vector has unit L2 norm (||v|| = 1), cosine equals dot product and ||q - d||^2 = 2 - 2(q · d), so maximizing dot product or cosine produces the identical ranking as minimizing L2 distance. When truncating a 1,536-dim Matryoshka vector to 256 dims, you must first confirm the model was trained with Matryoshka loss, slice the leading 256 coordinates, and immediately L2-renormalize the truncated vector (and re-index queries and documents with the same truncated dimension)."
+quiz:
+  - question: "A query vector is q = (0.6, 0.8) with norm 1.0. Document d1 = (0.8, 0.6) has norm 1.0 and d2 = (1.6, 1.2) has norm 2.0. How do dot product and cosine similarity rank d1 versus d2?"
+    options: ["Both metrics rank d1 and d2 identically at 0.96 because Euclidean angle ignores scale", "Cosine ranks d2 higher at 1.92 while dot product ties both documents at 0.96", "Both metrics rank d2 twice as high as d1 because larger magnitudes always mean stronger relevance", "Dot product scores d2 at 1.92 over d1 at 0.96, while cosine ties both at 0.96"]
+    correctIndex: 3
+    explanation: "Dot product multiplies magnitudes as well as angle: q · d1 = 0.96 whereas q · d2 = 1.92. Cosine similarity divides by ||q||·||d||, canceling d2's norm of 2.0 so both documents tie at 0.96 because d2 equals 2 × d1."
+  - question: "Your team upgrades from embedding model A (1,536 dims) to newer model B (also 1,536 dims) and begins embedding new user queries with model B while keeping existing corpus vectors from model A. What happens?"
+    options: ["Recall improves smoothly on recent queries while older documents stay at baseline accuracy", "Retrieval collapses into random noise because the two models use incompatible vector spaces", "Cosine similarity stays calibrated as long as both models use 1,536-dimensional unit vectors", "Only rare acronyms degrade while general paraphrases align across models of the same dimension"]
+    correctIndex: 1
+    explanation: "Matching dimension counts does not align coordinate axes: model A and model B learned completely different rotations and semantic neighborhoods during contrastive training. Changing the embedding model always requires re-embedding the corpus (often via a blue-green shadow index)."
+  - question: "After truncating a 1,536-dim Matryoshka embedding to its first 256 dimensions, what must you do before storing or scoring it with dot product?"
+    options: ["Re-normalize the 256-dim prefix to unit L2 length", "Multiply every remaining coordinate by 6 to preserve the original 1,536-dim norm", "Sort the 256 coordinates in descending magnitude so HNSW visits the largest values first", "Average the discarded 1,280 coordinates into a single scalar appended as dimension 257"]
+    correctIndex: 0
+    explanation: "Dropping the trailing 1,280 coordinates lowers the prefix's Euclidean norm below 1.0 by a different amount for every chunk. Re-normalizing the 256-dim vector back to unit L2 length restores exact equivalence between dot product and cosine similarity."
+citations:
+  - title: "Matryoshka Representation Learning"
+    authors: "Aditya Kusupati, Gantavya Bhatt, Aniket Rege, Matthew Wallingford, Aditya Sinha, Vivek Ramanujan, William Howard-Snyder, Kaifeng Chen, Sham Kakade, Prateek Jain, Ali Farhadi"
+    year: 2022
+    url: "https://arxiv.org/abs/2205.13147"
+  - title: "Dense Passage Retrieval for Open-Domain Question Answering"
+    authors: "Vladimir Karpukhin, Barlas Oğuz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, Wen-tau Yih"
+    year: 2020
+    url: "https://arxiv.org/abs/2004.04906"
+updated: "2026-11-20"
+---
+
+In [Embeddings: Meaning as Geometry](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/), you saw how a single token maps to a vector of numbers. Dense retrieval extends that idea from one token to an entire chunk from [Chunking Strategies & Boundary Tradeoffs](/lessons/27-retrieval-and-hybrid-search/27.2-chunking-strategies-and-boundaries/): a **bi-encoder** neural network encodes a user query into one vector $q \in \mathbb{R}^d$ and encodes every corpus chunk offline into its own vector $d_i \in \mathbb{R}^d$. Because documents are encoded independently of the query, you compute corpus vectors once at ingestion and compare them in milliseconds at search time.
+
+## Dot product, cosine similarity, and unit normalization
+
+Three distance functions dominate vector search: **dot product**, **cosine similarity**, and **Euclidean (L2) distance**. Work through a tiny 2D example first to see why vector length matters.
+
+Suppose a query vector is $q = (0.6, 0.8)$ (length $\|q\|_2 = \sqrt{0.36 + 0.64} = 1.0$). Consider two document vectors pointing in the *exact same direction*, where $d_2$ is twice as long as $d_1$:
+
+- $d_1 = (0.8, 0.6)$, norm $\|d_1\|_2 = 1.0$.
+- $d_2 = (1.6, 1.2)$, norm $\|d_2\|_2 = 2.0$.
+
+Compute the raw dot product $q \cdot d$:
+
+- $q \cdot d_1 = 0.6 \times 0.8 + 0.8 \times 0.6 = 0.96$.
+- $q \cdot d_2 = 0.6 \times 1.6 + 0.8 \times 1.2 = 1.92$.
+
+Raw dot product scores $d_2$ twice as high as $d_1$ purely because of magnitude. Now compute cosine similarity, which divides out vector lengths:
+
+$$\cos(q, d) = \frac{q \cdot d}{\|q\|_2 \,\|d\|_2}$$
+
+Both documents score identically: $\cos(q, d_1) = 0.96 / (1.0 \times 1.0) = 0.96$ and $\cos(q, d_2) = 1.92 / (1.0 \times 2.0) = 0.96$.
+
+Now normalize every vector to **unit L2 length** ($\hat{v} = v / \|v\|_2$, so $\|\hat{q}\|_2 = \|\hat{d}\|_2 = 1$). Once vectors are unit-normalized, all three metrics produce the exact same ranking:
+
+$$\cos(\hat{q}, \hat{d}) = \hat{q} \cdot \hat{d}, \qquad \|\hat{q} - \hat{d}\|_2^2 = 2 - 2(\hat{q} \cdot \hat{d})$$
+
+Verify on $\hat{q} = (0.6, 0.8)$ and $\hat{d}_1 = (0.8, 0.6)$: squared L2 distance is $(0.6 - 0.8)^2 + (0.8 - 0.6)^2 = 0.04 + 0.04 = 0.08$, and $2 - 2(0.96) = 0.08$. That is why production vector indexes normalize vectors at ingestion and run raw SIMD dot products at query time—same ranking as cosine, fewer floating-point divisions.
+
+## Asymmetric search, domain shift, and model lock-in
+
+Contrastive bi-encoders (popularized by Karpukhin et al. 2020 in Dense Passage Retrieval) pull matching `(query, passage)` pairs close together and push unrelated negatives apart. Three practical quirks follow:
+
+- **Queries and passages are asymmetric.** A query is short (`"refund deadline"`), while a passage is a 250-token policy paragraph. Many modern bi-encoders require distinct input prefixes or task flags (`query:` vs `passage:`, or `RETRIEVAL_QUERY` vs `RETRIEVAL_DOCUMENT`); omitting them silently drops recall.
+- **General embeddings struggle on proprietary identifiers.** A model trained on web text maps `"reset 2FA"` cleanly near `"recover multi-factor authentication"`, yet it has no geometric intuition for internal part numbers (`SKU-9482-B`), rare error codes, or customer IDs. That exact blind spot is why hybrid search pairs dense vectors with lexical search later in this track.
+- **Embedding spaces are mutually incompatible.** Two different embedding models—even if both output 1,536 floats—assign completely different meanings to coordinate 42. You can never query an index built with Model A using query vectors from Model B. Upgrading an embedding model requires a versioned backfill into a fresh index before cutting traffic over.
+
+:::warning
+Always store `embedding_model_id` and `embedding_dim` alongside your index metadata and assert that the query encoder matches them at startup. Silent model-version drift is one of the hardest retrieval bugs to spot because the system still returns top-k results without throwing an error.
+:::
+
+## Matryoshka Representation Learning (MRL)
+
+High-dimensional embeddings (`1,536` or `3,072` floats per chunk) give strong accuracy but eat RAM and bandwidth fast. **Matryoshka Representation Learning (MRL)**, introduced by Kusupati et al. (2022), solves that cost-versus-quality dilemma inside training. Instead of computing the contrastive loss only on the full vector, MRL applies the training loss simultaneously to nested leading prefixes—such as the first `64`, `128`, `256`, `512`, and `1,536` dimensions—packing the coarsest semantic signal into the earliest coordinates like Russian nesting dolls.
+
+Look at the concrete storage payoff on a single `1,536`-dim `fp32` vector (`6,144` bytes):
+
+- Truncating a Matryoshka vector to its first `256` dimensions shrinks storage to `256 × 4 = 1,024` bytes—a **6× reduction** in memory and scan bandwidth—typically retaining over 95% of full-dimension retrieval quality on standard benchmarks.
+- Because dropping trailing coordinates changes each vector's length, you **must re-normalize** the truncated 256-dim vector to unit L2 length immediately after slicing.
+
+:::insight
+Matryoshka prefixes unlock a fast two-stage funnel without changing models: keep compact 256-dim vectors in hot RAM to pull the top-100 candidates cheaply, then rescore only those 100 finalists with the full 1,536-dim vectors loaded from disk.
+:::
+
+Remember the boundary condition: truncating only works on models explicitly trained with MRL. Slicing the first 256 dimensions of a standard non-Matryoshka encoder throws away arbitrary features and degrades recall sharply.

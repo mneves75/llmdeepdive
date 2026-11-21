@@ -1,0 +1,105 @@
+---
+id: "28.2-baseline-rag-and-context-assembly"
+track: "28-production-rag-architectures"
+order: 2
+title: "Baseline RAG & Lost-in-the-Middle Assembly"
+summary: "Build a disciplined baseline RAG assembly stage with explicit token budgets, chunk deduplication, boundary delimiters, and edge-first ordering to counter lost-in-the-middle accuracy drops."
+tier: "core"
+locale: "en"
+prerequisites: ["26.5-prompt-engineering-hierarchy-and-caching", "27.2-chunking-strategies-and-boundaries", "28.1-rag-vs-long-context-vs-fine-tuning"]
+unlocks: ["28.3-reranking-cross-encoders-and-colbert", "28.4-query-transformation-and-routing"]
+analogy: "Packing a RAG prompt is like briefing an emergency room doctor in thirty seconds. You put the single most urgent vital sign first, the second most urgent finding right before asking for the decision, and you leave redundant printouts off the clipboard. Burying the critical lab value between twelve routine notes does not hide it physically, yet a tired reader skims past it. The comparison stops at safety: a patient chart rarely contains adversarial instructions pretending to be hospital policy, whereas retrieved chunks can."
+teachBack:
+  prompt: "You have an 8,192-token window, 600 tokens of system instructions, 1,000 tokens of chat history, 150 tokens for the user query, and 1,000 tokens reserved for the answer. Each formatted evidence chunk averages 550 tokens. How many chunks fit cleanly, how should you order the top 6 ranked chunks, and where must the static system prompt sit relative to retrieved chunks?"
+  modelAnswer: "The fixed and reserved parts consume 600 + 1,000 + 150 + 1,000 = 2,750 tokens, leaving 5,442 tokens for evidence—at most 9 chunks of 550 tokens, though keeping only the top 5 to 8 high-signal chunks reduces distractor noise. To counter lost-in-the-middle degradation, reorder the top 6 ranked chunks with edge-first placement such as [#1, #3, #5, #6, #4, #2], placing the strongest chunk at the start and the second strongest at the end just before the query. Keep the static system prompt at the very beginning before dynamic evidence so prefix caching stays intact and retrieved text remains wrapped as lower-privilege data."
+quiz:
+  - question: "In Liu et al. (2023), multi-document question answering showed a U-shaped accuracy curve as the single relevant passage moved across 20 retrieved documents. What assembly change directly mitigates this effect?"
+    options: ["Place the highest-ranked chunks at the beginning and end of the evidence block, relegating lower-ranked chunks to the middle", "Sort retrieved chunks alphabetically by filename so the model builds a predictable mental map", "Append every chunk in ascending relevance order so the lowest-scoring passages warm up the model", "Double the number of retrieved chunks from 20 to 40 so the answer repeats more often"]
+    correctIndex: 0
+    explanation: "Models attend most reliably to the start and end of long context blocks and lose accuracy in the middle. Edge-first (bookend) ordering puts rank #1 at the top and rank #2 at the bottom of the evidence block."
+  - question: "Why should the static system prompt stay before the dynamic retrieved chunks in the assembled message?"
+    options: ["Language models ignore system instructions whenever they appear after retrieved passages in the prompt", "Static leading tokens preserve prefix-cache hits across different queries", "Placing chunks first doubles the maximum output token limit", "Vector indexes require the system prompt at index zero"]
+    correctIndex: 1
+    explanation: "Prefix caching matches contiguous leading tokens from position zero. Putting dynamic per-query chunks before the system prompt breaks the shared prefix on every single call."
+  - question: "An assembly step retrieves 8 chunks from a 256-token sliding-window index with 64-token overlap. Four chunks come from the same section and repeat identical paragraphs. What happens if you inject all 8 raw chunks without deduplication?"
+    options: ["Duplicate text increases Recall@k because the same relevant paragraph appears four separate times in the prompt", "Duplicate chunks lower prefill latency by simplifying attention weights", "The model skips overlapping tokens without spending context budget", "Repeated text wastes evidence budget and crowds out distinct passages"]
+    correctIndex: 3
+    explanation: "Overlapping chunks consume context budget without adding new facts and push genuinely distinct evidence out of the fixed token cap. Merging adjacent overlaps or capping chunks per document restores diversity."
+citations:
+  - title: "Lost in the Middle: How Language Models Use Long Contexts"
+    authors: "Nelson F. Liu et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2307.03172"
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+  - title: "The Instruction Hierarchy: Training LLMs to Prioritize Privileged Instructions"
+    authors: "Eric Wallace et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2404.13208"
+updated: "2026-11-20"
+---
+
+Retrieving the right document does not guarantee a right answer. Once your search engine returns candidate chunks, your code has to decide how many chunks fit, how to strip overlap, how to wrap untrusted text, and in what order to place them inside the prompt. Engineers often concatenate the top 20 results with newlines and ship it—then watch accuracy collapse on real traffic. This lesson builds a disciplined *context assembly* stage grounded in token budgets, prefix caching, and the empirical attention curve of transformer models.
+
+## Sizing the evidence budget with real numbers
+
+Every request to a language model works inside a fixed token ceiling. Before injecting a single retrieved chunk, subtract every non-negotiable slice of the prompt so evidence never truncates the user's question or forces the reply to cut off mid-sentence.
+
+Work through an 8,192-token budget for a support assistant:
+
+- **Static system prompt and tool/citation rules:** 600 tokens.
+- **Recent conversation history (capped by turns):** 1,000 tokens.
+- **Current user question:** 150 tokens.
+- **Reserved output tokens for the answer:** 1,000 tokens.
+
+Adding those fixed allocations gives $600 + 1{,}000 + 150 + 1{,}000 = 2{,}750$ tokens, which leaves:
+
+$$
+B_{\text{evidence}} = 8{,}192 - 2{,}750 = 5{,}442\ \text{tokens}.
+$$
+
+Each chunk from the boundary pipeline in [lesson 27.2](/lessons/27-retrieval-and-hybrid-search/27.2-chunking-strategies-and-boundaries/) averages 500 body tokens plus 50 tokens of metadata wrapper (chunk ID, document title, section path, and revision date), totaling 550 tokens per formatted passage. At 550 tokens each, at most $\lfloor 5{,}442 / 550 \rfloor = 9$ chunks fit without truncation. Even when 9 chunks fit, sending 5 to 8 high-precision chunks after reranking usually outperforms filling every last slot with low-scoring distractors.
+
+In general, compute the available evidence budget before packing context:
+
+$$
+B_{\text{evidence}} = W_{\max} - \left(T_{\text{system}} + T_{\text{history}} + T_{\text{query}} + T_{\text{output}}\right),
+$$
+
+where $W_{\max}$ is the request's chosen context ceiling (often much smaller than the model's absolute maximum to protect latency and cost from [lesson 28.1](/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/)).
+
+## Lost in the middle and edge-first placement
+
+Ordering retrieved chunks matters almost as much as selecting them. Liu et al. (2023) tested language models on multi-document question answering with 20 passages where exactly one passage held the ground-truth answer. Moving that single gold passage from position 1 or position 20 into position 10 produced a pronounced U-shaped accuracy curve—accuracy often dropped by more than 15 to 20 percentage points in the middle positions, even though the exact same words remained inside the context window.
+
+Two practical design choices follow directly from that curve. First, keep the final evidence set compact: pull 50 candidates broadly in stage one, trim to the strongest 5 to 8 passages in stage two, and never dump 30 marginal chunks "just in case." Second, use *edge-first* (or bookend) placement instead of plain descending rank order. Given 6 ranked chunks `[#1, #2, #3, #4, #5, #6]`, placing them as:
+
+```text
+[#1, #3, #5, #6, #4, #2]
+```
+
+keeps the highest-scoring evidence right at the start of the context block and the second-highest evidence right at the end, immediately preceding the user's question, while lower-confidence background sits in the middle.
+
+<Figure id="28-2-rag-assembly-flow" />
+
+## Deduplication, parent expansion, and provenance tags
+
+Raw top-k retrieval from overlapping chunk windows frequently returns three or four fragments of the same paragraph. Injecting all four wastes token budget and crowds out a second document needed to answer multi-part questions.
+
+A clean assembly loop runs three deterministic passes over the ranked candidate list before formatting the prompt:
+
+1. **Deduplicate and merge overlaps:** drop exact duplicate hashes, and when two selected chunks come from adjacent offsets in the same document, stitch them into one continuous span (or fetch their shared parent section) so sentences never repeat or break mid-clause.
+2. **Enforce per-document diversity caps:** cap how many chunks any single document can claim (for example, at most 3 of 8 slots) when queries span multiple policies or repositories.
+3. **Attach stable provenance attributes:** wrap each chunk in explicit delimiters carrying its short ID, title, and timestamp, such as `<evidence id="c1" doc="refund-policy-v4" updated="2026-10-01">...</evidence>`. Short IDs (`c1`, `c2`) keep citations compact and easy to verify programmatically.
+
+## Preserving prompt hierarchy and prefix caching
+
+Order at the whole-prompt level governs both speed and security. As established in [lesson 26.5](/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/), KV-cache prefix reuse only hits when leading tokens match byte for byte across requests. Place the static system prompt and citation rules at the very top, followed by any static few-shot examples, followed by the dynamic `<evidence>` block, and finally the user's current question. Putting dynamic retrieved passages ahead of the system prompt destroys prefix caching on every request.
+
+Delimiter separation also enforces the instruction hierarchy described by Wallace et al. (2024): system instructions carry the highest privilege, while retrieved passages are untrusted external data. Explicit data tags combined with an instruction stating that text inside `<evidence>` tags can supply facts but can never override system rules form the baseline structural boundary—one we harden further against adversarial corpus poisoning in track 30.
+
+:::warning
+Never interpolate raw retrieved text directly into the system prompt string. Treating retrieved passages as privileged system instructions turns any compromised document in your index into a direct prompt injection.
+:::

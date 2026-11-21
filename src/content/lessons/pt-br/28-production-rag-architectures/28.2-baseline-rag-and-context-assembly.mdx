@@ -1,0 +1,105 @@
+---
+id: "28.2-baseline-rag-and-context-assembly"
+track: "28-production-rag-architectures"
+order: 2
+title: "RAG Baseline e Montagem Contra Lost-in-the-Middle"
+summary: "Construa uma etapa disciplinada de montagem de contexto com orçamento explícito de tokens, deduplicação de trechos, delimitadores de fronteira e ordenação nas bordas contra lost-in-the-middle."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["26.5-prompt-engineering-hierarchy-and-caching", "27.2-chunking-strategies-and-boundaries", "28.1-rag-vs-long-context-vs-fine-tuning"]
+unlocks: ["28.3-reranking-cross-encoders-and-colbert", "28.4-query-transformation-and-routing"]
+analogy: "Montar o prompt de um RAG é como passar o caso de um paciente para um médico de plantão em trinta segundos. Você informa o sinal vital mais crítico primeiro, o segundo achado mais importante logo antes da pergunta de conduta e deixa folhas repetidas fora da prancheta. Enterrar o exame decisivo entre doze anotações de rotina não o esconde fisicamente, mas faz um leitor apressado passar direto. A comparação para na segurança: um prontuário raramente traz instruções hostis fingindo ser protocolo do hospital, mas trechos recuperados podem trazer."
+teachBack:
+  prompt: "Você tem uma janela de 8.192 tokens, 600 tokens de instruções de sistema, 1.000 tokens de histórico de conversa, 150 tokens para a pergunta atual e 1.000 tokens reservados para a resposta. Cada trecho formatado de evidência consome em média 550 tokens. Quantos trechos cabem com folga, como você ordena os 6 melhores trechos e onde o prompt de sistema estático deve ficar em relação aos trechos recuperados?"
+  modelAnswer: "As partes fixas e reservadas somam 600 + 1.000 + 150 + 1.000 = 2.750 tokens, deixando 5.442 tokens para evidências—no máximo 9 trechos de 550 tokens, embora enviar de 5 a 8 trechos de alto sinal reduza ruído. Para mitigar o efeito lost-in-the-middle, reordene os 6 melhores trechos pelas bordas, como [#1, #3, #5, #6, #4, #2], colocando o trecho mais forte no início e o segundo mais forte no fim, logo antes da pergunta. Mantenha o prompt de sistema estático no topo absoluto antes das evidências dinâmicas para preservar acertos de cache de prefixo e isolar o texto recuperado como dado de menor privilégio."
+quiz:
+  - question: "Em Liu et al. (2023), perguntas sobre múltiplos documentos exibiram uma curva de acurácia em formato de U quando a única passagem relevante se movia entre 20 documentos recuperados. Qual mudança na montagem mitiga esse efeito diretamente?"
+    options: ["Colocar os trechos mais bem classificados no início e no fim do bloco de evidências, deixando os trechos secundários no meio", "Ordenar os trechos recuperados em ordem alfabética de arquivo para que o modelo forme um mapa previsível", "Anexar todos os trechos em ordem crescente de relevância para que as passagens mais fracas aqueçam o modelo", "Dobrar o número de trechos recuperados de 20 para 40 para que a resposta se repita com mais frequência"]
+    correctIndex: 0
+    explanation: "Modelos prestam atenção com mais confiabilidade ao início e ao fim de blocos longos e perdem acurácia no meio. A ordenação pelas bordas coloca o #1 no topo e o #2 na base do bloco de evidências."
+  - question: "Por que o prompt de sistema estático deve permanecer antes dos trechos recuperados dinâmicos na mensagem montada?"
+    options: ["Modelos de linguagem ignoram instruções de sistema sempre que elas aparecem depois dos trechos recuperados", "Tokens estáticos iniciais preservam acertos de cache de prefixo entre consultas", "Colocar os trechos antes dobra o limite máximo de saída", "Bancos vetoriais exigem o prompt de sistema no índice zero"]
+    correctIndex: 1
+    explanation: "O cache de prefixo compara tokens iniciais contíguos a partir da posição zero. Colocar trechos dinâmicos de cada consulta antes do prompt de sistema quebra o prefixo compartilhado em toda chamada."
+  - question: "Uma montagem recupera 8 trechos de um índice com janela deslizante de 256 tokens e sobreposição de 64 tokens. Quatro trechos vêm da mesma seção e repetem parágrafos idênticos. O que acontece se você injetar os 8 trechos brutos sem deduplicação?"
+    options: ["O texto duplicado eleva o Recall@k porque o mesmo parágrafo relevante aparece quatro vezes seguidas no prompt", "Os trechos duplicados reduzem a latência de prefill ao simplificar a atenção", "O modelo ignora tokens sobrepostos sem gastar orçamento", "Texto repetido desperdiça orçamento e expulsa passagens distintas"]
+    correctIndex: 3
+    explanation: "Trechos sobrepostos consomem orçamento de tokens sem trazer fatos novos e empurram evidências distintas para fora do limite fixo. Fundir sobreposições adjacentes ou limitar trechos por documento preserva a diversidade."
+citations:
+  - title: "Lost in the Middle: How Language Models Use Long Contexts"
+    authors: "Nelson F. Liu et al."
+    year: 2023
+    url: "https://arxiv.org/abs/2307.03172"
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+  - title: "The Instruction Hierarchy: Training LLMs to Prioritize Privileged Instructions"
+    authors: "Eric Wallace et al."
+    year: 2024
+    url: "https://arxiv.org/abs/2404.13208"
+updated: "2026-11-20"
+---
+
+Recuperar o documento certo não garante uma resposta certa. Depois que o motor de busca devolve os trechos candidatos, o seu código precisa decidir quantos trechos cabem, como remover repetições, como isolar texto não confiável e em qual ordem posicionar cada passagem no prompt. É comum concatenar os 20 primeiros resultados com quebras de linha e colocar em produção—e ver a acurácia despencar em tráfego real. Esta aula constrói uma etapa disciplinada de *montagem de contexto*, apoiada em orçamento de tokens, cache de prefixo e na curva empírica de atenção dos modelos Transformer.
+
+## Dimensionando o orçamento de evidências com números reais
+
+Toda chamada a um modelo de linguagem opera dentro de um teto fixo de tokens. Antes de injetar um único trecho recuperado, subtraia cada fatia obrigatória do prompt para que as evidências nunca trunquem a pergunta do usuário nem cortem a resposta no meio da frase.
+
+Faça as contas para um orçamento de 8.192 tokens de um assistente de suporte:
+
+- **Prompt de sistema estático e regras de citação:** 600 tokens.
+- **Histórico recente da conversa (limitado por turnos):** 1.000 tokens.
+- **Pergunta atual do usuário:** 150 tokens.
+- **Tokens reservados para gerar a resposta:** 1.000 tokens.
+
+Somando essas parcelas fixas obtemos $600 + 1{,}000 + 150 + 1{,}000 = 2{,}750$ tokens, restando:
+
+$$
+B_{\text{evidência}} = 8{,}192 - 2{,}750 = 5{,}442\ \text{tokens}.
+$$
+
+Cada trecho vindo do pipeline de fronteiras da [aula 27.2](/pt-br/lessons/27-retrieval-and-hybrid-search/27.2-chunking-strategies-and-boundaries/) tem em média 500 tokens de corpo mais 50 tokens de invólucro de metadados (identificador do trecho, título do documento, seção e data de revisão), somando 550 tokens por passagem formatada. A 550 tokens cada, cabem no máximo $\lfloor 5{,}442 / 550 \rfloor = 9$ trechos sem truncamento. Mesmo cabendo 9, enviar de 5 a 8 trechos de alta precisão após o reranking costuma render melhor do que preencher cada vaga restante com distratores de pontuação baixa.
+
+No caso geral, calcule o orçamento livre de evidência antes de empacotar o contexto:
+
+$$
+B_{\text{evidência}} = W_{\max} - \left(T_{\text{sistema}} + T_{\text{histórico}} + T_{\text{consulta}} + T_{\text{saída}}\right),
+$$
+
+em que $W_{\max}$ é o teto escolhido para a requisição—muitas vezes bem menor que o limite absoluto do modelo para proteger latência e custo, como visto na [aula 28.1](/pt-br/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/).
+
+## Lost in the middle e posicionamento nas bordas
+
+A ordem dos trechos recuperados importa quase tanto quanto a seleção deles. Liu et al. (2023) avaliaram modelos de linguagem em perguntas sobre múltiplos documentos com 20 passagens, das quais exatamente uma continha a resposta correta. Mover essa única passagem dourada da posição 1 ou da posição 20 para a posição 10 gerou uma curva de acurácia acentuada em formato de U—a taxa de acerto caiu frequentemente mais de 15 a 20 pontos percentuais nas posições centrais, mesmo com as mesmíssimas palavras presentes na janela de contexto.
+
+Duas decisões práticas decorrem diretamente dessa curva. Primeiro, mantenha o conjunto final enxuto: traga 50 candidatos de forma ampla no primeiro estágio, reduza para as 5 a 8 passagens mais fortes no segundo estágio e nunca despeje 30 trechos marginais "por garantia". Segundo, aplique posicionamento *nas bordas* em vez de ordem estritamente decrescente. Dados 6 trechos classificados `[#1, #2, #3, #4, #5, #6]`, dispô-los como:
+
+```text
+[#1, #3, #5, #6, #4, #2]
+```
+
+mantém a evidência mais forte logo no início do bloco de contexto e a segunda mais forte logo no final, imediatamente antes da pergunta do usuário, enquanto o contexto secundário fica no centro.
+
+<Figure id="28-2-rag-assembly-flow" />
+
+## Deduplicação, expansão para o pai e tags de proveniência
+
+A recuperação top-k bruta sobre janelas de chunking com sobreposição devolve com frequência três ou quatro fragmentos do mesmo parágrafo. Injetar todos desperdiça orçamento de tokens e expulsa um segundo documento necessário para responder perguntas compostas.
+
+Um laço limpo de montagem executa três passos determinísticos sobre a lista classificada antes de formatar o prompt:
+
+1. **Deduplicar e fundir sobreposições:** descarte hashes idênticos e, quando dois trechos selecionados vierem de deslocamentos adjacentes do mesmo documento, una-os em um trecho contínuo (ou carregue a seção-pai compartilhada) para que frases não se repitam nem quebrem no meio.
+2. **Aplicar tetos de diversidade por documento:** limite quantos trechos um único documento pode ocupar (por exemplo, no máximo 3 de 8 vagas) quando as consultas cruzam várias políticas ou repositórios.
+3. **Anexar atributos estáveis de proveniência:** envolva cada trecho em delimitadores explícitos com identificador curto, título e data, como `<evidence id="c1" doc="politica-reembolso-v4" updated="2026-10-01">...</evidence>`. Identificadores curtos (`c1`, `c2`) mantêm as citações enxutas e fáceis de validar por código.
+
+## Preservando hierarquia de prompts e cache de prefixo
+
+A ordem no nível do prompt inteiro governa velocidade e segurança. Conforme estabelecido na [aula 26.5](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/), o reaproveitamento de prefixo no KV cache só acerta quando os tokens iniciais coincidem byte a byte entre requisições. Posicione o prompt de sistema estático e as regras de citação no topo absoluto, seguidos por eventuais exemplos estáticos, depois pelo bloco dinâmico `<evidence>` e por fim pela pergunta atual do usuário. Colocar passagens dinâmicas antes do prompt de sistema quebra o cache de prefixo em todas as chamadas.
+
+A separação por delimitadores também reforça a hierarquia de instruções descrita por Wallace et al. (2024): instruções de sistema têm privilégio máximo, enquanto trechos recuperados são dados externos não confiáveis. Tags explícitas de dados somadas à regra de que texto dentro de `<evidence>` fornece fatos mas nunca sobrescreve instruções de sistema formam a fronteira estrutural básica—que endurecemos contra envenenamento de corpus na trilha 30.
+
+:::warning
+Nunca interpole texto recuperado diretamente dentro da string do prompt de sistema. Tratar passagens recuperadas como instruções privilegiadas de sistema transforma qualquer documento comprometido no índice em uma injeção direta de prompt.
+:::

@@ -1,0 +1,93 @@
+---
+id: "26.5-prompt-engineering-hierarchy-and-caching"
+track: "26-llm-apis-and-structured-outputs"
+order: 5
+title: "Prompt Hierarchy, Sensitivity & Prefix Caching"
+summary: "Order prompts by trust and stability: privileged system rules first, volatile per-request data last. Keep prefixes byte-identical to cut input costs and TTFT through KV prefix caching."
+tier: "foundations"
+locale: "en"
+prerequisites: ["26.3-structured-outputs-and-constrained-decoding", "7.2-the-kv-cache"]
+unlocks: ["28.2-baseline-rag-and-context-assembly", "31.2-multi-layer-caching-and-semantic-risk", "32.1-coupled-versioning-and-release-artifacts"]
+analogy: "Prefix caching works like saving a compiled header in C++: as long as the top lines of the file stay byte-for-byte identical, the compiler skips re-parsing thousands of declarations and starts straight at your new code at the bottom. Put a live clock timestamp on line one and you force a full rebuild on every single run. The comparison stops at privilege: unlike a compiler that strictly separates code from comments, a transformer processes system rules, user prompts, and retrieved text as one token stream, so instruction hierarchy is a trained preference rather than an unbreakable wall."
+teachBack:
+  prompt: "A support prompt has a 4,000-token static policy and tool-definition block plus a 500-token dynamic user turn. Uncached input costs USD 3.00 per million tokens and cached prefix reads cost USD 0.30 per million. Someone inserts 'Current UTC time: 2026-11-20T14:32:09Z' on line 1 of the system prompt. Compute the cost per 1,000 requests before and after moving that timestamp to the user turn, and explain why the position of a single volatile byte breaks KV cache reuse."
+  modelAnswer: "With the volatile timestamp on line 1, the prefix changes on every request and hits zero cached tokens, so each call pays 4,500 × 3.00 / 1,000,000 = USD 0.0135, or USD 13.50 per 1,000 requests. Moving the timestamp to the dynamic suffix keeps the first 4,000 tokens byte-identical: each cached call pays (4,000 × 0.30 + 500 × 3.00) / 1,000,000 = USD 0.0012 + USD 0.0015 = USD 0.0027, or USD 2.70 per 1,000 requests—an 80% input cost drop. Causal self-attention computes every token's key and value vectors from all preceding tokens, so mutating token 1 invalidates the cached K/V states for every token that follows."
+quiz:
+  - question: "A prompt has a 4,000-token static prefix and a 500-token user suffix at USD 3.00/M uncached and USD 0.30/M cached reads. What does 1,000 requests cost once the prefix is warm versus when a per-request UUID sits at token 1?"
+    options: ["USD 2.70 with a warm prefix versus USD 13.50 when the UUID breaks caching", "USD 1.35 with a warm prefix versus USD 13.50 when the UUID breaks caching", "USD 12.00 with a warm prefix versus USD 13.50 when the UUID breaks caching", "USD 2.70 in both cases because prefix caches skip over random tokens at line 1"]
+    correctIndex: 0
+    explanation: "Uncached cost is 4,500 × 3.00 / 1,000,000 = USD 0.0135 per call (USD 13.50 per 1,000). With 4,000 cached tokens and 500 uncached tokens, cost is (4,000 × 0.30 + 500 × 3.00) / 1,000,000 = USD 0.0027 per call (USD 2.70 per 1,000). A single changed byte at token 1 invalidates the entire downstream KV prefix."
+  - question: "Under Wallace et al.'s Instruction Hierarchy, which trust order should an application preserve when assembling messages for a tool-using assistant?"
+    options: ["Retrieved tool output highest, then user prompt, then developer system prompt at the bottom", "User prompt highest, then retrieved documents, then system instructions as fallback defaults", "All roles at equal priority because modern models ignore role headers during prefill", "System/developer highest, then user, then untrusted tool outputs"]
+    correctIndex: 3
+    explanation: "The Instruction Hierarchy ranks developer/system policies above end-user messages and end-user messages above untrusted tool or retrieved data. Putting untrusted text inside the system role collapses that trust boundary and invites prompt injection."
+  - question: "Your team serializes JSON tool definitions from an unordered hash map on every request, causing tool keys to appear in slightly different orders across worker processes. What symptom shows up in production?"
+    options: ["Constrained decoding rejects every tool call because JSON Schema requires alphabetical tool names", "Prefix cache hit rate collapses because non-deterministic key order changes the prefix tokens", "The model refuses to call tools placed after position 3 in the definitions array", "Total prompt token count doubles because each worker re-tokenizes spaces differently"]
+    correctIndex: 1
+    explanation: "Prefix caching requires an exact token-for-token match from byte zero up to the cache breakpoint. Non-deterministic map serialization rearranges the tool block between workers, turning warm prefix cache hits into full uncached prefills."
+citations:
+  - title: "The Instruction Hierarchy: Training LLMs to Prioritize Privileged Instructions"
+    authors: "Eric Wallace, Kai Xiao, Reimar Leike, Lilian Weng, Johannes Heidecke, Alex Beutel"
+    year: 2024
+    url: "https://arxiv.org/abs/2404.13208"
+  - title: "Prompt Caching Documentation"
+    authors: "Anthropic"
+    year: 2025
+    url: "https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching"
+  - title: "Prompt Caching Guide"
+    authors: "OpenAI"
+    year: 2025
+    url: "https://platform.openai.com/docs/guides/prompt-caching"
+updated: "2026-11-20"
+---
+
+Two identical-looking prompt refactors can swing your monthly inference bill by 80% and open a security hole at the same time. Prompt engineering in production is less about clever phrasing tricks and more about two systems constraints: **trust hierarchy** (who is allowed to issue instructions) and **prefix stability** (which tokens stay byte-identical so the serving engine can skip recomputing the KV cache).
+
+## The Instruction Hierarchy and trust boundaries
+
+Every message in a chat API carries a role, and modern models are post-trained to obey a strict priority order. As Wallace et al. (2024) formalized in *The Instruction Hierarchy*, privileged developer instructions sit above end-user messages, which in turn sit above third-party tool outputs and retrieved web pages:
+
+- **System / developer prompt:** defines immutable product policy, output contract, and refusal rules.
+- **User message:** expresses the caller's goal within the developer's boundaries.
+- **Tool / retrieved content:** untrusted external data that should be read as evidence, never executed as commands.
+
+Because of this hierarchy, never concatenate raw user profile bios, support tickets, or retrieved PDF excerpts into the `system` message. Placing untrusted text inside the privileged role tells the model to treat an attacker's text as developer policy. Keep untrusted data in `user` or `tool` messages inside clear delimiters, and treat instruction hierarchy as defense in depth rather than a cryptographic sandbox—irreversible actions still need deterministic code checks outside the model.
+
+## Prompt sensitivity and disciplined specification
+
+Small surface changes—swapping two bullet points, adding contradictory adjectives like "be exhaustive yet brief", or changing few-shot label capitalization—measurably shift model outputs. Instead of layering ad-hoc reminders ("IMPORTANT!! DO NOT HALLUCINATE!!"), write prompts like specifications:
+
+- State the exact task, decision boundary, and fallback behavior ("If the policy does not cover the region, return `escalate`").
+- Pair rules with two or three concrete input–output examples that cover the tricky edge cases rather than obvious happy paths.
+- Offload syntactic structure to constrained decoding from [Structured Outputs & Constrained Decoding](/lessons/26-llm-apis-and-structured-outputs/26.3-structured-outputs-and-constrained-decoding/) so your prompt prose spends tokens on domain rules instead of begging for valid JSON.
+
+## How prefix caching works on the KV cache
+
+In [The KV Cache](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/), you saw that during prefill each token attends only to itself and earlier tokens (causal masking). That mathematical property has a direct engineering payoff: if request B shares the exact same first $P$ tokens as request A, the key and value tensors for those first $P$ tokens are mathematically identical. Serving engines store recent prefix KV blocks in GPU or host RAM and skip recomputing them, cutting both **TTFT** and input token cost—typically by 50% to 90% on cached prefix reads across major providers (Anthropic 2025; OpenAI 2025).
+
+Walk through the arithmetic on a realistic support assistant before writing the general formula. Suppose your prompt has a `4,000`-token static prefix (system instructions, sorted tool schemas, and reference examples) plus a `500`-token dynamic user turn. Uncached input costs `USD 3.00` per million tokens and cached prefix reads cost `USD 0.30` per million (a 90% discount).
+
+- **Volatile metadata at the top (`0` cached tokens):** Someone puts `Current time: 2026-11-20T14:32:09Z` on line 1 of the system prompt. Because token 1 changes every second, every downstream KV vector changes too, yielding `0%` cache hits. Every call pays `4,500 × 3.00 / 1,000,000 = USD 0.0135`, or `USD 13.50` per `1,000` calls.
+- **Static prefix first, volatile metadata last (`4,000` cached tokens):** Moving the timestamp into the user turn keeps the first `4,000` tokens identical across callers. Each warm call pays `4,000 × 0.30 / 1,000,000 = USD 0.0012` for the cached prefix plus `500 × 3.00 / 1,000,000 = USD 0.0015` for the fresh suffix, totaling `USD 0.0027` per call—`USD 2.70` per `1,000` calls, an **80% reduction** in input spend.
+
+In general, for total input tokens $T_{\text{in}}$, matched prefix length $P_{\text{hit}}$, cached read price $c_{\text{cached}}$, and uncached price $c_{\text{uncached}}$ (per token):
+
+$$C_{\text{in}} = P_{\text{hit}} \cdot c_{\text{cached}} + (T_{\text{in}} - P_{\text{hit}}) \cdot c_{\text{uncached}}$$
+
+:::note
+Providers enforce a minimum prefix threshold (commonly 1,024 tokens) and a time-to-live window (often 5 minutes, refreshed on each hit, with optional extended TTL tiers). Some APIs also charge a one-time cache-write premium on the first miss, so prefix caching pays off most when a static prefix serves many calls inside its TTL.
+:::
+
+## Canonical layout: stable at the top, volatile at the bottom
+
+To maximize both trust clarity and KV cache hit rate, assemble every request strictly from most static to most volatile:
+
+1. Static system policy and role instructions.
+2. Deterministic tool schemas sorted alphabetically by tool name and property key.
+3. Static few-shot examples or shared reference manuals.
+4. Prior conversation turns (compacted in periodic batches, not mutated every turn).
+5. The current user query, retrieved per-request chunks, and live metadata (timestamps, request IDs, user locale).
+
+:::warning
+Watch out for silent cache-busters: unordered JSON map serialization, injecting the current user's name into the system prompt, or shuffling few-shot examples per request. Log `cached_tokens / input_tokens` in production telemetry and alert when the ratio drops unexpectedly.
+:::

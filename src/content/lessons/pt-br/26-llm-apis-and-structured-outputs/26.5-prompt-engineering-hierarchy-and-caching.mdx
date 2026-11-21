@@ -1,0 +1,93 @@
+---
+id: "26.5-prompt-engineering-hierarchy-and-caching"
+track: "26-llm-apis-and-structured-outputs"
+order: 5
+title: "Hierarquia de Prompts, Sensibilidade e Cache"
+summary: "Ordene prompts por confiança e estabilidade: regras privilegiadas no topo e dados voláteis no final. Manter prefixos idênticos byte a byte corta custo de entrada e TTFT com cache de prefixo KV."
+tier: "foundations"
+locale: "pt-br"
+prerequisites: ["26.3-structured-outputs-and-constrained-decoding", "7.2-the-kv-cache"]
+unlocks: ["28.2-baseline-rag-and-context-assembly", "31.2-multi-layer-caching-and-semantic-risk", "32.1-coupled-versioning-and-release-artifacts"]
+analogy: "O cache de prefixo funciona como um cabeçalho pré-compilado em C++: enquanto as primeiras linhas do arquivo permanecerem idênticas byte a byte, o compilador pula milhares de declarações e começa direto no código novo lá embaixo. Coloque um relógio ao vivo na linha um e você força recompilação total em toda execução. A comparação para no privilégio: ao contrário de um compilador que separa código de comentários com rigor, um transformer processa regras de sistema, prompts de usuário e texto recuperado no mesmo fluxo de tokens, então a hierarquia de instruções é uma preferência treinada e não uma parede intransponível."
+teachBack:
+  prompt: "Um prompt de suporte tem 4.000 tokens estáticos de política e ferramentas mais 500 tokens dinâmicos do usuário. Entrada sem cache custa USD 3,00 por milhão de tokens e leitura em cache custa USD 0,30 por milhão. Alguém insere 'Hora UTC atual: 2026-11-20T14:32:09Z' na linha 1 do prompt de sistema. Calcule o custo por 1.000 chamadas antes e depois de mover esse horário para o turno do usuário e explique por que um único byte volátil no topo quebra o reaproveitamento do KV cache."
+  modelAnswer: "Com o horário volátil na linha 1, o prefixo muda em toda chamada e acerta zero tokens em cache, pagando 4.500 × 3,00 / 1.000.000 = USD 0,0135 por requisição, ou USD 13,50 por 1.000 chamadas. Movendo o horário para o sufixo dinâmico, os primeiros 4.000 tokens ficam idênticos byte a byte: cada chamada aquecida paga (4.000 × 0,30 + 500 × 3,00) / 1.000.000 = USD 0,0012 + USD 0,0015 = USD 0,0027, ou USD 2,70 por 1.000 chamadas—queda de 80% no gasto de entrada. A autoatenção causal calcula os vetores K e V de cada token a partir de todos os tokens anteriores, logo alterar o token 1 invalida o KV cache de tudo o que vem depois."
+quiz:
+  - question: "Um prompt tem prefixo estático de 4.000 tokens e sufixo do usuário de 500 tokens, a USD 3,00/M sem cache e USD 0,30/M em cache. Quanto custam 1.000 requisições com prefixo aquecido versus com um UUID aleatório no token 1?"
+    options: ["USD 2,70 com prefixo aquecido versus USD 13,50 quando o UUID quebra o cache", "USD 1,35 com prefixo aquecido versus USD 13,50 quando o UUID quebra o cache", "USD 12,00 com prefixo aquecido versus USD 13,50 quando o UUID quebra o cache", "USD 2,70 nos dois casos porque o cache de prefixo ignora tokens aleatórios na linha 1"]
+    correctIndex: 0
+    explanation: "Sem cache, o custo é 4.500 × 3,00 / 1.000.000 = USD 0,0135 por chamada (USD 13,50 por 1.000). Com 4.000 tokens em cache e 500 sem cache, o custo cai para (4.000 × 0,30 + 500 × 3,00) / 1.000.000 = USD 0,0027 por chamada (USD 2,70 por 1.000). Um único byte alterado no token 1 invalida todo o KV prefixo posterior."
+  - question: "Segundo a Hierarquia de Instruções de Wallace et al., qual ordem de confiança a aplicação deve preservar ao montar mensagens para um assistente com ferramentas?"
+    options: ["Saída de ferramenta no topo, depois prompt do usuário e instruções do sistema por último", "Prompt do usuário no topo, depois documentos recuperados e regras de sistema como padrão", "Todos os papéis com prioridade igual porque modelos modernos ignoram cabeçalhos no prefill", "Sistema/desenvolvedor no topo, depois usuário e por fim saídas de ferramentas"]
+    correctIndex: 3
+    explanation: "A Hierarquia de Instruções coloca políticas do desenvolvedor/sistema acima de mensagens do usuário final, e estas acima de dados externos não confiáveis de ferramentas ou busca. Colocar texto não confiável no papel system destrói essa fronteira e abre brecha para injeção de prompt."
+  - question: "Sua equipe serializa definições JSON de ferramentas a partir de um mapa sem ordem garantida em cada chamada, fazendo as chaves mudarem de posição entre processos worker. Qual sintoma aparece em produção?"
+    options: ["A decodificação restrita recusa toda chamada porque o JSON Schema exige nomes em ordem alfabética", "O cache de prefixo despenca porque a ordem variável das chaves muda os tokens iniciais", "O modelo se recusa a acionar ferramentas posicionadas depois do terceiro item do array", "A contagem total de tokens dobra porque cada worker tokeniza espaços de forma diferente"]
+    correctIndex: 1
+    explanation: "O cache de prefixo exige correspondência exata token a token desde o byte zero até o ponto de corte. Serializar mapas em ordem não determinística embaralha o bloco de ferramentas entre workers e transforma acertos de cache em prefills completos sem desconto."
+citations:
+  - title: "The Instruction Hierarchy: Training LLMs to Prioritize Privileged Instructions"
+    authors: "Eric Wallace, Kai Xiao, Reimar Leike, Lilian Weng, Johannes Heidecke, Alex Beutel"
+    year: 2024
+    url: "https://arxiv.org/abs/2404.13208"
+  - title: "Prompt Caching Documentation"
+    authors: "Anthropic"
+    year: 2025
+    url: "https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching"
+  - title: "Prompt Caching Guide"
+    authors: "OpenAI"
+    year: 2025
+    url: "https://platform.openai.com/docs/guides/prompt-caching"
+updated: "2026-11-20"
+---
+
+Duas refatorações de prompt que parecem equivalentes podem oscilar sua fatura mensal de inferência em 80% e abrir uma brecha de segurança ao mesmo tempo. Engenharia de prompts em produção depende menos de frases mágicas e mais de duas restrições de sistema: **hierarquia de confiança** (quem tem autoridade para dar instruções) e **estabilidade de prefixo** (quais tokens permanecem idênticos byte a byte para o motor pular o recálculo do KV cache).
+
+## A Hierarquia de Instruções e fronteiras de confiança
+
+Cada mensagem numa API de chat carrega um papel, e modelos modernos passam por pós-treinamento para obedecer a uma ordem clara de prioridade. Como Wallace et al. (2024) formalizaram em *The Instruction Hierarchy*, instruções privilegiadas do desenvolvedor prevalecem sobre mensagens do usuário final, que por sua vez prevalecem sobre saídas de ferramentas externas e trechos recuperados da web:
+
+- **Prompt de sistema / desenvolvedor:** define políticas imutáveis do produto, contrato de saída e regras de recusa.
+- **Mensagem do usuário:** expressa o pedido do cliente dentro dos limites do desenvolvedor.
+- **Ferramentas / conteúdo recuperado:** dados externos não confiáveis que devem ser lidos como evidência, nunca executados como comandos.
+
+Por causa dessa hierarquia, nunca concatene biografias de perfil, chamados brutos ou trechos de PDF recuperados dentro da mensagem `system`. Misturar texto não confiável no papel privilegiado instrui o modelo a tratar o texto de um atacante como política do desenvolvedor. Mantenha dados externos em mensagens `user` ou `tool` com delimitadores claros e trate a hierarquia como defesa em profundidade, não como barreira criptográfica—ações irreversíveis continuam exigindo checagens determinísticas em código fora do modelo.
+
+## Sensibilidade de prompts e especificação disciplinada
+
+Pequenas mudanças de superfície—trocar a ordem de dois itens, somar adjetivos contraditórios como "seja exaustivo porém curto" ou variar maiúsculas em exemplos—deslocam visivelmente as saídas do modelo. Em vez de empilhar alertas em caixa alta ("IMPORTANTE!! NÃO ALUCINE!!"), redija prompts como especificações técnicas:
+
+- Declare a tarefa exata, a fronteira de decisão e o comportamento de recuo ("Se a política não cobrir a região, retorne `escalate`").
+- Acompanhe as regras com dois ou três exemplos concretos de entrada e saída focados nos casos de borda difíceis, não nos casos triviais.
+- Delegue sintaxe rígida à decodificação restrita de [Saídas Estruturadas e Decodificação Restrita](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.3-structured-outputs-and-constrained-decoding/) para que o texto do prompt gaste tokens com regras de domínio em vez de implorar por JSON válido.
+
+## Como o cache de prefixo atua sobre o KV cache
+
+Em [O KV Cache](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/), você viu que durante o prefill cada token presta atenção apenas a si mesmo e aos tokens anteriores (máscara causal). Essa propriedade matemática gera um ganho direto de engenharia: se a requisição B compartilha exatamente os mesmos primeiros $P$ tokens da requisição A, os tensores de *key* e *value* desses $P$ tokens são matematicamente idênticos. Motores de serving guardam blocos recentes de KV em GPU ou RAM do host e pulam o recálculo, cortando tanto o **TTFT** quanto o preço dos tokens de entrada—tipicamente em 50% a 90% nas leituras em cache entre os principais provedores (Anthropic 2025; OpenAI 2025).
+
+Veja a conta num assistente de suporte realista antes da fórmula geral. Suponha um prefixo estático de `4.000` tokens (instruções de sistema, schemas ordenados de ferramentas e exemplos) mais `500` tokens dinâmicos do turno do usuário. A entrada sem cache custa `USD 3,00` por milhão de tokens e a leitura em cache custa `USD 0,30` por milhão (desconto de 90%).
+
+- **Metadado volátil no topo (`0` tokens em cache):** alguém coloca `Hora atual: 2026-11-20T14:32:09Z` na linha 1 do prompt de sistema. Como o token 1 muda a cada segundo, todo vetor KV posterior muda junto, zerando o cache. Cada chamada paga `4.500 × 3,00 / 1.000.000 = USD 0,0135`, ou `USD 13,50` por `1.000` chamadas.
+- **Prefixo estático primeiro, metadado volátil no fim (`4.000` tokens em cache):** mover o horário para o turno do usuário mantém os primeiros `4.000` tokens idênticos entre clientes. Cada chamada aquecida paga `4.000 × 0,30 / 1.000.000 = USD 0,0012` pelo prefixo em cache mais `500 × 3,00 / 1.000.000 = USD 0,0015` pelo sufixo novo, somando `USD 0,0027` por chamada—`USD 2,70` por `1.000` chamadas, uma **redução de 80%** no custo de entrada.
+
+De modo geral, para $T_{\text{in}}$ tokens de entrada totais, prefixo reaproveitado $P_{\text{hit}}$, preço por token em cache $c_{\text{cached}}$ e preço sem cache $c_{\text{uncached}}$:
+
+$$C_{\text{in}} = P_{\text{hit}} \cdot c_{\text{cached}} + (T_{\text{in}} - P_{\text{hit}}) \cdot c_{\text{uncached}}$$
+
+:::note
+Provedores exigem um prefixo mínimo (comumente 1.024 tokens) e uma janela de validade (TTL, frequentemente 5 minutos renovados a cada acerto, com opções estendidas). Algumas APIs cobram também um pequeno acréscimo único na escrita do cache, então o recurso rende mais quando um mesmo prefixo atende muitas chamadas dentro do TTL.
+:::
+
+## Layout canônico: estável no topo, volátil na base
+
+Para maximizar tanto a clareza de confiança quanto a taxa de acerto do KV cache, monte toda requisição estritamente do mais estável ao mais volátil:
+
+1. Política de sistema estática e instruções de papel.
+2. Schemas determinísticos de ferramentas ordenados alfabeticamente por nome e propriedade.
+3. Exemplos *few-shot* fixos ou manuais de referência compartilhados.
+4. Turnos anteriores da conversa (compactados em lotes periódicos, não editados a cada turno).
+5. A pergunta atual do usuário, trechos recuperados naquela consulta e metadados ao vivo (horários, IDs de requisição, idioma).
+
+:::warning
+Fique atento a destruidores silenciosos de cache: serialização não ordenada de mapas JSON, injeção do nome do usuário no prompt de sistema ou embaralhamento de exemplos por chamada. Monitore `cached_tokens / input_tokens` na telemetria e dispare alerta quando a razão cair sem explicação.
+:::

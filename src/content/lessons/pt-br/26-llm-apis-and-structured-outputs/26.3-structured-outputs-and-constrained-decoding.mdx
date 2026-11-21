@@ -1,0 +1,87 @@
+---
+id: "26.3-structured-outputs-and-constrained-decoding"
+track: "26-llm-apis-and-structured-outputs"
+order: 3
+title: "Saídas Estruturadas e Decodificação Restrita"
+summary: "Pedir JSON educadamente no prompt falha em escala. A decodificação restrita compila um JSON Schema numa máquina de estados que mascara logits ilegais antes da amostragem, garantindo sintaxe sem garantir verdade."
+tier: "foundations"
+locale: "pt-br"
+prerequisites: ["26.1-stateless-apis-and-conversation-state", "7.4-sampling"]
+unlocks: ["26.5-prompt-engineering-hierarchy-and-caching", "28.5-grounding-citations-abstention-and-graph-rag"]
+analogy: "Pedir JSON só via prompt é como colocar uma placa educada na entrada da rodovia pedindo ao motorista que fique na faixa. A decodificação restrita instala guard-rails de aço no formato exato da pista, impedindo fisicamente o volante de entrar num token ilegal. A comparação para no destino: guard-rails garantem que o carro permaneça no asfalto, não que chegou ao endereço certo—sua aplicação ainda precisa conferir fatos semânticos e regras de negócio depois que a decodificação termina."
+teachBack:
+  prompt: "Um extrator de faturas usa saídas estruturadas com JSON Schema estrito contendo {total_usd: number, items: [{name: string, price_usd: number}]}. Um colega afirma que agora dá para apagar a camada de validação posterior porque a API garante 100% de conformidade com o schema. Explique como a decodificação restrita opera na amostragem, cite dois bugs que ela não impede e diga por que a ordem dos campos afeta a qualidade da resposta."
+  modelAnswer: "A decodificação restrita compila o JSON Schema numa máquina de estados finitos e mascara para menos infinito o logit de todo token que violaria a gramática no estado atual antes do softmax, garantindo JSON válido com tipos e chaves obrigatórias corretas. Ela não impede erros semânticos nem regras entre campos—como total_usd diferente da soma dos itens ou um preço copiado por engano do número da fatura—então a validação de domínio precisa continuar. A ordem dos campos importa porque a geração é autorregressiva: colocar um campo breve de evidência ou raciocínio antes do veredito deixa o modelo calcular antes de decidir, enquanto colocar o veredito primeiro força um palpite antes de conferir os números."
+quiz:
+  - question: "No passo inicial de um objeto JSON, apenas o token A ('{\"') é legal segundo a FSM compilada do schema. Os logits brutos num vocabulário de 4 tokens são A: 2,0, B: 3,5, C: 1,0 e D: -0,5. O que acontece na decodificação restrita?"
+    options: ["O servidor amostra B primeiro, detecta erro de sintaxe ao final e tenta novamente com temperatura zero", "O servidor soma +10 ao logit do token A mantendo probabilidades pequenas não nulas para B, C e D", "O servidor define os logits de B, C e D como menos infinito para que o softmax dê probabilidade 1,0 a A", "O servidor decodifica livremente e remove tokens inválidos com uma expressão regular antes de retornar o corpo"]
+    correctIndex: 2
+    explanation: "A decodificação restrita aplica uma máscara aditiva de 0 para tokens permitidos e menos infinito para proibidos antes do softmax. Como exp(-infinito) = 0, o token A recebe probabilidade exp(2,0) / exp(2,0) = 1,0 já na primeira passagem, sem retries."
+  - question: "Seu schema de extração exige {approved: boolean, reasoning: string, amount: number} com decodificação restrita estrita ativada. Qual falha ainda pode chegar ao backend?"
+    options: ["Uma vírgula sobrando após o campo amount que quebra o JSON.parse no Node ou no Python", "Um bloco de código markdown (```json) envolvendo o objeto retornado pelo modelo", "Um valor de amount serializado como a string 'quarenta e dois' em vez de número JSON", "Um campo approved igual a true acompanhado de um amount acima do teto de reembolso"]
+    correctIndex: 3
+    explanation: "A gramática compilada proíbe blocos markdown, vírgulas extras e tipos errados porque todo token ilegal é mascarado durante o decode. Consistência de regra de negócio entre campos—como exigir approved falso quando amount excede a política—é um invariante semântico que exige validação na aplicação."
+  - question: "Por que colocar um campo curto de evidência ou raciocínio antes do rótulo de classificação num JSON Schema estrito costuma aumentar a precisão?"
+    options: ["Tokens emitidos antes entram no contexto dos tokens seguintes", "Validadores de JSON Schema ordenam chaves alfabeticamente antes da máscara", "Colocar strings primeiro elimina a latência de compilação da FSM no cold start", "Campos booleanos só podem ser mascarados após amostrar pelo menos uma string"]
+    correctIndex: 0
+    explanation: "Modelos autorregressivos geram estritamente da esquerda para a direita: os tokens emitidos num campo inicial de evidência ou raciocínio passam a compor o prefixo que condiciona o campo final de classificação. A ordem das chaves não muda o mecanismo de compilação nem a máscara de booleanos."
+citations:
+  - title: "Efficient Guided Generation for Large Language Models"
+    authors: "Brandon T. Willard, Rémi Louf"
+    year: 2023
+    url: "https://arxiv.org/abs/2307.09702"
+  - title: "JSON Schema: A Media Type for Describing JSON Documents (Draft 2020-12)"
+    authors: "Austin Wright, Henry Andrews, Ben Hutton, Greg Dennis"
+    year: 2022
+    url: "https://json-schema.org/draft/2020-12/json-schema-core"
+updated: "2026-11-20"
+---
+
+Quando um LLM conversa com código em vez de um humano, um único bloco markdown perdido (` ```json `) ou uma chave faltando derruba o pipeline seguinte. Escrever no prompt "Responda SOMENTE em JSON válido, sem preâmbulo" entrega cerca de 95% a 99% de confiabilidade sintática, o que ainda gera dezenas de falhas de parsing a cada dez mil chamadas. A decodificação restrita (*constrained decoding*) troca pedidos educados por uma garantia matemática dentro do próprio laço de amostragem.
+
+## Por que JSON só por prompt quebra em produção
+
+Em [Amostragem](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/), você viu que a cada passo de decode o modelo produz um vetor de pontuações brutas—**logits**—sobre todo o vocabulário, converte esses valores em probabilidades com o softmax e sorteia um token. Mesmo quando o prompt exige JSON estrito, o treinamento conversacional mantém probabilidade não nula para tokens como `"Claro"`, crases, vírgulas extras ou aspas sem escape dentro de strings. Ao longo de milhares de requisições contra a API stateless de [APIs Stateless de LLM e Estado de Conversa](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/), 1% de cauda vira ruído constante de retries e exceções de parser.
+
+## Mascarando logits com uma máquina de estados finitos
+
+A decodificação restrita—muitas vezes chamada de *Structured Outputs* ou geração guiada por gramática—corrige o problema imediatamente antes da amostragem. Antes de gerar o primeiro token, o servidor compila seu **JSON Schema** (uma especificação declarativa de chaves, tipos, enums e aninhamento permitidos) numa **máquina de estados finitos (FSM, *finite-state machine*)** ou autômato com pilha que acompanha quais caracteres são sintaticamente legais a seguir.
+
+Veja um exemplo com um vocabulário mínimo de 4 tokens no passo 0, logo antes da abertura de um objeto JSON:
+
+- O token `{"` tem logit bruto `2,0` (token legal).
+- O token `true` tem logit bruto `3,5` (ilegal no início do objeto).
+- O token `123` tem logit bruto `1,0` (ilegal).
+- O token `}` tem logit bruto `-0,5` (ilegal).
+
+Sem restrição, o softmax transforma esses logits em pesos proporcionais a $e^{2.0} \approx 7.39$, $e^{3.5} \approx 33.12$, $e^{1.0} \approx 2.72$ e $e^{-0.5} \approx 0.61$. O token `true` vence com `75,6%` de probabilidade (`33,12 / 43,83`), gerando JSON inválido já no primeiro passo.
+
+Com decodificação restrita, a FSM fornece o conjunto de tokens permitidos $\mathcal{A}(s) = \{\text{\texttt{\{"}}\}$ para o estado atual $s$ e soma uma máscara $m_i$ a cada logit antes do softmax:
+
+$$p_i = \frac{\exp(z_i + m_i)}{\sum_{j=1}^{V} \exp(z_j + m_j)}, \qquad m_i = \begin{cases} 0 & \text{if } i \in \mathcal{A}(s) \\ -\infty & \text{if } i \notin \mathcal{A}(s) \end{cases}$$
+
+Como $\exp(-\infty) = 0$, os três tokens ilegais caem para probabilidade `0`, e `{"` fica com `7,39 / 7,39 = 1,0`. Depois de amostrar `{"`, a FSM avança para o estado "esperando nome de chave" e carrega a próxima máscara permitida.
+
+<Figure id="26-3-constrained-decoding-loop" />
+
+Checar a gramática de forma ingênua durante o decode teria de inspecionar todo um vocabulário de 100.000 tokens a cada passo, travando a geração. Como mostraram Willard e Louf (2023) em *Efficient Guided Generation*, pré-computar um índice que mapeia cada estado da FSM à sua máscara de bits reduz o custo por passo a uma consulta $O(1)$ em tabela durante o decode. Você paga uma compilação única na primeira vez que o provedor vê um schema novo (dezenas a centenas de milissegundos), e as chamadas seguintes reaproveitam o artefato em cache.
+
+## Sintaxe válida não é verdade semântica
+
+A decodificação restrita elimina `JSONDecodeError`—desde que a geração não bata em `max_tokens` no meio do objeto—mas equipes costumam confundir sintaxe válida com dado confiável. A máscara garante a *forma*, nunca o *significado*.
+
+- **Invariantes entre campos continuam quebrando.** Um schema com `start_date`, `end_date` e `total_usd` não impede que `end_date` venha antes de `start_date` nem que `total_usd` discorde da soma dos itens.
+- **Enums forçam uma escolha mesmo na dúvida.** Se o schema limita `category` a `["billing", "shipping", "cancel"]` sem válvula de escape, uma pergunta fora do escopo acaba empurrada para um desses três rótulos. Inclua sempre um valor explícito `"other"` ou `"insufficient_evidence"` e permita campos nulos quando o dado pode não existir.
+- **Schemas rígidos demais distorcem o raciocínio.** Se o modelo não pode registrar incerteza ou contas intermediárias antes de emitir um booleano `approved`, a máscara o obriga a decidir cedo demais.
+
+:::caveat
+Mantenha um validador real na aplicação (como Pydantic ou Zod) após toda chamada estruturada ao LLM. Deixe a decodificação restrita garantir JSON bem formado e tipos, e deixe seu validador checar contas de domínio, chaves estrangeiras e regras de política.
+:::
+
+## Regras práticas de desenho de schemas
+
+Bons schemas trabalham *a favor* da decodificação autorregressiva da esquerda para a direita em vez de lutar contra ela:
+
+- **Ordene as chaves de propósito.** Coloque campos curtos de `evidence` ou `reasoning` antes de `label` ou `action`. Como todo token emitido condiciona os seguintes, o modelo lê a própria evidência extraída antes de escolher a classificação final.
+- **Evite schemas recursivos ou excessivamente dinâmicos.** Prefira objetos rasos, defina `additionalProperties: false` e limite a profundidade de aninhamento; schemas muito recursivos ou expressões regulares complexas inflam a latência de compilação da FSM e esbarram nos subconjuntos aceitos pelos provedores.
+- **Trate recusa e truncamento.** Inspecione `finish_reason` e o campo `refusal` do provedor antes de fazer o parse. Um corte por `length` ainda entrega JSON quebrado mesmo sob decodificação restrita porque a geração parou antes de a FSM atingir o estado final.

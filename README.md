@@ -102,7 +102,7 @@ site deliberately does not use, are in `AGENTS.md` under **Search metadata**.
 
 ## Current scale
 
-380 lessons live (190 English, 190 Portuguese) across 26 tracks in two parts,
+460 lessons live (230 English, 230 Portuguese) across 34 tracks in three parts,
 with full parity enforced by the build. Part one, tracks 0–13, is how a model
 works. Tracks 0–7 carry the model from first principles
 to efficient inference; track 8 covers the serving stacks that run it (PyTorch,
@@ -129,9 +129,21 @@ trajectory evaluation, resilience, and a capstone. One fictional purchasing
 assistant is built across all twelve tracks in
 [`examples/agent-engineering/`](examples/agent-engineering/), a Python project
 whose tests CI runs on every change: every code block a lesson calls runnable
-is checked against that project by `pnpm content:excerpts`. Nothing there
-needs an API key, a model or a paid service; commands that need KVM, a Slack
-workspace or a cloud account are labelled as not run by CI.
+is checked against that project by `pnpm content:excerpts`. nothing there needs an API key, a model or a paid service; commands that need
+KVM, a Slack workspace or a cloud account are labelled as not run by CI.
+
+Part three, tracks 26–33, is AI engineering in production: stateless APIs, SSE
+streaming and constrained structured outputs, document ingestion and hybrid
+BM25 + HNSW + RRF search, production RAG architectures, retrieval and judge
+evaluation (`rag-eval` lab), RAG tenant security and EU AI Act / OWASP / NIST
+governance, end-to-end latency budgets and multi-layer caching (`ai-system-budget`
+lab), LLMOps and managed-vs-self-hosted economics, and multimodal/voice/system
+defense (including discrete masked and block text diffusion in lesson 33.2).
+Lesson 7.4 adds an interactive next-token `token-sampling` lab (temperature, top-k,
+top-p and min-p), the home page adds a zero-JS 5-stage forward-pass pipeline
+walkthrough, and a bilingual [`/roadmap/`](https://llmdeepdive.com/roadmap/)
+maps all 34 tracks into 16 progressive levels, a 100-day accelerated path,
+portfolio blueprints, and production defense drills.
 
 Each lesson is a course player: the track's syllabus with reading times and
 completion stars, a step list for the lesson's loop, a reading gauge, and a

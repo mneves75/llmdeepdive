@@ -5,8 +5,8 @@ import { localePath, type Locale } from '~/lib/i18n'
 export const TIERS = ['foundations', 'core', 'advanced', 'frontier'] as const
 export type Tier = (typeof TIERS)[number]
 
-/** The course's two halves: how a model works, then how to build systems around one. Each is a band of the sky. */
-export const PARTS = ['models', 'agents'] as const
+/** The course's three parts: how a model works, building agent systems, and AI engineering in production. Each is a band of the sky. */
+export const PARTS = ['models', 'agents', 'engineering'] as const
 export type Part = (typeof PARTS)[number]
 
 export type TrackData = {

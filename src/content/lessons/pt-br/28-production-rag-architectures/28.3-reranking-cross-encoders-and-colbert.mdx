@@ -1,0 +1,92 @@
+---
+id: "28.3-reranking-cross-encoders-and-colbert"
+track: "28-production-rag-architectures"
+order: 3
+title: "Reranking: Cross-Encoders e MaxSim do ColBERT"
+summary: "Aprimore a busca híbrida com reranking em dois estágios: compare o gargalo dos bi-encoders com a atenção conjunta de cross-encoders e a interação tardia MaxSim do ColBERT."
+tier: "core"
+locale: "pt-br"
+prerequisites: ["27.5-bm25-hybrid-search-and-rrf", "28.2-baseline-rag-and-context-assembly"]
+unlocks: ["28.5-grounding-citations-abstention-and-graph-rag", "33.1-visual-document-rag-and-cross-modal-search"]
+analogy: "A busca de primeiro estágio é percorrer os títulos de um depósito com um milhão de livros para puxar cinquenta volumes promissores em um carrinho. Um cross-encoder é um especialista lendo a pergunta e cada uma dessas cinquenta páginas lado a lado antes de entregar as seis melhores. O ColBERT fica no meio: cada palavra de cada página já tem uma ficha catalogada, então conferir o melhor par de cada palavra da pergunta leva microssegundos em vez de reler tudo do zero. A comparação para na memória: guardar uma ficha por palavra multiplica bastante o espaço ocupado."
+teachBack:
+  prompt: "Suponha que uma consulta tenha dois tokens e um trecho tenha três tokens, com similaridades de cosseno [0,82; 0,15; 0,20] para o token 1 da consulta e [0,18; 0,40; 0,76] para o token 2. Calcule a pontuação MaxSim do ColBERT, explique por que um cross-encoder não substitui a busca de primeiro estágio em um milhão de trechos e indique o principal custo de armazenamento do ColBERT."
+  modelAnswer: "Para o token 1 da consulta, a maior similaridade entre os três tokens do trecho é 0,82. Para o token 2, o máximo é 0,76. Somando os máximos por token da consulta obtemos MaxSim = 0,82 + 0,76 = 1,58. Um cross-encoder precisa rodar inferência conjunta do Transformer para cada par consulta-documento; a 2 ms por par, pontuar um milhão de trechos levaria 2.000 segundos por consulta, então ele só atua sobre os 50 melhores candidatos da busca híbrida. O principal custo do ColBERT é armazenamento: guardar um vetor de embedding por token do documento, em vez de um vetor por trecho inteiro, multiplica o tamanho do índice aproximadamente pelo número de tokens do trecho até aplicar compressão."
+quiz:
+  - question: "Um corpus tem 1.000.000 de trechos e um cross-encoder em lote pontua cada par consulta-trecho em 2 ms em média. Por que a recuperação em dois estágios é obrigatória em vez de rodar o cross-encoder no corpus inteiro?"
+    options: ["Cross-encoders não conseguem processar passagens maiores que 64 tokens sem truncar a consulta", "Cross-encoders comparam apenas palavras-chave e ignoram sinônimos", "A busca híbrida já garante exatamente a mesma ordenação da atenção cruzada", "Pontuar 1.000.000 de pares leva 2.000 s, enquanto 50 pares levam 100 ms"]
+    correctIndex: 3
+    explanation: "Cross-encoders não conseguem pré-computar vetores de documentos de forma independente da consulta, então pontuar o corpus inteiro cresce linearmente (2.000 s para 1 milhão de pares). Restringir o cross-encoder aos 50 candidatos do estágio 1 derruba o reranking para ~100 ms."
+  - question: "Uma consulta de dois tokens encontra produtos internos [0,90; 0,10; 0,25] para o primeiro token e [0,30; 0,70; 0,40] para o segundo frente a um trecho de três tokens. Qual é a pontuação MaxSim do ColBERT?"
+    options: ["0,90, escolhendo só o maior produto interno da matriz", "0,44, calculando a média aritmética igualitária dos seis produtos", "1,60, somando o melhor acerto (0,90 + 0,70) de cada token da consulta", "2,65, somando todos os produtos internos positivos entre tokens da consulta e do trecho"]
+    correctIndex: 2
+    explanation: "O MaxSim encontra o token do documento que melhor casa com cada token da consulta separadamente (máximo = 0,90 e máximo = 0,70) e soma esses máximos: 0,90 + 0,70 = 1,60."
+  - question: "Qual é o principal compromisso da interação tardia do ColBERT em relação a um bi-encoder de vetor único?"
+    options: ["Maior espaço vetorial por trecho", "Impossibilidade de pré-computar vetores do documento offline", "Perda de precisão no casamento por token em textos longos", "Falta de suporte para consultas com mais de uma palavra"]
+    correctIndex: 0
+    explanation: "O ColBERT pré-computa e armazena um vetor por token do documento em vez de um único vetor por trecho inteiro, multiplicando o consumo de espaço até que compressão residual ou quantização seja aplicada."
+citations:
+  - title: "ColBERT: Efficient and Effective Passage Search via Contextualized Late Interaction over BERT"
+    authors: "Omar Khattab e Matei Zaharia"
+    year: 2020
+    url: "https://arxiv.org/abs/2004.12832"
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis et al."
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+updated: "2026-11-20"
+---
+
+A busca híbrida da [aula 27.5](/pt-br/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/) costuma colocar a passagem correta entre os 50 primeiros candidatos, mas a única evidência de que você precisa frequentemente estaciona na posição 14 em vez da posição 1. Se a montagem de contexto da [aula 28.2](/pt-br/lessons/28-production-rag-architectures/28.2-baseline-rag-and-context-assembly/) envia apenas 6 trechos, a posição 14 nunca chega ao modelo de linguagem. O *reranking* (reordenação) fecha essa lacuna de precisão: um pontuador mais forte e sensível à consulta examina os 30 a 100 melhores candidatos e promove a evidência real ao topo antes da montagem.
+
+## Por que a recuperação por vetor único deixa precisão na mesa
+
+Um *bi-encoder* (o modelo padrão de *embeddings* densos) codifica a consulta e cada trecho de maneira totalmente separada em um único vetor de tamanho fixo cada, comparando os dois por um produto interno ou similaridade de cosseno. Essa independência viabiliza busca aproximada rápida em milhões de trechos, pois cada vetor de trecho é calculado uma única vez na indexação.
+
+O gargalo é a compressão. Espremer um trecho técnico de 300 tokens em um só vetor obriga um ponto no espaço a representar nomes de produtos, códigos de erro, pré-condições e exceções ao mesmo tempo. Quando alguém pergunta `"prazo de reembolso após retenção alfandegária"`, um trecho genérico sobre `"prazos de entrega"` e `"reembolso padrão"` pode pontuar acima da cláusula exata sobre `"retenção na alfândega"`—porque consulta e passagem nunca enxergaram os tokens um do outro dentro do codificador.
+
+## Cross-encoders: atenção completa em um conjunto pequeno
+
+Um *cross-encoder* remove esse gargalo de informação. Em vez de codificar consulta e trecho separadamente, ele concatena ambos em uma só sequência—`[CLS] consulta [SEP] trecho [SEP]`—e executa todas as camadas de autoatenção do Transformer sobre os dois juntos. Cada token da consulta presta atenção diretamente em cada token do trecho, capturando negações, condições exatas e vínculos sutis de entidades, antes que uma cabeça linear emita uma pontuação escalar de relevância.
+
+Por que não rodar um cross-encoder na base inteira? Faça a conta de latência. Suponha que o corpus tenha 1.000.000 de trechos e que um cross-encoder em lote em GPU leve em média 2 ms por par consulta-trecho:
+
+$$
+T_{\text{total}} = 1{,}000{,}000 \times 0.002\ \text{s} = 2{,}000\ \text{s} \approx 33.3\ \text{minutos por consulta}.
+$$
+
+Rodá-lo em dois estágios muda a conta por completo. O estágio 1 (BM25 mais busca densa combinados por *Reciprocal Rank Fusion*) traz 50 candidatos em 25 ms. O estágio 2 envia apenas esses 50 pares ao cross-encoder em um lote, levando cerca de 60 a 100 ms conforme o comprimento do texto e o hardware. A latência total fica perto de 100 ms, enquanto o gerador recebe 6 trechos bem ordenados em vez de 20 cheios de ruído.
+
+## Interação tardia do ColBERT e MaxSim na mão
+
+Khattab e Zaharia (2020) investigaram como manter o casamento no nível de tokens sem pagar inferência completa de cross-encoder em cada par. A resposta deles, o *ColBERT* (*Contextualized Late Interaction over BERT*), codifica cada documento offline—como um bi-encoder—mas guarda um vetor compacto normalizado (em geral de 128 dimensões) por token, em vez de resumir o trecho inteiro em um só vetor. Na hora da consulta, o codificador gera um vetor por token da consulta, e um operador matricial rápido chamado *MaxSim* pontua cada candidato.
+
+Resolva um exemplo pequeno na mão. Suponha que a consulta tenha dois tokens (`reembolso`, `atraso`) e um trecho candidato tenha três tokens (`devolução`, `alfândega`, `retenção`). Calcular a similaridade de cosseno entre cada vetor de token da consulta e cada vetor de token do trecho gera uma matriz $2 \times 3$:
+
+- **Token 1 da consulta (`reembolso`)** contra `[devolução, alfândega, retenção]` produz `[0,82; 0,15; 0,20]`; o melhor casamento é $0.82$.
+- **Token 2 da consulta (`atraso`)** contra `[devolução, alfândega, retenção]` produz `[0,18; 0,40; 0,76]`; o melhor casamento é $0.76$.
+- **Pontuação MaxSim total** soma os máximos por token da consulta: $0.82 + 0.76 = 1.58$.
+
+Note o que aconteceu: cada token da consulta encontrou sua melhor evidência em qualquer ponto da passagem sem ser diluído por palavras irrelevantes do mesmo trecho. A regra geral do ColBERT para embeddings dos tokens da consulta $Q = \{q_1, \dots, q_{|Q|}\}$ e do documento $D = \{d_1, \dots, d_{|D|}\}$ é:
+
+$$
+S(Q, D) = \sum_{i=1}^{|Q|} \max_{j=1}^{|D|} \left( q_i \cdot d_j \right).
+$$
+
+Como todos os $d_j$ já estão pré-computados antes de a consulta chegar, o MaxSim se reduz a produtos internos em lote e máximos por linha—ordens de grandeza mais rápido por candidato do que rodar autoatenção completa sobre texto concatenado.
+
+## Escolhendo entre cross-encoders e ColBERT em produção
+
+Cada reranker ocupa um ponto distinto no triângulo entre acurácia, latência e armazenamento:
+
+| Arquitetura | Interação consulta–trecho | Armazenamento offline por trecho | Papel típico em produção |
+|---|---|---|---|
+| Bi-encoder (vetor único) | Um único produto interno | 1 vetor (~3 KiB em 768 dims, fp32) | Recuperação de estágio 1 em milhões de trechos |
+| ColBERT (interação tardia) | MaxSim por token | $N_{\text{tokens}}$ vetores (~32 KiB em 128 tokens × 128 dims, fp16 sem compressão) | Reranker rápido de estágio 2 ou índice multivetor comprimido |
+| Cross-encoder | Autoatenção completa em múltiplas camadas | Nenhum (lê texto bruto na consulta) | Reranker de precisão máxima no estágio 2 sobre top 20–100 |
+
+Observe o salto de armazenamento no ColBERT: guardar 128 vetores de token de 128 dimensões em fp16 de 2 bytes consome $128 \times 128 \times 2 = 32{,}768$ bytes (32 KiB) por trecho antes de quantização residual—mais de 10 vezes um único vetor fp32 de bi-encoder. Implantações em produção ou comprimem agressivamente os vetores de token (códigos residuais de 2 bits) ou usam ColBERT apenas sobre os 100 melhores candidatos, enquanto cross-encoders atendem cargas que comportam 50 a 120 ms de inferência em GPU para atingir precisão máxima.
+
+:::caveat
+O reranking só consegue promover trechos que o estágio 1 realmente recuperou. Se a busca híbrida deixar uma passagem relevante fora dos 50 primeiros candidatos, nem um cross-encoder perfeito a encontra—meça sempre o Recall@50 do estágio 1 antes de ajustar rerankers do estágio 2.
+:::

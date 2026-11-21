@@ -64,22 +64,26 @@ test('the lift ends with every point on the sphere and starts on the chart plane
 })
 
 test('the lifted plate stays in frame and faces the viewer over the whole sway', () => {
-  const [width, height] = [1000, 560]
-  const camera = new THREE.PerspectiveCamera()
-  frameCamera(camera, FRAME, width, height, 1)
-  const toCamera = new THREE.Vector3()
-  const corners = [[-1, -1], [-1, 1], [1, -1], [1, 1], [0, 0]]
-  for (let step = 0; step <= 360; step += 1) {
-    const sway = swayAt((step / 360) * SKY_PERIOD_S)
-    for (const [px, py] of corners) {
-      const rotation = skyRotation(sway, { x: px * PARALLAX_LIMIT, y: py * PARALLAX_LIMIT }, 1)
-      for (const [x, y] of grid(100)) {
-        const point = liftedPoint(FRAME, x, y, 1).applyQuaternion(rotation)
-        const screen = project(camera, point, width, height)
-        assert.ok(screen.x >= 0 && screen.x <= width, `(${x}, ${y}) leaves the frame sideways (${screen.x.toFixed(1)})`)
-        assert.ok(screen.y >= 0 && screen.y <= height, `(${x}, ${y}) leaves the frame vertically (${screen.y.toFixed(1)})`)
-        toCamera.copy(camera.position).sub(point).normalize()
-        assert.ok(point.clone().normalize().dot(toCamera) > 0.2, `(${x}, ${y}) turns away from the viewer`)
+  for (const frame of [FRAME, { width: 1000, height: 1800 }]) {
+    const { width, height } = frame
+    const camera = new THREE.PerspectiveCamera()
+    frameCamera(camera, frame, width, height, 1)
+    const toCamera = new THREE.Vector3()
+    const corners = [[-1, -1], [-1, 1], [1, -1], [1, 1], [0, 0]]
+    for (let step = 0; step <= 360; step += 6) {
+      const sway = swayAt((step / 360) * SKY_PERIOD_S)
+      for (const [px, py] of corners) {
+        const rotation = skyRotation(sway, { x: px * PARALLAX_LIMIT, y: py * PARALLAX_LIMIT }, 1)
+        for (let x = 0; x <= frame.width; x += 100) {
+          for (let y = 0; y <= frame.height; y += 100) {
+            const point = liftedPoint(frame, x, y, 1).applyQuaternion(rotation)
+            const screen = project(camera, point, width, height)
+            assert.ok(screen.x >= 0 && screen.x <= width, `(${x}, ${y}) leaves the frame sideways (${screen.x.toFixed(1)})`)
+            assert.ok(screen.y >= 0 && screen.y <= height, `(${x}, ${y}) leaves the frame vertically (${screen.y.toFixed(1)})`)
+            toCamera.copy(camera.position).sub(point).normalize()
+            assert.ok(point.clone().normalize().dot(toCamera) > 0.2, `(${x}, ${y}) turns away from the viewer`)
+          }
+        }
       }
     }
   }

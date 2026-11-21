@@ -1,0 +1,81 @@
+---
+id: "27.1-document-ingestion-and-layout-parsing"
+track: "27-retrieval-and-hybrid-search"
+order: 1
+title: "Document Ingestion & Why PDFs Break RAG"
+summary: "PDF files store drawing coordinates rather than paragraphs. Extracting reading order, tables, and provenance metadata at ingestion sets the quality ceiling for every downstream retrieval step."
+tier: "core"
+locale: "en"
+prerequisites: ["19.2-ingestion-and-retrieval", "1.2-tokenization-i"]
+unlocks: ["27.2-chunking-strategies-and-boundaries", "33.1-visual-document-rag-and-cross-modal-search"]
+analogy: "Extracting text naively from a PDF is like sweeping up the wooden letters from a knocked-over Scrabble board from left to right across the table and expecting two separate words from adjacent columns to still make sense. A PDF only remembers where each glyph was painted on the page, not which paragraph or table cell owns it. The comparison stops at hybrid files: unlike Scrabble tiles that are always physical letters, a PDF page can mix vector text with scanned raster images that contain no character codes at all until optical character recognition runs."
+teachBack:
+  prompt: "A team builds a RAG assistant over 500 two-column financial PDFs using a basic text extractor, and users complain that numbers from quarterly tables are constantly wrong even though the source pages are retrieved. Explain why PDF layout causes this failure, compute how much noise repeated 30-word running headers add across a 40-page report, and list the four provenance and access-control fields you would attach to every parsed unit."
+  modelAnswer: "PDF stores glyphs at (x, y) drawing coordinates rather than logical paragraphs or tables, so a naive left-to-right extractor stitches text across column gutters and flattens multi-column tables into unlabeled streams of numbers whose row and column headers detach from their values. Repeating a 30-word header and footer across 40 pages injects 30 × 40 = 1,200 boilerplate words directly inside paragraphs, corrupting chunk boundaries and token embeddings. Every canonical parsed unit should carry doc_id, page number (or section path), tenant_id and ACL group list, and content_hash plus updated_at so citations resolve cleanly, unauthorized chunks are filtered, and incremental re-indexing stays accurate."
+quiz:
+  - question: "Why does naive left-to-right text extraction frequently corrupt two-column PDFs before chunking or embedding even starts?"
+    options: ["PDF files encrypt column metadata unless decrypted by a licensed viewer", "PDFs store glyph coordinates instead of paragraphs, merging both columns", "Tokenizers drop newline characters whenever a file exceeds ten pages", "PDF 2.0 forbids UTF-8 encoding inside multi-column layouts by specification"]
+    correctIndex: 1
+    explanation: "As ISO 32000-2 specifies, PDF is a page-description format that positions characters by (x, y) coordinates. Without layout analysis to detect column boundaries and reading order, a simple extractor reads straight across both columns on the same horizontal baseline."
+  - question: "A 40-page corporate PDF has a 30-word header and footer on every page plus five scanned pages embedded as JPEG images. What happens if you run a plain text-layer extractor over it?"
+    options: ["The extractor skips headers automatically and runs built-in OCR on the five scanned pages", "The extractor refuses to open the document until all 40 pages use identical font tables", "It injects 1,200 repeated header words into prose and silently drops the five scanned pages", "It doubles the file's token count only on the five scanned pages while keeping the other 35 clean"]
+    correctIndex: 2
+    explanation: "A plain text-layer reader dumps running headers inline (30 × 40 = 1,200 words of repeated noise) and extracts zero text from raster-only scanned pages, creating silent recall blind spots unless the ingestion pipeline routes low-text pages through OCR or vision parsing."
+  - question: "Why must content hashes and tombstones be part of a production document ingestion pipeline?"
+    options: ["Unchanged files skip redundant re-embedding and deleted source files are purged cleanly from the index", "Vector databases cannot store cosine-normalized embeddings unless every row includes a SHA-256 primary key", "Content hashes compress PDF tables into Markdown automatically without running a layout detection model", "Tombstones prevent tokenization drift when switching from subword BPE to character-level vocabularies"]
+    correctIndex: 0
+    explanation: "Hashing each canonical document or section lets scheduled sync jobs re-embed only modified content instead of paying to re-index the entire corpus, while explicit tombstones delete stale chunks so retracted policies never leak back into answers."
+citations:
+  - title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks"
+    authors: "Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, Sebastian Riedel, Douwe Kiela"
+    year: 2020
+    url: "https://arxiv.org/abs/2005.11401"
+  - title: "ISO 32000-2:2020 Document Management — Portable Document Format — Part 2 (PDF 2.0)"
+    authors: "International Organization for Standardization"
+    year: 2020
+    url: "https://www.iso.org/standard/75839.html"
+updated: "2026-11-20"
+---
+
+Most Retrieval-Augmented Generation (RAG) projects blame the embedding model or the LLM when answers quote the wrong number from a report. Open the raw text stored in the index, and half the time the answer was already destroyed before a single vector was computed: two columns got glued together, a financial table dissolved into naked digits, or five scanned pages vanished silently. Ingestion is where retrieval quality is won or lost.
+
+## Why PDF is hostile to text extraction
+
+HTML, Markdown, and DOCX store a logical document tree—headings, paragraphs, lists, and explicit `<table>` rows. **Portable Document Format (PDF)**, standardized in ISO 32000-2, was built for a different job: guaranteeing that a page prints identically on every printer. Internally, a PDF page is mostly a stream of drawing instructions saying "paint glyph `R` at coordinate `(72, 710)` in 11 pt Helvetica." Tagged PDFs can carry structure trees, yet most real-world business PDFs omit or break them.
+
+Picture a concrete two-column quarterly report. On horizontal line `y = 640`, column A reads `"Revenue rose 14% year over year"` and column B reads `"excluding the Q4 European write-off."` A naive extractor sorting glyphs by `y` then `x` stitches them into `"Revenue rose 14% year over year excluding the Q4 European write-off."` Worse, a 4-column balance sheet loses its column headers and turns into `"2024 41.2 2025 38.9"`—once split into tokens (as in [Tokenization I](/lessons/1-text-to-tensors/1.2-tokenization-i/)), neither a vector search nor an LLM can tell which figure belongs to which metric.
+
+Running chrome compounds the damage. If a `40`-page PDF carries a `30`-word header and footer (`"Acme Corp Confidential — FY2025 Audit — Page 12 of 40"`) on every page, naive extraction splices `40 × 30 = 1,200` words of identical boilerplate right through the middle of sentences that cross page breaks.
+
+<Figure id="27-1-ingestion-pipeline" />
+
+## A four-stage layout-aware ingestion pipeline
+
+Building on the ingestion loop introduced in [Ingestion and Retrieval](/lessons/19-agent-memory-and-context/19.2-ingestion-and-retrieval/), a production pipeline treats parsing as structured data engineering rather than a one-line `pdftotext` call:
+
+- **Format triage and OCR routing.** Inspect each file's MIME type and per-page character density. Parse HTML, Markdown, and DOCX directly from their native trees. For PDFs, detect scanned or image-heavy pages (low text-to-area ratio or embedded raster scans) and route them to **Optical Character Recognition (OCR)** or a vision-language parser instead of silently indexing zero tokens.
+- **Layout analysis and reading-order reconstruction.** Segment each page into typed blocks—title, heading, paragraph, list, table, figure caption, header/footer—using a layout detector. Drop repeating headers, footers, and page numbers; reconstruct multi-column reading order; and serialize tables into Markdown or compact HTML so every cell stays bound to its row and column header.
+- **Canonical text normalization.** Repair broken soft hyphens at line wraps (`"retriev-\nal"` → `"retrieval"`), normalize Unicode ligatures (`ﬁ` → `fi`), and preserve code blocks intact without stripping indentation.
+- **Provenance and access-control attachment.** Attach structured metadata to every extracted block before chunking: `doc_id`, `source_uri`, `page`, `section_path` (such as `"4. Pricing > 4.2 Enterprise"`), `tenant_id`, `acl_groups`, `content_hash`, and `updated_at`.
+
+:::insight
+Serialize every table with its headers intact and prepend its nearby title or caption. If a long table spans three pages, repeat the column header row on every split chunk so no fragment becomes an orphan wall of numbers.
+:::
+
+## Incremental sync, deduplication, and tombstones
+
+Corpora are not static zip archives; policies get amended, contracts expire, and wiki pages get deleted. Re-embedding a 100,000-document repository from scratch every night wastes money and creates stale windows.
+
+Compute a deterministic `content_hash` over the canonical parsed text plus security metadata. On each sync run:
+
+- If `doc_id` exists with the same `content_hash`, skip chunking and embedding altogether.
+- If `content_hash` changed, insert the new version's chunks atomically and delete the old version's chunks using the prior `version_id` so two conflicting editions of the same policy never coexist in search results.
+- If a document disappeared from the source system (or lost permissions), write a **tombstone** and purge its indexed chunks immediately.
+
+:::warning
+Always inspect 20 randomly sampled parsed documents visually—side by side with the original PDFs—before tuning embeddings or prompts. A 30-minute parser audit routinely recovers more retrieval accuracy than weeks of model swapping.
+:::
+
+## When text extraction is still not enough
+
+Some enterprise documents—engineering blueprints, dense slide decks with callout arrows, scanned handwritten forms, or multi-axis financial charts—encode critical meaning visually rather than in prose. Converting those pages to text alone discards spatial relationships. Later in Part 3, you will see how visual document RAG indexes page images directly alongside text parsing; for every text-centric corpus, clean layout-aware parsing remains the foundation that sets your retrieval ceiling.

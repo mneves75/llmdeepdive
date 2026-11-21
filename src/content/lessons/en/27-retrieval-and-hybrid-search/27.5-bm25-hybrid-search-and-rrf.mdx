@@ -1,0 +1,97 @@
+---
+id: "27.5-bm25-hybrid-search-and-rrf"
+track: "27-retrieval-and-hybrid-search"
+order: 5
+title: "BM25, Hybrid Search & Reciprocal Rank Fusion"
+summary: "Dense vectors capture paraphrases while BM25 catches exact codes and rare identifiers. Combine both retrievers with Reciprocal Rank Fusion so consensus wins without fragile score normalization."
+tier: "core"
+locale: "en"
+prerequisites: ["27.4-ann-vector-indexes-and-hnsw"]
+unlocks: ["28.1-rag-vs-long-context-vs-fine-tuning", "28.3-reranking-cross-encoders-and-colbert", "29.2-retrieval-and-generation-metrics"]
+analogy: "Running hybrid search with Reciprocal Rank Fusion is like asking two specialist judges—a semantic librarian who understands ideas and a strict index clerk who matches exact serial numbers—to hand you their ranked shortlists. Instead of arguing over whether the librarian's 0.84 cosine score beats the clerk's 5.34 BM25 score, you convert each judge's placement into 1 / (60 + rank) and add the two votes together. The comparison stops at confidence margins: rank fusion ignores how far ahead first place was from second, so if one judge is dead certain and the other guessed randomly, a downstream reranker still helps break close ties."
+teachBack:
+  prompt: "First, compute Okapi BM25 for a term with corpus N = 10,000, df = 250, tf = 3, docLen = 400, avgDocLen = 250, k1 = 1.5, and b = 0.75 (giving IDF, length norm, and term score). Second, compute RRF (k = 60) for Doc A (dense #1, BM25 #40), Doc B (dense #3, BM25 #2), and Doc C (dense #2, absent from BM25), and explain why Doc B wins without normalizing raw scores."
+  modelAnswer: "For BM25, smoothed IDF = ln(1 + (10,000 - 250 + 0.5) / (250 + 0.5)) = ln(39.924) = 3.687. Length norm = 1 - 0.75 + 0.75 × (400 / 250) = 1.45. The term score is 3.687 × (3 × 2.5) / (3 + 1.5 × 1.45) = 3.687 × 7.5 / 5.175 = 5.343. For RRF with k = 60: Doc A scores 1/61 + 1/100 = 0.02639, Doc B scores 1/63 + 1/62 = 0.03200, and Doc C scores 1/62 = 0.01613. Doc B wins because RRF uses rank positions rather than incompatible raw scales (bounded cosine vs unbounded BM25) and rewards consensus across both retrievers."
+quiz:
+  - question: "Why does pure dense vector retrieval often fail on queries containing error codes like ERR_TLS_HANDSHAKE_TIMEOUT or part IDs like SKU-9482-B?"
+    options: ["HNSW graphs reject alphanumeric strings containing underscores during insertion", "Dense bi-encoders compress rare exact tokens poorly, missing literal matches", "Cosine similarity clips scores to zero whenever query length is below five words", "Unit L2 normalization erases uppercase characters before token embeddings run"]
+    correctIndex: 1
+    explanation: "Bi-encoders map text into smooth semantic neighborhoods learned during training, so rare identifiers, serial numbers, and exact error strings that were not heavily represented in pretraining collapse into nearby noise unless paired with lexical retrieval like BM25."
+  - question: "In Okapi BM25 (N = 10,000, df = 250, docLen = 400, avgDocLen = 250, k1 = 1.5, b = 0.75), a term with tf = 3 scores 5.343 (IDF = 3.687, length norm = 1.45). What happens if a writer stuffs that same term 30 times into the document instead of 3?"
+    options: ["The BM25 score increases exactly 10× to 53.43 because term frequency scales linearly", "The BM25 score drops to zero because k1 penalizes any document repeating a word past 10 occurrences", "The BM25 score grows sub-linearly and saturates below IDF × (k1 + 1) ≈ 9.22", "The IDF component recomputes upward because higher term frequency lowers document frequency"]
+    correctIndex: 2
+    explanation: "BM25's term-frequency factor tf(k1 + 1) / (tf + k1 · lengthNorm) approaches k1 + 1 asymptotically as tf grows, capping the contribution at IDF × (k1 + 1) ≈ 3.687 × 2.5 = 9.22 regardless of keyword stuffing."
+  - question: "Using Reciprocal Rank Fusion with k = 60, Doc A is dense #1 and BM25 #40, Doc B is dense #3 and BM25 #2, and Doc C is dense #2 and absent from BM25. Which document finishes first and with what fused score?"
+    options: ["Doc A finishes first with 0.03200 because dense rank #1 dominates all lower placements", "Doc C finishes first with 0.02639 because missing BM25 ranks default to 1/60", "Doc A and Doc B tie at 0.02639 because k = 60 flattens every rank inside the top 50", "Doc B wins at 0.03200 (1/63 + 1/62), ahead of Doc A (0.02639) and Doc C (0.01613)"]
+    correctIndex: 3
+    explanation: "RRF sums 1 / (k + rank) over the retrievers that returned each document: Doc B gets 1/63 + 1/62 = 0.01587 + 0.01613 = 0.03200, beating Doc A (1/61 + 1/100 = 0.02639) and Doc C (1/62 = 0.01613)."
+citations:
+  - title: "The Probabilistic Relevance Framework: BM25 and Beyond"
+    authors: "Stephen Robertson, Hugo Zaragoza"
+    year: 2009
+    url: "https://doi.org/10.1561/1500000019"
+  - title: "Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods"
+    authors: "Gordon V. Cormack, Charles L. A. Clarke, Stefan Büttcher"
+    year: 2009
+    url: "https://doi.org/10.1145/1571941.1572114"
+updated: "2026-11-20"
+---
+
+Vector databases and HNSW from [Vector Databases, HNSW & Filtered ANN Search](/lessons/27-retrieval-and-hybrid-search/27.4-ann-vector-indexes-and-hnsw/) excel at paraphrases: search `"recover locked two-factor account"` and dense search pulls `"MFA reset procedure"` effortlessly. Now search for an exact identifier—`ERR_SSL_VERSION_OR_CIPHER_MISMATCH`, invoice `INV-2026-0419`, or part code `SKU-9482-B`—and dense embeddings routinely miss the exact document sitting right in front of them. Conversely, keyword search nails exact identifiers and misses paraphrases. **Hybrid search** runs both retrievers in parallel and fuses their rankings.
+
+## Okapi BM25: exact lexical matching with saturation
+
+The standard lexical retriever is **Okapi BM25** (Best Matching 25), formalized in Robertson and Zaragoza (2009). Rather than counting raw keyword hits—which keyword-stuffed or sprawling documents would game—BM25 weights every matching query term $t$ using three ideas:
+
+1. **Inverse Document Frequency (IDF):** rare words across the corpus carry more signal than common words like `"system"`.
+2. **Term-frequency saturation ($k_1$, standard default `1.5`):** seeing a term 3 times matters far more than seeing it once, yet seeing it 30 times is not 10× more relevant than 3.
+3. **Document length normalization ($b$, standard default `0.75`):** a 400-token chunk mentioning a word 3 times is less concentrated than a 250-token average chunk mentioning it 3 times.
+
+Walk through a concrete single-term calculation before looking at the general equations. Suppose a corpus has $N = 10{,}000$ documents, the query term appears in $\text{df} = 250$ documents, and a candidate document of length $\text{docLen} = 400$ tokens (against corpus average $\text{avgDocLen} = 250$) contains the term $\text{tf} = 3$ times, with $k_1 = 1.5$ and $b = 0.75$:
+
+- **Smoothed IDF:** $\ln\!\left(1 + \frac{10{,}000 - 250 + 0.5}{250 + 0.5}\right) = \ln(1 + 38.924) = 3.687$.
+- **Length normalization factor:** $1 - 0.75 + 0.75 \cdot \frac{400}{250} = 0.25 + 1.20 = 1.45$.
+- **BM25 term score:** $3.687 \cdot \frac{3 \cdot (1.5 + 1)}{3 + 1.5 \cdot 1.45} = 3.687 \cdot \frac{7.5}{5.175} = 5.343$.
+
+In general, using the standard Lucene/Robertson–Spärck Jones smoothed IDF so scores stay non-negative:
+
+$$\text{IDF}(t) = \ln\!\left(1 + \frac{N - \text{df}(t) + 0.5}{\text{df}(t) + 0.5}\right)$$
+
+$$\text{BM25}(t, d) = \text{IDF}(t) \cdot \frac{\text{tf} \cdot (k_1 + 1)}{\text{tf} + k_1 \cdot \left(1 - b + b \cdot \frac{|d|}{\text{avgdl}}\right)}$$
+
+For a multi-word query, BM25 sums this score across every query term present in document $d$. Notice that as $\text{tf} \to \infty$, the fraction saturates at $k_1 + 1 = 2.5$, bounding any single term's contribution below $3.687 \times 2.5 = 9.22$ no matter how heavily a document repeats the word.
+
+## Why raw score blending is brittle
+
+Once you have a dense top-50 list (cosine scores in `[-1, 1]`, often clustered tightly between `0.72` and `0.86`) and a BM25 top-50 list (unbounded scores in `[0, ∞)` that shift with query length and corpus IDF), a tempting shortcut is linear blending: $\alpha \cdot s_{\text{dense}} + (1 - \alpha) \cdot s_{\text{BM25}}$.
+
+That shortcut breaks quickly in production:
+
+- **Incompatible scales:** adding `0.82` cosine to `14.6` BM25 lets BM25 dominate unless you rescale every query.
+- **Min-max distortion:** rescaling a query's top-50 BM25 scores into `[0, 1]` turns an irrelevant outlier (`0.4` vs `0.1`) into a fake `1.0`, promoting noise whenever lexical search had no real match.
+
+## Reciprocal Rank Fusion (RRF)
+
+Cormack, Clarke, and Büttcher (2009) showed that discarding raw scores altogether and combining **rank positions** via **Reciprocal Rank Fusion (RRF)** beats complex score-calibration heuristics across diverse corpora. For each candidate document $d$ across retrievers $r \in R$ (using 1-based rank $\text{rank}_r(d)$, omitting retrievers that did not return $d$):
+
+$$\text{RRF}(d) = \sum_{r \in R} \frac{1}{k + \text{rank}_r(d)}$$
+
+The smoothing constant $k = 60$ damps the gap between rank #1 and rank #3 so neither retriever's isolated #1 outlier overwhelms strong agreement from both engines.
+
+Compute the worked comparison with $k = 60$ across three candidate documents:
+
+- **Document A** (dense #1, BM25 #40): $\frac{1}{60 + 1} + \frac{1}{60 + 40} = 0.01639 + 0.01000 = 0.02639$.
+- **Document B** (dense #3, BM25 #2): $\frac{1}{60 + 3} + \frac{1}{60 + 2} = 0.01587 + 0.01613 = 0.03200$ (**wins**).
+- **Document C** (dense #2, absent from BM25): $\frac{1}{60 + 2} = 0.01613$.
+
+<Figure id="27-5-rrf-fusion-grid" />
+
+Document B finishes decisively ahead of Document A—even though Document A was dense #1—because both semantic and lexical search place Document B near the top. Document C drops to third because only one retriever backed it.
+
+:::insight
+RRF needs zero training data, zero per-query score normalization, and extends directly to three or more lists (for example, dense + BM25 + metadata-boosted title index). Start every production RAG system with hybrid BM25 + dense + RRF before tuning custom weights.
+:::
+
+## Limits of rank-only fusion
+
+RRF has one real blind spot: because it discards raw score margins, it treats a massive confidence lead the same as a photo-finish tie. If an exact SKU query yields a BM25 #1 score of `28.0` and #2 score of `1.1`, while dense search returns irrelevant guesses, unweighted RRF still gives dense #1 equal rank weight (`1/61`). Two lightweight fixes handle that edge case cleanly in Track 28: adding modest modality weights when domain evals justify them, or—far better—passing the fused top-50 candidates to a **cross-encoder reranker** that reads the query and each chunk jointly.

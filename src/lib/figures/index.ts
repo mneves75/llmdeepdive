@@ -28,6 +28,14 @@ import { TRACK_22_FIGURES } from './22-multi-agent-systems-and-a2a'
 import { TRACK_23_FIGURES } from './23-agent-evaluation-and-ci'
 import { TRACK_24_FIGURES } from './24-agent-resilience-and-fallbacks'
 import { TRACK_25_FIGURES } from './25-agent-capstone-and-portfolio'
+import { TRACK_26_FIGURES } from './26-llm-apis-and-structured-outputs'
+import { TRACK_27_FIGURES } from './27-retrieval-and-hybrid-search'
+import { TRACK_28_FIGURES } from './28-production-rag-architectures'
+import { TRACK_29_FIGURES } from './29-llm-and-rag-evaluations'
+import { TRACK_30_FIGURES } from './30-rag-security-privacy-and-governance'
+import { TRACK_31_FIGURES } from './31-ai-system-design-and-caching'
+import { TRACK_32_FIGURES } from './32-llmops-and-managed-platforms'
+import { TRACK_33_FIGURES } from './33-multimodal-voice-and-system-defense'
 
 export const FIGURES = {
   ...TRACK_1_FIGURES,
@@ -48,6 +56,14 @@ export const FIGURES = {
   ...TRACK_23_FIGURES,
   ...TRACK_24_FIGURES,
   ...TRACK_25_FIGURES,
+  ...TRACK_26_FIGURES,
+  ...TRACK_27_FIGURES,
+  ...TRACK_28_FIGURES,
+  ...TRACK_29_FIGURES,
+  ...TRACK_30_FIGURES,
+  ...TRACK_31_FIGURES,
+  ...TRACK_32_FIGURES,
+  ...TRACK_33_FIGURES,
 } as const satisfies FigureRegistry
 
 export type FigureId = keyof typeof FIGURES

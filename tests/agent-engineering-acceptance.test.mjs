@@ -23,7 +23,9 @@ const EXAMPLES = 'examples/agent-engineering'
 const CONTENT = process.env.LLMDEEPDIVE_CONTENT_ROOT ?? 'src/content'
 const DIST = process.env.LLMDEEPDIVE_DIST_ROOT ?? 'dist'
 const inventory = JSON.parse(readFileSync(join(SPEC_DIR, 'inventory.json'), 'utf8'))
+const engineeringInventory = JSON.parse(readFileSync('docs/plans/ai-engineering-roadmap/inventory.json', 'utf8'))
 const NEW_TRACKS = new Set(inventory.tracks.map((track) => track.id))
+const ENGINEERING_TRACKS = new Set(engineeringInventory.tracks.map((track) => track.id))
 const NEW_LESSONS = new Map(inventory.lessons.map((lesson) => [lesson.id, lesson]))
 const FENCE = /^```[^\n]*\n([\s\S]*?)^```/gmu
 const HEADER = /^(?:#|\/\/) file: (\S+)\s*$/u
@@ -47,16 +49,17 @@ function corpus(locale) {
 
 const corpora = new Map(LOCALES.map((locale) => [locale, corpus(locale)]))
 
-// --- Acceptance 1: 26 tracks and 190 lessons per locale, in two parts -------
+// --- Acceptance 1: 34 tracks and 230 lessons per locale, in three parts -----
 
 for (const locale of LOCALES) {
-  test(`${locale}: 26 tracks and 190 lessons, tracks 14–25 in the agents part`, () => {
+  test(`${locale}: 34 tracks and 230 lessons, tracks 14–25 in agents and 26–33 in engineering`, () => {
     const { tracks, lessons } = corpora.get(locale)
-    assert.equal(tracks.length, 26)
-    assert.equal(lessons.length, 190)
-    assert.equal(new Set(lessons.map((item) => item.id)).size, 190, 'duplicate lesson id')
+    assert.equal(tracks.length, 34)
+    assert.equal(lessons.length, 230)
+    assert.equal(new Set(lessons.map((item) => item.id)).size, 230, 'duplicate lesson id')
     for (const track of tracks) {
-      assert.equal(track.part, NEW_TRACKS.has(track.id) ? 'agents' : 'models', `${track.id} part`)
+      const expectedPart = NEW_TRACKS.has(track.id) ? 'agents' : ENGINEERING_TRACKS.has(track.id) ? 'engineering' : 'models'
+      assert.equal(track.part, expectedPart, `${track.id} part`)
       assert.equal(track.locale, locale)
     }
     for (const planned of inventory.tracks) {
@@ -329,12 +332,12 @@ for (const locale of LOCALES) {
     }
   })
 
-  test(`${locale}: the build holds 190 lesson pages and 26 track pages`, () => {
+  test(`${locale}: the build holds 230 lesson pages and 34 track pages`, () => {
     const base = locale === 'en' ? DIST : join(DIST, 'pt-br')
     const lessonsPages = walkFiles(resolve(base, 'lessons'), new Set(['.html'])).filter((file) => /lessons\/[^/]+\/[^/]+\/index\.html$/u.test(file))
     const trackPages = walkFiles(resolve(base, 'tracks'), new Set(['.html'])).filter((file) => /tracks\/[^/]+\/index\.html$/u.test(file))
-    assert.equal(lessonsPages.length, 190)
-    assert.equal(trackPages.length, 26)
+    assert.equal(lessonsPages.length, 230)
+    assert.equal(trackPages.length, 34)
   })
 }
 
@@ -358,7 +361,7 @@ test('progress keys keep the shape that stored first-part progress uses', () => 
 
 test('tracks 0–13 keep their lesson ids and orders', () => {
   // Progress keys and URLs are the lesson id; the first part must not move.
-  const first = corpora.get('en').lessons.filter((item) => !NEW_TRACKS.has(item.track))
+  const first = corpora.get('en').lessons.filter((item) => !NEW_TRACKS.has(item.track) && !ENGINEERING_TRACKS.has(item.track))
   assert.equal(first.length, 130)
   for (const item of first) {
     assert.ok(new RegExp(`/${item.track}/${item.id}\\.mdx$`, 'u').test(item.file), `${item.file}: id or track does not match its path`)

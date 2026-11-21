@@ -28,6 +28,7 @@ export function lastmodByPath() {
     dates.set(`${prefix}/lessons/${track}/${lesson.id}/`, iso)
     keepNewest(`${prefix}/tracks/${track}/`, iso)
     keepNewest(`${prefix}/tracks/`, iso)
+    keepNewest(`${prefix}/roadmap/`, iso)
     keepNewest(`${prefix}/`, iso)
   }
   return dates

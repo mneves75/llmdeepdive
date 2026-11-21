@@ -1,0 +1,102 @@
+---
+id: "33.5-applied-fine-tuning-and-engineering-defense"
+track: "33-multimodal-voice-and-system-defense"
+order: 5
+title: "Adapter Serving & AI Architecture Defense"
+summary: "How S-LoRA serves hundreds of concurrent tenant LoRA adapters from one shared base model, how to debug four canonical production AI incidents, and how to defend scale and cost tradeoffs."
+tier: "frontier"
+locale: "en"
+prerequisites: ["28.1-rag-vs-long-context-vs-fine-tuning", "31.5-production-system-design-case-studies", "32.3-shadow-canary-and-incident-rollbacks", "32.5-enterprise-tenancy-residency-and-portability", "33.1-visual-document-rag-and-cross-modal-search", "33.2-diffusion-and-flow-matching-generation", "33.4-realtime-voice-agents-and-barge-in", "25.5-defend-and-publish-deliberately"]
+unlocks: []
+analogy: "Think of an orchestra playing for 100 different opera singers across one evening. You do not hire 100 separate 80-piece orchestras and park 99 of them in the hallway; you keep one shared orchestra on stage (the frozen base weights) and hand each singer their own thin sheet-music overlay (the LoRA adapter) as they step to the microphone. Defending a production architecture works like a flight-readiness review: reviewers do not ask you to recite textbook definitions—they cut one engine (50% budget cut), spike headwinds 100x (100x traffic), or inject a sensor fault (silent RAG drop) and watch which telemetry and controls keep the plane flying."
+teachBack:
+  prompt: "A B2B SaaS company has 100 enterprise tenants, each needing a custom domain-style LoRA adapter (~60 MB each) on top of a 54 GB base model. Compare GPU memory for 100 merged copies versus S-LoRA multi-adapter serving, then walk through your debugging protocol for a sudden 12-point RAG groundedness drop and your exact architectural plan if leadership demands a 50% inference cost cut without losing schema reliability."
+  modelAnswer: "Merging and serving 100 separate copies of a 54 GB base model would require 100 * 54 = 5,400 GB of GPU VRAM—completely infeasible. With S-LoRA (Sheng et al., 2023), one frozen 54 GB base model stays resident on GPU while the 100 rank-16 LoRA adapters (~60 MB each) total only 6 GB across Unified Paging pools (loading active adapters dynamically from host RAM and running custom batched GEMM kernels per request's adapter), so total weights are ~60 GB instead of 5,400 GB—a 90x memory reduction. For a sudden 12-point RAG groundedness drop with HTTP 200, I follow a structured incident protocol: (1) slice OpenTelemetry traces by `release_id` to check whether a coupled prompt, model snapshot, embedding, or index revision just rolled out; (2) inspect retrieval spans (Recall@k, chunk counts, empty results, ACL filter regressions) versus generation spans (`finish_reasons`, citation formatting); (3) isolate whether retrieval stopped finding evidence or the model stopped obeying citations; and (4) flip the immutable manifest pointer back atomically before writing a new regression case into the offline CI suite. For a 50% cost cut while preserving schema reliability, I keep constrained decoding intact, apply a model cascade routing ~70% of simple queries to a cheaper 8x-lower-cost model, tighten prompt-prefix and tenant-scoped exact caching, cap verbose output tokens, and measure every change against our held-out eval gate—explicitly refusing to cut tenant ACLs, safety guardrails, or schema validation."
+quiz:
+  - question: "A platform serves 100 enterprise tenants, each with a 60 MB LoRA adapter on top of one 54 GB base model. How much total weight memory do 100 merged full-model copies require versus one shared S-LoRA base plus 100 adapters?"
+    options: ["5,400 GB for 100 full copies versus 60 GB (54 GB base + 6 GB adapters) with S-LoRA", "540 GB for 100 full copies versus 600 GB with S-LoRA because adapters duplicate KV caches", "6,000 GB for 100 full copies versus 540 GB with S-LoRA because every adapter needs 10% of base VRAM", "1,080 GB for 100 full copies versus 114 GB with S-LoRA because LoRA halves base model precision"]
+    correctIndex: 0
+    explanation: "100 merged copies require 100 * 54 GB = 5,400 GB of weights. Sharing one 54 GB base model and storing 100 adapters of 60 MB each (6 GB total) takes 54 + 6 = 60 GB—a 90x reduction in weight footprint."
+  - question: "During an on-call incident, your agent's hourly token spend triples while incoming user traffic stays flat. What OpenTelemetry signals pinpoint a runaway agent loop first?"
+    options: ["A 15 ms increase in vector database HNSW query latency across all routes", "Rising `execute_tool` spans per trace alongside repeated error retries and surging `output_tokens`", "A 2% shift in client browser WebRTC jitter buffers on mobile sessions", "A drop in daily offline CI test runtime on the staging branch"]
+    correctIndex: 1
+    explanation: "A runaway loop keeps traffic volume flat while multiplying model and tool turns inside each single request trace. Inspecting spans per `trace_id` immediately reveals repeated `execute_tool` failures, unbounded retries, and ballooning `gen_ai.usage.output_tokens`."
+  - question: "In a system-design defense, an interviewer says: 'Your architecture works at 10,000 requests/day—now cut inference cost by 50% without raising silent hallucinations.' Which combination is the strongest engineering response?"
+    options: ["Disable all input guardrails and remove JSON schema validation to save prefill tokens", "Switch every tenant onto one global unkeyed semantic cache to hit 80% cache savings", "Lower retrieval top-k to 0 so the model answers every enterprise question from memory", "Add model cascades, prefix caching, and strict output caps verified on held-out evals"]
+    correctIndex: 3
+    explanation: "Cutting cost safely removes waste rather than safety or grounding: routing routine requests to a smaller model, maximizing prefix/exact cache hits, and trimming verbose outputs routinely cut spend by 40–65% while held-out evaluations verify groundedness and schema reliability stay intact."
+citations:
+  - title: "S-LoRA: Serving Thousands of Concurrent LoRA Adapters"
+    authors: "Ying Sheng, Shiyi Cao, Dacheng Li, Coleman Hooper, Nicholas Lee, Shuo Yang, Christopher Chou, Banghua Zhu, Lianmin Zheng, Kurt Keutzer, Joseph E. Gonzalez, Ion Stoica"
+    year: 2023
+    url: "https://arxiv.org/abs/2311.03285"
+  - title: "Demystifying evals for AI agents"
+    authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
+    year: 2026
+    url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
+updated: "2026-11-20"
+---
+
+Across Part 3, you learned how to call LLMs reliably, retrieve text and visual pages, measure quality honestly, lock down tenant security, budget latency and unit economics, run LLMOps rollouts, and build sub-500 ms voice systems. Two real-world realities separate engineers who know those concepts individually from senior AI engineers who own production systems: **serving customized fine-tuned models without exploding GPU bills**, and **defending a complete system under live incidents, 100x growth, and aggressive cost pressure**.
+
+This closing lesson covers multi-adapter serving with S-LoRA, a four-incident debugging playbook, and the architecture defense framework that extends [lesson 25.5](/lessons/25-agent-capstone-and-portfolio/25.5-defend-and-publish-deliberately/) to full Part 3 production systems.
+
+## Multi-adapter serving: S-LoRA worked memory math
+
+In [lesson 28.1](/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/), you saw when fine-tuning wins over prompting or RAG—for example locking in a tight domain style, specialized extraction syntax, or a compact distilled classifier. Once fine-tuning works for one enterprise customer, sales immediately asks for a custom model for 100 tenants.
+
+Look at the memory wall if you merge each tenant's LoRA weights into a separate full copy of a 54 GB base model (bf16):
+
+$$
+M_{\text{merged}} = 100 \times 54\ \text{GB} = 5{,}400\ \text{GB}
+$$
+
+You would need roughly 68 dedicated 80 GB GPUs sitting idle just to hold the weights in VRAM before serving a single token.
+
+**S-LoRA** (Sheng et al., 2023) breaks that wall by separating the shared frozen base model from the tiny low-rank adapter matrices ($A$ and $B$). Suppose each tenant's rank-$r = 16$ LoRA adapter occupies **60 MB** in bf16. Keep **one** 54 GB base model pinned in GPU memory and hold all 100 adapters in a **Unified Paging** memory pool (the same paged-memory idea as PagedAttention, extended to variable-rank adapter slices alongside KV-cache pages, paging cold adapters seamlessly from host CPU RAM):
+
+$$
+M_{\text{S-LoRA}} = 54\ \text{GB} + 100 \times 0.06\ \text{GB} = 54 + 6 = 60\ \text{GB}
+$$
+
+Total weight memory drops **90x**, from 5,400 GB down to 60 GB—fitting comfortably on a single 80 GB-class GPU while custom batched kernels compute the shared base projection once for the mixed batch and apply each request's individual $A, B$ adapter deltas in parallel. Combined with tenant-scoped adapter routing ([lesson 32.5](/lessons/32-llmops-and-managed-platforms/32.5-enterprise-tenancy-residency-and-portability/)), one serving deployment supports hundreds of isolated tenant customizations.
+
+## Production incident debugging playbook
+
+When a production AI system breaks at 2 a.m., guessing wastes hours. Match the symptom to a disciplined trace-first triage path across the four canonical AI incidents:
+
+| Incident symptom | First telemetry to inspect | Most common root causes | Immediate containment |
+| --- | --- | --- | --- |
+| **Sudden RAG groundedness drop** (HTTP 200) | OTel `release_id`, retrieval chunk count, rerank score distribution | Embedding/index version skew, PDF parser regression, broken ACL pre-filter | Atomic rollback to prior immutable manifest ([lesson 32.3](/lessons/32-llmops-and-managed-platforms/32.3-shadow-canary-and-incident-rollbacks/)) |
+| **Runaway agent loop / 3x token bill** | Spans per `trace_id`, `execute_tool` error rates, `output_tokens` | Tool returning ambiguous errors causing endless retries, missing step/budget cap | Trip circuit breaker / lower max-step ceiling, isolate offending route |
+| **p95 tail latency spike** | Split OTel child spans: retrieval vs guardrail vs TTFT vs decode vs 429 retries | Provider rate-limit backoff, unindexed metadata filter, verbose prompt (`finish_reason=length`) | Shed non-critical retries, overflow to secondary model/PAYG, cap `max_output_tokens` |
+| **Fine-tuned adapter regression** | Offline vs live eval delta by `adapter_id`, schema parse failures | Catastrophic forgetting on edge classes, base checkpoint upgraded under old adapter | Pin adapter to exact base revision; route back to prior adapter or base+prompt manifest |
+
+Every resolved incident ends with one mandatory step from Anthropic's evaluation guidance: **convert the failed production trace (redacted of PII) into a permanent deterministic test case** in your offline CI eval suite so that exact defect can never ship twice.
+
+## Structured architecture whiteboarding
+
+Whether presenting to a principal engineering review board or defending a portfolio project, clear architects follow the same five-step sequence in order—never starting with a framework name:
+
+1. **Constraints and SLAs first**: state traffic volume (daily/monthly requests, peak-to-average ratio), hard latency budget (for example < 2 s for text RAG, < 500 ms for voice from [lesson 33.4](/lessons/33-multimodal-voice-and-system-defense/33.4-realtime-voice-agents-and-barge-in/)), accuracy floor, and unit-cost ceiling.
+2. **Data, privacy, and residency boundary**: name what data is sensitive (PII, multi-tenant ACLs, EU/regional residency), where redaction runs, and how tenant isolation wraps indexes, caches, and adapters.
+3. **Core modality and retrieval pipeline**: justify why plain-text hybrid RAG, visual document RAG ([lesson 33.1](/lessons/33-multimodal-voice-and-system-defense/33.1-visual-document-rag-and-cross-modal-search/)), diffusion/flow-matching async jobs ([lesson 33.2](/lessons/33-multimodal-voice-and-system-defense/33.2-diffusion-and-flow-matching-generation/)), or streaming speech-to-speech fits the workload—explicitly comparing against the simpler baseline.
+4. **Evaluation, observability, and rollout gates**: specify your error taxonomy, retrieval/generation metrics, OpenTelemetry `gen_ai.*` spans tied to coupled manifests, shadow/canary windows, and automated rollback triggers.
+5. **Failure modes and unit economics**: show the monthly bill arithmetic ([lesson 31.5](/lessons/31-ai-system-design-and-caching/31.5-production-system-design-case-studies/) and track 32) and name the top three ways the system degrades safely when a provider or database fails.
+
+## Defending 100x scale and 50% cost-cut stress tests
+
+Senior design reviews always end with two deliberate shocks. Prepare concrete arithmetic rather than hand-waving:
+
+- **Shock 1 — "Traffic grows 100x next quarter"**: state *what breaks first* with numbers. Direct API rate limits (RPM/TPM) saturate first, forcing provisioned throughput reservations plus multi-region/multi-provider spillover. Next, single-node HNSW vector RAM hits its ceiling, requiring scalar/binary quantization and tenant-keyed index sharding. Meanwhile, the fixed-cost crossover flips: at 100x volume, high-utilization provisioned capacity or self-hosted S-LoRA clusters often beat PAYG by 40–60%.
+- **Shock 2 — "Cut inference cost by 50% this month"**: prioritize zero-regret levers in strict order—(1) route 60–75% of routine requests to a smaller, cheaper model in a cascade, (2) maximize prompt-prefix caching and tenant-scoped exact caching, (3) tighten context top-k and cap `max_output_tokens` on verbose routes, and (4) distill a small fine-tuned LoRA model for high-volume structured extraction. Just as important, state **what you refuse to cut**: tenant ACL pre-filters, constrained schema validation, and the held-out evaluation gate proving groundedness did not silently collapse.
+
+:::warning
+Never answer a 50% cost-cut challenge by removing guardrails, turning off tenant cache keys, or deleting offline evals. Those "savings" hide catastrophic security or compliance liabilities behind a smaller token invoice.
+:::
+
+:::caveat
+Every architectural decision carries a shelf life. Frontier model prices, multimodal context windows, and managed platform capabilities will keep shifting after 2026. The durable skill you built across all 34 tracks is not memorizing today's vendor SKU—it is deriving latency budgets, memory ceilings, retrieval metrics, statistical rollout windows, and unit economics from first principles whenever the next generation of models arrives.
+:::
+
+With lesson 33.5 complete, you have finished Part 3—AI Engineering in Production—and the full 34-track curriculum of `llmdeepdive.com`, from a single parameter and BPE merge up through transformer internals, autonomous agents, and production multimodal AI systems.

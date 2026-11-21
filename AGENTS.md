@@ -5,9 +5,11 @@ How to work in this repo. Read before non-trivial changes. `CLAUDE.md` points he
 ## What this is
 
 A free, open-source, bilingual (EN + pt-BR) interactive course on large language
-models in two parts: how a model works, from what a parameter is through
-efficient inference (tracks 0–13), and how to build agent systems around one
-(tracks 14–25). Static site on Cloudflare Workers, MIT licensed.
+models in three parts: how a model works, from what a parameter is through
+efficient inference (tracks 0–13), how to build agent systems around one
+(tracks 14–25), and AI engineering in production — APIs, hybrid RAG, evals,
+governance, caching, LLMOps, and multimodal/voice systems (tracks 26–33), plus a
+bilingual `/roadmap/` wayfinding route. Static site on Cloudflare Workers, MIT licensed.
 
 ## Commands
 
@@ -127,8 +129,8 @@ an IntersectionObserver, a WebGL check, page load and idle; a real `.catch()`
 that leaves the poster; no wheel or touch-scroll capture; stopped offscreen,
 when hidden, when paused (`[data-motion-toggle]`) and under reduced motion.
 It owns its own renderer — one WebGL context per page, never two. The chart has one band per course
-*part* (the track field `part`: `models`, then `agents`), each laid out as the
-whole sky once was, stacked vertically in one SVG; that is how 26 tracks fit
+*part* (the track field `part`: `models`, `agents`, then `engineering`), each laid out as the
+whole sky once was, stacked vertically in one SVG (`1000 × 1800` for three parts); that is how 34 tracks fit
 without a second chart or a second context. A track with no lessons yet draws
 nothing. `tests/sky-layout.test.mjs` runs every geometry check against the
 published corpus and the full planned catalog in
@@ -676,8 +678,14 @@ that keep the lessons true:
 
 ## External systems reference
 
-The published corpus is tracks 0–25 (190 lessons per locale); documentation
-must describe that shipped scope exactly. Tracks 7 and 11–13 (Inference and
+The published corpus is tracks 0–33 (230 lessons per locale across three parts); documentation
+must describe that shipped scope exactly. Part 3 (tracks 26–33, AI engineering
+in production) keeps its derived math in `src/lib/engineering-math.ts`, pinned
+against both locales and the two Part 3 labs (`rag-eval`, `ai-system-budget`) by
+`tests/engineering-math.test.mjs` and `tests/engineering-content.test.mjs`; the
+next-token `token-sampling` lab in lesson 7.4 is backed by `src/lib/sampling-math.ts`
+and `tests/sampling-math.test.mjs`; the Part 3 plan and frozen inventory live in
+`docs/plans/ai-engineering-roadmap/`. Tracks 7 and 11–13 (Inference and
 Efficiency, Mac Studio Ultra and MLX, DGX and CUDA, llama.cpp in depth) pin
 their software: MLX `v0.32.3`, mlx-lm `v0.32.0`, ddalcu/mlx-serve `v26.10.1`,
 ashhart/TensorFold `v1.2.1` and llama.cpp `b11380`. Re-read
