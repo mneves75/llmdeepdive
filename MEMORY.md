@@ -2,6 +2,11 @@
 
 ## Current Direction
 
+- **2026-11-21, 0.17.1: test suite maintenance.** The contributor policy uses
+  `cccc` for the threshold on new tests. The suite keeps unique behavior
+  checks. `progress.md` records why each removed check was redundant or
+  incapable of observing a regression, and `tests.json` records the runs.
+
 - **2026-11-21, 0.17.0: Part 3 — AI Engineering in Production (tracks 26–33, 40 bilingual lessons), `/roadmap/`, three new labs (`token-sampling`, `rag-eval`, `ai-system-budget`), Home 5-stage pipeline, discrete text diffusion, and frontend/3D fixes.**
   Added 8 tracks (40 lessons per locale = 80 MDX files) covering LLM APIs, hybrid BM25 + HNSW + RRF search, production RAG, evaluations (`rag-eval` lab), RAG security/governance (OWASP LLM Top 10, NIST AI 600-1, EU AI Act + Digital Omnibus), latency/caching (`ai-system-budget` lab), LLMOps, and multimodal/voice/system defense (including discrete masked and block text diffusion in 33.2). Pure math lives in `src/lib/engineering-math.ts` and `src/lib/sampling-math.ts`, pinned against prose, 12 zero-JS figures, and `[data-out]` lab elements by `tests/engineering-math.test.mjs`, `tests/engineering-content.test.mjs`, and `tests/sampling-math.test.mjs`. Added interactive next-token `token-sampling` lab to lesson 7.4 and a zero-JS 5-stage LLM forward-pass pipeline to `Home.astro`. Extended the Star Atlas sky and 3D dome to 3 parts (`1000 × 1800`) across **34 tracks / 230 lessons per locale (460 MDX files)**. Added bilingual `/roadmap/` and `/pt-br/roadmap/` linking all 34 tracks across 16 levels, a 100-day path, portfolio rubric/blueprints, and defense drills. Folded neutral graphite 3D enamel, WebGL context release, Search submit-race + same-origin path guard, `.fig-scroll` `position: relative` containment, and modern CSS polish.
 

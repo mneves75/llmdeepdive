@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.17.1] — 2026-11-21
+
+### Changed
+
+- Removed redundant website tests and assertions in the website and Python suites. The pruning ledger in `progress.md` names the checks that still cover each behavior.
+- Documented the cognitive complexity rule for adding tests. `tests.json` records the baseline and candidate results.
+
 ## [0.17.0] — 2026-11-21
 
 ### Added

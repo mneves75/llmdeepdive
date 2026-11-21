@@ -187,6 +187,12 @@ pnpm exec playwright install chromium webkit firefox && pnpm render:check
 
 CI runs the same checks plus a full-history Gitleaks scan.
 
+Before adding a test, measure the target with
+[`cccc`](https://github.com/moznion/cccc), using `cccc --no-cache --min 0 <path>`.
+New tests cover code with cognitive complexity above 5 or code that contains a
+regular expression. See `AGENTS.md` for the existing-test policy and
+`progress.md` and `tests.json` for the pruning evidence.
+
 `pnpm privacy` is the other half of that scan. Gitleaks looks for credentials;
 this looks for the things a public repo leaks that are *not* secrets — an
 absolute path from someone's machine, an account-specific deploy subdomain, an
