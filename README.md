@@ -54,8 +54,11 @@ that disagreed with its own lesson would be worse than no figure.
 
 ## The Anatomy Explorer
 
-The course's front door is a transformer signal observatory you can rotate and
-inspect: one decoder block built as an armillary instrument on a single axis.
+Follow one short phrase through tokenization, context and next-token prediction.
+The walkthrough uses an illustrative vocabulary and probabilities and works with
+the keyboard or touch, including when JavaScript is disabled.
+
+Below it, rotate and inspect one decoder block built as an armillary instrument on a single axis.
 Porcelain embedding and LM-head plates, ink-enamel decks with engraved dials,
 attention drawn as arcs that thicken with the attention weight, one gold
 feed-forward core and porcelain side meridians for the two residual bypasses

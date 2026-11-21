@@ -113,7 +113,9 @@ pt-BR URL. `content-parity.mjs` is the gate.
 Poster renders first; WebGL replaces it. One long-lived `Stage`, never one
 renderer per lab.
 
-The explorer's current contract is the **Signal Observatory**: every component
+The explorer opens with a four-step token walkthrough. Keep its native controls
+operable without JavaScript and label the vocabulary, vectors and distribution
+as illustrative in both locales. Below it, the **Signal Observatory** contract applies: every component
 in `COMPONENTS` has a selectable 3D port, an evidence-drawer state and a valid
 lesson link. The specimen keeps visible input→output direction and bilingual
 layer identity. Since 0.9 it is an armillary instrument on one steel axis:

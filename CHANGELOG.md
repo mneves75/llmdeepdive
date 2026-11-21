@@ -3,13 +3,15 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — Learning studio
+## [0.18.0] — 2026-11-21
 
 ### Changed
 
+- The anatomy explorer opens with a hands-on example. Follow the same phrase through tokenization, context and next-token probabilities before inspecting the model in 3D.
 - Both language editions now open with a next-token prediction experiment. Adjusting temperature changes the probabilities, and the example links to the full sampling lab.
 - Learners can enter the course by goal, expand the curriculum map on demand, jump to a lesson section, and open the first lesson of each roadmap level directly.
 - Redesigned the course shell, curriculum, roadmap, reading view, labs, assessments, anatomy explorer, search, 404s and sharing cards across both languages. The temperature diagram shows probability changes through branch weight, the section navigator follows the reader, and selecting a model port updates its evidence panel. Motion respects the system preference.
+- Search distinguishes an unavailable index from an empty result. Quizzes distinguish skipped questions from wrong answers, and wide inline equations can be scrolled with the keyboard.
 
 ## [0.17.1] — 2026-11-21
 

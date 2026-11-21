@@ -555,6 +555,10 @@ with `2.75rem` targets; a star flies between pages as a named view transition.
 
 ### Signal Observatory (signature)
 
+The explorer starts with a worked phrase. Readers advance through its representations
+at their own pace before opening the corresponding machinery. The selected stage
+and its output stay legible with animation disabled.
+
 The explorer's 3D specimen: one decoder block built as an armillary
 instrument on a single axis, input at the bottom and output at the top,
 always. Eight decks stand on a plinth under a crown: embedding, RMSNorm,
