@@ -14,7 +14,7 @@
 - Scanned all 181 supported source files under `src`, `scripts`, and the Python example source with `cccc 1.8.0`. The scanner scored 1,293 functions and reported zero parse errors. Astro templates are outside this scan.
 - Audited all 33 website test files and the four Python suite inventories. Existing tests with distinct behavior stay, including those for low-complexity code.
 - Pruned 10 website cases and seven assertion groups across the website and Python suites. Added no tests. The website suite passed 329 cases. All four Python suites matched their baseline counts.
-- The website suite's measured line and function coverage held at 41.29% and 87.20%. Reported branch coverage moved from 80.78% to 80.85% with the same coverage command.
+- The website suite's measured line and function coverage held at 41.29% and 87.20%. Reported branch coverage was 80.78% at baseline and 80.87% in the corrected candidate.
 - Independent review kept the retired CSS token guard. A stylesheet can define and use a retired token without violating the undefined-token check.
 
 ## Pruning ledger
