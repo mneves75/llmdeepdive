@@ -103,6 +103,16 @@ test('the FFN is the one warm core', () => {
   assert.equal(ctx.root.getObjectByName('compute-core').material.userData.warm, true)
 })
 
+test('enamel is neutral graphite: the night has no hue', () => {
+  const { ctx } = built()
+  const enamel = []
+  ctx.root.traverse((part) => { if (part.material?.name === 'enamel') enamel.push(part.material) })
+  assert.ok(enamel.length > 0, 'the decks carry enamel')
+  const { r, g, b } = enamel[0].color.clone().convertLinearToSRGB()
+  assert.ok(Math.max(r, g, b) - Math.min(r, g, b) < 0.01, `enamel must have no hue, got rgb(${r}, ${g}, ${b})`)
+  assert.ok(r > 0.12, 'enamel must read lighter than the night plate it stands on')
+})
+
 test('isolate dims every other piece and maps mechanism aliases to their deck', () => {
   const { ctx, scene } = built()
   const opacity = (name) => {
