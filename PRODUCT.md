@@ -56,10 +56,11 @@ The interface supports light, dark, and operating-system themes.
   governance, latency budgets and caching, LLMOps, multimodal/voice and system
   defense), paired with a bilingual `/roadmap/` route mapping all 34 tracks into
   16 levels, a 100-day path, portfolio blueprints and defense drills.
-- ten interactive labs (memory budget, cost per token, video tokens, MoE
-  balancing, context budget, repair-loop budget, trajectory checker, cost per
-  successful task, RAG retrieval metrics, and AI system latency/cost budget)
-  that server-render their defaults and stay usable without JavaScript.
+- eleven interactive labs (memory budget, cost per token, sampling distribution,
+  video tokens, MoE balancing, context budget, repair-loop budget, trajectory
+  checker, cost per successful task, RAG retrieval metrics, and AI system
+  latency/cost budget) that server-render their defaults and stay usable without
+  JavaScript.
 - quizzes whose correct answer cannot be found by picking the longest or the
   shortest option (a build gate), and lesson completion that remains a
   participation check, not a certification of external project work.

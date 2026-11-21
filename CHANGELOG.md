@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.17.0] — 2026-11-20
+## [0.17.0] — 2026-11-21
 
 ### Added
 
@@ -17,10 +17,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Track 30 (`30-rag-security-privacy-and-governance`): pre-filtered tenant ACL isolation, corpus poisoning & indirect injection, PII redaction & zero-data-retention boundaries, tiered guardrails & latency budgets, AI governance mapping (OWASP LLM Top 10, NIST AI 600-1, EU AI Act Regulation 2024/1689 + Digital Omnibus Annex III / Annex I / Article 50).
   - Track 31 (`31-ai-system-design-and-caching`): end-to-end latency & tail budgets, exact / KV-prefix / semantic caching & key partitioning, model routing cascades & gateways, unit economics at scale, production system design case studies.
   - Track 32 (`32-llmops-and-managed-platforms`): coupled versioning & release manifests, OpenTelemetry GenAI observability, shadow/canary rollouts & silent-regression rollbacks, API vs managed cloud vs self-hosted economics, enterprise tenancy, residency & portability.
-  - Track 33 (`33-multimodal-voice-and-system-defense`): visual document RAG (ColPali), diffusion & flow matching, neural audio codecs / Whisper STT / streaming TTS, realtime voice agents & barge-in under 500 ms, S-LoRA multi-adapter serving & architecture defense.
-- **Two interactive labs** backed by `src/lib/engineering-math.ts` (server-rendered defaults, locale-aware decimal parsing, zero third-party requests):
-  - `rag-eval` (lesson 29.2): interactive Recall@k, Precision@k, single-query Reciprocal Rank (RR), and NDCG@k calculator.
-  - `ai-system-budget` (lesson 31.1): interactive latency budget (post-TTFT decode for `outputTokens - 1`), semantic-cache false-hit risk per 10k requests, and PAYG vs provisioned monthly economics.
+  - Track 33 (`33-multimodal-voice-and-system-defense`): visual document RAG (ColPali), continuous image/video diffusion, Flow Matching & discrete masked/block text diffusion (D3PM, MDLM), neural audio codecs / Whisper STT / streaming TTS, realtime voice agents & barge-in under 500 ms, S-LoRA multi-adapter serving & architecture defense.
+- **Three interactive labs** (server-rendered defaults, locale-aware decimal parsing, zero third-party requests, bringing the site to 11 labs):
+  - `token-sampling` (lesson 7.4, `src/lib/sampling-math.ts`): interactive next-token Temperature, Top-K, Top-P (nucleus), and Min-P probability visualizer with entropy and effective-choices (`2^H`) readouts across factual, code, and creative logit presets.
+  - `rag-eval` (lesson 29.2, `src/lib/engineering-math.ts`): interactive Recall@k, Precision@k, single-query Reciprocal Rank (RR), and NDCG@k calculator.
+  - `ai-system-budget` (lesson 31.1, `src/lib/engineering-math.ts`): interactive latency budget (post-TTFT decode for `outputTokens - 1`), semantic-cache false-hit risk per 10k requests, and PAYG vs provisioned monthly economics.
+- **Home 5-stage LLM forward-pass pipeline:** zero-JS interactive walkthrough (`Tokenization → Embeddings → Attention & FFN → Sampling → Generation & tools`) on `/` and `/pt-br/` linking directly to lessons 1.2, 1.5, 4.2, 7.4, 15.1, and `/explore/`.
 - **Twelve zero-JS bilingual figures** across tracks 26–33 (`src/lib/figures/26..33.ts`) derived directly from `src/lib/engineering-math.ts`.
 - **Bilingual `/roadmap/` and `/pt-br/roadmap/`:** 16 progressive levels covering all 34 tracks, a 6-stage 100-day accelerated path, a portfolio proof rubric, 5 project blueprints, and 4 production defense drills, with CSS-only tab switching, native `<details>` animations (`interpolate-size: allow-keywords` + `transition-behavior: allow-discrete`), build-time lesson ID verification, and device-local completion progress.
 

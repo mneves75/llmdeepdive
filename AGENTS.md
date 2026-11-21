@@ -681,9 +681,11 @@ that keep the lessons true:
 The published corpus is tracks 0–33 (230 lessons per locale across three parts); documentation
 must describe that shipped scope exactly. Part 3 (tracks 26–33, AI engineering
 in production) keeps its derived math in `src/lib/engineering-math.ts`, pinned
-against both locales and the two labs (`rag-eval`, `ai-system-budget`) by
-`tests/engineering-math.test.mjs` and `tests/engineering-content.test.mjs`; its
-plan and frozen inventory live in `docs/plans/ai-engineering-roadmap/`. Tracks 7 and 11–13 (Inference and
+against both locales and the two Part 3 labs (`rag-eval`, `ai-system-budget`) by
+`tests/engineering-math.test.mjs` and `tests/engineering-content.test.mjs`; the
+next-token `token-sampling` lab in lesson 7.4 is backed by `src/lib/sampling-math.ts`
+and `tests/sampling-math.test.mjs`; the Part 3 plan and frozen inventory live in
+`docs/plans/ai-engineering-roadmap/`. Tracks 7 and 11–13 (Inference and
 Efficiency, Mac Studio Ultra and MLX, DGX and CUDA, llama.cpp in depth) pin
 their software: MLX `v0.32.3`, mlx-lm `v0.32.0`, ddalcu/mlx-serve `v26.10.1`,
 ashhart/TensorFold `v1.2.1` and llama.cpp `b11380`. Re-read

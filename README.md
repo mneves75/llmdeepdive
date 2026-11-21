@@ -138,9 +138,12 @@ BM25 + HNSW + RRF search, production RAG architectures, retrieval and judge
 evaluation (`rag-eval` lab), RAG tenant security and EU AI Act / OWASP / NIST
 governance, end-to-end latency budgets and multi-layer caching (`ai-system-budget`
 lab), LLMOps and managed-vs-self-hosted economics, and multimodal/voice/system
-defense. A bilingual [`/roadmap/`](https://llmdeepdive.com/roadmap/) maps all
-34 tracks into 16 progressive levels, a 100-day accelerated path, portfolio
-blueprints, and production defense drills.
+defense (including discrete masked and block text diffusion in lesson 33.2).
+Lesson 7.4 adds an interactive next-token `token-sampling` lab (temperature, top-k,
+top-p and min-p), the home page adds a zero-JS 5-stage forward-pass pipeline
+walkthrough, and a bilingual [`/roadmap/`](https://llmdeepdive.com/roadmap/)
+maps all 34 tracks into 16 progressive levels, a 100-day accelerated path,
+portfolio blueprints, and production defense drills.
 
 Each lesson is a course player: the track's syllabus with reading times and
 completion stars, a step list for the lesson's loop, a reading gauge, and a

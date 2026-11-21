@@ -182,7 +182,8 @@ something.
 
 Charts are real data, never decoration. One deterministic layout
 (`src/lib/sky.ts`) feeds the home sky, each track's constellation, the "you
-are here" plate in a lesson header, and the 3D sky. Each part of the course is
+are here" plate in a lesson header, and the 3D sky across the full corpus of
+34 tracks and 230 lessons per locale (460 MDX files). Each part of the course is
 one 1000 × 560 band, stacked with 60-unit gaps (`models`, `agents`, and
 `engineering`), so the whole chart is a portrait atlas plate (1000 × 1800 with
 three parts).
