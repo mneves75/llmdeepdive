@@ -36,6 +36,13 @@ const lessonPages = all.filter((page) => /^\/(?:pt-br\/)?lessons\/[^/]+\/[^/]+\/
 const trackPages = all.filter((page) => /^\/(?:pt-br\/)?tracks\/[^/]+\/$/u.test(page.route))
 const homePages = all.filter((page) => page.route === '/' || page.route === '/pt-br/')
 
+test('every course footer has a focusable return destination at the top of its own document', () => {
+  for (const { route, html } of all) {
+    assert.match(html, /<footer\b[\s\S]*?<a\b[^>]*href="#site-start"/u, route)
+    assert.match(html, /<body\b(?=[^>]*id="site-start")(?=[^>]*tabindex="-1")[^>]*>/u, route)
+  }
+})
+
 /** Opening tags that carry an attribute, with their attribute string. */
 function tagsWith(html, attribute) {
   // The attribute itself, not a longer hook that starts with its name

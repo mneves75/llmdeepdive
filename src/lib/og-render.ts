@@ -75,13 +75,14 @@ function headlineSize(text: string): number {
 
 /** The reticle mark: a ring with four ticks and a centre star point. */
 function mark(): Node {
-  const tick = { position: 'absolute', background: COLOR.ink }
-  return div({ position: 'relative', width: 44, height: 44, border: `3px solid ${COLOR.ink}`, borderRadius: '50%' }, [
-    div({ ...tick, left: 17, top: -14, width: 3, height: 12 }),
-    div({ ...tick, left: 17, top: 40, width: 3, height: 12 }),
-    div({ ...tick, left: -14, top: 17, width: 12, height: 3 }),
-    div({ ...tick, left: 40, top: 17, width: 12, height: 3 }),
-    div({ position: 'absolute', left: 12, top: 12, width: 14, height: 14, borderRadius: '50%', background: COLOR.reticle }),
+  const tick = { position: 'absolute', background: COLOR.night }
+  return div({ position: 'relative', width: 48, height: 48, background: COLOR.reticle, borderRadius: 4 }, [
+    div({ position: 'absolute', left: 10, top: 10, width: 28, height: 28, border: `2px solid ${COLOR.night}`, borderRadius: '50%' }),
+    div({ ...tick, left: 23, top: 5, width: 2, height: 10 }),
+    div({ ...tick, left: 23, top: 33, width: 2, height: 10 }),
+    div({ ...tick, left: 5, top: 23, width: 10, height: 2 }),
+    div({ ...tick, left: 33, top: 23, width: 10, height: 2 }),
+    div({ ...tick, left: 20, top: 20, width: 8, height: 8, transform: 'rotate(45deg)' }),
   ])
 }
 
@@ -103,22 +104,22 @@ function cardTree(card: Card): Node {
     flexDirection: 'column',
     width: OG_IMAGE.width,
     height: OG_IMAGE.height,
-    padding: '0 72px',
+    padding: '0 64px',
+    borderLeft: `14px solid ${card.tier ? TIER_COLOR[card.tier] : COLOR.reticle}`,
     background: COLOR.night,
     color: COLOR.ink,
     fontFamily: 'Mona Sans',
   }, [
-    div({ alignItems: 'center', gap: 22, paddingTop: 56 }, [
-      mark(),
-      div({ fontSize: 40, fontWeight: 800, letterSpacing: -1 }, BRAND),
+    div({ alignItems: 'center', justifyContent: 'space-between', padding: '39px 0 31px', borderBottom: `1px solid ${COLOR.rule}` }, [
+      div({ alignItems: 'center', gap: 14 }, [mark(), div({ fontSize: 40, fontWeight: 800, letterSpacing: -2 }, BRAND)]),
+      ...(card.tier ? [tierStars(card.tier)] : []),
     ]),
     div({ flexDirection: 'column', justifyContent: 'center', flexGrow: 1 }, [
-      div({ fontSize: 28, fontWeight: 700, letterSpacing: 3, textTransform: 'uppercase', color: card.tier ? TIER_COLOR[card.tier] : COLOR.reticle }, card.kicker),
-      div({ marginTop: 22, maxWidth: 1056, fontSize: headlineSize(card.headline), fontWeight: 800, lineHeight: 1.02, letterSpacing: -2 }, card.headline),
+      div({ fontSize: 28, fontWeight: 700, color: card.tier ? TIER_COLOR[card.tier] : COLOR.reticle }, card.kicker),
+      div({ marginTop: 16, fontSize: headlineSize(card.headline), fontWeight: 800, lineHeight: 1, letterSpacing: -3 }, card.headline),
     ]),
     div({ alignItems: 'center', justifyContent: 'space-between', gap: 32, padding: '26px 0 46px', borderTop: `1px solid ${COLOR.rule}` }, [
       div({ fontSize: 28, fontWeight: 500, color: COLOR.muted }, card.footer),
-      ...(card.tier ? [tierStars(card.tier)] : []),
     ]),
   ])
 }
