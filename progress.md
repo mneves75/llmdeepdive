@@ -13,8 +13,9 @@
 - Established the baseline at the `v0.17.0` main commit in an isolated worktree. The website build generated 538 pages. The website and all four Python suites passed with one existing Python skip.
 - Scanned all 181 supported source files under `src`, `scripts`, and the Python example source with `cccc 1.8.0`. The scanner scored 1,293 functions and reported zero parse errors. Astro templates are outside this scan.
 - Audited all 33 website test files and the four Python suite inventories. Existing tests with distinct behavior stay, including those for low-complexity code.
-- Pruned 10 website cases and eight assertion groups across the website and Python suites. Added no tests. The website suite passed 329 cases. All four Python suites matched their baseline counts.
+- Pruned 10 website cases and seven assertion groups across the website and Python suites. Added no tests. The website suite passed 329 cases. All four Python suites matched their baseline counts.
 - The website suite's measured line and function coverage held at 41.29% and 87.20%. Reported branch coverage moved from 80.78% to 80.85% with the same coverage command.
+- Independent review kept the retired CSS token guard. A stylesheet can define and use a retired token without violating the undefined-token check.
 
 ## Pruning ledger
 
@@ -24,7 +25,6 @@
 | `agent-engineering-acceptance`: the `lastVisitKey('pt-br')` assertion | Identical input and expected key in `progress.test.mjs`. The distinct first-part completion key stays. |
 | `content-quiz-distribution`: balanced positions positive case | The comparable-length positive case uses the same positions, bilingual structure, relative option lengths and successful exit assertion. |
 | `course-player`: route-existence case | The acceptance tests require exactly 230 lesson pages and 34 track pages per locale. The rendered home-parts test requires content on both home routes. |
-| `course-player`: retired CSS token names | Tests historical names absent from current source and specifications. The undefined-token check stays. |
 | `math-scroll`: synthetic inline MathML case | The real Markdown pipeline requires the exact inline span opening, excluding focus and region attributes. The transform idempotence test stays. |
 | `moe-math`: counterfactual total and serving-read derivations | The Qwen counterfactual case pins each operand using the same fixture. The removed cases recompute values in the test without calling additional application code. |
 | `rendered-html`: build-produced-pages case | The SEO route-set test requires both a page and a lesson minimum and fails on missing output. |

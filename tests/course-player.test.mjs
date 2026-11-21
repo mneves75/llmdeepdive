@@ -157,6 +157,9 @@ test('no stylesheet references a token the system no longer defines', () => {
   const html = all.map((page) => page.html).join('\n')
   const missing = [...used].filter((name) => !defined.has(name) && !html.includes(`${name}:`) && !/^--(?:tw|default)-/u.test(name))
   assert.deepEqual(missing, [], `undefined custom properties: ${missing.join(', ')}`)
+  for (const retired of ['--abyss', '--paper', '--sonar', '--kelp', '--coral', '--cyan-bright']) {
+    assert.ok(!defined.has(retired) && !used.has(retired), `retired token ${retired} still in CSS`)
+  }
 })
 
 test('the teach-back and quiz keep their own state out of the progress pass', () => {
