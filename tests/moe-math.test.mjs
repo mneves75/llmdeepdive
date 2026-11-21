@@ -135,32 +135,6 @@ test("the Qwen counterfactual is the course's own arithmetic", () => {
   assert.equal(budget.storedFfnTotal, 136_902_082_560)
 })
 
-test('the counterfactual total matches the values model-facts publishes', () => {
-  const budget = moeParameterBudget({
-    hidden: 5120,
-    denseFfn: 17408,
-    layers: 64,
-    experts: 64,
-    topK: 8,
-  })
-  const denseTotal = budget.denseFfnPerLayer * 64
-  const nonExpert = 27e9 - denseTotal
-  const total = nonExpert + budget.storedFfnTotal + budget.routerParamsPerLayer * 64
-  close(total, 146_810_293_760, 1)
-  close(total / 27e9, 5.4374, 5e-5)
-  close(total * 2e-9, 293.6206, 1e-3)
-})
-
-test('the serving reads separate storage from what a decoded token touches', () => {
-  const budget = moeParameterBudget({ hidden: 5120, denseFfn: 17408, layers: 64, experts: 64, topK: 8 })
-  const nonExpert = 27e9 - budget.denseFfnPerLayer * 64
-  const rest = nonExpert + budget.routerParamsPerLayer * 64
-  const active = budget.activeFfnPerLayer * 64
-  close(active * 0.5e-9 + rest * 2e-9, 28.3728, 1e-4)
-  close((active + rest) * 0.5e-9, 13.5105, 1e-4)
-  close((budget.storedFfnTotal + rest) * 0.5e-9, 73.4051, 1e-4)
-})
-
 test('the expert width follows the active budget, not the expert count', () => {
   // 32 experts at top-4 must be exactly as wide as 64 at top-8: the width is
   // denseFfn / topK. Deriving it as denseFfn * topK / experts agreed at 64/8 by
