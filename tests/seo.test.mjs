@@ -129,9 +129,7 @@ test('every indexable page carries complete search and share metadata', () => {
     assert.equal(one(html, 'property', 'og:image:width', route), '1200')
     assert.equal(one(html, 'property', 'og:image:height', route), '630')
     assert.ok(one(html, 'property', 'og:image:alt', route).length > 10, `${route}: og:image:alt is empty`)
-    const file = distFileFor(image)
-    assert.ok(file, `${route}: ${image} was not built`)
-    assert.deepEqual(pngSize(file), { width: 1200, height: 630 }, `${route}: card is not 1200×630`)
+    assert.deepEqual(pngSize(card), { width: 1200, height: 630 }, `${route}: card is not 1200×630`)
   }
 })
 

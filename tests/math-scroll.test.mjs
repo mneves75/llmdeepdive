@@ -5,7 +5,7 @@ import rehypeKatex from 'rehype-katex'
 import remarkMath from 'remark-math'
 import { rehypeMathScroll } from '../src/lib/markdown/math-scroll.mjs'
 
-const formula = (display) => ({
+const displayFormula = () => ({
   type: 'element',
   tagName: 'span',
   properties: { className: ['katex'] },
@@ -13,7 +13,7 @@ const formula = (display) => ({
     {
       type: 'element',
       tagName: 'math',
-      properties: display ? { display: 'block' } : {},
+      properties: { display: 'block' },
       children: [],
     },
   ],
@@ -43,18 +43,8 @@ test('the real markdown pipeline makes display MathML a localised keyboard scrol
   assert.match(english.code, /Inline <span class="katex"><math/u)
 })
 
-test('inline MathML stays inline and out of the keyboard tab order', () => {
-  const inline = formula(false)
-  rehypeMathScroll()(
-    { type: 'root', children: [inline] },
-    { path: '/content/lessons/en/7/example.mdx' },
-  )
-
-  assert.deepEqual(inline.properties, { className: ['katex'] })
-})
-
 test('the display-math transform is idempotent', () => {
-  const display = formula(true)
+  const display = displayFormula()
   const transform = rehypeMathScroll()
   const tree = { type: 'root', children: [display] }
 

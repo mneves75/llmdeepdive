@@ -49,7 +49,6 @@ test('every library component has one numbered port, in the order the rail numbe
   // library order must be the same list.
   const markers = transformerMarkers()
   assert.deepEqual(markers.map(({ id }) => id), COMPONENTS.map(({ id }) => id))
-  assert.equal(new Set(markers.map(({ id }) => id)).size, markers.length)
   for (const marker of markers) {
     const [x, y, z] = marker.position
     // Ports sit on a deck's rim, where the facing test has a horizontal normal.

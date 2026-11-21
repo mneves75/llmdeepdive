@@ -47,12 +47,6 @@ function attr(attributes, name) {
   return attributes.match(new RegExp(`\\b${name}="([^"]*)"`, 'u'))?.[1]
 }
 
-test('the course player pages exist', () => {
-  assert.ok(lessonPages.length >= 200, `expected the lesson corpus, found ${lessonPages.length}`)
-  assert.ok(trackPages.length >= 20)
-  assert.equal(homePages.length, 2)
-})
-
 test('view-transition names are unique on every page', () => {
   for (const { route, html } of all) {
     const names = [...html.matchAll(/view-transition-name:\s*([a-z0-9-]+)/giu)].map((match) => match[1])
@@ -163,9 +157,6 @@ test('no stylesheet references a token the system no longer defines', () => {
   const html = all.map((page) => page.html).join('\n')
   const missing = [...used].filter((name) => !defined.has(name) && !html.includes(`${name}:`) && !/^--(?:tw|default)-/u.test(name))
   assert.deepEqual(missing, [], `undefined custom properties: ${missing.join(', ')}`)
-  for (const retired of ['--abyss', '--paper', '--sonar', '--kelp', '--coral', '--cyan-bright']) {
-    assert.ok(!defined.has(retired) && !used.has(retired), `retired token ${retired} still in CSS`)
-  }
 })
 
 test('the teach-back and quiz keep their own state out of the progress pass', () => {

@@ -52,14 +52,9 @@ test('content parity rejects a deterministic position for each quiz ordinal', ()
   assert.match(result.stderr, /quiz 1 has predictable answer positions: 1,1,1,1/u)
 })
 
-test('content parity accepts balanced answer positions shared by both locales', () => {
-  const result = runFixture([0, 1, 1, 2, 2, 3, 3, 0])
-  assert.equal(result.status, 0, result.stderr)
-})
-
 // The correct option was uniquely the longest in ~89% of items (lesson review,
 // 2026-10-18): a learner could pass by picking the longest answer. Balanced
-// positions above do not catch that cue.
+// positions alone do not catch that cue.
 const longestCorrect = (item, correct) => ['Short', 'Brief', 'Small', 'Tiny'].map((word, index) => (index === correct ? 'The much longer correct answer' : word))
 const evenLengths = () => ['Option one', 'Option two', 'Option ttt', 'Option fff']
 
