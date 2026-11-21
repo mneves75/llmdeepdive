@@ -432,6 +432,29 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
 
 async function learningStudioFailures(browser, name, base) {
   const failures = []
+  const delayed = await browser.newPage()
+  let resumeScripts
+  const held = new Promise((resolve) => { resumeScripts = resolve })
+  try {
+    await delayed.route('**/_astro/*.js', async (route) => {
+      await held
+      await route.continue().catch(() => {})
+    })
+    await delayed.goto(base + '/explore/', { waitUntil: 'commit' })
+    const link = delayed.locator('a[data-component]').nth(4)
+    await link.focus()
+    const component = await link.getAttribute('data-component')
+    resumeScripts()
+    const upgraded = delayed.locator(`button[data-component="${component}"]:focus`)
+    await upgraded.waitFor({ timeout: 5000 })
+    await delayed.keyboard.press('Space')
+    if (await upgraded.getAttribute('aria-current') !== 'true') throw new Error('focused port did not activate')
+  } catch (error) {
+    failures.push(`${name} /explore/: keyboard focus during enhancement: ${error.message}`)
+  } finally {
+    resumeScripts()
+    await delayed.close()
+  }
   const viewport = { width: 390, height: 844 }
   for (const prefix of ['', '/pt-br']) {
     const page = await browser.newPage({ viewport, reducedMotion: 'reduce' })

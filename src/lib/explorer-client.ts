@@ -186,8 +186,10 @@ export function mountExplorer(root: HTMLElement): Cleanup {
     button.dataset.component = link.dataset.component
     button.dataset.lessonHref = link.pathname
     button.setAttribute('aria-current', String(link.dataset.component === componentId))
+    const wasFocused = document.activeElement === link
     button.append(...link.childNodes)
     link.replaceWith(button)
+    if (wasFocused) button.focus({ preventScroll: true })
   }
   for (const btn of root.querySelectorAll<HTMLButtonElement>('button[data-component]')) {
     on(btn, 'click', () => setComponent(btn.dataset.component ?? ''))
