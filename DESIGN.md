@@ -183,14 +183,15 @@ something.
 Charts are real data, never decoration. One deterministic layout
 (`src/lib/sky.ts`) feeds the home sky, each track's constellation, the "you
 are here" plate in a lesson header, and the 3D sky. Each part of the course is
-one 1000 × 560 band, the agent-systems band below the model band with a 60-unit
-gap, so the whole chart is a portrait atlas plate (1000 × 1180 with two parts).
+one 1000 × 560 band, stacked with 60-unit gaps (`models`, `agents`, and
+`engineering`), so the whole chart is a portrait atlas plate (1000 × 1800 with
+three parts).
 Star size is the lesson's in-degree in the prerequisite graph; star pigment is
 its tier; within a band, constellations stand left to right in track order. Each
 band carries its part's name in its top-left corner as a small plate title that
 links to that part in the tracks index; it is hidden below a 45.5rem chart and while
 the 3D sky is live (the dome moves track names into the corners). The chart key
-always names both bands, so the parts stay legible at every width and in both modes. A graticule
+always names all three bands, so the parts stay legible at every width and in both modes. A graticule
 appears only where it locates something. Every page is complete as HTML and
 SVG before any WebGL loads, and every string is HTML.
 
