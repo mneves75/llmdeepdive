@@ -3,7 +3,7 @@ import { getCollection } from 'astro:content'
 import { LOCALES, localePath } from '~/lib/i18n'
 import { lessonPath, trackOf, trackPath, type LessonEntry, type TrackEntry } from '~/lib/content'
 import { renderCard } from '~/lib/og-render'
-import { exploreCard, homeCard, lessonCard, ogSlug, trackCard, tracksCard, type Card } from '~/lib/seo'
+import { exploreCard, homeCard, lessonCard, ogSlug, roadmapCard, trackCard, tracksCard, type Card } from '~/lib/seo'
 
 /**
  * One 1200×630 card per page, at `/og/<page path>.png`. Every page's
@@ -25,6 +25,7 @@ export const getStaticPaths = (async () => {
 
     add(localePath(locale, '/'), homeCard(locale, size))
     add(localePath(locale, '/tracks/'), tracksCard(locale, size))
+    add(localePath(locale, '/roadmap/'), roadmapCard(locale))
     add(localePath(locale, '/explore/'), exploreCard(locale))
     for (const track of tracks) {
       const count = lessons.filter((lesson) => lesson.data.track === track.data.id).length

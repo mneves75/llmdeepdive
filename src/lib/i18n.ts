@@ -73,15 +73,17 @@ export const tierLabels = {
   'pt-br': { foundations: 'Fundamentos', core: 'Essencial', advanced: 'Avançado', frontier: 'Fronteira' },
 } as const satisfies Record<Locale, Record<string, string>>
 
-/** The course's two parts, as the home catalog and the tracks index head them. */
+/** The course's three parts, as the home catalog and the tracks index head them. */
 export const partLabels = {
   en: {
     models: { title: 'How language models work', summary: 'From what a parameter is to running a model efficiently on real hardware.' },
     agents: { title: 'Building agent systems', summary: 'Durable state, tool protocols, security, isolation, memory, human approval, evaluation and recovery for software that acts on a model\u2019s output.' },
+    engineering: { title: 'AI engineering in production', summary: 'LLM APIs, structured outputs, hybrid search, production RAG, evaluations, security and governance, caching, LLMOps, managed platforms, voice and system defense.' },
   },
   'pt-br': {
     models: { title: 'Como os modelos de linguagem funcionam', summary: 'Do que é um parâmetro até rodar um modelo com eficiência em hardware real.' },
     agents: { title: 'Construindo sistemas de agentes', summary: 'Estado durável, protocolos de ferramentas, segurança, isolamento, memória, aprovação humana, avaliação e recuperação para software que age sobre a saída de um modelo.' },
+    engineering: { title: 'Engenharia de IA em produção', summary: 'APIs de LLM, saídas estruturadas, busca híbrida, RAG em produção, avaliações, segurança e governança, cache, LLMOps, plataformas gerenciadas, voz e defesa de arquitetura.' },
   },
 } as const satisfies Record<Locale, Record<string, { title: string; summary: string }>>
 
@@ -105,6 +107,7 @@ export const ui = {
     explore: 'Explore',
     lessons: 'Lessons',
     tracks: 'Tracks',
+    roadmap: 'Roadmap',
     notes: 'Notes',
     search: 'Search',
     tagline: 'Free, bilingual, and open source.',
@@ -118,6 +121,7 @@ export const ui = {
     explore: 'Explorar',
     lessons: 'Aulas',
     tracks: 'Trilhas',
+    roadmap: 'Roteiro',
     notes: 'Anotações',
     search: 'Buscar',
     tagline: 'Curso gratuito, bilíngue e de código aberto.',
