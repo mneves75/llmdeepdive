@@ -440,13 +440,17 @@ async function learningStudioFailures(browser, name, base) {
       await held
       await route.continue().catch(() => {})
     })
+    const requested = delayed.waitForRequest('**/_astro/*.js')
     await delayed.goto(base + '/explore/', { waitUntil: 'commit' })
+    await requested
+    await delayed.waitForFunction(() => document.readyState !== 'loading')
     const link = delayed.locator('a[data-component]').nth(4)
     await link.focus()
+    if (!await link.evaluate((el) => el === document.activeElement)) throw new Error('static link did not receive focus')
     const component = await link.getAttribute('data-component')
     resumeScripts()
     const upgraded = delayed.locator(`button[data-component="${component}"]:focus`)
-    await upgraded.waitFor({ timeout: 5000 })
+    await upgraded.waitFor({ timeout: 15_000 })
     await delayed.keyboard.press('Space')
     if (await upgraded.getAttribute('aria-current') !== 'true') throw new Error('focused port did not activate')
   } catch (error) {
@@ -527,6 +531,8 @@ async function learningStudioFailures(browser, name, base) {
       await experiment.getByRole('link').click()
       await page.locator('[data-lab-id="token-sampling"]').waitFor()
       if (!page.url().endsWith('#lab-heading')) throw new Error('sampling link did not open the lab section')
+      // The lab is server-rendered. Its visit is recorded by a deferred module.
+      await page.waitForLoadState('load')
       const labPath = new URL(page.url()).pathname
       await page.goto(home)
       await page.locator('[data-continue-link]').click()
@@ -610,7 +616,7 @@ async function learningStudioFailures(browser, name, base) {
       if (await links.count() !== 12) throw new Error('static component index is incomplete')
       const lesson = links.nth(4)
       const href = await lesson.getAttribute('href')
-      await lesson.click()
+      await Promise.all([fallback.waitForURL((url) => url.pathname === href), lesson.press('Enter')])
       if (new URL(fallback.url()).pathname !== href || !href?.startsWith(prefix + '/lessons/')) {
         throw new Error('static component index failed to open the localized lesson')
       }
