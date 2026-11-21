@@ -109,30 +109,31 @@ export interface RetrievalEvalResult {
   hitsAtK: number
   recallAtK: number
   precisionAtK: number
-  mrr: number
+  /** Mean Reciprocal Rank contribution (single-query Reciprocal Rank) over the full returned list. */
+  rr: number
   dcgAtK: number
   idcgAtK: number
   ndcgAtK: number
 }
 
 /**
- * Lesson 29.2 & `rag-eval` lab: Recall@k, Precision@k, MRR, and NDCG@k
- * for a ranked list of retrieved chunks against binary relevance labels.
+ * Lesson 29.2 & `rag-eval` lab: Recall@k, Precision@k, Reciprocal Rank (RR),
+ * and NDCG@k for a ranked list of retrieved chunks against binary relevance labels.
  */
 export function retrievalMetrics(input: RetrievalEvalInput): RetrievalEvalResult | null {
   if (!Number.isInteger(input.totalRelevant) || input.totalRelevant < 1) return null
   if (!Number.isInteger(input.k) || input.k < 1 || input.hits.length === 0) return null
   const k = Math.min(input.k, input.hits.length)
   let hitsAtK = 0
-  let firstHitRank = 0
   let dcgAtK = 0
   for (let index = 0; index < k; index += 1) {
     if (input.hits[index]) {
       hitsAtK += 1
-      if (firstHitRank === 0) firstHitRank = index + 1
       dcgAtK += 1 / Math.log2(index + 2)
     }
   }
+  const firstHitIndex = input.hits.findIndex(Boolean)
+  const rr = firstHitIndex >= 0 ? 1 / (firstHitIndex + 1) : 0
   const idealHits = Math.min(input.totalRelevant, k)
   let idcgAtK = 0
   for (let index = 0; index < idealHits; index += 1) {
@@ -143,7 +144,7 @@ export function retrievalMetrics(input: RetrievalEvalInput): RetrievalEvalResult
     hitsAtK,
     recallAtK: hitsAtK / input.totalRelevant,
     precisionAtK: hitsAtK / k,
-    mrr: firstHitRank > 0 ? 1 / firstHitRank : 0,
+    rr,
     dcgAtK,
     idcgAtK,
     ndcgAtK: idcgAtK > 0 ? dcgAtK / idcgAtK : 0,
@@ -161,7 +162,8 @@ export interface JudgeCalibrationResult {
   total: number
   observedAgreement: number
   expectedAgreement: number
-  kappa: number
+  /** Cohen's kappa; null when expectedAgreement === 1 (constant labels, 0/0 undefined). */
+  kappa: number | null
   precision: number
   recall: number
   f1: number
@@ -183,7 +185,7 @@ export function judgeCalibration(counts: ConfusionCounts): JudgeCalibrationResul
   const humanNeg = (counts.tn + counts.fp) / total
   const expectedAgreement = judgePos * humanPos + judgeNeg * humanNeg
   const denom = 1 - expectedAgreement
-  const kappa = Math.abs(denom) < 1e-12 ? (observedAgreement === 1 ? 1 : 0) : (observedAgreement - expectedAgreement) / denom
+  const kappa = Math.abs(denom) < 1e-12 ? null : (observedAgreement - expectedAgreement) / denom
   const precision = counts.tp + counts.fp > 0 ? counts.tp / (counts.tp + counts.fp) : 0
   const recall = counts.tp + counts.fn > 0 ? counts.tp / (counts.tp + counts.fn) : 0
   const f1 = precision + recall > 0 ? (2 * precision * recall) / (precision + recall) : 0
@@ -247,7 +249,9 @@ export function aiSystemBudget(input: AiSystemBudgetInput): AiSystemBudgetResult
   if (!Number.isFinite(input.cacheHitRate) || input.cacheHitRate < 0 || input.cacheHitRate > 1) return null
   if (!Number.isFinite(input.falseHitRate) || input.falseHitRate < 0 || input.falseHitRate > 1) return null
 
-  const decodeMs = (input.outputTokens / input.decodeTps) * 1000
+  // TTFT already ends when the first output token is emitted, so post-TTFT
+  // decode covers the remaining max(0, outputTokens - 1) tokens.
+  const decodeMs = (Math.max(0, input.outputTokens - 1) / input.decodeTps) * 1000
   const uncachedLatencyMs = input.retrievalMs + input.guardrailMs + input.ttftMs + decodeMs
   const effectiveLatencyMs = input.cacheHitRate * input.cacheLookupMs + (1 - input.cacheHitRate) * uncachedLatencyMs
   const falseHitsPer10k = input.cacheHitRate * input.falseHitRate * 10000

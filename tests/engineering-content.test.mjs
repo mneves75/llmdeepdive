@@ -116,36 +116,48 @@ test('derived arithmetic in Part 3 lessons matches src/lib/engineering-math.ts i
     assert.ok(l293.includes(fmt(locale, imb.kappa, 3)), `${locale} 29.3 missing imbalanced kappa`)
 
     const l311 = readLesson(locale, '31-ai-system-design-and-caching', '31.1-end-to-end-latency-budgets').body
-    const uncachedStr = locale === 'pt-br' ? '4.537' : '4,537'
-    const effectiveStr = locale === 'pt-br' ? '2.955' : '2,955'
+    const uncachedStr = locale === 'pt-br' ? '4.520' : '4,520'
+    const effectiveStr = locale === 'pt-br' ? '2.944' : '2,944'
     assert.ok(l311.includes(uncachedStr) || l311.includes(String(Math.round(sys.uncachedLatencyMs))), `${locale} 31.1 missing uncached latency`)
     assert.ok(l311.includes(effectiveStr) || l311.includes(String(Math.round(sys.effectiveLatencyMs))), `${locale} 31.1 missing effective latency`)
 
-    const l334 = readLesson(locale, '33-multimodal-voice-and-system-defense', '33.4-realtime-voice-and-barge-in'.replace('voice-and', 'voice-agents-and')).body
+    const l334 = readLesson(locale, '33-multimodal-voice-and-system-defense', '33.4-realtime-voice-agents-and-barge-in').body
     const cascStr = locale === 'pt-br' ? '1.170' : '1,170'
     assert.ok(l334.includes(cascStr) || l334.includes(String(voiceCascaded)), `${locale} 33.4 missing cascaded voice latency`)
     assert.ok(l334.includes(String(voiceStreaming)), `${locale} 33.4 missing streaming voice latency`)
   }
 })
 
+function extractLabOut(html, labId, outKey) {
+  const formMatch = html.match(new RegExp(`<form[^>]*data-lab="${labId}"[\\s\\S]*?<\\/form>`, 'u'))
+  assert.ok(formMatch, `missing form[data-lab="${labId}"]`)
+  const outMatch = formMatch[0].match(new RegExp(`<b[^>]*data-out="${outKey}"[^>]*>([^<]+)<\\/b>`, 'u'))
+  assert.ok(outMatch, `missing [data-out="${outKey}"] inside [data-lab="${labId}"]`)
+  return outMatch[1].trim()
+}
+
 for (const locale of LOCALES) {
-  test(`${locale}: built /roadmap/ and both new labs render their worked defaults`, () => {
+  test(`${locale}: built /roadmap/ links all 34 tracks and both new labs render exact [data-out] defaults`, () => {
     const prefix = locale === 'en' ? '' : 'pt-br'
     const roadmapHtml = readFileSync(join(DIST, prefix, 'roadmap', 'index.html'), 'utf8')
     assert.ok(roadmapHtml.includes('roadmap-view-full'), `${locale} roadmap missing full view radio`)
     assert.ok(roadmapHtml.includes('roadmap-view-100'), `${locale} roadmap missing 100-day radio`)
     assert.ok(roadmapHtml.includes('L15'), `${locale} roadmap missing level L15`)
     assert.ok(existsSync(join(DIST, 'og', ...(prefix ? [prefix] : []), 'roadmap.png')), `${locale} roadmap OG card missing`)
+    const linkedTracks = new Set([...roadmapHtml.matchAll(/\/lessons\/(\d+)-[^/"']+\//gu)].map((m) => Number(m[1])))
+    assert.equal(linkedTracks.size, 34, `${locale} roadmap should link all 34 tracks (got ${linkedTracks.size})`)
 
     const ragLabHtml = readFileSync(join(DIST, prefix, 'lessons', '29-llm-and-rag-evaluations', '29.2-retrieval-and-generation-metrics', 'index.html'), 'utf8')
-    assert.ok(ragLabHtml.includes('data-lab="rag-eval"'), `${locale} 29.2 missing rag-eval lab`)
-    assert.ok(ragLabHtml.includes(locale === 'pt-br' ? '60,0%' : '60.0%'), `${locale} rag-eval default recall`)
-    assert.ok(ragLabHtml.includes(locale === 'pt-br' ? '0,491' : '0.491'), `${locale} rag-eval default ndcg`)
+    assert.equal(extractLabOut(ragLabHtml, 'rag-eval', 'recall'), locale === 'pt-br' ? '60,0%' : '60.0%')
+    assert.equal(extractLabOut(ragLabHtml, 'rag-eval', 'precision'), locale === 'pt-br' ? '60,0%' : '60.0%')
+    assert.equal(extractLabOut(ragLabHtml, 'rag-eval', 'rr'), locale === 'pt-br' ? '0,500' : '0.500')
+    assert.equal(extractLabOut(ragLabHtml, 'rag-eval', 'ndcg'), locale === 'pt-br' ? '0,491' : '0.491')
 
     const sysLabHtml = readFileSync(join(DIST, prefix, 'lessons', '31-ai-system-design-and-caching', '31.1-end-to-end-latency-budgets', 'index.html'), 'utf8')
-    assert.ok(sysLabHtml.includes('data-lab="ai-system-budget"'), `${locale} 31.1 missing ai-system-budget lab`)
-    assert.ok(sysLabHtml.includes(locale === 'pt-br' ? '4.537 ms' : '4,537 ms'), `${locale} ai-system-budget uncached latency`)
-    assert.ok(sysLabHtml.includes(locale === 'pt-br' ? '2.955 ms' : '2,955 ms'), `${locale} ai-system-budget effective latency`)
-    assert.ok(sysLabHtml.includes(locale === 'pt-br' ? 'USD 2.925' : 'USD 2,925'), `${locale} ai-system-budget monthly payg`)
+    assert.equal(extractLabOut(sysLabHtml, 'ai-system-budget', 'uncached'), locale === 'pt-br' ? '4.520 ms' : '4,520 ms')
+    assert.equal(extractLabOut(sysLabHtml, 'ai-system-budget', 'effective'), locale === 'pt-br' ? '2.944 ms' : '2,944 ms')
+    assert.equal(extractLabOut(sysLabHtml, 'ai-system-budget', 'falseHits'), locale === 'pt-br' ? '70,0' : '70.0')
+    assert.equal(extractLabOut(sysLabHtml, 'ai-system-budget', 'monthlyPayg'), locale === 'pt-br' ? 'USD 2.925' : 'USD 2,925')
+    assert.equal(extractLabOut(sysLabHtml, 'ai-system-budget', 'monthlySaved'), locale === 'pt-br' ? 'USD 1.575' : 'USD 1,575')
   })
 }

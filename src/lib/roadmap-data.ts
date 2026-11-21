@@ -78,7 +78,7 @@ export const ROADMAP_LEVELS: readonly RoadmapLevel[] = [
       'pt-br': ['Prever saltos de custo de tokens entre idiomas e código', 'Explicar por que prefill é limitado por cálculo e decode por largura de banda', 'Selecionar modelos por avaliações privadas em vez de ranking público'],
     },
     capstone: { en: 'Benchmark three candidate models on 20 domain prompts with latency and cost tables.', 'pt-br': 'Comparar três modelos candidatos em 20 prompts reais com tabela de latência e custo.' },
-    lessonIds: ['0.1-what-is-a-language-model', '1.2-tokenization-i', '4.2-self-attention', '7.1-what-actually-happens-when-you-hit-send', '7.3-prefill-vs-decode-two-different-machines', '7.4-sampling', '6.9-reasoning-models-test-time-compute-and-long-cot', '29.4-benchmarks-leaderboards-and-contamination'],
+    lessonIds: ['0.1-what-is-a-language-model', '1.2-tokenization-i', '2.5-backpropagation', '3.5-bahdanau-attention', '4.2-self-attention', '5.5-chinchilla-compute-optimality', '7.1-what-actually-happens-when-you-hit-send', '7.3-prefill-vs-decode-two-different-machines', '7.4-sampling', '6.9-reasoning-models-test-time-compute-and-long-cot', '29.4-benchmarks-leaderboards-and-contamination'],
   },
   {
     code: 'L2',
@@ -142,7 +142,7 @@ export const ROADMAP_LEVELS: readonly RoadmapLevel[] = [
       'pt-br': ['Laço de agente com checkpoints e chaves de idempotência para efeitos colaterais', 'Servidor MCP com menor privilégio e schemas tipados', 'Laço de reparo limitado e pausa/retomada durável com aprovação humana'],
     },
     capstone: { en: 'Build and test a stateful purchasing or ops agent with replayable traces and approval gates.', 'pt-br': 'Construir e testar um agente com estado, traces reproduzíveis e portões de aprovação.' },
-    lessonIds: ['14.1-when-a-workflow-needs-an-agent', '14.3-checkpoints-and-serialization', '14.5-langgraph-and-temporal', '15.2-json-rpc-and-protocol-lifecycle', '15.4-a-raw-postgres-mcp-server', '17.1-what-isolation-protects', '20.1-decide-when-approval-is-needed', '21.4-budget-the-repair-loop', '22.3-supervisor-and-peer-topologies'],
+    lessonIds: ['14.1-when-a-workflow-needs-an-agent', '14.3-checkpoints-and-serialization', '14.5-langgraph-and-temporal', '15.2-json-rpc-and-protocol-lifecycle', '15.4-a-raw-postgres-mcp-server', '17.1-what-isolation-protects', '18.1-observe-before-acting', '20.1-decide-when-approval-is-needed', '21.4-budget-the-repair-loop', '22.3-supervisor-and-peer-topologies'],
   },
   {
     code: 'L6',
@@ -238,7 +238,7 @@ export const ROADMAP_LEVELS: readonly RoadmapLevel[] = [
       'pt-br': ['Cálculo de break-even entre PAYG, capacidade reservada e self-hosting', 'Checklist de rede privada, IAM e contrato de retenção zero', 'Abstração de gateway isolando recursos proprietários da lógica central'],
     },
     capstone: { en: 'Produce a multi-region managed-vs-self-hosted deployment plan with exit-cost estimates.', 'pt-br': 'Produzir um plano multi-região comparando nuvem gerenciada e self-hosting com custo de migração.' },
-    lessonIds: ['32.4-api-managed-cloud-and-self-hosted-economics', '32.5-enterprise-tenancy-residency-and-portability', '8.11-serving-in-the-cloud', '8.12-choosing-your-stack', '7.11-serving-stacks-vllm-sglang-tensorrt-llm'],
+    lessonIds: ['32.4-api-managed-cloud-and-self-hosted-economics', '32.5-enterprise-tenancy-residency-and-portability', '8.11-serving-in-the-cloud', '8.12-choosing-your-stack', '7.11-serving-stacks-vllm-sglang-tensorrt-llm', '11.4-serving-from-a-mac-mlx-lm-server-and-mlx-serve', '12.5-the-cuda-stack-for-llms', '13.3-llama-server-in-production'],
   },
   {
     code: 'L12',

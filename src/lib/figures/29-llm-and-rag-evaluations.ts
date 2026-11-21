@@ -9,17 +9,19 @@ import type { Figure } from './types'
 const ir = retrievalMetrics({ hits: [false, true, false, true, true, false, false, true], totalRelevant: 5, k: 5 })!
 const bal = judgeCalibration({ tp: 42, fp: 8, fn: 6, tn: 44 })!
 const imb = judgeCalibration({ tp: 90, fp: 5, fn: 4, tn: 1 })!
+const balKappa = bal.kappa!
+const imbKappa = imb.kappa!
 
 export const TRACK_29_FIGURES = {
   '29-2-ir-metrics-grid': {
     lesson: '29.2-retrieval-and-generation-metrics',
     title: {
-      en: 'Rank position changes MRR and NDCG@5 even when Recall@5 is identical',
-      'pt-br': 'A posição no ranking altera MRR e NDCG@5 mesmo com Recall@5 idêntico',
+      en: 'Rank position changes RR and NDCG@5 even when Recall@5 is identical',
+      'pt-br': 'A posição no ranking altera RR e NDCG@5 mesmo com Recall@5 idêntico',
     },
     caption: {
-      en: `With 5 relevant chunks in the corpus and hits at ranks 2, 4 and 5 inside top-5, Recall@5 is ${(ir.recallAtK * 100).toFixed(1)}% and Precision@5 is ${(ir.precisionAtK * 100).toFixed(1)}%, while missing rank 1 holds MRR to ${ir.mrr.toFixed(3)} and NDCG@5 to ${ir.ndcgAtK.toFixed(3)}.`,
-      'pt-br': `Com 5 trechos relevantes no corpus e acertos nas posições 2, 4 e 5 do top-5, Recall@5 é ${(ir.recallAtK * 100).toFixed(1).replace('.', ',')}% e Precision@5 é ${(ir.precisionAtK * 100).toFixed(1).replace('.', ',')}%, enquanto errar a posição 1 segura MRR em ${ir.mrr.toFixed(3).replace('.', ',')} e NDCG@5 em ${ir.ndcgAtK.toFixed(3).replace('.', ',')}.`,
+      en: `With 5 relevant chunks in the corpus and hits at ranks 2, 4 and 5 inside top-5, Recall@5 is ${(ir.recallAtK * 100).toFixed(1)}% and Precision@5 is ${(ir.precisionAtK * 100).toFixed(1)}%, while missing rank 1 holds single-query RR to ${ir.rr.toFixed(3)} and NDCG@5 to ${ir.ndcgAtK.toFixed(3)}.`,
+      'pt-br': `Com 5 trechos relevantes no corpus e acertos nas posições 2, 4 e 5 do top-5, Recall@5 é ${(ir.recallAtK * 100).toFixed(1).replace('.', ',')}% e Precision@5 é ${(ir.precisionAtK * 100).toFixed(1).replace('.', ',')}%, enquanto errar a posição 1 segura o RR da consulta em ${ir.rr.toFixed(3).replace('.', ',')} e NDCG@5 em ${ir.ndcgAtK.toFixed(3).replace('.', ',')}.`,
     },
     body: {
       kind: 'grid',
@@ -48,8 +50,8 @@ export const TRACK_29_FIGURES = {
       'pt-br': 'Alta concordância bruta pode esconder um juiz LLM quase inútil',
     },
     caption: {
-      en: `A balanced judge (42/8/6/44) hits ${(bal.observedAgreement * 100).toFixed(0)}% agreement with κ = ${bal.kappa.toFixed(3)}. An imbalanced rubber-stamp judge (90/5/4/1) scores ${(imb.observedAgreement * 100).toFixed(0)}% raw agreement yet drops to κ = ${imb.kappa.toFixed(3)} because chance agreement alone is ${(imb.expectedAgreement * 100).toFixed(1)}%.`,
-      'pt-br': `Um juiz equilibrado (42/8/6/44) atinge ${(bal.observedAgreement * 100).toFixed(0)}% de concordância com κ = ${bal.kappa.toFixed(3).replace('.', ',')}. Um juiz carimbador desbalanceado (90/5/4/1) marca ${(imb.observedAgreement * 100).toFixed(0)}% bruto mas cai para κ = ${imb.kappa.toFixed(3).replace('.', ',')} porque o acaso sozinho já concorda em ${(imb.expectedAgreement * 100).toFixed(1).replace('.', ',')}%.`,
+      en: `A balanced judge (42/8/6/44) hits ${(bal.observedAgreement * 100).toFixed(0)}% agreement with κ = ${balKappa.toFixed(3)}. An imbalanced rubber-stamp judge (90/5/4/1) scores ${(imb.observedAgreement * 100).toFixed(0)}% raw agreement yet drops to κ = ${imbKappa.toFixed(3)} because chance agreement alone is ${(imb.expectedAgreement * 100).toFixed(1)}%.`,
+      'pt-br': `Um juiz equilibrado (42/8/6/44) atinge ${(bal.observedAgreement * 100).toFixed(0)}% de concordância com κ = ${balKappa.toFixed(3).replace('.', ',')}. Um juiz carimbador desbalanceado (90/5/4/1) marca ${(imb.observedAgreement * 100).toFixed(0)}% bruto mas cai para κ = ${imbKappa.toFixed(3).replace('.', ',')} porque o acaso sozinho já concorda em ${(imb.expectedAgreement * 100).toFixed(1).replace('.', ',')}%.`,
     },
     body: {
       kind: 'grid',
@@ -64,8 +66,8 @@ export const TRACK_29_FIGURES = {
         { en: 'Rubber-stamp judge (90/5/4/1)', 'pt-br': 'Juiz carimbador (90/5/4/1)' },
       ],
       cells: [
-        [Number(bal.observedAgreement.toFixed(3)), Number(bal.expectedAgreement.toFixed(3)), Number(bal.kappa.toFixed(3))],
-        [Number(imb.observedAgreement.toFixed(3)), Number(imb.expectedAgreement.toFixed(3)), Number(imb.kappa.toFixed(3))],
+        [Number(bal.observedAgreement.toFixed(3)), Number(bal.expectedAgreement.toFixed(3)), Number(balKappa.toFixed(3))],
+        [Number(imb.observedAgreement.toFixed(3)), Number(imb.expectedAgreement.toFixed(3)), Number(imbKappa.toFixed(3))],
       ],
     },
   },

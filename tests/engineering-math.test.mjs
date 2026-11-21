@@ -40,10 +40,20 @@ test('retrievalMetrics reproduces lesson 29.2 worked example and rejects invalid
   assert.equal(worked.hitsAtK, 3)
   assert.equal(worked.recallAtK, 0.6)
   assert.equal(worked.precisionAtK, 0.6)
-  assert.equal(worked.mrr, 0.5)
+  assert.equal(worked.rr, 0.5)
   assert.ok(Math.abs(worked.ndcgAtK - 0.49126) < 1e-4)
 
-  // Moving a hit to rank 1 keeps Recall@5 at 0.6 while doubling MRR to 1.0
+  // Cutoff k = 1 must not zero out single-query RR when first hit is at rank 2
+  const tightCutoff = retrievalMetrics({
+    hits: [false, true, false, true, true, false, false, true],
+    totalRelevant: 5,
+    k: 1,
+  })
+  assert.ok(tightCutoff)
+  assert.equal(tightCutoff.hitsAtK, 0)
+  assert.equal(tightCutoff.rr, 0.5)
+
+  // Moving a hit to rank 1 keeps Recall@5 at 0.6 while doubling RR to 1.0
   const rankOne = retrievalMetrics({
     hits: [true, false, false, true, true, false, false, true],
     totalRelevant: 5,
@@ -51,13 +61,13 @@ test('retrievalMetrics reproduces lesson 29.2 worked example and rejects invalid
   })
   assert.ok(rankOne)
   assert.equal(rankOne.recallAtK, 0.6)
-  assert.equal(rankOne.mrr, 1)
+  assert.equal(rankOne.rr, 1)
   assert.ok(rankOne.ndcgAtK > worked.ndcgAtK)
 
   // Zero hits returns 0 across all metrics
   const none = retrievalMetrics({ hits: [false, false, false], totalRelevant: 2, k: 3 })
   assert.ok(none)
-  assert.equal(none.mrr, 0)
+  assert.equal(none.rr, 0)
   assert.equal(none.ndcgAtK, 0)
 
   // Invalid inputs
@@ -84,10 +94,12 @@ test('judgeCalibration distinguishes balanced agreement from the imbalanced rubb
   assert.ok(rubberStamp.observedAgreement > balanced.observedAgreement)
   assert.ok(rubberStamp.kappa < 0.2, 'imbalanced judge must collapse under Cohen kappa')
 
-  // Edge & bad inputs
-  const perfectSingleClass = judgeCalibration({ tp: 10, fp: 0, fn: 0, tn: 0 })
-  assert.ok(perfectSingleClass)
-  assert.equal(perfectSingleClass.kappa, 1)
+  // Edge & bad inputs: constant single-class labels leave Cohen's kappa undefined (null)
+  const constantSingleClass = judgeCalibration({ tp: 10, fp: 0, fn: 0, tn: 0 })
+  assert.ok(constantSingleClass)
+  assert.equal(constantSingleClass.observedAgreement, 1)
+  assert.equal(constantSingleClass.expectedAgreement, 1)
+  assert.equal(constantSingleClass.kappa, null)
   assert.equal(judgeCalibration({ tp: 0, fp: 0, fn: 0, tn: 0 }), null)
   assert.equal(judgeCalibration({ tp: -1, fp: 0, fn: 0, tn: 10 }), null)
   assert.equal(judgeCalibration({ tp: 1.2, fp: 0, fn: 0, tn: 10 }), null)
@@ -109,14 +121,20 @@ test('aiSystemBudget reproduces lesson 31.1 worked example and validates boundar
   }
   const worked = aiSystemBudget(base)
   assert.ok(worked)
-  assert.equal(Math.round(worked.decodeMs), 4167)
-  assert.equal(Math.round(worked.uncachedLatencyMs), 4537)
-  assert.equal(Math.round(worked.effectiveLatencyMs), 2955)
+  assert.equal(Math.round(worked.decodeMs), 4150)
+  assert.equal(Math.round(worked.uncachedLatencyMs), 4520)
+  assert.equal(Math.round(worked.effectiveLatencyMs), 2944)
   assert.ok(Math.abs(worked.falseHitsPer10k - 70) < 1e-6)
   assert.equal(worked.monthlyUncachedUsd, 4500)
   assert.equal(worked.monthlyCachedUsd, 2925)
   assert.equal(worked.monthlySavingsUsd, 1575)
   assert.equal(worked.provisionedVerdict, 'provisioned')
+
+  // Single output token emits at TTFT and incurs zero post-TTFT decode time
+  const oneToken = aiSystemBudget({ ...base, outputTokens: 1 })
+  assert.ok(oneToken)
+  assert.equal(oneToken.decodeMs, 0)
+  assert.equal(oneToken.uncachedLatencyMs, 370)
 
   // Verdict transitions: close (<10% delta) and payg
   const close = aiSystemBudget({ ...base, provisionedMonthlyUsd: 2800 })
