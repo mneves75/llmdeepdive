@@ -8,7 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **`pnpm verify:learning`**, a real-engine check of the lesson-completion record. 120 record cases per engine in Chromium and WebKit (eight teach-back states around both floors × quiz true/false/absent × no action or one of four actions), plus the two producers driven through their own controls: the teach-back textarea at each floor, and the quiz Check button with the documented answers and with one wrong. It seeds storage before any script runs and asserts the record against the input state alone — present only while the quiz is right and the teach-back passes 80 characters and 15 words, never withdrawn by a reload. Wired into CI after the browser install.
-- The check was proven to fail before it was trusted: `teachBackValid || quizValid` broke 44 cases, seeding `teachBackValid = false` broke 8, dropping the 15-word floor broke 20 (including both producer cases between the floors), and forcing every quiz answer correct broke 2. All four mutations were reverted.
+- The check was proven to fail before it was trusted. Five mutations, each rebuilt and reverted, broke it: `teachBackValid || quizValid` (118 cases), seeding `teachBackValid = false` (18, the returning-learner reload among them), dropping the 15-word floor (20, both producer cases between the floors), forcing every quiz answer correct (2), and removing the quiz's completion event (2, the record left absent after a real correct click).
 
 ### Changed
 

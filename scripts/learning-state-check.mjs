@@ -157,19 +157,13 @@ async function producerFailures(browser, base) {
     const context = await browser.newContext()
     const page = await context.newPage()
     const failures = []
+    // A learner whose teach-back already passes: a real quiz click must then
+    // move the completion record itself, not only the quiz record.
+    await page.addInitScript((keys) => {
+      localStorage.setItem(keys.teachBack, 'A language model turns the text it has already read into one score for every token it knows, a sampler picks one token from those scores, the token joins the text, and the same step repeats.')
+      localStorage.removeItem(keys.quiz)
+    }, KEYS)
     await page.goto(base + ROUTE)
-
-    for (const testCase of TEACH_BACK_CASES) {
-      const state = await page.evaluate((value) => {
-        const area = document.querySelector('[data-teach-back] textarea')
-        area.value = value
-        area.dispatchEvent(new Event('input', { bubbles: true }))
-        return document.querySelector('[data-teach-back]')?.getAttribute('data-complete')
-      }, testCase.answer)
-      if (state !== String(testCase.expected)) {
-        failures.push(`teach-back "${testCase.name}" reports data-complete ${state}`)
-      }
-    }
 
     const checkQuiz = (pick) => page.evaluate(({ choose }) => {
       const root = document.querySelector('[data-lesson-quiz]')
@@ -184,6 +178,7 @@ async function producerFailures(browser, base) {
       return {
         stored: localStorage.getItem(`ldd:quiz:${key}`),
         results: fieldsets.map((fieldset) => fieldset.getAttribute('data-result')),
+        complete: localStorage.getItem(`ldd:complete:${key}`),
       }
     }, { choose: pick })
 
@@ -192,9 +187,26 @@ async function producerFailures(browser, base) {
     if (right.results.some((result) => result !== 'right')) {
       failures.push(`the quiz marked documented answers ${JSON.stringify(right.results)}`)
     }
+    if (right.complete !== 'true') {
+      failures.push(`a correct quiz and a passing teach-back left the record ${right.complete ?? 'absent'}`)
+    }
     const wrong = await checkQuiz('wrong')
     if (wrong.stored !== 'false') failures.push(`the quiz stored "${wrong.stored}" with one wrong answer`)
     if (!wrong.results.includes('wrong')) failures.push('the quiz did not mark the wrong answer wrong')
+    if (wrong.complete === 'true') failures.push('a wrong answer left the record complete')
+
+    // After the quiz cases, which leave one answer wrong on purpose.
+    for (const testCase of TEACH_BACK_CASES) {
+      const state = await page.evaluate((value) => {
+        const area = document.querySelector('[data-teach-back] textarea')
+        area.value = value
+        area.dispatchEvent(new Event('input', { bubbles: true }))
+        return document.querySelector('[data-teach-back]')?.getAttribute('data-complete')
+      }, testCase.answer)
+      if (state !== String(testCase.expected)) {
+        failures.push(`teach-back "${testCase.name}" reports data-complete ${state}`)
+      }
+    }
 
     await context.close()
     return failures
@@ -227,6 +239,7 @@ try {
     .split(',').map((engine) => engine.trim()).filter(Boolean)
   const unknown = engines.filter((engine) => !(engine in ENGINES))
   if (unknown.length) throw new Error('unknown engine(s): ' + unknown.join(', '))
+  if (engines.length === 0) throw new Error('no engine selected; unset LEARNING_STATE_BROWSERS for the default')
 
   let failed = 0
   for (const engine of engines) {
