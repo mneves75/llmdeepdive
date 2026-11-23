@@ -56,7 +56,7 @@ not the promise.
 | `src/lib/progress.ts` | `ldd:complete:<locale>:<lesson id>` key and `isComplete` reading `=== 'true'` |
 | `src/lib/progress-client.ts` | the second writer of `data-complete` (why that attribute is not asserted) |
 
-**Sync commit:** `3be65dc`. The verification was last confirmed to describe the
+**Sync commit:** `069131b`. The verification was last confirmed to describe the
 code at that commit. If any file above changes after it, re-run the check; once
 it passes and you have read the diff, move this line forward — never before.
 
@@ -89,12 +89,13 @@ check edited to match a regression is worse than no check.
 
 ## Keeping it honest
 
-Two mutations were run when this verification was created, and both failed it:
+Five mutations were run against this verification, and each failed it:
 
-1. `const complete = teachBackValid && quizValid` → `||`: 44 failures.
-2. `let teachBackValid = …dataset.complete === 'true'` → `let teachBackValid = false`: 8 failures, including the reload with both gates stored.
+1. `const complete = teachBackValid && quizValid` → `||`: 118 failures.
+2. `let teachBackValid = …dataset.complete === 'true'` → `let teachBackValid = false`: 18 failures, the reload with both gates stored among them.
 3. `characters >= 80 && words >= 15` → `characters >= 80`: 20 failures, both producer cases between the floors among them.
 4. `const correct = selected…` → `const correct = true`: 2 failures, the quiz storing `true` for a wrong answer.
+5. Removing the quiz's `ldd:quiz` dispatch: 2 failures, the record left absent after a real correct click.
 
 Repeat one of them after any change to the state machine, then revert. A check
 that has never been seen red is a draft.
