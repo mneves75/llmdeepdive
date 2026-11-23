@@ -24,40 +24,17 @@
  * a check never seen red is not a check. `RENDER_BROWSERS=chromium` narrows
  * the engines for a quick local run.
  */
-import { createReadStream, existsSync, statSync } from 'node:fs'
-import { createServer } from 'node:http'
-import { extname, join, normalize, relative, sep } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { chromium, firefox, webkit } from 'playwright'
 import { DIST_ROOT, walkFiles } from './content-utils.mjs'
+import { serveDist } from './serve-dist.mjs'
 
 const ENGINES = { chromium, webkit, firefox }
 const BASELINE_ROUTES = [
   '/lessons/0-orientation-and-foundations/0.5-matrix-multiplication-transformation/',
   '/pt-br/lessons/7-inference-and-efficiency/7.7-flashattention-and-io-awareness/',
 ]
-const TYPES = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
-  '.json': 'application/json', '.txt': 'text/plain', '.xml': 'application/xml', '.wasm': 'application/wasm',
-  '.pf_meta': 'application/octet-stream', '.pf_index': 'application/octet-stream', '.pf_fragment': 'application/octet-stream',
-}
 const selfTest = process.argv.includes('--self-test')
-
-function serveDist() {
-  const server = createServer((request, response) => {
-    const path = decodeURIComponent(new URL(request.url ?? '/', 'http://local').pathname)
-    let file = normalize(join(DIST_ROOT, path))
-    if (!file.startsWith(DIST_ROOT + sep) && file !== DIST_ROOT) {
-      response.writeHead(403).end()
-      return
-    }
-    if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html')
-    const found = existsSync(file) && statSync(file).isFile()
-    if (!found) file = join(DIST_ROOT, '404.html')
-    response.writeHead(found ? 200 : 404, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' })
-    createReadStream(file).pipe(response)
-  })
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
-}
 
 function routes() {
   return walkFiles(DIST_ROOT, new Set(['.html']))

@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`pnpm verify:learning`**, a real-engine check of the lesson-completion record. It seeds storage before any script runs, applies one user action, and asserts the record against the input state alone: present only while the quiz is right and the teach-back passes 80 characters and 15 words, and never withdrawn by a reload. 45 cases per engine in Chromium and WebKit; wired into CI after the browser install.
+- The check was proven to fail before it was trusted: `teachBackValid || quizValid` broke 44 cases and seeding `teachBackValid = false` broke 8, including the returning-learner reload. Both mutations were reverted.
+
+### Changed
+
+- `scripts/render-check.mjs` now shares its dist server through `scripts/serve-dist.mjs`, so a second real-engine check serves the same bytes including the 404 page.
+
 ## [0.17.1] — 2026-11-21
 
 ### Changed
