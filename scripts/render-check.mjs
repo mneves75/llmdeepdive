@@ -24,7 +24,7 @@
  * a check never seen red is not a check. `RENDER_BROWSERS=chromium` narrows
  * the engines for a quick local run.
  */
-import { join, relative, sep } from 'node:path'
+import { relative, sep } from 'node:path'
 import { chromium, firefox, webkit } from 'playwright'
 import { DIST_ROOT, walkFiles } from './content-utils.mjs'
 import { serveDist } from './serve-dist.mjs'
