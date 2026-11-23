@@ -29,11 +29,14 @@ Exit code 0 is a pass; each failure names the case and what disagreed.
 then for every case opens a fresh browser context with storage seeded **before
 any page script runs** (`addInitScript`), loads
 `/lessons/0-orientation-and-foundations/0.1-what-is-a-language-model/`, and
-optionally applies one action with the same write-then-announce order the real
-components use. It then compares `localStorage` and the page's completion line
-with a rule computed from the inputs alone. 45 cases per engine: teach-back
-valid / invalid / absent × quiz true / false / absent × no action or one of the
-four actions, in Chromium and WebKit.
+in the same write-then-announce order the real components use. It then compares
+`localStorage` and the page's completion line with a rule computed from the
+inputs alone. 120 record cases per engine: eight teach-back answers on and
+around both floors × quiz true / false / absent × no action or one of four
+actions, in Chromium and WebKit. A second part drives the producers themselves:
+the textarea's `input` event at every boundary, and the quiz's Check button with
+the documented answers and with one deliberately wrong, reading each
+question's verdict and the stored record.
 
 Why a browser and not more unit tests: `tests/learning-ui.test.mjs` hands
 `Lesson.astro` a fake DOM whose `[data-teach-back]` is already `true`, so it
@@ -53,16 +56,16 @@ not the promise.
 | `src/lib/progress.ts` | `ldd:complete:<locale>:<lesson id>` key and `isComplete` reading `=== 'true'` |
 | `src/lib/progress-client.ts` | the second writer of `data-complete` (why that attribute is not asserted) |
 
-**Sync commit:** `c77c0fa`. The verification was last confirmed to describe the
+**Sync commit:** `3be65dc`. The verification was last confirmed to describe the
 code at that commit. If any file above changes after it, re-run the check; once
 it passes and you have read the diff, move this line forward — never before.
 
 ## Not covered
 
-- Clicking the real quiz and teach-back controls: the check dispatches the
-  components' events and performs their storage write itself, so a component
-  that stops writing before dispatching is caught by `learning-ui.test.mjs`, not
-  here.
+- The record matrix still dispatches the components' events and performs their
+  storage write itself; only the producer cases use the real controls. A quiz
+  whose documented key is itself wrong is invisible to both, because the page
+  and the check read the same `data-correct`.
 - The pt-BR keys, Firefox, and storage that throws. Each is a real risk with its
   own unit coverage; add a case here only if one of them changes.
 - Any lesson other than `0.1`. The page shape is shared, so one route proves it
@@ -90,6 +93,8 @@ Two mutations were run when this verification was created, and both failed it:
 
 1. `const complete = teachBackValid && quizValid` → `||`: 44 failures.
 2. `let teachBackValid = …dataset.complete === 'true'` → `let teachBackValid = false`: 8 failures, including the reload with both gates stored.
+3. `characters >= 80 && words >= 15` → `characters >= 80`: 20 failures, both producer cases between the floors among them.
+4. `const correct = selected…` → `const correct = true`: 2 failures, the quiz storing `true` for a wrong answer.
 
 Repeat one of them after any change to the state machine, then revert. A check
 that has never been seen red is a draft.
