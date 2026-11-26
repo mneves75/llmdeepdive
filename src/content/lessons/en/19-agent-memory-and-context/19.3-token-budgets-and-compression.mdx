@@ -38,10 +38,10 @@ citations:
     authors: "Charles Packer et al."
     year: 2023
     url: "https://arxiv.org/abs/2310.08560"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
-The purchasing assistant runs on a model with a 32,768-token context window. One request carries 1,200 tokens of system instructions, 2,400 tokens of tool schemas, six retrieved chunks of 800 tokens each and a 50-turn conversation history of 21,000 tokens. You want 4,096 tokens kept free for the answer. Does the request fit, and if not, what has to give? This lesson does the arithmetic, then compresses a real 50-turn conversation and measures what the compression lost.
+The purchasing assistant runs on a model with a 32,768-token context window. One request carries 1,200 tokens of system instructions, 2,400 tokens of tool schemas (descriptions of the tools the model may call), six retrieved chunks of 800 tokens each and a 50-turn conversation history of 21,000 tokens. You want 4,096 tokens kept free for the answer. Does the request fit, and if not, what has to give? This lesson does the arithmetic, then compresses a real 50-turn conversation and measures what the compression lost.
 
 ## Where does a context window go?
 
@@ -49,13 +49,15 @@ A *context window* is the number of tokens one model call can hold. It holds the
 
 - input limit: 32,768 − 4,096 = 28,672 tokens.
 
-Some parts of the request are fixed for this step: the system instructions, the tool schemas (the descriptions of the tools the model may call) and the retrieved chunks. Together they take 1,200 + 2,400 + 6 × 800 = 8,400 tokens. The conversation history gets the rest. The request as given uses 8,400 + 21,000 = 29,400 tokens, which is 728 over the input limit. The history must shrink to at most 28,672 − 8,400 = 20,272 tokens.
+Some parts of the request are fixed for this step: the system instructions, the tool schemas and the retrieved chunks (from [lesson 19.2](/lessons/19-agent-memory-and-context/19.2-ingestion-and-retrieval/)). Together they take 1,200 + 2,400 + 6 × 800 = 8,400 tokens. The conversation history gets the rest. The request as given uses 8,400 + 21,000 = 29,400 tokens, which is 728 over the input limit. The history must shrink to at most 28,672 − 8,400 = 20,272 tokens.
 
-Change the window and the verdict changes. With 131,072 tokens the same request fits with 97,576 to spare. With 8,192 tokens the input limit is 4,096, which cannot hold even the 8,400 fixed tokens, so no amount of history compression helps; you must send fewer schemas or fewer chunks. The calculator below starts from these numbers and lets you move each part.
+<Figure id="t19-window-slice" />
+
+Change the window size and the verdict flips between headroom, history compression, and a fixed-token overflow that no history cut can solve. The calculator below starts from these numbers and lets you move each part.
 
 ## Counting tokens, approximately and on purpose
 
-Every number above assumes you counted with the model's own tokenizer. [Lesson 1.4](/lessons/1-text-to-tensors/1.4-sentencepiece-byte-level-token-counts/) showed why: token counts belong to a tokenizer, not to the text, and the same sentence costs different amounts in English and Portuguese. The exercise must run offline with no model, so it uses a deliberate approximation, labelled as one in the code:
+Every number above assumes you counted with the model's own tokenizer. [Lesson 1.4](/lessons/1-text-to-tensors/1.4-sentencepiece-byte-level-token-counts/) showed why: token counts belong to a tokenizer, not to the text, and the same sentence costs different amounts in English and Portuguese. Because the exercise runs offline with no model, the function below estimates token count by dividing the character length by four and rounding up to the next whole number:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/memory/compression.py
@@ -73,7 +75,7 @@ A budget with a wide margin survives an approximate count. A budget 728 tokens o
 
 ## Fitting is not the same as being used
 
-A history that fits is not a history the model will use well. Liu et al. (2023) measured multi-document question answering and key-value retrieval. Accuracy was often highest when the relevant information sat at the beginning or the end of the input and dropped when it sat in the middle, including for models built for long inputs. Input length also costs latency and inference memory; the KV cache that grows with every token is sized in [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/). Capacity, position, latency and memory are four different questions, and a bigger window answers only the first.
+A history that fits is not a history the model will use well. Liu et al. (2023) measured multi-document question answering and key-value retrieval (finding one labeled value buried inside a long list of pairs). Accuracy was often highest when the relevant information sat at the beginning or the end of the input and dropped when it sat in the middle, including for models built for long inputs. Input length also costs latency and inference memory; the KV cache that grows with every token is sized in [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/). Capacity, position, latency and memory are four different questions, and a bigger window answers only the first.
 
 ## Compressing fifty turns, measured by lost facts
 
@@ -87,9 +89,9 @@ The exercise's conversation is small enough to read: 50 alternating turns, 937 a
 | `drop_stopwords` | 500 | 35 | 1 | 3 | 2 |
 | `pin_ledger` | 490 | 26 | 6 | 0 | 0 |
 
-`recent_window` keeps the newest turns that fit, from turn 25 on, so the four facts stated before it are lost. `drop_stopwords` deletes small words from every turn, using a stopword list that contains *not* and *never*. It packs in more turns and is the worst of the three: "Do not pay PO-1003 until the gloves arrive." becomes "pay PO-1003 gloves arrive.", a prohibition turned into an instruction. A flipped fact is worse than a lost one, because the model now reads the opposite of what the buyer said.
+`recent_window` keeps the newest turns that fit, from turn 25 on, so the four facts stated before it are lost. `drop_stopwords` deletes words from a *stopword list* — a list of common short words such as *the*, *is*, *not* and *never* that some search tools strip out. It packs in more turns and is the worst of the three: "Do not pay PO-1003 until the gloves arrive." becomes "pay PO-1003 gloves arrive.", a prohibition turned into an instruction. A flipped fact is worse than a lost one, because the model now reads the opposite of what the buyer said.
 
-`pin_ledger` keeps every flagged commitment verbatim and fills the rest with recent turns:
+`pin_ledger` pulls out every flagged commitment verbatim and subtracts their tokens from the budget first; if those commitments alone exceed the budget, it stops with an error instead of dropping one. Otherwise it fills the remaining tokens with the newest non-fact turns and sorts everything back into chronological order:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/memory/compression.py
@@ -104,7 +106,7 @@ The exercise's conversation is small enough to read: 50 alternating turns, 937 a
 The six flagged turns cost 85 tokens, and the call fails loudly when they alone exceed the budget instead of cutting one to fit. MemGPT (Packer et al., 2023) is one published design in the same spirit: it moves data between a limited context and external storage rather than trusting the window to hold everything.
 
 :::caveat
-The ledger works here because the controller flags a commitment when the user states it. In a real system that flag comes from an extraction step, which can itself miss a commitment, and `score` is how you would find out. A model-written summary is a fourth compressor; scoring it needs a model, so the course's CI does not run one, but you would score it with the same facts.
+The ledger works here because the controller (the program running the conversation) flags a commitment when the user states it. In a real system that flag comes from an extraction step, which can itself miss a commitment, and `score` is how you would find out. A model-written summary is a fourth compressor; scoring it needs a model, so the course's automated test suite (CI) does not run one, but you would score it with the same facts.
 :::
 
 ## Run the exercise

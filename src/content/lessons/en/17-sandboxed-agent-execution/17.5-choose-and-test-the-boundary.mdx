@@ -54,14 +54,14 @@ citations:
     authors: "Firecracker project"
     year: 2026
     url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/jailer.md"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 The team has to pick where the report generator runs. Five names keep coming up in the discussion: E2B, gVisor, WebContainers, "just a container" and Docker-in-Docker. Each is offered as "a sandbox", as if they were interchangeable. They are not. Each puts the boundary somewhere else, protects someone else, and needs a different machine. This lesson compares them against the five exposures from [lesson 17.1](/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/), then does two things no comparison table can do: it measures the backend you actually configured, and it cleans up after it.
 
 ## Six options, six different boundaries
 
-The table adds the course's Firecracker reference to the five candidates. "Network" lists only what the cited documentation states.
+The table adds the course's Firecracker reference to the five candidates. A *container runtime* is the engine (such as Docker) that starts and configures containers on the host, and a *VMM* (Virtual Machine Monitor, here Firecracker) is the host program that creates and manages a virtual machine. "Network" lists only what the cited documentation states.
 
 | Option | Where the guest's code runs | What stands between it and your host | Network |
 |---|---|---|---|
@@ -72,21 +72,21 @@ The table adds the course's Firecracker reference to the five candidates. "Netwo
 | Docker-in-Docker | your Linux host | usually nothing: it runs `--privileged` | set by the runtime |
 | Firecracker reference | your Linux host with KVM | a guest kernel and a jailed VMM | none: no network device |
 
-Read across a row and the differences show. **E2B** moves the guest off your machines, which also makes the provider part of your control plane: your controller needs network access to it, and the learner's own account and consent. **gVisor** keeps the guest on your host, answering its system calls with the Sentry rather than the host kernel. It is not a VM. **WebContainers** run Node.js "entirely inside your browser tab", so they protect a visitor's machine from a coding demo and do nothing for Python next to your data. An **unprivileged container** shares the host kernel, and Docker notes that user namespaces are "available but not enabled by default". **Docker-in-Docker** is the use case the `docker run` reference gives for `--privileged`.
+Read across a row and the differences show. **E2B** moves the guest off your machines, which also makes the provider part of your control plane: your controller needs network access to it, and the learner's own account and consent. **gVisor** keeps the guest on your host, answering its system calls with the Sentry rather than the host kernel. It is not a VM. **WebContainers** run Node.js "entirely inside your browser tab", so they protect a visitor's machine from a coding demo and do nothing for Python next to your data. An **unprivileged container** shares the host kernel, and Docker notes that *user namespaces* (a Linux feature that maps `root` inside a container to an ordinary user outside) are "available but not enabled by default". **Docker-in-Docker** is the use case the `docker run` reference gives for `--privileged`.
 
 ## Configurations that remove the boundary
 
 A boundary is a configuration, and three common ones undo it:
 
-- **`--privileged`.** The `docker run` reference says it enables all capabilities, grants access to all host devices, disables the default seccomp and AppArmor profiles, and "is not a securely sandboxed process".
-- **A mounted Docker socket.** The Docker daemon "requires `root` privileges unless you opt-in to Rootless mode". Docker's page on protecting the daemon says anyone with the keys "can give any instructions to your Docker daemon", which means root on its host. A guest that can reach the socket can start a container with the host's `/` mounted, which Docker's security page says "can alter your host filesystem without any restriction".
-- **Defaults left on.** E2B's documentation, read on 2026-10-18, says "Every sandbox has outbound access to the internet by default". Allow rules "always take precedence" over deny rules, and domain filtering covers only HTTP on port 80 and TLS on port 443. An unexamined default is a decision too.
+- **`--privileged`.** The `docker run` reference says it enables all capabilities, grants access to all host devices, disables the default seccomp ([lesson 17.1](/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/)) and *AppArmor* (a Linux security module restricting which files and actions a program can access) profiles, and "is not a securely sandboxed process".
+- **A mounted Docker socket.** The Docker *daemon* (the background service that starts and stops containers) "requires `root` privileges unless you opt-in to Rootless mode" (running the service as an ordinary user). Docker's page on protecting the daemon says anyone with the keys "can give any instructions to your Docker daemon", which means root on its host. A guest that can reach the socket can start a container with the host's `/` mounted, which Docker's security page says "can alter your host filesystem without any restriction".
+- **Defaults left on.** E2B's documentation, read on 2026-10-18, says "Every sandbox has outbound access to the internet by default". Allow rules "always take precedence" over deny rules, and domain filtering covers only HTTP (Hypertext Transfer Protocol, unencrypted web traffic) on port 80 and TLS (Transport Layer Security, encrypted web traffic) on port 443. An unexamined default is a decision too.
 
-None of the options is free of vulnerabilities, and none claims to be. gVisor's documentation even lists where it "does not help": attacks before the sandbox starts, Spectre-style side channels, and exploits inside the workload, where "the attacker will still have access to whatever the sandbox is configured to have access to".
+None of the options is free of vulnerabilities, and none claims to be. gVisor's documentation even lists where it "does not help": attacks before the sandbox starts, *Spectre-style side channels* (hardware timing attacks that infer secret data from shared processor caches), and *exploits* (attacks abusing a software bug) inside the workload, where "the attacker will still have access to whatever the sandbox is configured to have access to".
 
 ## Measure, do not describe
 
-A vendor page describes a product. Your configuration of it is what runs. So the project measures a backend with small probes, each a guest script whose output the controller compares with the marker that means "the guest could do this":
+A vendor page describes a product. Your configuration of it is what runs. So the project measures a backend with small *probes* (short test scripts run inside the sandbox). The function below creates a temporary host file outside any workspace, runs three scripts to check whether the guest can read that file, see `PATH` or `HOME` in its environment, or `fork` a child process, and runs a fourth script that writes 32 MiB to see whether stdout is capped, returning four true/false facts:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/sandbox/boundary.py
@@ -105,17 +105,21 @@ def probe_boundary(backend: Backend) -> dict[str, bool]:
     return report
 ```
 
-For the subprocess backend, run as an ordinary user, the measured report is `reads_host_file=True`, `inherits_environment=False`, `starts_processes=False` and `output_bounded=True`. Three controls hold and one boundary is absent, which is exactly what lessons 17.1 and 17.2 predicted. A positive control runs the same probes against a looser configuration and gets different answers, so the probes really can tell configurations apart. Network probes are left out on purpose: they need a destination you control and a firewall to test against, and E2B's warning that blocked connections can look open applies to them.
+The stepped figure below shows the measured results for `SubprocessBackend` (matching what lessons 17.1 and 17.2 predicted), a looser positive-control backend that proves the probes can tell configurations apart, and the scoped cleanup rule that follows every run.
+
+<Figure id="t17-boundary-probes" />
+
+Network probes are left out on purpose: they need a destination you control and a firewall to test against, and E2B's warning that blocked connections can look open applies to them.
 
 ## Clean up exactly what the run owns
 
-Every run creates resources: a workspace, a process group, and on the microVM path a jail directory and a cgroup. Cleanup removes those, named by what the run recorded when it created them. It never removes "everything that looks like ours". `rm -rf /tmp/agentlab-sandbox-*` would delete another run's workspace in the middle of its work. A `pkill python` would hit processes that belong to someone else.
+Every run creates resources: a workspace, a process group, and on the microVM path a jail directory and a cgroup. As the third frame of the figure shows, cleanup removes only those exact resources recorded at creation — never "everything that looks like ours". A wildcard command like `rm -rf /tmp/agentlab-sandbox-*` would delete another run's workspace mid-flight, and `pkill python` (which kills every running process whose name matches) would hit processes belonging to someone else.
 
-The project follows that rule at each layer. The workspace is the exact path `TemporaryDirectory` returned. The kill targets the process group the child leads. On the microVM path, the jailer's id names both the chroot `/srv/jailer/firecracker/<id>` and the cgroup, and the jailer documentation leaves that cleanup to you. The cleanup must also run on failure: after a timeout, and after the guest locks its own files with `chmod 0`.
+The project enforces that rule at each layer: the exact path `TemporaryDirectory` returned, the child's process group, and on the microVM path the jailer id naming `/srv/jailer/firecracker/<id>` and its cgroup (which the jailer leaves to you). Cleanup must also hold on failure, including after a timeout or after a hostile guest strips permissions from its own files with `chmod 0` (removing read, write and execute bits).
 
 ## Write the decision down
 
-An *architecture decision record* (ADR) is a short document that states one decision, its context and the alternatives rejected, so the next person knows why. For a sandbox, it must hold measured values, not adjectives. The template below is an illustration for you to fill in. The course's CI does not check it, because only you know your threat model and your machines:
+An *architecture decision record* (ADR) is a short document that states one decision, its context and the alternatives rejected, so the next person knows why. For a sandbox, it must hold measured values — including the date, host and version-control *commit* (snapshot) — rather than adjectives. The template below illustrates the seven sections to fill in (context, threat model, chosen backend, measured limits, unsupported platforms, failure cleanup, and rejected alternatives). The course's CI does not check it, because only you know your threat model and your machines:
 
 ```markdown
 # ADR: Execution boundary for the report generator

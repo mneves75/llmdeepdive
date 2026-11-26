@@ -42,10 +42,10 @@ citations:
     authors: "Projeto Firecracker"
     year: 2026
     url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/prod-host-setup.md"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
-O script de relatório do modelo tem um bug. Ele pretende ler o CSV de compras linha por linha, mas nunca avança a linha, então o laço nunca termina. Uma segunda versão continua acrescentando cada linha a uma lista dentro desse laço, e uma terceira imprime a tabela inteira a cada volta. Ninguém atacou nada: o modelo cometeu um erro comum. Mesmo assim, o primeiro script prende um núcleo de CPU para sempre, o segundo toma memória até a máquina entrar em swap, e o terceiro despeja megabytes de texto de volta no próximo prompt do modelo. Esta aula limita cada um deles com limites que o kernel impõe, e é honesta sobre o que esses limites deixam aberto.
+O script de relatório do modelo tem um bug. Ele pretende ler o CSV (valores separados por vírgula, uma tabela em texto puro) de compras linha por linha, mas nunca avança a linha, então o laço nunca termina. Uma segunda versão continua acrescentando cada linha a uma lista dentro desse laço, e uma terceira imprime a tabela inteira a cada volta. Ninguém atacou nada: o modelo cometeu um erro comum. Mesmo assim, o primeiro script prende um núcleo da unidade central de processamento (CPU) para sempre, o segundo enche a memória até a máquina entrar em *swap* (despejando memória no disco lento), e o terceiro despeja megabytes de texto de volta no próximo prompt do modelo. Esta aula limita cada um deles com limites que o kernel impõe, e é honesta sobre o que esses limites deixam aberto.
 
 ## O que um bug honesto consegue esgotar?
 
@@ -54,26 +54,26 @@ Cinco recursos se esgotam, e cada um tem seu sintoma:
 - **Tempo de CPU**: um laço que nunca termina.
 - **Memória**: uma lista ou string que não para de crescer.
 - **Disco e saída**: um arquivo ou um print que nunca para.
-- **Descritores de arquivo**: arquivos ou sockets abertos num laço e nunca fechados. Um *descritor de arquivo* é o número que o kernel dá a um processo para cada arquivo, pipe ou socket aberto.
+- **Descritores de arquivo**: arquivos ou sockets ([aula 17.1](/pt-br/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/)) abertos num laço e nunca fechados. Um *descritor de arquivo* é o número que o kernel dá a um processo para cada arquivo, *pipe* (canal em memória que liga a saída de um programa à entrada de outro) ou socket aberto.
 - **Processos**: um laço que inicia processos novos, a clássica *fork bomb*. `fork` é a chamada de sistema que copia o processo atual.
 
-O tempo de relógio é um sexto. Um script que dorme ou espera um lock não usa CPU, e ainda assim mantém a execução aberta.
+O tempo de relógio é um sexto. Um script que dorme ou espera um *lock* (um marcador de coordenação que protege um recurso compartilhado) não usa CPU, e ainda assim mantém a execução aberta.
 
 ## Limites que o kernel impõe por processo
 
-Um *limite de recurso*, ou *rlimit*, é um teto que o kernel prende a um processo e aos processos que ele inicia. Cada um tem um valor *flexível* (*soft*), onde o kernel começa a reclamar, e um valor *rígido* (*hard*), o teto para o flexível. Um processo sem privilégios pode baixar qualquer um dos dois, mas nunca pode subir o rígido de novo. Por isso limites aplicados dentro do filho antes de o script começar valem pela vida inteira do script.
+Um *limite de recurso*, ou *rlimit*, é um teto que o kernel prende a um processo e aos processos que ele inicia. Cada um tem um valor *flexível* (*soft*), onde o kernel começa a reclamar, e um valor *rígido* (*hard*), o teto para o flexível. Um *processo sem privilégios* (que roda como usuário comum, sem direitos de administrador) pode baixar qualquer um dos dois, mas nunca pode subir o rígido de novo. Por isso limites aplicados dentro do filho antes de o script começar valem pela vida inteira do script.
 
-A página de manual do getrlimit diz o que cada limite faz quando é atingido:
+A página de manual do getrlimit diz o que cada limite faz quando é atingido. Um *sinal* é um aviso curto que o kernel envia a um processo (`SIGXCPU` avisa que o tempo de CPU acabou; `SIGKILL` encerra o processo imediatamente e não pode ser ignorado), enquanto `EFBIG`, `EMFILE` e `EAGAIN` são códigos de erro do sistema operacional para arquivo grande demais, arquivos abertos demais e recurso temporariamente indisponível:
 
 | Limite | Limita | Quando atingido |
 |---|---|---|
 | `RLIMIT_CPU` | segundos de CPU | `SIGXCPU` no valor flexível, depois `SIGKILL` no rígido |
-| `RLIMIT_AS` | espaço de endereços | pedidos de memória falham; o Python levanta `MemoryError` |
+| `RLIMIT_AS` | espaço de endereços (memória virtual total mapeada) | pedidos de memória falham; o Python levanta `MemoryError` |
 | `RLIMIT_FSIZE` | tamanho de cada arquivo escrito | a escrita falha com `EFBIG` (o CPython ignora o `SIGXFSZ`) |
 | `RLIMIT_NOFILE` | descritores de arquivo abertos | `open` falha com `EMFILE` |
 | `RLIMIT_NPROC` | processos do usuário real | `fork` falha com `EAGAIN` |
 
-Os limites do projeto são um registro pequeno:
+O registro `Limits` abaixo reúne os tetos padrão do projeto num único objeto somente leitura: 2 segundos de CPU, 10 segundos de tempo de relógio, 256 MiB de espaço de endereços onde aceito, 1 MiB por arquivo escrito, 64 descritores de arquivo abertos e zero processos filhos:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/sandbox/process.py
@@ -91,7 +91,7 @@ class Limits:
     allow_processes: bool = False
 ```
 
-Um bootstrap curto os aplica dentro do filho, antes de o script rodar. A documentação do Python avisa que a alternativa, um callback `preexec_fn`, "is NOT SAFE to use in the presence of threads in your application" (NÃO É SEGURO na presença de threads na sua aplicação). Os limites obrigatórios falham fechados:
+Um *bootstrap* curto (um script de inicialização dentro do filho) aplica esses tetos antes de o script não confiável rodar. A documentação do Python avisa que a alternativa, um callback `preexec_fn`, "is NOT SAFE to use in the presence of threads in your application" (NÃO É SEGURO na presença de *threads*, linhas paralelas de execução que dividem memória dentro de um processo). O bloco abaixo aplica cada limite obrigatório com `cap()` e *falha fechado* — se o sistema operacional recusar algum teto, ele grava o erro em JSON no pipe de relatório e sai com código 125 para que o código não confiável nunca comece:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/sandbox/process.py
@@ -106,21 +106,25 @@ except (ValueError, OSError) as error:
     sys.exit(125)
 ```
 
-Se algum deles não pode ser aplicado, o bootstrap informa o erro e sai antes de o script começar, e `run_python` levanta `SandboxSetupError`. O limite de CPU tem o valor rígido um segundo acima do flexível, então o primeiro sinal é `SIGXCPU`, como a página de manual descreve. O relatório viaja por um pipe que o bootstrap fecha antes de o script rodar, então o script não consegue escrever um relatório falso.
+Quando o bootstrap sai sem fechar um relatório válido, `run_python` levanta `SandboxSetupError`. Definir o limite rígido de CPU um segundo acima do flexível permite que `SIGXCPU` chegue primeiro, como a página de manual descreve, e fechar o pipe de relatório antes de o código convidado começar impede que o script falsifique o relatório.
 
 ## O tempo que o limite de CPU não enxerga
 
-Um laço que dorme quase não usa CPU, então o `RLIMIT_CPU` nunca dispara. Por isso o pai espera com um timeout de relógio e depois mata o filho. Uma morte enviada só ao filho erraria qualquer processo que o filho iniciou. É por isso que o filho começa com `start_new_session=True`, que o torna líder de um novo *grupo de processos*, e por isso o pai mata o grupo inteiro com uma única chamada a `killpg`. A morte mira exatamente o grupo que esta execução criou, nunca todos os processos Python da máquina.
+A figura em passos abaixo percorre como `run_python` limita a configuração, scripts ocupados ou ruidosos e scripts dormindo que o `RLIMIT_CPU` nunca captura.
+
+<Figure id="t17-rlimit-enforcement" />
+
+Uma morte enviada só ao processo filho erraria qualquer descendente iniciado por ele. Iniciar o filho com `start_new_session=True` o torna líder de um novo *grupo de processos* (um conjunto de processos relacionados que podem receber um sinal juntos), então a chamada `killpg` do pai encerra exatamente o grupo criado por esta execução, nunca todos os processos Python da máquina.
 
 O timeout não aceita um relógio injetado. O kernel mede tempo real, então os testes que o comprovam gastam cerca de um segundo de tempo real cada um.
 
 :::caveat
-Um processo que chama `setsid()` sai do grupo e sobrevive à morte. Um *cgroup* do Linux, um grupo do kernel que carrega cotas e pode ser esvaziado de uma vez, o alcança. Destruir uma VM também. Os dois aparecem na [aula 17.4](/pt-br/lessons/17-sandboxed-agent-execution/17.4-a-python-interpreter-in-a-microvm/).
+Um processo que chama `setsid()` sai do grupo e sobrevive à morte. Um *cgroup* do Linux ([aula 17.1](/pt-br/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/)), um grupo do kernel que carrega cotas e pode ser esvaziado de uma vez, o alcança. Destruir uma máquina virtual (VM) também. Os dois aparecem na [aula 17.4](/pt-br/lessons/17-sandboxed-agent-execution/17.4-a-python-interpreter-in-a-microvm/).
 :::
 
 ## A saída também é um recurso
 
-O stdout e o stderr do filho vão para arquivos temporários, não para pipes. Um pipe faria o pai ler tudo o que o filho escreve, então uma enxurrada de saída cairia na memória do pai. Um arquivo é limitado pelo `RLIMIT_FSIZE`, e o pai depois lê no máximo `max_file_bytes` dele. O mesmo limite vale para todo arquivo que o script escreve no seu diretório de trabalho. Esse teto por arquivo é o único limite de disco aqui.
+O `stdout` (saída padrão, para texto normal impresso) e o `stderr` (erro padrão, para mensagens de erro) do filho vão para arquivos temporários, não para pipes. Um pipe faria o pai ler tudo o que o filho escreve, então uma enxurrada de saída cairia na memória do pai. Um arquivo é limitado pelo `RLIMIT_FSIZE`, e o pai depois lê no máximo `max_file_bytes` dele. O mesmo limite vale para todo arquivo que o script escreve no seu diretório de trabalho. Esse teto por arquivo é o único limite de disco aqui.
 
 O diretório de trabalho é tarefa de quem chama: cada execução ganha um novo e vazio, e ele é apagado depois. O backend da aula 17.4 faz as duas coisas.
 
@@ -129,8 +133,8 @@ O diretório de trabalho é tarefa de quem chama: cada execução ganha um novo 
 Três fatos de plataforma moldam o que esses limites significam:
 
 - **O macOS recusa o `RLIMIT_AS`.** No macOS, o `setrlimit` levantou `ValueError` para `RLIMIT_AS` e `RLIMIT_DATA` nas verificações deste projeto, então um Mac não dá limite de espaço de endereços pelo `resource`. Falhar fechado faria toda execução falhar, então a memória é o único limite aplicado na base do possível. `RunResult.memory_limited` diz se ele foi aplicado, e no Linux o teste exige que seja verdadeiro.
-- **O `RLIMIT_NPROC` conta o usuário inteiro.** A página de manual o define por ID real de usuário e diz que ele "is not enforced" (não é aplicado) para o root ou para processos com `CAP_SYS_ADMIN` ou `CAP_SYS_RESOURCE`. Um número positivo pequeno bloquearia também os outros processos do usuário, então o único valor portável é zero: nenhum processo novo, e no Linux nenhuma thread nova.
-- **Alguns limites precisam de mais que rlimits.** Uma cota total de disco, um sistema de arquivos somente leitura e uma contagem de processos por sandbox exigem recursos do sistema operacional: montagens, namespaces, cgroups. O guia de produção do Firecracker recomenda exatamente essa camada para os seus próprios processos.
+- **O `RLIMIT_NPROC` conta o usuário inteiro.** A página de manual o define por ID real de usuário e diz que ele "is not enforced" (não é aplicado) para o `root` (a conta administrativa no Unix/Linux) ou para processos com as capabilities administrativas `CAP_SYS_ADMIN` ou `CAP_SYS_RESOURCE`. Um número positivo pequeno bloquearia também os outros processos do usuário, então o único valor portável é zero: nenhum processo novo, e no Linux nenhuma thread nova.
+- **Alguns limites precisam de mais que rlimits.** Uma cota total de disco, um sistema de arquivos somente leitura e uma contagem de processos por sandbox exigem recursos do sistema operacional: *montagens* (anexar uma pasta com regras como acesso somente leitura), namespaces e cgroups. O guia de produção do Firecracker recomenda exatamente essa camada para os seus próprios processos.
 
 ## Rode o exercício
 

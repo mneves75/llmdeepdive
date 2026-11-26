@@ -34,16 +34,18 @@ citations:
     authors: "Adam Barth"
     year: 2011
     url: "https://www.rfc-editor.org/rfc/rfc6265"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-The supplier portal wants a username and a password, and its session lasts 15 minutes. The quickest design gives the model the password in its instructions and lets it type it like any other text. Follow one run of that design. The password is now in the model's context, so it ends up in the run's trace, the log that records every step, and from there in a bug report. Halfway through, a supplier's e-mail links to a copy of the login page on another address, and the model types the password there too. Later the session expires while the run is waiting, the next click lands on the login page, and the model tries the export again, and again.
+The supplier portal wants a username and a password, and its session lasts 15 minutes. The quickest design gives the model the password in its instructions and lets it type it like any other text. Follow one run of that design. The password is now in the model's context (the text sent into the model), so it ends up in the run's trace, the log that records every step, and from there in a bug report. Halfway through, a supplier's e-mail links to a copy of the login page on another address, and the model types the password there too. Later the session expires while the run is waiting, the next click lands on the login page, and the model tries the export again, and again.
 
-Each of those steps is a design decision. This lesson makes each one differently.
+Each of those steps is a design decision. The figure below shows how this lesson replaces every one of them:
+
+<Figure id="t18-session-and-vault-flow" />
 
 ## Where the password lives
 
-A *credential* is what proves identity to the portal: here a username and password. The rule from [lesson 16.4](/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/) applies unchanged: the model never holds a secret. The controller, the trusted code around the model, keeps credentials in a vault and asks for one only for the page it is on:
+A *credential* is what proves identity to the portal: here a username and password. The rule from [lesson 16.4](/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/) applies unchanged: the model never holds a secret. The controller, the trusted code around the model, keeps credentials in a vault. The class below stores them keyed by exact origin, hides the mapping from printed logs, and raises `PermissionError` (an error signalling a forbidden action) whenever the current page's origin is not registered:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/gui/session.py
@@ -60,11 +62,11 @@ class CredentialVault:
         return credential
 ```
 
-An *origin* is the scheme, host and port of a URL, such as `http://127.0.0.1:8123`. Matching it exactly is the point. `http://localhost:8123`, `https://127.0.0.1:8123` and `http://127.0.0.1:8123.evil.invalid` all get nothing, even when two of them reach the same machine, because a lookalike page usually sits on a machine the attacker controls. `repr=False` keeps the password out of logs and test failure messages, and `Credential` does the same for its own password field.
+An *origin* is the three identifying parts of a URL (web address): its scheme (`http` or `https`), its host (server name or numeric address such as `127.0.0.1`) and its port (channel number such as `8123`), giving `http://127.0.0.1:8123`. Matching it exactly is the point. `http://localhost:8123`, `https://127.0.0.1:8123` and `http://127.0.0.1:8123.evil.invalid` all get nothing, even when two of them reach the same machine, because a lookalike page usually sits on a machine the attacker controls. `repr=False` tells Python to omit the field when turning the object into text for logs or test failures, and `Credential` does the same for its own password field.
 
 ## Signing in without the model
 
-The sign-in step is controller code, not a tool the model can call:
+The sign-in step is controller code, not a tool the model can call. The lines below fetch the credential for the current page, charge the action budget, fill the username and password boxes by their labels, log only `"[secret]"` for the password, and click Sign in:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/gui/browser.py
@@ -77,11 +79,11 @@ The sign-in step is controller code, not a tool the model can call:
     page.get_by_role("button", name="Sign in", exact=True).click()
 ```
 
-`release` runs first, so on a lookalike page a `PermissionError` is raised before a single field is filled. The fields are found by their labels, the semantic route of [lesson 18.1](/lessons/18-computer-use-and-gui-automation/18.1-observe-before-acting/). The trace records that the password field was filled, never with what.
+The fields are found by their labels, the semantic route of [lesson 18.1](/lessons/18-computer-use-and-gui-automation/18.1-observe-before-acting/), and because `release` runs first, a lookalike page fails before a single character is typed.
 
 ## A trace that never holds a secret
 
-Traces travel: into dashboards, evaluation sets, bug reports. So `Trace.record` scrubs every string of every event against the run's secrets before the event is stored, and the stored record is the project's `ExecutionEvent` with a timezone-aware time from an injected clock:
+Traces travel: into dashboards, evaluation sets, bug reports. The method below scrubs every string in every event field against the run's secrets before appending a numbered `ExecutionEvent` stamped with a timezone-aware time from an injected clock (a controllable clock object tests use to jump forward without waiting):
 
 ```python
 # file: examples/agent-engineering/src/agentlab/gui/trace.py
@@ -90,19 +92,19 @@ Traces travel: into dashboards, evaluation sets, bug reports. So `Trace.record` 
         self.events.append(ExecutionEvent(run_id=self.run_id, seq=len(self.events), kind=kind, at=self.clock(), data=clean))
 ```
 
-The scrub catches a secret that leaks through a field nobody marked, such as a URL with the password in its query string, which a test plants on purpose. It matches exact text only. A password that was encoded, split or hashed before reaching the trace would pass through, which is why the first rule is never to hand the secret to anything that writes the trace. The scrub is the backstop.
+The scrub catches a secret that leaks through a field nobody marked, such as a URL with the password in its query string (the `?key=value` text at the end of a web address), which a test plants on purpose. It matches exact text only. A password that was encoded (converted to another format), split into pieces or hashed (turned into a one-way fingerprint) before reaching the trace would pass through, which is why the first rule is never to hand the secret to anything that writes the trace. The scrub is the backstop.
 
 ## What the session is, and why it ends
 
-After a correct sign-in, the portal answers with a *session cookie*: a random token the browser stores and sends back with every request, so the portal knows the requests come from a signed-in user. The portal marks it `HttpOnly`, which RFC 6265 says "limits the scope of the cookie to HTTP requests". Scripts on the page cannot read it, while the browser still sends it. A browser test checks both halves: `document.cookie` is empty, and the context holds one cookie.
+After a correct sign-in, the portal answers with a *session cookie*: a random token the browser stores and sends back with every HTTP (Hypertext Transfer Protocol) request, so the portal knows the requests come from a signed-in user. The portal marks it `HttpOnly`, which RFC 6265 says "limits the scope of the cookie to HTTP requests". Scripts on the page cannot read it through `document.cookie` (the browser interface that exposes ordinary cookies to page code), while the browser still sends it. A browser test checks both halves: `document.cookie` is empty, and the context holds one cookie.
 
 Anyone who holds that token is signed in, so it is a credential too. Playwright's documentation warns that a saved browser state "may contain sensitive cookies and headers that could be used to impersonate you or your test account" and says "We strongly discourage checking them into private or public repositories." The exercises never save one. Each test signs in fresh or receives a session from the portal object directly.
 
-The portal ends a session 15 minutes after it starts. It reads time from an injected clock, so a test moves the clock forward 16 minutes instead of waiting, and the next page load redirects to `/login?expired=1`.
+The portal ends a session 15 minutes after it starts. It reads time from an injected clock, so a test moves the clock forward 16 minutes instead of waiting, and the next page load redirects (automatically sends the browser) to `/login?expired=1`.
 
 ## Pause, do not retry
 
-The dangerous moment is after expiry. The page the agent expected is now a login page, and a run that simply repeats its last action will click, fail, and click again. `classify_page` turns every observation into one of three states before anything is clicked:
+The dangerous moment is after expiry. The page the agent expected is now a login page, and a run that repeats its last action without checking will click, fail, and click again. The function below classifies every observation before anything is clicked, returning `needs_human` for a foreign origin or a human-challenge phrase, `needs_login` for the `/login` path, and `ready` otherwise:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/gui/session.py
@@ -118,7 +120,7 @@ def classify_page(url: str, snapshot: str, portal_origin: str) -> PageState:
     return "ready"
 ```
 
-`needs_login` pauses the run and hands the decision to the controller, which may sign in again under a rule it owns. `needs_human` covers a page outside the portal and any challenge built to require a person: a one-time code sent to a phone, a CAPTCHA. Nothing in this course tries to get past those. They exist so that a person, not a script, completes that step. When a run must wait for that person, [lesson 20.1](/lessons/20-human-approval-and-durable-pauses/20.1-decide-when-approval-is-needed/) and the rest of track 20 cover waiting durably.
+`needs_login` hands the decision back to the controller, which may sign in again under a rule it owns. `needs_human` covers a page outside the portal and any challenge built to require a person: a one-time code sent to a phone, or a CAPTCHA (Completely Automated Public Turing test to tell Computers and Humans Apart). Nothing in this course tries to get past those. They exist so that a person, not a script, completes that step. When a run must wait for that person, [lesson 20.1](/lessons/20-human-approval-and-durable-pauses/20.1-decide-when-approval-is-needed/) and the rest of track 20 cover waiting durably.
 
 :::caveat
 Matching phrases such as "one-time code" fits this synthetic portal. A real portal needs its own list, and an unrecognised challenge looks like an unknown layout, which [lesson 18.5](/lessons/18-computer-use-and-gui-automation/18.5-recover-and-verify/) escalates instead of guessing at.
