@@ -12,9 +12,19 @@ import { relative, resolve, sep } from 'node:path'
 import { displayPath, finish, readLessons } from './content-utils.mjs'
 
 const REPO_ROOT = resolve(process.env.LLMDEEPDIVE_REPO_ROOT ?? '.')
-const PROJECT = resolve(REPO_ROOT, 'examples/agent-engineering')
+const PROJECTS = [
+  resolve(REPO_ROOT, 'examples/agent-engineering'),
+  resolve(REPO_ROOT, 'examples/qwen-local-lab'),
+]
 const FENCE = /^```[^\n]*\n([\s\S]*?)^```/gmu
 const HEADER = /^(?:#|\/\/) file: (\S+)\s*$/u
+
+function isInsideProject(file) {
+  return PROJECTS.some((project) => {
+    const inside = relative(project, file)
+    return !inside.startsWith('..') && !inside.split(sep).includes('..') && resolve(project, inside) === file
+  })
+}
 
 try {
   const failures = []
@@ -27,9 +37,8 @@ try {
       checked += 1
       const path = header[1] ?? ''
       const file = resolve(REPO_ROOT, path)
-      const inside = relative(PROJECT, file)
-      if (inside.startsWith('..') || inside.split(sep).includes('..') || resolve(PROJECT, inside) !== file) {
-        failures.push(displayPath(lesson.file) + ': excerpt path ' + path + ' is outside examples/agent-engineering')
+      if (!isInsideProject(file)) {
+        failures.push(displayPath(lesson.file) + ': excerpt path ' + path + ' is outside examples/agent-engineering or examples/qwen-local-lab')
         continue
       }
       if (!existsSync(file)) {
