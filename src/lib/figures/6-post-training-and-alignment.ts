@@ -77,8 +77,8 @@ export const TRACK_6_FIGURES = {
       {
         label: { en: 'Base model', 'pt-br': 'Modelo base' },
         caption: {
-          en: 'Pretraining rewards any continuation that fits written text, so all four branches carry comparable probability mass. Nothing in the objective marks the imperative as an instruction to execute.',
-          'pt-br': 'O pretraining recompensa qualquer continuação que caiba em texto escrito, então os quatro ramos carregam massa de probabilidade comparável. Nada no objetivo marca o imperativo como uma instrução a executar.',
+          en: 'Pretraining rewards any continuation that fits written text, so multiple plausible continuations (four illustrative branches below) can share non-trivial probability mass. Nothing in the objective marks the imperative as an instruction to execute.',
+          'pt-br': 'O pretraining recompensa qualquer continuação que caiba em texto escrito, então várias continuações plausíveis (quatro ramos ilustrativos abaixo) podem dividir massa de probabilidade relevante. Nada no objetivo marca o imperativo como uma instrução a executar.',
         },
         body: {
           kind: 'flow',
@@ -100,7 +100,7 @@ export const TRACK_6_FIGURES = {
           kind: 'flow',
           steps: [
             { label: { en: 'Chat template', 'pt-br': 'Template de chat' }, detail: { en: 'system, user and assistant role markers', 'pt-br': 'marcadores de papel system, user e assistant' }, pigment: 'accent' },
-            { label: { en: 'Same attention weights', 'pt-br': 'Mesmos pesos de attention' }, detail: { en: 'same matrices, updated values', 'pt-br': 'mesmas matrizes, valores atualizados' }, pigment: 'accent' },
+            { label: { en: 'Same architecture, updated weights', 'pt-br': 'Mesma arquitetura, pesos atualizados' }, detail: { en: 'identical attention mechanics; post-training updates weight values', 'pt-br': 'mecânica de attention idêntica; o pós-treino atualiza os valores dos pesos' }, pigment: 'accent' },
             { label: { en: 'Assistant reply', 'pt-br': 'Resposta do assistente' }, detail: { en: 'three reasons, directly in the assistant turn', 'pt-br': 'três razões, direto no turno do assistente' }, pigment: 'success' },
           ],
         },
@@ -133,15 +133,15 @@ export const TRACK_6_FIGURES = {
     lesson: '6.2-supervised-fine-tuning-and-instruction-data',
     title: { en: 'Which tokens enter the SFT loss', 'pt-br': 'Quais tokens entram na loss do SFT' },
     caption: {
-      en: 'One 460-token conversation passes through the forward pass intact in both cases. The loss mask decides which tokens generate gradients during the backward pass.',
-      'pt-br': 'Uma conversa de 460 tokens atravessa o forward pass inteira nos dois casos. A máscara da loss decide quais tokens geram gradientes durante o backward pass.',
+      en: 'One 460-token conversation passes through the forward pass intact in both cases. The loss mask zeroes direct cross-entropy loss on prompt tokens, while gradients from the scored assistant loss still flow back through prompt representations via attention.',
+      'pt-br': 'Uma conversa de 460 tokens atravessa o forward pass inteira nos dois casos. A máscara da loss zera a cross-entropy direta nos tokens do prompt, enquanto gradientes da loss do assistente ainda fluem de volta pelas representações do prompt via attention.',
     },
     steps: [
       {
         label: { en: 'Masked (correct SFT)', 'pt-br': 'Mascarado (SFT correto)' },
         caption: {
-          en: 'All 460 tokens stay in context so the model attends over them, while only the 120 assistant tokens (26%) are scored in the loss.',
-          'pt-br': 'Todos os 460 tokens ficam no contexto para o modelo prestar attention neles, enquanto só os 120 tokens do assistente (26%) entram na loss.',
+          en: 'All 460 tokens stay in context so the model attends over them, while only the 120 assistant tokens (26%) contribute direct cross-entropy loss terms.',
+          'pt-br': 'Todos os 460 tokens ficam no contexto para o modelo prestar attention neles, enquanto só os 120 tokens do assistente (26%) contribuem com termos diretos de loss de cross-entropy.',
         },
         body: {
           kind: 'stack',
@@ -157,8 +157,8 @@ export const TRACK_6_FIGURES = {
       {
         label: { en: 'Unmasked (wrong turn)', 'pt-br': 'Sem máscara (desvio errado)' },
         caption: {
-          en: 'Without the mask, 340 of 460 gradient signals (74%) train the model to imitate markers, system instructions, and user questions — so it finishes an answer and writes the next user turn.',
-          'pt-br': 'Sem a máscara, 340 de 460 sinais de gradiente (74%) treinam o modelo a imitar marcadores, instruções de system e perguntas do usuário — e ele termina a resposta escrevendo o próximo turno do usuário.',
+          en: 'Without the mask, 340 of 460 direct cross-entropy loss terms (74%) train the model to imitate markers, system instructions, and user questions — so it finishes an answer and writes the next user turn.',
+          'pt-br': 'Sem a máscara, 340 de 460 termos diretos de loss de cross-entropy (74%) treinam o modelo a imitar marcadores, instruções de system e perguntas do usuário — e ele termina a resposta escrevendo o próximo turno do usuário.',
         },
         body: {
           kind: 'stack',
@@ -167,7 +167,7 @@ export const TRACK_6_FIGURES = {
             { label: { en: 'Template markers', 'pt-br': 'Marcadores do template' }, detail: { en: '18 tokens — trains on structural markers', 'pt-br': '18 tokens — treina em marcadores estruturais' }, weight: 18, pigment: 'danger' },
             { label: { en: 'System instruction', 'pt-br': 'Instrução de system' }, detail: { en: '96 tokens — trains on system text', 'pt-br': '96 tokens — treina em texto de system' }, weight: 96, pigment: 'danger' },
             { label: { en: 'User request', 'pt-br': 'Pedido do usuário' }, detail: { en: '226 tokens — trains to imitate user prompts', 'pt-br': '226 tokens — treina para imitar prompts de usuário' }, weight: 226, pigment: 'danger' },
-            { label: { en: 'Assistant reply', 'pt-br': 'Resposta do assistente' }, detail: { en: '120 tokens — only a quarter of the gradient budget', 'pt-br': '120 tokens — apenas um quarto do orçamento de gradiente' }, weight: 120, pigment: 'accent' },
+            { label: { en: 'Assistant reply', 'pt-br': 'Resposta do assistente' }, detail: { en: '120 tokens — only a quarter of the direct loss terms', 'pt-br': '120 tokens — apenas um quarto dos termos diretos de loss' }, weight: 120, pigment: 'accent' },
           ],
         },
       },
@@ -481,8 +481,8 @@ export const TRACK_6_FIGURES = {
       {
         label: { en: 'SimPO', 'pt-br': 'SimPO' },
         caption: {
-          en: 'Drops the reference model completely and divides log-probability by token count, flipping long-vs-short rankings relative to summed scoring.',
-          'pt-br': 'Descarta o modelo de referência por completo e divide a log-probabilidade pelo número de tokens, invertendo rankings entre respostas longas e curtas em relação à soma.',
+          en: 'Drops the reference model completely and divides log-probability by token count; this length normalization can reverse long-vs-short rankings relative to summed scoring.',
+          'pt-br': 'Descarta o modelo de referência por completo e divide a log-probabilidade pelo número de tokens; essa normalização por comprimento pode inverter rankings entre respostas longas e curtas em relação à soma.',
         },
         body: {
           kind: 'flow',
@@ -608,8 +608,8 @@ export const TRACK_6_FIGURES = {
       {
         label: { en: 'Effort: xhigh', 'pt-br': 'Esforço: xhigh' },
         caption: {
-          en: 'Scored 44/45 on answers that finished, yet 5 answers ran out of the 4,096-token budget — pulling overall score to 88% (McNemar p = 0.25 vs low; a budget bottleneck, not lower intelligence).',
-          'pt-br': 'Marcou 44/45 nas respostas que terminaram, mas 5 respostas estouraram o orçamento de 4.096 tokens — puxando o placar geral para 88% (McNemar p = 0,25 vs low; gargalo de orçamento, não menor inteligência).',
+          en: 'Scored 44/45 on answers that finished, yet 5 answers hit the 4,096-token budget — pulling overall score to 88%. McNemar p = 0.25 vs low means this 50-item sample lacks statistical evidence of a difference (it does not prove equal underlying capability), while the 5 truncations point to a budget bottleneck.',
+          'pt-br': 'Marcou 44/45 nas respostas que terminaram, mas 5 atingiram o orçamento de 4.096 tokens — puxando o placar geral para 88%. McNemar p = 0,25 vs low significa que essa amostra de 50 itens não traz evidência estatística de diferença (não prova capacidade subjacente igual), enquanto os 5 truncamentos apontam gargalo de orçamento.',
         },
         body: {
           kind: 'flow',
@@ -654,17 +654,17 @@ export const TRACK_6_FIGURES = {
         },
       },
       {
-        label: { en: 'Phase 2: AI preferences (RLAIF)', 'pt-br': 'Fase 2: Preferências de IA (RLAIF)' },
+        label: { en: 'Phase 2: AI preferences (RLAIF / offline DPO)', 'pt-br': 'Fase 2: Preferências de IA (RLAIF / DPO offline)' },
         caption: {
-          en: 'A model judge ranks candidate pairs under the same principles to feed a reward model or DPO. Human audits remain necessary because one judge repeats its blind spots on every matching case.',
-          'pt-br': 'Um modelo jurado ordena pares de candidatos sob os mesmos princípios para alimentar um reward model ou DPO. Auditorias humanas continuam necessárias porque um único jurado repete seus pontos cegos em todo caso parecido.',
+          en: 'A model judge ranks candidate pairs under the same clauses. RL-based RLAIF trains a reward model and runs an explicit RL policy update (e.g. PPO), whereas offline preference optimization (e.g. DPO) updates the policy directly from those pairs. Human audits remain essential because one judge repeats its blind spots.',
+          'pt-br': 'Um modelo jurado ordena pares de candidatos sob as mesmas cláusulas. O RLAIF baseado em RL treina um reward model e roda uma atualização explícita de policy por RL (ex.: PPO), enquanto a otimização offline de preferência (ex.: DPO) atualiza a policy direto desses pares. Auditorias humanas seguem essenciais porque um único jurado repete seus pontos cegos.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Candidate pair', 'pt-br': 'Par de candidatos' }, detail: { en: 'two responses sampled for one prompt', 'pt-br': 'duas respostas amostradas para um prompt' }, pigment: 'muted' },
             { label: { en: 'Judge + clause', 'pt-br': 'Jurado + cláusula' }, detail: { en: 'model ranks pair and logs clause invoked', 'pt-br': 'modelo ordena o par e registra a cláusula' }, pigment: 'accent' },
-            { label: { en: 'RM or DPO update', 'pt-br': 'Atualização RM ou DPO' }, detail: { en: 'AI labels train reward model or policy', 'pt-br': 'rótulos de IA treinam reward model ou policy' }, pigment: 'accent' },
+            { label: { en: 'RLAIF (RM + RL) or DPO', 'pt-br': 'RLAIF (RM + RL) ou DPO' }, detail: { en: 'RM + RL policy update, or offline DPO directly', 'pt-br': 'RM + atualização por RL, ou DPO offline direto' }, pigment: 'accent' },
             { label: { en: 'Human audit', 'pt-br': 'Auditoria humana' }, detail: { en: 'catches shared blind spots and over-refusal', 'pt-br': 'detecta pontos cegos compartilhados e recusa excessiva' }, pigment: 'caution' },
           ],
         },
@@ -673,28 +673,28 @@ export const TRACK_6_FIGURES = {
   },
 
   /**
-   * 6.11 contrasts logit distillation (enabled by open weights like Qwen3.8-27B)
-   * with sequence distillation (the only route behind an API, requiring external
-   * verification rather than self-filtering).
+   * 6.11 contrasts logit distillation (enabled by open weights like Qwen3.8-27B
+   * or approximated via APIs exposing top-k logprobs) with sequence distillation
+   * (the route behind text-only black-box APIs, requiring external verification).
    */
   't6-distillation-two-routes': {
     lesson: '6.11-distillation-making-small-models-punch-up',
     title: { en: 'Two ways a student learns from a teacher', 'pt-br': 'Duas formas de um student aprender com um teacher' },
     caption: {
-      en: 'Both routes train a genuinely smaller parameter count — unlike quantization, which keeps all 27B weights in fewer bits. Open weights unlock logit distillation; APIs restrict you to sequence distillation.',
-      'pt-br': 'As duas rotas treinam uma contagem de parâmetros genuinamente menor — ao contrário da quantização, que mantém todos os 27B de pesos em menos bits. Pesos abertos liberam a distillation de logits; APIs restringem você à distillation de sequência.',
+      en: 'Both routes train a genuinely smaller parameter count — unlike quantization, which keeps all 27B weights in fewer bits. Open weights expose full logits (and APIs returning top-k logprobs allow approximate logit distillation); text-only black-box APIs restrict you to sequence-level distillation.',
+      'pt-br': 'As duas rotas treinam uma contagem de parâmetros genuinamente menor — ao contrário da quantização, que mantém todos os 27B de pesos em menos bits. Pesos abertos expõem logits completos (e APIs que retornam top-k logprobs permitem distillation aproximada de logits); APIs caixa-preta só de texto restringem você à distillation em nível de sequência.',
     },
     steps: [
       {
-        label: { en: 'Logit distillation (open weights)', 'pt-br': 'Distillation de logits (pesos abertos)' },
+        label: { en: 'Logit distillation (open or top-k logprobs)', 'pt-br': 'Distillation de logits (aberto ou top-k logprobs)' },
         caption: {
-          en: `Qwen3.8-27B ships under Apache 2.0, exposing logits over all ${VOCAB.en} vocabulary rows. Soft probabilities reveal plausible runners-up ("kitten" 0.25) that a one-hot label ("cat" 1.0) hides; implementations usually cache only the top few hundred entries per token.`,
-          'pt-br': `O Qwen3.8-27B vem sob Apache 2.0, expondo logits sobre todas as ${VOCAB['pt-br']} linhas do vocabulário. Probabilidades suaves revelam boas alternativas ("gatinho" 0,25) que um rótulo one-hot ("gato" 1,0) esconde; implementações costumam guardar só as poucas centenas do topo por token.`,
+          en: `Qwen3.8-27B ships under Apache 2.0, exposing logits over all ${VOCAB.en} vocabulary rows; APIs returning top-k logprobs support an approximate version. Soft probabilities reveal plausible runners-up ("kitten" 0.25) that a one-hot label ("cat" 1.0) hides; implementations usually cache only the top entries per token.`,
+          'pt-br': `O Qwen3.8-27B vem sob Apache 2.0, expondo logits sobre todas as ${VOCAB['pt-br']} linhas do vocabulário; APIs que retornam top-k logprobs suportam uma versão aproximada. Probabilidades suaves revelam boas alternativas ("gatinho" 0,25) que um rótulo one-hot ("gato" 1,0) esconde; implementações costumam guardar só as entradas do topo por token.`,
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Open teacher', 'pt-br': 'Teacher aberto' }, detail: { en: `${VOCAB.en}-row logits accessible`, 'pt-br': `logits de ${VOCAB['pt-br']} linhas acessíveis` }, pigment: 'accent' },
+            { label: { en: 'Open teacher / top-k API', 'pt-br': 'Teacher aberto / API top-k' }, detail: { en: `full ${VOCAB.en}-row logits or top-k logprobs`, 'pt-br': `logits de ${VOCAB['pt-br']} linhas ou top-k logprobs` }, pigment: 'accent' },
             { label: { en: 'Soft targets (temp T)', 'pt-br': 'Alvos suaves (temp T)' }, detail: { en: 'cat 0.70, kitten 0.25, car 0.05', 'pt-br': 'gato 0,70, gatinho 0,25, carro 0,05' }, pigment: 'accent' },
             { label: { en: 'KL + hard loss', 'pt-br': 'KL + loss dura' }, detail: { en: 'student matches top-k distribution', 'pt-br': 'student acompanha a distribuição top-k' }, pigment: 'caution' },
             { label: { en: 'Smaller student', 'pt-br': 'Student menor' }, detail: { en: 'fewer parameters; can then be quantized', 'pt-br': 'menos parâmetros; depois pode ser quantizado' }, pigment: 'success' },
@@ -702,10 +702,10 @@ export const TRACK_6_FIGURES = {
         },
       },
       {
-        label: { en: 'Sequence distillation (API or open)', 'pt-br': 'Distillation de sequência (API ou aberto)' },
+        label: { en: 'Sequence distillation (text-only API or open)', 'pt-br': 'Distillation de sequência (API só texto ou aberto)' },
         caption: {
-          en: 'When only text outputs are available, generate under a pinned preset, filter with an external checker rather than the same teacher, and run SFT on the surviving answers.',
-          'pt-br': 'Quando só as saídas em texto estão disponíveis, gere sob um preset fixado, filtre com um verificador externo em vez do próprio teacher e rode SFT nas respostas sobreviventes.',
+          en: 'Behind a text-only black-box API (without logprobs), generate under a pinned preset, filter with an external checker rather than the same teacher, and run SFT on the surviving answers.',
+          'pt-br': 'Atrás de uma API caixa-preta só de texto (sem logprobs), gere sob um preset fixado, filtre com um verificador externo em vez do próprio teacher e rode SFT nas respostas sobreviventes.',
         },
         body: {
           kind: 'flow',

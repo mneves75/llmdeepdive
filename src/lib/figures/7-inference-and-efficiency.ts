@@ -380,8 +380,8 @@ export const TRACK_7_FIGURES = {
       {
         label: { en: 'Admission & tokens', 'pt-br': 'Admissão e tokens' },
         caption: {
-          en: `The gateway enforces limits before GPU work starts, the chat template wraps roles and thinking tags, the tokenizer maps text into ids from ${both(QWEN.vocabSize.value).en} entries, and the scheduler checks KV-cache headroom.`,
-          'pt-br': `O gateway aplica limites antes de qualquer trabalho na GPU, o chat template envolve papéis e tags de thinking, o tokenizer mapeia texto em ids dentre ${both(QWEN.vocabSize.value)['pt-br']} entradas e o scheduler verifica a folga de KV cache.`,
+          en: `The gateway enforces limits before GPU work starts, the chat template wraps roles and thinking tags, the tokenizer maps text into ${both(QWEN.tokenizerMappedIds.value).en} mapped ids (the model’s output table is padded to ${both(QWEN.vocabSize.value).en} rows), and the scheduler checks KV-cache headroom.`,
+          'pt-br': `O gateway aplica limites antes de qualquer trabalho na GPU, o chat template envolve papéis e tags de thinking, o tokenizer mapeia texto em ${both(QWEN.tokenizerMappedIds.value)['pt-br']} ids mapeados (a tabela de saída do modelo tem padding para ${both(QWEN.vocabSize.value)['pt-br']} linhas) e o scheduler verifica a folga de KV cache.`,
         },
         body: {
           kind: 'flow',
@@ -399,8 +399,8 @@ export const TRACK_7_FIGURES = {
             {
               label: { en: 'Tokenizer', 'pt-br': 'Tokenizer' },
               detail: {
-                en: `text → integer ids (${both(QWEN.vocabSize.value).en} vocab)`,
-                'pt-br': `texto → ids inteiros (${both(QWEN.vocabSize.value)['pt-br']} entradas)`,
+                en: `text → integer ids (${both(QWEN.tokenizerMappedIds.value).en} mapped ids)`,
+                'pt-br': `texto → ids inteiros (${both(QWEN.tokenizerMappedIds.value)['pt-br']} ids mapeados)`,
               },
               pigment: 'accent',
             },
@@ -439,8 +439,8 @@ export const TRACK_7_FIGURES = {
             {
               label: { en: 'First logits', 'pt-br': 'Primeiros logits' },
               detail: {
-                en: `${both(QWEN.vocabSize.value).en} raw scores for token 1 only`,
-                'pt-br': `${both(QWEN.vocabSize.value)['pt-br']} pontuações brutas só para o token 1`,
+                en: `${both(QWEN.vocabSize.value).en} padded output rows for token 1 only`,
+                'pt-br': `${both(QWEN.vocabSize.value)['pt-br']} linhas de saída (com padding) só para o token 1`,
               },
               pigment: 'accent',
             },
@@ -608,8 +608,8 @@ export const TRACK_7_FIGURES = {
       'pt-br': 'Dos logits até um token amostrado',
     },
     caption: {
-      en: 'The model only produces scores; decoding reshapes, filters, renormalizes and draws one token. Steps 2 and 3 apply Qwen3.8-27B’s thinking and instruct presets to the same six illustrative code-completion logits from the lab below.',
-      'pt-br': 'O modelo apenas produz pontuações; o decoding remodela, filtra, renormaliza e sorteia um token. Os passos 2 e 3 aplicam os presets thinking e instruct do Qwen3.8-27B aos mesmos seis logits ilustrativos de código do laboratório abaixo.',
+      en: 'The model only produces scores; decoding reshapes, filters, renormalizes and draws one token. Steps 2 and 3 apply Qwen3.8-27B’s thinking and instruct temperature/truncation presets to the same six illustrative code-completion logits from the lab below (instruct mode also recommends presence_penalty = 1.5, which penalizes already-seen tokens).',
+      'pt-br': 'O modelo apenas produz pontuações; o decoding remodela, filtra, renormaliza e sorteia um token. Os passos 2 e 3 aplicam os presets thinking e instruct de temperature e truncamento do Qwen3.8-27B aos mesmos seis logits ilustrativos de código do laboratório abaixo (o modo instruct também recomenda presence_penalty = 1,5, que penaliza tokens já emitidos).',
     },
     steps: [
       {
@@ -655,10 +655,10 @@ export const TRACK_7_FIGURES = {
         },
       },
       {
-        label: { en: 'Thinking (T=1.0, p=0.95)', 'pt-br': 'Thinking (T=1,0, p=0,95)' },
+        label: { en: 'Thinking (T=1.0, p=0.95, pres=0.0)', 'pt-br': 'Thinking (T=1,0, p=0,95, pres=0,0)' },
         caption: {
-          en: 'On the lab’s illustrative code preset ("def fib(n): return …"), thinking settings keep 5 of 6 candidates ("None" is cut) and leave the leader "n" at 43.0%.',
-          'pt-br': 'No preset ilustrativo de código do laboratório ("def fib(n): return …"), os ajustes de thinking mantêm 5 de 6 candidatos ("None" é cortado) e deixam o líder "n" em 43,0%.',
+          en: 'On the lab’s illustrative code preset ("def fib(n): return …"), thinking settings (presence_penalty = 0.0) keep 5 of 6 candidates ("None" is cut) and leave the leader "n" at 43.0%.',
+          'pt-br': 'No preset ilustrativo de código do laboratório ("def fib(n): return …"), os ajustes de thinking (presence_penalty = 0,0) mantêm 5 de 6 candidatos ("None" é cortado) e deixam o líder "n" em 43,0%.',
         },
         body: {
           kind: 'stack',
@@ -667,10 +667,10 @@ export const TRACK_7_FIGURES = {
         },
       },
       {
-        label: { en: 'Instruct (T=0.7, p=0.80)', 'pt-br': 'Instruct (T=0,7, p=0,80)' },
+        label: { en: 'Instruct (T=0.7, p=0.80, pres=1.5)', 'pt-br': 'Instruct (T=0,7, p=0,80, pres=1,5)' },
         caption: {
-          en: 'Cooling to T = 0.7 and tightening top-p to 0.80 drops "0", "[" and "None", leaving only 3 survivors and lifting the leader "n" to 56.6%.',
-          'pt-br': 'Esfriar para T = 0,7 e apertar o top-p para 0,80 corta "0", "[" e "None", deixando só 3 sobreviventes e elevando o líder "n" para 56,6%.',
+          en: 'Cooling to T = 0.7 and tightening top-p to 0.80 drops "0", "[" and "None", leaving 3 survivors and lifting "n" to 56.6% on this single-step slice; the full model-card instruct preset also sets presence_penalty = 1.5 to discourage repeating tokens across a generation.',
+          'pt-br': 'Esfriar para T = 0,7 e apertar o top-p para 0,80 corta "0", "[" e "None", deixando 3 sobreviventes e elevando "n" para 56,6% neste passo isolado; o preset instruct completo do model card também define presence_penalty = 1,5 para desestimular repetição de tokens ao longo da geração.',
         },
         body: {
           kind: 'stack',
@@ -684,8 +684,8 @@ export const TRACK_7_FIGURES = {
   /**
    * 7.5 explains speculative decoding as a three-stage round: draft proposes k
    * tokens cheaply, target verifies all k in one parallel pass, then accepted
-   * tokens commit with one corrected bonus token. Replaces the 3-item numbered
-   * list in the speculative decoding section.
+   * tokens commit with one replacement token (or a bonus token when all k pass).
+   * Replaces the 3-item numbered list in the speculative decoding section.
    */
   't7-speculative-verify': {
     lesson: '7.5-beam-search-speculative-decoding-and-medusa',
@@ -694,15 +694,15 @@ export const TRACK_7_FIGURES = {
       'pt-br': 'Uma rodada especulativa, quatro tokens rascunhados',
     },
     caption: {
-      en: `Illustrative k = 4 round. Total arithmetic rises, yet latency drops because one ~${QWEN.weightsGbBf16.value} GB target weight read verifies all four proposals together while preserving the target model’s exact output distribution.`,
-      'pt-br': `Rodada ilustrativa com k = 4. A aritmética total sobe, mas a latência cai porque uma única leitura de ~${QWEN.weightsGbBf16.value} GB de pesos do target verifica as quatro propostas juntas preservando a distribuição exata do target.`,
+      en: `Illustrative k = 4 round. Total arithmetic rises, yet latency drops because one ~${QWEN.weightsGbBf16.value} GB target weight read verifies all four proposals together; standard speculative rejection sampling preserves the target’s exact output distribution (Medusa’s typical-acceptance variant relaxes that exact match).`,
+      'pt-br': `Rodada ilustrativa com k = 4. A aritmética total sobe, mas a latência cai porque uma única leitura de ~${QWEN.weightsGbBf16.value} GB de pesos do target verifica as quatro propostas juntas; a amostragem por rejeição especulativa padrão preserva a distribuição exata do target (a variante de typical acceptance do Medusa relaxa essa equivalência exata).`,
     },
     steps: [
       {
         label: { en: 'Draft proposes k=4', 'pt-br': 'Draft propõe k=4' },
         caption: {
-          en: 'A small draft model, Medusa heads, or Qwen3.8-27B’s built-in multi-token prediction proposes four candidate tokens cheaply, one after another.',
-          'pt-br': 'Um draft model pequeno, heads do Medusa ou a previsão multi-token embutida no Qwen3.8-27B propõem quatro tokens candidatos de forma barata, um após o outro.',
+          en: 'A small autoregressive draft model proposes four candidate tokens cheaply one after another; alternatively, multiple Medusa heads predict future positions in parallel from the same hidden state (and Qwen3.8-27B’s native MTP heads can likewise act as built-in drafters).',
+          'pt-br': 'Um draft model autorregressivo pequeno propõe quatro tokens candidatos de forma barata, um após o outro; como alternativa, múltiplas heads do Medusa preveem posições futuras em paralelo a partir do mesmo estado oculto (e as heads nativas de MTP do Qwen3.8-27B também podem atuar como drafters embutidos).',
         },
         body: {
           kind: 'flow',
@@ -735,17 +735,17 @@ export const TRACK_7_FIGURES = {
         },
       },
       {
-        label: { en: 'Commit + bonus token', 'pt-br': 'Efetivar + token bônus' },
+        label: { en: 'Commit + corrected token', 'pt-br': 'Efetivar + token corrigido' },
         caption: {
-          en: 'Accepted tokens commit in order, the rejected suffix ("cat") is discarded, and one corrected token ("fox") is sampled from the adjusted target distribution — three tokens emitted from one target pass.',
-          'pt-br': 'Os tokens aceitos são efetivados em ordem, o sufixo rejeitado ("cat") é descartado e um token corrigido ("fox") é amostrado da distribuição ajustada do target — três tokens emitidos numa passagem do target.',
+          en: 'Accepted tokens commit in order, the rejected suffix ("cat") is discarded, and on this rejection one replacement token ("fox") is sampled from the adjusted residual distribution (a "bonus" token is instead the extra k+1-th token sampled when all k drafts are accepted) — three tokens emitted from one target pass.',
+          'pt-br': 'Os tokens aceitos são efetivados em ordem, o sufixo rejeitado ("cat") é descartado e, nessa rejeição, um token de substituição ("fox") é amostrado da distribuição residual ajustada (um token "bônus" é o token extra k+1 amostrado quando todos os k rascunhos são aceitos) — três tokens emitidos numa passagem do target.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: '"the"', 'pt-br': '"the"' }, detail: { en: 'committed', 'pt-br': 'efetivado' }, pigment: 'success' },
             { label: { en: '"quick"', 'pt-br': '"quick"' }, detail: { en: 'committed', 'pt-br': 'efetivado' }, pigment: 'success' },
-            { label: { en: '"fox"', 'pt-br': '"fox"' }, detail: { en: 'corrected target sample', 'pt-br': 'amostra corrigida do target' }, pigment: 'accent' },
+            { label: { en: '"fox"', 'pt-br': '"fox"' }, detail: { en: 'replacement from residual distribution', 'pt-br': 'substituição da distribuição residual' }, pigment: 'accent' },
             { label: { en: '"cat"', 'pt-br': '"cat"' }, detail: { en: 'discarded; cache freed', 'pt-br': 'descartado; cache liberado' }, pigment: 'danger' },
           ],
         },
@@ -765,8 +765,8 @@ export const TRACK_7_FIGURES = {
       'pt-br': 'Encolhendo cabeças KV — e saindo desse eixo com o MLA',
     },
     caption: {
-      en: `On Qwen3.8-27B’s ${QWEN.attentionLayers.value} full-attention layers (head dimension ${QWEN.headDim.value}, bf16, ${both(QWEN.contextNative.value).en} tokens), cache size scales strictly with KV head count — until MLA replaces per-head K/V caching with a compressed latent vector.`,
-      'pt-br': `Nas ${QWEN.attentionLayers.value} camadas de full attention do Qwen3.8-27B (head dimension ${QWEN.headDim.value}, bf16, ${both(QWEN.contextNative.value)['pt-br']} tokens), o tamanho do cache escala estritamente com o número de cabeças KV — até o MLA trocar o cache por cabeça por um vetor latente comprimido.`,
+      en: `On Qwen3.8-27B’s ${QWEN.attentionLayers.value} full-attention layers (head dimension ${QWEN.headDim.value}, bf16, ${both(QWEN.contextNative.value).en} tokens), cache size scales strictly with KV head count — until MLA replaces per-head K/V caching with a compressed latent vector plus a decoupled RoPE key.`,
+      'pt-br': `Nas ${QWEN.attentionLayers.value} camadas de full attention do Qwen3.8-27B (head dimension ${QWEN.headDim.value}, bf16, ${both(QWEN.contextNative.value)['pt-br']} tokens), o tamanho do cache escala estritamente com o número de cabeças KV — até o MLA trocar o cache por cabeça por um vetor latente comprimido mais a chave de RoPE desacoplado.`,
     },
     steps: [
       {
@@ -811,8 +811,8 @@ export const TRACK_7_FIGURES = {
       {
         label: { en: 'MLA: off the head-count axis', 'pt-br': 'MLA: fora do eixo de cabeças' },
         caption: {
-          en: 'Multi-head latent attention does not pick a group count. It compresses each token into one learned latent vector in the cache and projects keys and values back out on demand, with decoupled RoPE handling.',
-          'pt-br': 'A multi-head latent attention não escolhe uma contagem de grupos. Ela comprime cada token num vetor latente aprendido no cache e projeta keys e values de volta sob demanda, com tratamento desacoplado do RoPE.',
+          en: 'Multi-head latent attention does not pick a group count. It caches both a compressed KV latent vector and a small decoupled RoPE key per token, then projects full keys and values back out on demand.',
+          'pt-br': 'A multi-head latent attention não escolhe uma contagem de grupos. Ela guarda no cache tanto um vetor latente comprimido de KV quanto uma pequena chave de RoPE desacoplado por token, e projeta keys e values completos de volta sob demanda.',
         },
         body: {
           kind: 'flow',
@@ -828,13 +828,13 @@ export const TRACK_7_FIGURES = {
               pigment: 'accent',
             },
             {
-              label: { en: 'Latent cache', 'pt-br': 'Cache latente' },
-              detail: { en: 'sized by latent dim, not head count', 'pt-br': 'dimensionado pela dimensão latente, não por cabeças' },
+              label: { en: 'Latent + RoPE key cache', 'pt-br': 'Cache latente + chave RoPE' },
+              detail: { en: 'stores compressed KV latent plus decoupled RoPE key', 'pt-br': 'guarda o latente comprimido de KV mais a chave de RoPE desacoplado' },
               pigment: 'success',
             },
             {
               label: { en: 'Reconstruct K & V', 'pt-br': 'Reconstruir K e V' },
-              detail: { en: 'up-projections + decoupled RoPE', 'pt-br': 'projeções de expansão + RoPE desacoplado' },
+              detail: { en: 'up-projections combine with cached decoupled RoPE key', 'pt-br': 'projeções de expansão combinam com a chave RoPE em cache' },
               pigment: 'caution',
             },
           ],
@@ -887,7 +887,7 @@ export const TRACK_7_FIGURES = {
             { label: { en: 'Load tile 1 in SRAM', 'pt-br': 'Carregar tile 1 na SRAM' }, detail: { en: '64 KiB K + 64 KiB V at d = 256', 'pt-br': '64 KiB K + 64 KiB V em d = 256' }, pigment: 'accent' },
             { label: { en: 'Local scores [1.0, 3.0]', 'pt-br': 'Scores locais [1,0, 3,0]' }, detail: { en: 'computed on chip, never saved to HBM', 'pt-br': 'calculados no chip, nunca gravados na HBM' }, pigment: 'accent' },
             { label: { en: 'Row max m₁ = 3', 'pt-br': 'Máximo m₁ = 3' }, detail: { en: 'prevents exponential overflow', 'pt-br': 'impede estouro das exponenciais' }, pigment: 'caution' },
-            { label: { en: 'Running sum ℓ₁ = 1.135', 'pt-br': 'Soma corrente ℓ₁ = 1,135' }, detail: { en: 'e^(1−3) + e^(3−3) = 0.135 + 1', 'pt-br': 'e^(1−3) + e^(3−3) = 0,135 + 1' }, pigment: 'caution' },
+            { label: { en: 'Running sum ℓ₁ ≈ 1.135', 'pt-br': 'Soma corrente ℓ₁ ≈ 1,135' }, detail: { en: 'e^(1−3) + e^(3−3) ≈ 0.135 + 1', 'pt-br': 'e^(1−3) + e^(3−3) ≈ 0,135 + 1' }, pigment: 'caution' },
           ],
         },
       },
@@ -901,8 +901,8 @@ export const TRACK_7_FIGURES = {
           kind: 'flow',
           steps: [
             { label: { en: 'New max m_new = 5', 'pt-br': 'Novo máximo m_new = 5' }, detail: { en: 'exceeds old max 3', 'pt-br': 'supera o máximo antigo 3' }, pigment: 'caution' },
-            { label: { en: 'Rescale old sum', 'pt-br': 'Reescalar soma antiga' }, detail: { en: '1.135 × e⁻² = 0.154 (same on output)', 'pt-br': '1,135 × e⁻² = 0,154 (idem na saída)' }, pigment: 'accent' },
-            { label: { en: 'Add new term', 'pt-br': 'Somar novo termo' }, detail: { en: '+ e^(5−5) = 1 → ℓ = 1.154 (exact)', 'pt-br': '+ e^(5−5) = 1 → ℓ = 1,154 (exato)' }, pigment: 'success' },
+            { label: { en: 'Rescale old sum', 'pt-br': 'Reescalar soma antiga' }, detail: { en: 'ℓ₁ × e⁻² ≈ 0.154 (same on output)', 'pt-br': 'ℓ₁ × e⁻² ≈ 0,154 (idem na saída)' }, pigment: 'accent' },
+            { label: { en: 'Add new term', 'pt-br': 'Somar novo termo' }, detail: { en: '+ e^(5−5) = 1 → ℓ ≈ 1.154 (matches whole-row)', 'pt-br': '+ e^(5−5) = 1 → ℓ ≈ 1,154 (igual à linha inteira)' }, pigment: 'success' },
             { label: { en: 'Write final O once', 'pt-br': 'Gravar O final uma vez' }, detail: { en: 'only output leaves chip to HBM', 'pt-br': 'só a saída final vai do chip à HBM' }, pigment: 'success' },
           ],
         },
@@ -929,24 +929,30 @@ export const TRACK_7_FIGURES = {
       {
         label: { en: 'Max reservation (1 user)', 'pt-br': 'Reserva máxima (1 usuário)' },
         caption: {
-          en: 'Reserving Qwen3.8-27B’s full 262,144-token context (16 GiB) up front leaves 7.3 GiB — not enough for a second reservation — so the 80 GB card serves one user while most of that buffer sits empty.',
-          'pt-br': 'Reservar antecipadamente o contexto completo de 262.144 tokens (16 GiB) do Qwen3.8-27B deixa 7,3 GiB — insuficiente para uma segunda reserva —, então a placa de 80 GB serve um usuário enquanto quase todo o buffer fica vazio.',
+          en: 'Reserving Qwen3.8-27B’s full 262,144-token context up front takes 16,384 MiB of KV plus 144 MiB of reference DeltaNet state (16,528 MiB total), leaving 7,331 MiB (~7.16 GiB) — far short of a second 16,528 MiB reservation — so the 80 GB card serves one user while most of that buffer sits empty.',
+          'pt-br': 'Reservar antecipadamente o contexto completo de 262.144 tokens do Qwen3.8-27B consome 16.384 MiB de KV mais 144 MiB de estado DeltaNet de referência (16.528 MiB no total), deixando 7.331 MiB (~7,16 GiB) — longe de uma segunda reserva de 16.528 MiB —, então a placa de 80 GB serve um usuário enquanto quase todo o buffer fica vazio.',
         },
         body: {
           kind: 'stack',
           direction: 'down',
           steps: [
             {
-              label: { en: '1 reserved sequence (262k max)', 'pt-br': '1 sequência reservada (máx. 262k)' },
-              detail: { en: '16 GiB (16,384 MiB) — mostly unused', 'pt-br': '16 GiB (16.384 MiB) — quase toda ociosa' },
+              label: { en: '1 reserved KV cache (262k max)', 'pt-br': '1 KV cache reservado (máx. 262k)' },
+              detail: { en: '16,384 MiB (16 GiB) — mostly unused', 'pt-br': '16.384 MiB (16 GiB) — quase todo ocioso' },
               pigment: 'danger',
               weight: FULL_CONTEXT_KV_MIB,
             },
             {
+              label: { en: '1 × fixed DeltaNet state', 'pt-br': '1 × estado fixo DeltaNet' },
+              detail: { en: `${DELTANET_STATE_MIB} MiB reference float32 (48 layers)`, 'pt-br': `${DELTANET_STATE_MIB} MiB na referência float32 (48 camadas)` },
+              pigment: 'caution',
+              weight: DELTANET_STATE_MIB,
+            },
+            {
               label: { en: 'Unusable remainder', 'pt-br': 'Restante inutilizável' },
-              detail: { en: '7,475 MiB (< 16 GiB; cannot fit user 2)', 'pt-br': '7.475 MiB (< 16 GiB; não cabe o usuário 2)' },
+              detail: { en: '7,331 MiB (< 16,528 MiB; cannot fit user 2)', 'pt-br': '7.331 MiB (< 16.528 MiB; não cabe o usuário 2)' },
               pigment: 'muted',
-              weight: POOL_80GB_MIB - FULL_CONTEXT_KV_MIB,
+              weight: POOL_80GB_MIB - FULL_CONTEXT_KV_MIB - DELTANET_STATE_MIB,
             },
           ],
         },
@@ -1068,9 +1074,9 @@ export const TRACK_7_FIGURES = {
   },
 
   /**
-   * 7.10 separates algorithms (GPTQ, AWQ, imatrix, QAT), container formats
-   * (GGUF) and runtime kernels, and shows why re-quantizing compounds loss.
-   * Replaces the three-bullet layer list in the opening section.
+   * 7.10 separates algorithms (GPTQ, AWQ, PTQ + imatrix calibration, QAT),
+   * container formats (GGUF) and runtime kernels, and shows why re-quantizing
+   * compounds loss. Replaces the three-bullet layer list in the opening section.
    */
   't7-quant-three-layers': {
     lesson: '7.10-quantization-ii-gptq-awq-gguf-qat',
@@ -1086,15 +1092,15 @@ export const TRACK_7_FIGURES = {
       {
         label: { en: 'Algorithm · Format · Runtime', 'pt-br': 'Algoritmo · Formato · Runtime' },
         caption: {
-          en: 'GPTQ, AWQ, imatrix (post-training) and QAT (during training) choose the approximate numbers; GGUF is only the container file; the runtime’s packed kernels decide whether you actually get the speed.',
-          'pt-br': 'GPTQ, AWQ, imatrix (pós-treino) e QAT (durante o treino) escolhem os números aproximados; GGUF é apenas o arquivo contêiner; os kernels empacotados do runtime decidem se você realmente ganha velocidade.',
+          en: 'GPTQ, AWQ, K-quant quantizers (optionally guided by imatrix activation-importance calibration data, which informs rather than quantizes weights) and QAT choose the approximate numbers; GGUF is only the container file; the runtime’s packed kernels decide whether you actually get the speed.',
+          'pt-br': 'GPTQ, AWQ, quantizadores K-quant (opcionalmente guiados por dados de calibração de importância de ativação do imatrix, que orientam o quantizador em vez de quantizar pesos por si sós) e QAT escolhem os números aproximados; GGUF é apenas o arquivo contêiner; os kernels empacotados do runtime decidem se você realmente ganha velocidade.',
         },
         body: {
           kind: 'flow',
           steps: [
             {
               label: { en: '1. Algorithm', 'pt-br': '1. Algoritmo' },
-              detail: { en: 'GPTQ, AWQ, imatrix (PTQ) or QAT — chooses codes', 'pt-br': 'GPTQ, AWQ, imatrix (PTQ) ou QAT — escolhe os códigos' },
+              detail: { en: 'GPTQ, AWQ, PTQ (+ imatrix calibration) or QAT — chooses codes', 'pt-br': 'GPTQ, AWQ, PTQ (+ calibração imatrix) ou QAT — escolhe os códigos' },
               pigment: 'accent',
             },
             {

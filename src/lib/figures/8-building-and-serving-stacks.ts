@@ -417,8 +417,8 @@ export const TRACK_8_FIGURES = {
       {
         label: { en: 'Inside the GPU ceiling', 'pt-br': 'Dentro do teto da GPU' },
         caption: {
-          en: 'Everything inside the utilization fraction competes for the same card. Pushing the flag toward 0.98 deletes the headroom that absorbs prefill spikes and causes out-of-memory crashes.',
-          'pt-br': 'Tudo dentro da fração de utilização disputa a mesma placa. Empurrar a flag rumo a 0,98 elimina a folga que absorve picos de prefill e provoca quedas por falta de memória.',
+          en: 'Under fixed KV pre-allocation, everything inside the utilization fraction competes for the same card: pushing the flag toward 0.98 deletes the headroom that absorbs prefill spikes and causes out-of-memory crashes (newer extensible KV sizing can default to 1.0 on supported CUDA/ROCm setups).',
+          'pt-br': 'Na pré-alocação fixa de KV, tudo dentro da fração de utilização disputa a mesma placa: empurrar a flag rumo a 0,98 elimina a folga que absorve picos de prefill e provoca quedas por falta de memória (o dimensionamento extensível mais recente de KV pode usar 1,0 por padrão em setups CUDA/ROCm suportados).',
         },
         body: {
           kind: 'stack',
@@ -459,8 +459,8 @@ export const TRACK_8_FIGURES = {
             {
               label: { en: 'Headroom outside the ceiling', 'pt-br': 'Folga fora do teto' },
               detail: {
-                en: 'reserved for ECC, OS overhead and traffic bursts (never push to 0.98)',
-                'pt-br': 'reservada para ECC, overhead do sistema e rajadas (nunca empurre para 0,98)',
+                en: 'reserved for ECC, OS overhead and bursts under fixed pre-allocation (avoid 0.98)',
+                'pt-br': 'reservada para ECC, overhead do sistema e rajadas na pré-alocação fixa (evite 0,98)',
               },
               pigment: 'danger',
             },
@@ -526,15 +526,15 @@ export const TRACK_8_FIGURES = {
       'pt-br': 'Reuso de prefixo no RadixAttention e máscara de gramática',
     },
     caption: {
-      en: 'Prefix sharing depends on exact token-id matches from position 1 (plus DeltaNet state checkpoints in hybrid models); constrained decoding enforces shape at the sampler, not truth.',
-      'pt-br': 'O compartilhamento de prefixo exige casamento exato de ids de token desde a posição 1 (mais checkpoints de estado DeltaNet em modelos híbridos); o decoding restrito impõe formato no sampler, não verdade.',
+      en: 'Prefix sharing depends on exact token-id matches from position 1 — and in hybrid models is conditional on saving and matching the recurrent DeltaNet state checkpoint at that boundary; constrained decoding enforces shape at the sampler, not truth.',
+      'pt-br': 'O compartilhamento de prefixo exige casamento exato de ids de token desde a posição 1 — e em modelos híbridos depende de salvar e casar o checkpoint do estado recorrente DeltaNet nessa fronteira; o decoding restrito impõe formato no sampler, não verdade.',
     },
     steps: [
       {
         label: { en: 'Stable prefix (40 calls)', 'pt-br': 'Prefixo estável (40 chamadas)' },
         caption: {
-          en: 'All 40 calls begin with the same 3,000-token preamble (187.5 MiB KV at 64 KiB/token). The radix tree stores and prefills it once, recovering ~7.3 GiB of duplicate KV and 39/40 preamble prefills.',
-          'pt-br': 'Todas as 40 chamadas começam com o mesmo preâmbulo de 3.000 tokens (187,5 MiB de KV a 64 KiB/token). A radix tree o guarda e faz prefill uma vez, recuperando ~7,3 GiB de KV duplicado e 39/40 dos prefills.',
+          en: 'All 40 calls begin with the same 3,000-token preamble (187.5 MiB KV at 64 KiB/token; ~7.32 GiB across 40). Keeping 1 shared copy frees 39 duplicate copies (7.14 GiB KV) and 39/40 preamble prefills — conditional on matching DeltaNet state in hybrid models.',
+          'pt-br': 'Todas as 40 chamadas começam com o mesmo preâmbulo de 3.000 tokens (187,5 MiB de KV a 64 KiB/token; ~7,32 GiB nas 40). Manter 1 cópia compartilhada libera 39 cópias duplicadas (7,14 GiB de KV) e 39/40 dos prefills — condicionado ao casamento do estado DeltaNet em modelos híbridos.',
         },
         body: {
           kind: 'flow',
@@ -550,8 +550,8 @@ export const TRACK_8_FIGURES = {
             {
               label: { en: 'Radix tree match', 'pt-br': 'Casamento na radix tree' },
               detail: {
-                en: 'all 40 calls walk the same root path; 1 prefill instead of 40',
-                'pt-br': 'as 40 chamadas seguem o mesmo caminho na raiz; 1 prefill em vez de 40',
+                en: 'all 40 calls reuse root KV (when hybrid DeltaNet state matches); 1 prefill instead of 40',
+                'pt-br': 'as 40 chamadas reusando o KV da raiz (quando o estado DeltaNet híbrido casa); 1 prefill em vez de 40',
               },
               pigment: 'accent',
             },
@@ -933,8 +933,8 @@ export const TRACK_8_FIGURES = {
       {
         label: { en: 'Context tiers vs KV cost', 'pt-br': 'Tiers de contexto vs KV' },
         caption: {
-          en: 'Ollama’s current VRAM-tier defaults sit below Qwen3.8-27B’s 262,144-token native window; exceeding num_ctx silently drops the front of your prompt.',
-          'pt-br': 'Os padrões atuais do Ollama por tier de VRAM ficam abaixo da janela nativa de 262.144 tokens do Qwen3.8-27B; ultrapassar num_ctx descarta o início do prompt em silêncio.',
+          en: 'Ollama’s lower VRAM-tier defaults (4K and 32K) sit below Qwen3.8-27B’s 262,144-token native window, while its 48+ GiB tier (256K) equals that native window; exceeding num_ctx silently trims older context (chat trimming can preserve system messages while dropping earlier turns).',
+          'pt-br': 'Os padrões de tiers menores de VRAM do Ollama (4K e 32K) ficam abaixo da janela nativa de 262.144 tokens do Qwen3.8-27B, enquanto o tier de 48+ GiB (256K) iguala essa janela nativa; ultrapassar num_ctx apara contexto antigo em silêncio (o corte em chat pode preservar mensagens de system enquanto descarta turnos anteriores).',
         },
         body: {
           kind: 'stack',
@@ -943,8 +943,8 @@ export const TRACK_8_FIGURES = {
             {
               label: { en: 'Under 24 GiB VRAM → 4K default', 'pt-br': 'Abaixo de 24 GiB de VRAM → padrão 4K' },
               detail: {
-                en: 'long documents are truncated from the front with no error or warning',
-                'pt-br': 'documentos longos são truncados pela frente sem erro nem aviso',
+                en: 'older context is silently trimmed past 4K without error (chat mode can retain system prompts)',
+                'pt-br': 'contexto antigo é aparado em silêncio acima de 4K sem erro (modo chat pode manter prompts de system)',
               },
               pigment: 'danger',
             },
@@ -967,8 +967,8 @@ export const TRACK_8_FIGURES = {
             {
               label: { en: `48+ GiB → 256K default (native ${CONTEXT_NATIVE.en})`, 'pt-br': `48+ GiB → padrão 256K (nativo ${CONTEXT_NATIVE['pt-br']})` },
               detail: {
-                en: `${KV_FULL_GIB.en} GiB KV at full native context; choose and pay for what you use`,
-                'pt-br': `${KV_FULL_GIB['pt-br']} GiB de KV no contexto nativo cheio; escolha e pague pelo que usa`,
+                en: `equals native window; ${KV_FULL_GIB.en} GiB KV at full context; choose and pay for what you use`,
+                'pt-br': `iguala a janela nativa; ${KV_FULL_GIB['pt-br']} GiB de KV no contexto cheio; escolha e pague pelo que usa`,
               },
               pigment: 'accent',
             },
@@ -989,15 +989,15 @@ export const TRACK_8_FIGURES = {
       'pt-br': 'Linha do tempo lazy e topologia de memória unificada no MLX',
     },
     caption: {
-      en: 'Lazy evaluation delays both runtime and peak memory until a value is read; unified memory removes host-to-device copies while sharing one physical pool with the OS and Metal.',
-      'pt-br': 'A lazy evaluation adia tanto o tempo de execução quanto o pico de memória até um valor ser lido; a memória unificada elimina cópias host-device mas divide um só pool físico com o sistema operacional e o Metal.',
+      en: 'Lazy evaluation delays both runtime and peak memory until a value is read (while explicit mx.compile fuses eligible kernels); unified memory removes host-to-device copies while sharing one physical pool with the OS and Metal.',
+      'pt-br': 'A lazy evaluation adia tanto o tempo de execução quanto o pico de memória até um valor ser lido (enquanto mx.compile explícito funde kernels elegíveis); a memória unificada elimina cópias host-device mas divide um só pool físico com o sistema operacional e o Metal.',
     },
     steps: [
       {
         label: { en: 'Lazy evaluation timeline', 'pt-br': 'Linha do tempo lazy' },
         caption: {
-          en: 'Writing y = model(x) only records graph nodes (for example, 2 ms). Printing or explicitly evaluating y runs the fused graph (for example, 900 ms) and triggers peak memory.',
-          'pt-br': 'Escrever y = model(x) apenas grava nós no grafo (por exemplo, 2 ms). Imprimir ou forçar a avaliação de y executa o grafo fundido (por exemplo, 900 ms) e dispara o pico de memória.',
+          en: 'Writing y = model(x) only records graph nodes (for example, 2 ms); kernel fusion comes from explicit compilation via mx.compile rather than plain lazy evaluation alone. Printing or calling mx.eval(y) executes the graph (for example, 900 ms) and triggers peak memory.',
+          'pt-br': 'Escrever y = model(x) apenas grava nós no grafo (por exemplo, 2 ms); a fusão de kernels vem da compilação explícita via mx.compile, não automaticamente da lazy evaluation sozinha. Imprimir ou chamar mx.eval(y) executa o grafo (por exemplo, 900 ms) e dispara o pico de memória.',
         },
         body: {
           kind: 'flow',
@@ -1011,10 +1011,10 @@ export const TRACK_8_FIGURES = {
               pigment: 'muted',
             },
             {
-              label: { en: 'Graph fusion', 'pt-br': 'Fusão do grafo' },
+              label: { en: 'mx.compile (optional fusion)', 'pt-br': 'mx.compile (fusão opcional)' },
               detail: {
-                en: 'merges chains into fewer kernels and drops unread intermediates',
-                'pt-br': 'junta cadeias em menos kernels e descarta intermediários não lidos',
+                en: 'explicit graph compilation fuses kernels; lazy eval alone skips unread nodes',
+                'pt-br': 'compilação explícita do grafo funde kernels; lazy eval sozinha só pula nós não lidos',
               },
               pigment: 'accent',
             },

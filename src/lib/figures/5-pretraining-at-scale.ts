@@ -95,16 +95,23 @@ const lrAxes = {
 } as const
 
 const cosineLr = (p: number): number => Number((0.3 + 0.5 * (3.0 - 0.3) * (1 + Math.cos(Math.PI * p))).toFixed(4))
-const TOKEN_STEPS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0] as const
+const WARMUP_PLANNED = 0.008
+const WARMUP_STRANDED = 0.016
+const PLANNED_DECAY_SPAN = 2 - WARMUP_PLANNED
+const STRANDED_DECAY_SPAN = 4 - WARMUP_STRANDED
+const STRANDED_END_P = (2 - WARMUP_STRANDED) / STRANDED_DECAY_SPAN
+const DECAY_FRACTIONS = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0] as const
+const STRANDED_FRACTIONS = [0.0625, 0.125, 0.1875, 0.25, 0.3125, 0.375, 0.4375] as const
 const PLANNED_COSINE_POINTS = [
   [0, 0] as const,
-  [0.008, 3.0] as const,
-  ...TOKEN_STEPS.map((t) => [t, cosineLr(t / 2)] as const),
+  [WARMUP_PLANNED, 3.0] as const,
+  ...DECAY_FRACTIONS.map((p) => [Number((WARMUP_PLANNED + p * PLANNED_DECAY_SPAN).toFixed(4)), cosineLr(p)] as const),
 ]
 const STRANDED_COSINE_POINTS = [
   [0, 0] as const,
-  [0.016, 3.0] as const,
-  ...TOKEN_STEPS.map((t) => [t, cosineLr(t / 4)] as const),
+  [WARMUP_STRANDED, 3.0] as const,
+  ...STRANDED_FRACTIONS.map((p) => [Number((WARMUP_STRANDED + p * STRANDED_DECAY_SPAN).toFixed(4)), cosineLr(p)] as const),
+  [2.0, cosineLr(STRANDED_END_P)] as const,
 ]
 
 /** The lab's default batch: 64 tokens, 8 experts, no bias to begin with. */
@@ -147,8 +154,8 @@ export const TRACK_5_FIGURES = {
       {
         label: { en: 'MLM (BERT)', 'pt-br': 'MLM (BERT)' },
         caption: {
-          en: 'Selected tokens are replaced with [MASK]. A bidirectional encoder sees both sides of the gap, but only the masked positions contribute to the loss.',
-          'pt-br': 'Tokens selecionados são trocados por [MASK]. Um encoder bidirecional vê os dois lados da lacuna, mas apenas as posições mascaradas contribuem para a loss.',
+          en: 'BERT selects ~15% of positions for the loss, replacing 80% of those with [MASK], 10% with a random token, and leaving 10% unchanged. A bidirectional encoder sees both sides, and only those selected positions contribute to the loss.',
+          'pt-br': 'O BERT seleciona ~15% das posições para a loss, trocando 80% delas por [MASK], 10% por um token aleatório e mantendo 10% intactas. Um encoder bidirecional vê os dois lados, e só essas posições selecionadas contribuem para a loss.',
         },
         body: {
           kind: 'flow',
@@ -410,8 +417,8 @@ export const TRACK_5_FIGURES = {
       {
         label: { en: '20 vs 150 tok/param (27B)', 'pt-br': '20 vs 150 tok/parâm (27B)' },
         caption: {
-          en: 'Training past the Chinchilla optimum spends 7.5× more training FLOPs once so every served token later reads 54 GB of weights instead of several hundred.',
-          'pt-br': 'Treinar além do ótimo de Chinchilla gasta 7,5× mais FLOPs de treino uma vez para que cada token servido depois leia 54 GB de pesos em vez de várias centenas.',
+          en: 'Both 27B bf16 models have the same 54 GB weight footprint, so over-training spends 7.5× more training FLOPs once to match a larger Chinchilla-optimal model’s quality — letting every served token read 54 GB instead of that larger model’s hundreds of GB.',
+          'pt-br': 'Dois modelos de 27B em bf16 têm os mesmos 54 GB de pesos; portanto, o over-training gasta 7,5× mais FLOPs de treino uma vez para igualar a qualidade de um modelo Chinchilla-ótimo maior — fazendo cada token servido ler 54 GB em vez das centenas de GB desse modelo maior.',
         },
         body: {
           kind: 'flow',
@@ -420,7 +427,7 @@ export const TRACK_5_FIGURES = {
             { label: { en: 'Over-trained (150×)', 'pt-br': 'Over-training (150×)' }, detail: { en: '4.05T tokens · 6.56e23 FLOPs (7.5×)', 'pt-br': '4,05T tokens · 6,56e23 FLOPs (7,5×)' }, pigment: 'caution' },
             {
               label: { en: 'Serving payoff', 'pt-br': 'Retorno no serving' },
-              detail: { en: `reads ${WEIGHTS_GB} GB of weights per token forever`, 'pt-br': `lê ${WEIGHTS_GB} GB de pesos por token para sempre` },
+              detail: { en: `reads ${WEIGHTS_GB} GB/token instead of a larger quality-matched model`, 'pt-br': `lê ${WEIGHTS_GB} GB/token em vez de um modelo maior de mesma qualidade` },
               pigment: 'success',
             },
           ],
@@ -529,7 +536,7 @@ export const TRACK_5_FIGURES = {
             { label: { en: 'bf16 parameters', 'pt-br': 'Parâmetros em bf16' }, detail: { en: `${WEIGHTS_GB} GB (full copy)`, 'pt-br': `${WEIGHTS_GB} GB (cópia inteira)` }, pigment: 'accent', weight: WEIGHTS_GB },
             { label: { en: 'bf16 gradients', 'pt-br': 'Gradientes em bf16' }, detail: { en: `${WEIGHTS_GB} GB (full copy)`, 'pt-br': `${WEIGHTS_GB} GB (cópia inteira)` }, pigment: 'caution', weight: WEIGHTS_GB },
             { label: { en: 'fp32 optimizer shard (1/64)', 'pt-br': 'Shard do optimizer fp32 (1/64)' }, detail: { en: '5.06 GB on this rank', 'pt-br': '5,06 GB neste rank' }, pigment: 'danger', weight: OPTIMIZER_GB / 64 },
-            { label: { en: 'Moved to other 63 GPUs', 'pt-br': 'Movido às outras 63 GPUs' }, detail: { en: '318.94 GB freed per GPU', 'pt-br': '318,94 GB liberados por GPU' }, pigment: 'muted', weight: (OPTIMIZER_GB * 63) / 64 },
+            { label: { en: 'Sharded across other 63 ranks', 'pt-br': 'Particionado nos outros 63 ranks' }, detail: { en: '318.94 GB redundant replicas removed per GPU', 'pt-br': '318,94 GB de réplicas redundantes eliminados por GPU' }, pigment: 'muted', weight: (OPTIMIZER_GB * 63) / 64 },
           ],
         },
       },
@@ -546,7 +553,7 @@ export const TRACK_5_FIGURES = {
             { label: { en: 'bf16 parameters', 'pt-br': 'Parâmetros em bf16' }, detail: { en: `${WEIGHTS_GB} GB (full copy)`, 'pt-br': `${WEIGHTS_GB} GB (cópia inteira)` }, pigment: 'accent', weight: WEIGHTS_GB },
             { label: { en: 'bf16 gradient shard (1/64)', 'pt-br': 'Shard de gradientes bf16 (1/64)' }, detail: { en: '0.84 GB on this rank', 'pt-br': '0,84 GB neste rank' }, pigment: 'caution', weight: WEIGHTS_GB / 64 },
             { label: { en: 'fp32 optimizer shard (1/64)', 'pt-br': 'Shard do optimizer fp32 (1/64)' }, detail: { en: '5.06 GB on this rank', 'pt-br': '5,06 GB neste rank' }, pigment: 'danger', weight: OPTIMIZER_GB / 64 },
-            { label: { en: 'Moved to other 63 GPUs', 'pt-br': 'Movido às outras 63 GPUs' }, detail: { en: '372.10 GB freed per GPU', 'pt-br': '372,10 GB liberados por GPU' }, pigment: 'muted', weight: ((WEIGHTS_GB + OPTIMIZER_GB) * 63) / 64 },
+            { label: { en: 'Sharded across other 63 ranks', 'pt-br': 'Particionado nos outros 63 ranks' }, detail: { en: '372.10 GB redundant replicas removed per GPU', 'pt-br': '372,10 GB de réplicas redundantes eliminados por GPU' }, pigment: 'muted', weight: ((WEIGHTS_GB + OPTIMIZER_GB) * 63) / 64 },
           ],
         },
       },
@@ -563,7 +570,7 @@ export const TRACK_5_FIGURES = {
             { label: { en: 'bf16 parameter shard (1/64)', 'pt-br': 'Shard de parâmetros bf16 (1/64)' }, detail: { en: '0.84 GB persistent', 'pt-br': '0,84 GB persistentes' }, pigment: 'accent', weight: WEIGHTS_GB / 64 },
             { label: { en: 'bf16 gradient shard (1/64)', 'pt-br': 'Shard de gradientes bf16 (1/64)' }, detail: { en: '0.84 GB persistent', 'pt-br': '0,84 GB persistentes' }, pigment: 'caution', weight: WEIGHTS_GB / 64 },
             { label: { en: 'fp32 optimizer shard (1/64)', 'pt-br': 'Shard do optimizer fp32 (1/64)' }, detail: { en: '5.06 GB persistent', 'pt-br': '5,06 GB persistentes' }, pigment: 'danger', weight: OPTIMIZER_GB / 64 },
-            { label: { en: 'Moved to other 63 GPUs', 'pt-br': 'Movido às outras 63 GPUs' }, detail: { en: '425.25 GB freed per GPU', 'pt-br': '425,25 GB liberados por GPU' }, pigment: 'muted', weight: (PERSISTENT_GB * 63) / 64 },
+            { label: { en: 'Sharded across other 63 ranks', 'pt-br': 'Particionado nos outros 63 ranks' }, detail: { en: '425.25 GB redundant replicas removed per GPU', 'pt-br': '425,25 GB de réplicas redundantes eliminados por GPU' }, pigment: 'muted', weight: (PERSISTENT_GB * 63) / 64 },
           ],
         },
       },
@@ -796,8 +803,8 @@ export const TRACK_5_FIGURES = {
       {
         label: { en: 'Token-based (planned)', 'pt-br': 'Em tokens (planejado)' },
         caption: {
-          en: 'Gentle near peak (2.605e-4 at 0.5T) and floor, steepest through the midpoint (1.65e-4 at 1.0T), reaching the 3e-5 floor right as the 2T budget ends — regardless of batch size.',
-          'pt-br': 'Suave perto do pico (2,605e-4 em 0,5T) e do piso, mais íngreme no meio (1,65e-4 em 1,0T), chegando ao piso de 3e-5 exatamente quando o orçamento de 2T termina — qualquer que seja o tamanho do batch.',
+          en: 'Cosine decay begins after the 8B-token (0.4%) linear warmup, with decay progress p running from 0 at peak to 1 at 2.0T: gentle near peak (2.605e-4 at p = 0.25) and floor, steepest at the midpoint (1.65e-4 at p = 0.50), reaching 3e-5 right as the 2T budget ends.',
+          'pt-br': 'O decaimento cosseno começa após o warmup linear de 8B de tokens (0,4%), com o progresso p indo de 0 no pico a 1 em 2,0T: suave perto do pico (2,605e-4 em p = 0,25) e do piso, mais íngreme no meio (1,65e-4 em p = 0,50), chegando a 3e-5 exatamente ao fim dos 2T.',
         },
         body: {
           kind: 'plot',
@@ -808,8 +815,8 @@ export const TRACK_5_FIGURES = {
               pigment: 'accent',
               points: PLANNED_COSINE_POINTS,
               marks: [
-                { at: [0.5, cosineLr(0.25)], label: { en: '2.605e-4', 'pt-br': '2,605e-4' } },
-                { at: [1.0, cosineLr(0.5)], label: { en: '1.65e-4', 'pt-br': '1,65e-4' } },
+                { at: [Number((WARMUP_PLANNED + 0.25 * PLANNED_DECAY_SPAN).toFixed(4)), cosineLr(0.25)], label: { en: 'p = 0.25: 2.605e-4', 'pt-br': 'p = 0,25: 2,605e-4' } },
+                { at: [Number((WARMUP_PLANNED + 0.5 * PLANNED_DECAY_SPAN).toFixed(4)), cosineLr(0.5)], label: { en: 'p = 0.50: 1.65e-4', 'pt-br': 'p = 0,50: 1,65e-4' } },
                 { at: [2.0, 0.3], label: { en: '3e-5 floor', 'pt-br': 'piso 3e-5' } },
               ],
             },
@@ -819,8 +826,8 @@ export const TRACK_5_FIGURES = {
       {
         label: { en: 'Step-based after 2× batch', 'pt-br': 'Em steps após dobrar o batch' },
         caption: {
-          en: 'Doubling the global batch from 4M to 8M tokens consumes all 2T tokens in 250,000 of the 500,000 configured steps. The run stops at p = 0.5, stranded at 1.65e-4 with the second half of decay never run.',
-          'pt-br': 'Dobrar o batch global de 4M para 8M de tokens consome todos os 2T de tokens em 250.000 dos 500.000 steps configurados. A run termina em p = 0,5, presa em 1,65e-4 sem nunca rodar a segunda metade do decaimento.',
+          en: 'Doubling the global batch from 4M to 8M tokens consumes all 2T tokens in 250,000 of the 500,000 configured steps. After the 2,000-step warmup, decay stops at p ≈ 0.50 (~1.66e-4, or 1.65e-4 ignoring warmup), leaving the second half of decay unrun.',
+          'pt-br': 'Dobrar o batch global de 4M para 8M de tokens consome todos os 2T de tokens em 250.000 dos 500.000 steps configurados. Após o warmup de 2.000 steps, o decaimento para em p ≈ 0,50 (~1,66e-4, ou 1,65e-4 desprezando o warmup), deixando a segunda metade sem rodar.',
         },
         body: {
           kind: 'plot',
@@ -832,11 +839,11 @@ export const TRACK_5_FIGURES = {
               points: PLANNED_COSINE_POINTS,
             },
             {
-              label: { en: 'Step-indexed after 2× batch (ends at p = 0.5)', 'pt-br': 'Por steps após 2× batch (para em p = 0,5)' },
+              label: { en: 'Step-indexed after 2× batch (ends at p ≈ 0.50)', 'pt-br': 'Por steps após 2× batch (para em p ≈ 0,50)' },
               pigment: 'danger',
               points: STRANDED_COSINE_POINTS,
               marks: [
-                { at: [2.0, cosineLr(0.5)], label: { en: 'Stranded: 1.65e-4', 'pt-br': 'Preso: 1,65e-4' } },
+                { at: [2.0, cosineLr(STRANDED_END_P)], label: { en: 'Stranded (p ≈ 0.50): ~1.66e-4', 'pt-br': 'Preso (p ≈ 0,50): ~1,66e-4' } },
               ],
             },
           ],
@@ -853,8 +860,8 @@ export const TRACK_5_FIGURES = {
     lesson: '5.12-training-instabilities',
     title: { en: 'Forensic triage when a training alarm fires', 'pt-br': 'Triagem forense quando um alarme de treino dispara' },
     caption: {
-      en: 'Preserve the state first, then replay the triggering batch from the last known-good checkpoint. Whether the failure reproduces separates data and numeric bugs from infrastructure faults.',
-      'pt-br': 'Preserve o estado primeiro e depois reproduza o batch causador a partir do último checkpoint bom. Se a falha se reproduz ou não separa bugs de dados e numérica de falhas de infraestrutura.',
+      en: 'Preserve the state first, then replay the triggering batch from the last known-good checkpoint. Repeatability narrows the suspect list — it is not proof of root cause — and follow-up checks should isolate one variable at a time.',
+      'pt-br': 'Preserve o estado primeiro e depois reproduza o batch causador a partir do último checkpoint bom. A reprodutibilidade estreita a lista de suspeitos — não é prova da causa raiz — e os testes seguintes devem isolar uma variável por vez.',
     },
     steps: [
       {
@@ -876,14 +883,14 @@ export const TRACK_5_FIGURES = {
       {
         label: { en: '2A. Replay reproduces', 'pt-br': '2A. Falha se reproduz' },
         caption: {
-          en: 'Replaying the same batch fails again: the cause lives in data, masks, or numerical range. Rerun on one device in wider precision to separate fp16 overflow from corrupted inputs.',
-          'pt-br': 'Reproduzir o mesmo batch falha de novo: a causa está nos dados, nas máscaras ou no alcance numérico. Rode num único dispositivo em precisão mais larga para separar overflow de fp16 de entradas corrompidas.',
+          en: 'Replaying the same batch fails again: this points toward deterministic data, mask, numerical-range, or kernel bugs (not yet proof of root cause). Isolate one variable at a time — widen precision on the same topology first, then vary device count separately.',
+          'pt-br': 'Reproduzir o mesmo batch falha de novo: isso aponta para bugs determinísticos de dados, máscaras, alcance numérico ou kernel (ainda não é prova da causa raiz). Isole uma variável por vez — alargue a precisão na mesma topologia primeiro e varie a contagem de dispositivos separadamente.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Replay same batch', 'pt-br': 'Reproduzir mesmo batch' }, detail: { en: 'from last known-good checkpoint', 'pt-br': 'do último checkpoint bom' }, pigment: 'accent' },
-            { label: { en: 'Test wider dtype', 'pt-br': 'Testar dtype mais largo' }, detail: { en: '1 device: isolates precision overflow', 'pt-br': '1 dispositivo: isola overflow de precisão' }, pigment: 'caution' },
+            { label: { en: 'Isolate one variable', 'pt-br': 'Isolar uma variável' }, detail: { en: 'widen dtype on same topology; test rank count separately', 'pt-br': 'alargue o dtype na mesma topologia; teste nº de ranks à parte' }, pigment: 'caution' },
             { label: { en: 'Validate inputs', 'pt-br': 'Validar entradas' }, detail: { en: 'token IDs, masks, boundaries, targets', 'pt-br': 'IDs de token, máscaras, fronteiras, alvos' }, pigment: 'accent' },
             { label: { en: 'Targeted recovery', 'pt-br': 'Recuperação dirigida' }, detail: { en: 'lower loss scale or quarantine sample', 'pt-br': 'baixar loss scale ou pôr amostra em quarentena' }, pigment: 'success' },
           ],
