@@ -58,7 +58,7 @@ citations:
     authors: "Hugging Face"
     year: 2026
     url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
-updated: "2026-11-06"
+updated: "2026-11-26"
 ---
 
 ## The FFN every token pays for
@@ -131,7 +131,7 @@ Two choices change who does the picking. **Token choice**, the default, lets eac
 
 Softmax gives the top-k weights a sum below 1, and the sum differs from token to token. Leave it alone and the layer's output size moves with the router's mood. The standard fix is **renormalisation**: divide the chosen weights by their sum, so they add to 1.
 
-Renormalising fixes the sum but not the magnitude. Take k experts with equal weight and uncorrelated outputs of equal RMS (root mean square, a measure of a vector's typical size). Their weighted sum has RMS $1/\sqrt{k}$ of one expert's, because independent contributions add in quadrature rather than linearly. At $k = 8$ that is a factor of 2.83.
+Renormalising fixes the sum but not the magnitude. Take k experts with equal weight and uncorrelated outputs of equal RMS (root mean square, a measure of a vector's typical size). Their weighted sum has RMS $1/\sqrt{k}$ of one expert's, because independent contributions add in quadrature (their squares add rather than their raw sizes) rather than linearly. At $k = 8$ that is a factor of 2.83.
 
 So implementations multiply the routed output by a **routed scaling factor**, often near $\sqrt{k}$. DeepSeek-V3 uses 2.5 at $k = 8$; Kimi K2 used 2.827 $\approx \sqrt{8}$; Kimi K3 renormalises with no extra factor at $k = 16$, as the handbook reads its config. The value is not settled across shipped models, and it changes the routed branch's share against any shared expert, which is why the next section cares about it too.
 
@@ -141,7 +141,7 @@ $\sqrt{k}$ restores the RMS only under the assumptions above: equal weights, equ
 
 ## Why the router runs in fp32
 
-A router's output is an ordering, and bf16 (brain float 16, the 16-bit format most training uses) keeps about eight bits of significand. Two logits that differ in the third decimal can round to the same bf16 number. Top-k then has to break a tie, and PyTorch does not promise which expert wins. The token reaches an expert the full-precision router would not have chosen, and nothing in the loss says so.
+A router's output is an ordering, and bf16 (brain float 16, the 16-bit format most training uses) keeps about eight bits of significand (the digits storing precision). Two logits that differ in the third decimal can round to the same bf16 number. Top-k then has to break a tie, and PyTorch does not promise which expert wins. The token reaches an expert the full-precision router would not have chosen, and nothing in the loss says so.
 
 The record on this is about stability rather than accuracy. The handbook reports that a bf16 router diverged in Switch Transformers while an fp32 router trained at bf16 speed, and that ST-MoE's **z-loss** — a penalty on the logits' logsumexp, the log of the sum of exponentials — kept every run stable. At the time of writing, five of the ten open MoEs the handbook tabulates run the router's matrix multiply in bf16 in their *inference* code, while the training precision is rarely reported.
 
@@ -149,19 +149,19 @@ The practical rule is narrow and defensible: keep the router's arithmetic in fp3
 
 ## How many experts, how wide, and who sees every token
 
-With the parameter budget fixed, more experts means narrower ones. **Granularity** describes that split: an MoE with 16 experts of width $d/2$ and top-4 has the same stored parameters and the same active compute as one with 8 experts of width $d$ and top-2. The handbook reports one 18-layer ablation in which loss kept improving as experts got finer, up to 128 experts of a quarter width with top-8, and stopped improving beyond that. Finer experts also mean smaller matrix multiplications, which use the GPU less efficiently, so the point where quality stops improving is where the experiment should stop.
+With the parameter budget fixed, more experts means narrower ones. **Granularity** describes that split: an MoE with 16 experts of width $d/2$ and top-4 has the same stored parameters and the same active compute as one with 8 experts of width $d$ and top-2. The handbook reports one 18-layer **ablation** (a controlled experiment varying one design choice) in which loss kept improving as experts got finer, up to 128 experts of a quarter width with top-8, and stopped improving beyond that. Finer experts also mean smaller matrix multiplications, which use the GPU less efficiently, so the point where quality stops improving is where the experiment should stop.
 
 Three variations are common enough that the course names them:
 
 - **A shared expert** is one FFN outside the router that processes every token. DeepSeekMoE introduced it so that common patterns need not be duplicated across routed experts. If the routed weights are renormalised to a scaling factor $s$, the shared expert takes $1/(1+s)$ of each token's output — 28.6% at $s = 2.5$. The measured gain is small and inconsistent: the handbook reports 0.01–0.02 lower loss in two models, and nothing or slightly worse in two others.
-- **Latent MoE** projects each token down to a smaller width $\ell$ before dispatch and back up after the experts. Every copy on the wire shrinks from $d$ to $\ell$, which buys $d/\ell$ times more experts and a proportionally larger top-k at the same traffic. the handbook reports NVIDIA's 73B-A8B ablation scoring 4.6 points higher on MMLU-Pro at matched size; the cost is two extra projections per token, and Kimi K3 needed a norm before the up-projection to keep it stable.
+- **Latent MoE** projects each token down to a smaller width $\ell$ before dispatch and back up after the experts. Every copy on the wire shrinks from $d$ to $\ell$, which buys $d/\ell$ times more experts and a proportionally larger top-k at the same traffic. The handbook reports NVIDIA's 73B-A8B ablation scoring 4.6 points higher on MMLU-Pro at matched size; the cost is two extra projections per token, and Kimi K3 needed a norm before the up-projection to keep it stable.
 - **Variable compute** lets the number of experts, or their width, differ per token while the average stays fixed. LongCat-Flash selects 12 of 512 ordinary experts plus 256 identity paths that compute nothing, targeting an average of 8 ordinary experts per token. It is a real design, not a default: Megatron's grouped matrix multiplications assume one expert width.
 
 Every expert so far uses the same activation as a dense FFN, with one addition worth knowing. An expert's output can grow without bound while the loss stays flat — the handbook reports one expert reaching 5,700 times the layer's median output norm — so some models clamp the activation (DeepSeek-V4.1-Flash at 10, Step 3.5 Flash at 7) or replace it with a smoothly capped variant (Kimi K3's SiTU-GLU). Clamping did not remove every loss spike in the studies the handbook cites; it bounds a known growth path.
 
 ## Where the MoE layers sit
 
-A model does not have to put an MoE in every layer, and each MoE layer costs two **all-to-all** exchanges — a collective that sends each token to the GPUs holding its experts and brings the results back. Three layouts are in production:
+A model does not have to put an MoE in every layer, and each MoE layer costs two **all-to-all** exchanges — a collective (coordinated network exchange) that sends each token to the GPUs holding its experts and brings the results back. Three layouts are in production:
 
 - **MoE in every layer**, as in Qwen3 and gpt-oss: the most capacity and the most exchanges.
 - **Leading dense layers**, as in DeepSeek-V3 (first three) and Kimi K3 (first one): a few layers keep the cheaper dense block, which removes the earliest exchanges.
