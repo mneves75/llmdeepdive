@@ -214,10 +214,10 @@ export const TRACK_29_FIGURES = {
     },
     steps: [
       {
-        label: { en: 'Private eval (0% leak)', 'pt-br': 'Avaliação privada (0% vazado)' },
+        label: { en: 'Clean eval (0% leak)', 'pt-br': 'Avaliação limpa (0% vazado)' },
         caption: {
-          en: 'On private company policies with zero leakage, Model Y leads Model X by 6 percentage points (66.0% versus 60.0%).',
-          'pt-br': 'Em políticas privadas da empresa com vazamento zero, o Modelo Y lidera o Modelo X por 6 pontos percentuais (66,0% contra 60,0%).',
+          en: 'On an uncontaminated benchmark with zero leakage, Model Y leads Model X by 6 percentage points (66.0% versus 60.0%).',
+          'pt-br': 'Em um benchmark sem contaminação (0% vazado), o Modelo Y lidera o Modelo X por 6 pontos percentuais (66,0% contra 60,0%).',
         },
         body: {
           kind: 'plot',
@@ -225,11 +225,11 @@ export const TRACK_29_FIGURES = {
           series: [
             {
               ...modelYCleanSeries,
-              marks: [{ at: [0, 66], label: { en: 'Private: 66%', 'pt-br': 'Privado: 66%' } }],
+              marks: [{ at: [0, 66], label: { en: 'Clean: 66%', 'pt-br': 'Limpo: 66%' } }],
             },
             {
               ...modelXCleanSeries,
-              marks: [{ at: [0, 60], label: { en: 'Private: 60%', 'pt-br': 'Privado: 60%' } }],
+              marks: [{ at: [0, 60], label: { en: 'Clean: 60%', 'pt-br': 'Limpo: 60%' } }],
             },
           ],
         },
@@ -289,7 +289,7 @@ export const TRACK_29_FIGURES = {
           steps: [
             {
               label: { en: 'Tier 1 · PR commit gate', 'pt-br': 'Camada 1 · Gate de PR' },
-              detail: { en: '40 fast golden + code cases · ~45 s · ~USD 0.15/PR · blocks merge', 'pt-br': '40 casos rápidos e em código · ~45 s · ~USD 0,15/PR · bloqueia merge' },
+              detail: { en: '40 fast golden + code cases · ~45 s · ~USD 0.15/PR · blocks merge', 'pt-br': '40 casos dourados rápidos e em código · ~45 s · ~USD 0,15/PR · bloqueia merge' },
               pigment: 'accent',
             },
             {
@@ -331,7 +331,7 @@ export const TRACK_29_FIGURES = {
             },
             {
               label: { en: 'Prune stale cases', 'pt-br': 'Podar casos vencidos' },
-              detail: { en: 'retire deleted policies so CI stays fast and trustworthy', 'pt-br': 'aposentar políticas excluídas para manter o CI rápido e confiável' },
+              detail: { en: 'retire regression cases tied to deleted policies so CI stays fast and trustworthy', 'pt-br': 'aposentar casos de regressão ligados a políticas excluídas para manter o CI rápido e confiável' },
               pigment: 'success',
             },
           ],

@@ -85,14 +85,14 @@ export const TRACK_31_FIGURES = {
       {
         label: { en: 'Exact cache', 'pt-br': 'Cache exato' },
         caption: {
-          en: 'Matches normalized identical inputs at the application edge in 5–20 ms. Zero model cost and zero false hits when the key scopes tenant, ACL, model version, and corpus epoch.',
-          'pt-br': 'Casa entradas normalizadas idênticas na borda da aplicação em 5–20 ms. Custo zero de modelo e zero falsos acertos quando a chave delimita tenant, ACL, versão do modelo e época do corpus.',
+          en: 'Matches normalized identical inputs at the application edge in 5–20 ms. Zero model cost and zero false hits when the key includes every answer-affecting state (tenant, ACL, model version, corpus epoch, and any prior turns).',
+          'pt-br': 'Casa entradas normalizadas idênticas na borda da aplicação em 5–20 ms. Custo zero de modelo e zero falsos acertos quando a chave inclui todo estado que altera a resposta (tenant, ACL, versão do modelo, época do corpus e turnos anteriores).',
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Incoming request', 'pt-br': 'Requisição recebida' }, detail: { en: 'normalized + scoped hash key', 'pt-br': 'texto normalizado + hash de escopo' }, pigment: 'accent' },
-            { label: { en: 'Exact cache hit', 'pt-br': 'Acerto no cache exato' }, detail: { en: '5–20 ms; 0% false-hit risk', 'pt-br': '5–20 ms; risco de falso acerto 0%' }, pigment: 'success' },
+            { label: { en: 'Incoming request', 'pt-br': 'Requisição recebida' }, detail: { en: 'normalized + full-state hash key', 'pt-br': 'texto normalizado + hash de estado completo' }, pigment: 'accent' },
+            { label: { en: 'Exact cache hit', 'pt-br': 'Acerto no cache exato' }, detail: { en: '5–20 ms; 0% false-hit if key is complete', 'pt-br': '5–20 ms; 0% erro com chave completa' }, pigment: 'success' },
             { label: { en: 'Model prefill', 'pt-br': 'Prefill do modelo' }, detail: { en: 'skipped', 'pt-br': 'pulado' }, pigment: 'muted' },
             { label: { en: 'Model decode', 'pt-br': 'Decode do modelo' }, detail: { en: 'skipped', 'pt-br': 'pulado' }, pigment: 'muted' },
           ],
@@ -101,8 +101,8 @@ export const TRACK_31_FIGURES = {
       {
         label: { en: 'Prefix (KV) cache', 'pt-br': 'Cache de prefixo (KV)' },
         caption: {
-          en: 'Works even when every user question is unique. Reuses prefilled attention key–value blocks for the static leading prompt, cutting TTFT and input token spend by 50–90% with zero correctness risk.',
-          'pt-br': 'Funciona mesmo quando toda pergunta do usuário é inédita. Reutiliza blocos key–value pré-processados do prefixo estático, cortando TTFT e gasto de entrada em 50–90% com risco zero de correção.',
+          en: 'Works even when every user question is unique. Reuses prefilled attention key–value blocks for the static leading prompt, discounting cached input tokens by 50–90% and trimming TTFT proportionally to the cached share with zero correctness risk.',
+          'pt-br': 'Funciona mesmo quando toda pergunta do usuário é inédita. Reutiliza blocos key–value pré-processados do prefixo estático, dando 50–90% de desconto nos tokens de entrada em cache e reduzindo o TTFT conforme a fração reaproveitada, sem risco de correção.',
         },
         body: {
           kind: 'flow',
@@ -207,8 +207,8 @@ export const TRACK_31_FIGURES = {
   '31-4-quadratic-chat-tokens': {
     lesson: '31.4-unit-economics-at-scale',
     title: {
-      en: 'Why uncompacted chat grows 10.5× faster than independent queries',
-      'pt-br': 'Por que um chat sem compactação cresce 10,5× mais que consultas isoladas',
+      en: 'Why 20 uncompacted chat turns use 10.5× more tokens than independent queries',
+      'pt-br': 'Por que 20 turnos sem compactação consomem 10,5× mais tokens que consultas isoladas',
     },
     caption: {
       en: 'Cumulative input tokens over 20 turns when each turn adds 1,000 tokens. Re-sending the full transcript turns linear usage into quadratic spend.',
@@ -284,8 +284,8 @@ export const TRACK_31_FIGURES = {
       {
         label: { en: 'B2C support', 'pt-br': 'Suporte B2C' },
         caption: {
-          en: 'High FAQ repetition makes an intent-gated semantic cache pay off (40% hit rate), while in-VPC PII redaction and provisioned baseline + PAYG burst hit USD 10,100/month under a USD 12,000 cap.',
-          'pt-br': 'Alta repetição de FAQs faz o cache semântico filtrado valer a pena (40% de acerto), enquanto redação de PII na VPC e base reservada + transbordo PAYG ficam em USD 10.100/mês sob teto de USD 12.000.',
+          en: 'High FAQ repetition makes exact plus intent-gated semantic caching pay off (40% combined hit rate), with in-VPC PII redaction and per-call model spend estimated at USD 10,100/month under a USD 12,000 cap (provisioned baseline + PAYG burst sized for peaks).',
+          'pt-br': 'Alta repetição de FAQs faz o cache exato mais o semântico filtrado valerem a pena (40% de acerto combinado), com redação de PII na VPC e gasto de modelo estimado em USD 10.100/mês sob teto de USD 12.000 (base reservada + transbordo PAYG para picos).',
         },
         body: {
           kind: 'flow',
@@ -293,15 +293,15 @@ export const TRACK_31_FIGURES = {
             { label: { en: 'Privacy & guardrails', 'pt-br': 'Privacidade e guardrails' }, detail: { en: '<2 ms regex/Luhn + 15 ms NER vault in VPC', 'pt-br': 'regex/Luhn <2 ms + cofre NER 15 ms na VPC' }, pigment: 'caution' },
             { label: { en: 'Cache policy', 'pt-br': 'Política de cache' }, detail: { en: 'exact + gated semantic: 40% hits in ~20 ms', 'pt-br': 'exato + semântico filtrado: 40% em ~20 ms' }, pigment: 'success' },
             { label: { en: 'Model dispatch', 'pt-br': 'Despacho de modelos' }, detail: { en: '80% small / 20% frontier RouteLLM router', 'pt-br': 'roteador RouteLLM 80% pequeno / 20% fronteira' }, pigment: 'accent' },
-            { label: { en: 'Target & result', 'pt-br': 'Meta e resultado' }, detail: { en: 'p95 TTFT ≤ 450 ms; USD 10,100/month', 'pt-br': 'TTFT p95 ≤ 450 ms; USD 10.100/mês' }, pigment: 'success' },
+            { label: { en: 'Target & estimate', 'pt-br': 'Meta e estimativa' }, detail: { en: 'p95 TTFT ≤ 450 ms; ~USD 10,100/mo model spend', 'pt-br': 'TTFT p95 ≤ 450 ms; ~USD 10.100/mês em modelo' }, pigment: 'success' },
           ],
         },
       },
       {
         label: { en: 'Overnight batch', 'pt-br': 'Lote noturno' },
         caption: {
-          en: 'With no human waiting on screen, real-time serving and semantic caching turn off completely; asynchronous Batch APIs (~50% cheaper) and deterministic cascade checks protect ≥99% recall.',
-          'pt-br': 'Sem humano esperando na tela, serving em tempo real e cache semântico desligam por completo; Batch APIs assíncronas (~50% menores) e verificadores determinísticos protegem recall ≥99%.',
+          en: 'With no human waiting on screen, real-time serving and semantic caching turn off completely; asynchronous Batch APIs (~50% cheaper) and cascade checks escalate ~15% of files toward the ≥99% recall target.',
+          'pt-br': 'Sem humano esperando na tela, serving em tempo real e cache semântico desligam por completo; Batch APIs assíncronas (~50% menores) e checagens em cascata escalam ~15% dos arquivos mirando a meta de recall ≥99%.',
         },
         body: {
           kind: 'flow',
@@ -309,7 +309,7 @@ export const TRACK_31_FIGURES = {
             { label: { en: 'Input & deadline', 'pt-br': 'Entrada e prazo' }, detail: { en: '50,000 unique PDFs in 6 h; no live TTFT', 'pt-br': '50.000 PDFs únicos em 6 h; sem TTFT ao vivo' }, pigment: 'muted' },
             { label: { en: 'Cache policy', 'pt-br': 'Política de cache' }, detail: { en: 'KV prefix on 3,500-tok rubric; semantic OFF', 'pt-br': 'prefixo KV na rubrica de 3.500 tok; semântico OFF' }, pigment: 'caution' },
             { label: { en: 'Model dispatch', 'pt-br': 'Despacho de modelos' }, detail: { en: 'mid-tier JSON + checks; ~15% escalate', 'pt-br': 'JSON intermediário + checagens; ~15% escalam' }, pigment: 'accent' },
-            { label: { en: 'Serving & recall', 'pt-br': 'Serving e recall' }, detail: { en: 'async Batch API (~50% off); ≥99% recall', 'pt-br': 'Batch API assíncrona (~50% menos); recall ≥99%' }, pigment: 'success' },
+            { label: { en: 'Serving & target', 'pt-br': 'Serving e meta' }, detail: { en: 'async Batch API (~50% off); ≥99% recall target', 'pt-br': 'Batch API assíncrona (~50% menos); meta recall ≥99%' }, pigment: 'success' },
           ],
         },
       },

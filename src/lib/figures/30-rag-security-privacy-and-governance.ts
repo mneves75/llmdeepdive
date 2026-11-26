@@ -11,8 +11,8 @@ export const TRACK_30_FIGURES = {
       'pt-br': 'Aplique ACLs de tenant e documento antes da busca vetorial, nunca no prompt',
     },
     caption: {
-      en: 'Post-filtering drops candidates after top-k and breaks recall; prompt-level restrictions leak restricted chunks into model context. Pre-filtering with trusted principal claims guarantees unauthorized documents never enter scoring.',
-      'pt-br': 'Pós-filtragem descarta candidatos após o top-k e derruba recall; restrições no prompt vazam trechos sigilosos para o contexto. Pré-filtragem com claims do runtime impede documentos não autorizados de entrar na pontuação.',
+      en: 'Post-filtering drops candidates after top-k and breaks recall; prompt-level restrictions leak restricted chunks into model context. Pre-filtering with trusted principal claims excludes unauthorized documents from top-k results (and with tenant partitions, from scoring altogether).',
+      'pt-br': 'Pós-filtragem descarta candidatos após o top-k e derruba recall; restrições no prompt vazam trechos sigilosos para o contexto. Pré-filtragem com claims do runtime exclui documentos não autorizados dos resultados top-k (e, com partições por tenant, da própria pontuação).',
     },
     body: {
       kind: 'flow',
@@ -69,7 +69,7 @@ export const TRACK_30_FIGURES = {
             { label: { en: '5 crafted uploads', 'pt-br': '5 textos forjados' }, detail: { en: 'prefix S matches Q; body I fakes answer', 'pt-br': 'prefixo S imita Q; corpo I forja resposta' }, pigment: 'danger' },
             { label: { en: 'Tiny corpus share', 'pt-br': 'Fatia mínima da base' }, detail: { en: '5 of 2,000,000 chunks (0.00025%)', 'pt-br': '5 em 2.000.000 de trechos (0,00025%)' }, pigment: 'caution' },
             { label: { en: 'Higher similarity', 'pt-br': 'Similaridade maior' }, detail: { en: '0.89–0.93 beats the true doc’s 0.82', 'pt-br': '0,89–0,93 supera os 0,82 do doc real' }, pigment: 'danger' },
-            { label: { en: 'Top-5 saturated', 'pt-br': 'Top-5 lotado' }, detail: { en: '5 of 5 slots poisoned (100% of context)', 'pt-br': '5 de 5 vagas tomadas (100% do contexto)' }, pigment: 'danger' },
+            { label: { en: 'Top-5 saturated', 'pt-br': 'Top-5 lotado' }, detail: { en: '5 of 5 retrieval slots poisoned (100% of top-k)', 'pt-br': '5 de 5 vagas de busca tomadas (100% do top-k)' }, pigment: 'danger' },
           ],
         },
       },
@@ -136,7 +136,7 @@ export const TRACK_30_FIGURES = {
             { label: { en: 'Two-stage detector', 'pt-br': 'Detector em duas etapas' }, detail: { en: 'regex/checksum (< 1 ms) + NER (10–30 ms)', 'pt-br': 'regex e dígito verificador (< 1 ms) + NER (10–30 ms)' }, pigment: 'accent' },
             { label: { en: 'Mask or session vault', 'pt-br': 'Máscara ou cofre efêmero' }, detail: { en: 'secrets erased; PII -> <PERSON_1>', 'pt-br': 'segredos apagados; PII -> <PERSON_1>' }, pigment: 'caution' },
             { label: { en: 'Index & ZDR vendor', 'pt-br': 'Índice e provedor ZDR' }, detail: { en: 'only sanitized text crosses boundary', 'pt-br': 'só texto higienizado cruza a fronteira' }, pigment: 'success' },
-            { label: { en: 'Redacted telemetry', 'pt-br': 'Telemetria higienizada' }, detail: { en: 'traces and evals keep zero raw secrets', 'pt-br': 'traces e evals sem segredos brutos' }, pigment: 'success' },
+            { label: { en: 'Redacted telemetry', 'pt-br': 'Telemetria higienizada' }, detail: { en: 'strips detected secrets before traces & evals', 'pt-br': 'remove segredos detectados antes de traces e evals' }, pigment: 'success' },
             { label: { en: 'Authorized restore', 'pt-br': 'Reversão autorizada' }, detail: { en: 'vault re-attaches names only on return', 'pt-br': 'cofre reconecta nomes só no retorno' }, pigment: 'success' },
           ],
         },
@@ -243,14 +243,14 @@ export const TRACK_30_FIGURES = {
       {
         label: { en: 'Streaming output + audit', 'pt-br': 'Saída em streaming + auditoria' },
         caption: {
-          en: 'Holding a 20–40 token trailing buffer lets deterministic checks and overlapping 48-token Tier 1 windows abort unsafe replies mid-stream while Tier 2 audits out of band.',
-          'pt-br': 'Reter um buffer de 20–40 tokens na ponta permite checagens determinísticas e janelas sobrepostas de 48 tokens na Camada 1 para cortar respostas inseguras, enquanto a Camada 2 audita em segundo plano.',
+          en: 'Holding a short trailing buffer (20–40 tokens) lets deterministic checks inspect text before flush while overlapping 48-token Tier 1 windows (stepped shorter than 48) abort unsafe replies mid-stream and Tier 2 audits out of band.',
+          'pt-br': 'Reter um buffer curto na ponta (20–40 tokens) permite checagens determinísticas antes da exibição enquanto janelas sobrepostas de 48 tokens na Camada 1 (avançando em passos menores que 48) cortam respostas inseguras e a Camada 2 audita em segundo plano.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Trailing buffer', 'pt-br': 'Buffer na ponta' }, detail: { en: 'holds 20–40 tokens before flush', 'pt-br': 'retém 20–40 tokens antes de exibir' }, pigment: 'accent' },
-            { label: { en: 'Window check', 'pt-br': 'Checagem por janela' }, detail: { en: 'PII rules + Tier 1 every 48 tokens', 'pt-br': 'regras de PII + Camada 1 a cada 48 tokens' }, pigment: 'caution' },
+            { label: { en: 'Sliding window check', 'pt-br': 'Checagem deslizante' }, detail: { en: 'PII rules + overlapping 48-token Tier 1 windows', 'pt-br': 'regras de PII + janelas sobrepostas de 48 tokens na Camada 1' }, pigment: 'caution' },
             { label: { en: 'Flush or abort', 'pt-br': 'Exibir ou abortar' }, detail: { en: 'stream safe text; stop on breach', 'pt-br': 'libera texto seguro; corta se violar' }, pigment: 'success' },
             { label: { en: 'Tier 2 async audit', 'pt-br': 'Camada 2 assíncrona' }, detail: { en: '0 ms delay: heavy judge & human review', 'pt-br': '0 ms de espera: juiz pesado e revisão humana' }, pigment: 'muted' },
           ],
@@ -288,8 +288,8 @@ export const TRACK_30_FIGURES = {
         {
           label: { en: 'Limited risk (Article 50 transparency)', 'pt-br': 'Risco limitado (transparência, Artigo 50)' },
           detail: {
-            en: 'interaction disclosure for chatbots plus machine-readable marking of synthetic text, audio, image, and video',
-            'pt-br': 'aviso de interação em chatbots mais marcação legível por máquina em texto, áudio, imagem e vídeo sintéticos',
+            en: 'interaction disclosure for chatbots plus machine-readable marking of synthetic text, audio, image, and video (subject to Article 50 exceptions)',
+            'pt-br': 'aviso de interação em chatbots mais marcação legível por máquina em texto, áudio, imagem e vídeo sintéticos (sujeitos às exceções do Artigo 50)',
           },
           pigment: 'accent',
         },
@@ -304,8 +304,8 @@ export const TRACK_30_FIGURES = {
         {
           label: { en: 'Unacceptable risk (prohibited)', 'pt-br': 'Risco inaceitável (proibido)' },
           detail: {
-            en: 'social scoring, untargeted face scraping, workplace or school emotion recognition, manipulative exploitation',
-            'pt-br': 'pontuação social, raspagem facial indiscriminada, reconhecimento de emoções no trabalho ou escola, exploração manipulativa',
+            en: 'social scoring, untargeted face scraping, workplace or school emotion recognition (outside medical/safety exceptions), manipulative exploitation',
+            'pt-br': 'pontuação social, raspagem facial indiscriminada, reconhecimento de emoções no trabalho ou escola (salvo fins médicos ou de segurança), exploração manipulativa',
           },
           pigment: 'danger',
         },
