@@ -34,18 +34,18 @@ citations:
     authors: "Austin Wright, Henry Andrews, Ben Hutton, Greg Dennis"
     year: 2022
     url: "https://json-schema.org/draft/2020-12/json-schema-core"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Quando um LLM conversa com código em vez de um humano, um único bloco markdown perdido (` ```json `) ou uma chave faltando derruba o pipeline seguinte. Escrever no prompt "Responda SOMENTE em JSON válido, sem preâmbulo" entrega cerca de 95% a 99% de confiabilidade sintática, o que ainda gera dezenas de falhas de parsing a cada dez mil chamadas. A decodificação restrita (*constrained decoding*) troca pedidos educados por uma garantia matemática dentro do próprio laço de amostragem.
+Quando um LLM conversa com outro programa em vez de um humano, um único **bloco de código markdown** perdido (três crases como `` ```json `` usadas para formatar código em texto) ou uma chave faltando derruba o **pipeline seguinte** (as etapas de software que leem a resposta do modelo). Escrever no prompt "Responda SOMENTE em JSON válido, sem preâmbulo" entrega cerca de 95% a 99% de confiabilidade sintática, o que ainda gera dezenas de falhas de **parsing** (leitura estruturada do texto pelo código) a cada dez mil chamadas. A decodificação restrita (*constrained decoding*) troca pedidos educados por uma garantia matemática dentro do próprio laço de amostragem.
 
 ## Por que JSON só por prompt quebra em produção
 
-Em [Amostragem](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/), você viu que a cada passo de decode o modelo produz um vetor de pontuações brutas—**logits**—sobre todo o vocabulário, converte esses valores em probabilidades com o softmax e sorteia um token. Mesmo quando o prompt exige JSON estrito, o treinamento conversacional mantém probabilidade não nula para tokens como `"Claro"`, crases, vírgulas extras ou aspas sem escape dentro de strings. Ao longo de milhares de requisições contra a API stateless de [APIs Stateless de LLM e Estado de Conversa](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/), 1% de cauda vira ruído constante de retries e exceções de parser.
+Em [Amostragem](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/), você viu que a cada passo de decode o modelo produz um vetor de pontuações brutas—**logits**—sobre todo o vocabulário, converte esses valores em probabilidades com o softmax e escolhe um token. Mesmo quando o prompt exige JSON estrito, o treinamento conversacional mantém uma pequena chance residual (**probabilidade de cauda**) para tokens como `"Claro"`, crases, vírgulas extras ou aspas sem escape dentro de textos. Ao longo de milhares de requisições contra a API stateless de [APIs Stateless de LLM e Estado de Conversa](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/), 1% de probabilidade de cauda vira custo constante de novas tentativas e quebras no parser.
 
 ## Mascarando logits com uma máquina de estados finitos
 
-A decodificação restrita—muitas vezes chamada de *Structured Outputs* ou geração guiada por gramática—corrige o problema imediatamente antes da amostragem. Antes de gerar o primeiro token, o servidor compila seu **JSON Schema** (uma especificação declarativa de chaves, tipos, enums e aninhamento permitidos) numa **máquina de estados finitos (FSM, *finite-state machine*)** ou autômato com pilha que acompanha quais caracteres são sintaticamente legais a seguir.
+A decodificação restrita—muitas vezes chamada de *Structured Outputs* ou geração guiada por gramática—corrige o problema imediatamente antes da amostragem. Antes de gerar o primeiro token, o servidor compila seu **JSON Schema** (um molde escrito que define nomes de campos ou **chaves**, **tipos** como números ou texto, listas fixas de opções chamadas **enums** e regras de **aninhamento** de objetos) numa **máquina de estados finitos (FSM, *finite-state machine*)**—uma tabela de regras que acompanha a posição sintática atual e quais caracteres são válidos a seguir—ou num **autômato com pilha** (uma máquina de estados com pequena memória auxiliar para casar chaves e colchetes aninhados).
 
 Veja um exemplo com um vocabulário mínimo de 4 tokens no passo 0, logo antes da abertura de um objeto JSON:
 
@@ -64,24 +64,24 @@ Como $\exp(-\infty) = 0$, os três tokens ilegais caem para probabilidade `0`, e
 
 <Figure id="26-3-constrained-decoding-loop" />
 
-Checar a gramática de forma ingênua durante o decode teria de inspecionar todo um vocabulário de 100.000 tokens a cada passo, travando a geração. Como mostraram Willard e Louf (2023) em *Efficient Guided Generation*, pré-computar um índice que mapeia cada estado da FSM à sua máscara de bits reduz o custo por passo a uma consulta $O(1)$ em tabela durante o decode. Você paga uma compilação única na primeira vez que o provedor vê um schema novo (dezenas a centenas de milissegundos), e as chamadas seguintes reaproveitam o artefato em cache.
+Checar regras de gramática token por token durante a geração exigiria inspecionar todo um vocabulário de 100.000 tokens a cada passo, travando a saída. Como mostraram Willard e Louf (2023) em *Efficient Guided Generation*, pré-computar um índice que mapeia cada estado da FSM à sua **máscara de bits** (*bitmask*, uma lista compacta de uns e zeros marcando quais tokens do vocabulário são aceitos) reduz o trabalho por passo a uma consulta $O(1)$ em tabela—tempo constante, um salto direto de índice independente do tamanho do vocabulário. Você paga uma compilação única na primeira vez que o provedor vê um schema novo (dezenas a centenas de milissegundos), e as chamadas seguintes reaproveitam esse **artefato compilado** (a tabela pronta em cache).
 
 ## Sintaxe válida não é verdade semântica
 
-A decodificação restrita elimina `JSONDecodeError`—desde que a geração não bata em `max_tokens` no meio do objeto—mas equipes costumam confundir sintaxe válida com dado confiável. A máscara garante a *forma*, nunca o *significado*.
+A decodificação restrita elimina `JSONDecodeError` (o erro lançado quando o texto não é JSON válido)—desde que a geração não bata em `max_tokens` no meio do objeto—mas equipes costumam confundir sintaxe válida com dado confiável. A máscara garante a *forma*, nunca o *significado*.
 
-- **Invariantes entre campos continuam quebrando.** Um schema com `start_date`, `end_date` e `total_usd` não impede que `end_date` venha antes de `start_date` nem que `total_usd` discorde da soma dos itens.
-- **Enums forçam uma escolha mesmo na dúvida.** Se o schema limita `category` a `["billing", "shipping", "cancel"]` sem válvula de escape, uma pergunta fora do escopo acaba empurrada para um desses três rótulos. Inclua sempre um valor explícito `"other"` ou `"insufficient_evidence"` e permita campos nulos quando o dado pode não existir.
-- **Schemas rígidos demais distorcem o raciocínio.** Se o modelo não pode registrar incerteza ou contas intermediárias antes de emitir um booleano `approved`, a máscara o obriga a decidir cedo demais.
+- **Invariantes entre campos continuam quebrando.** **Invariantes** (regras que relacionam dois ou mais campos), como `end_date` vir depois de `start_date` ou `total_usd` bater com a soma dos itens, não são verificados só pela sintaxe JSON.
+- **Enums forçam uma escolha mesmo na dúvida.** Se o schema limita `category` a `["billing", "shipping", "cancel"]` sem válvula de escape, uma pergunta fora do escopo acaba empurrada para um desses três rótulos. Inclua sempre um valor explícito `"other"` ou `"insufficient_evidence"` e permita **campos nulos** (que aceitam `null` quando o dado não existe).
+- **Schemas rígidos demais distorcem o raciocínio.** Se o modelo não pode registrar incerteza ou contas intermediárias antes de emitir um **booleano** (verdadeiro ou falso) `approved`, a máscara o obriga a decidir cedo demais.
 
 :::caveat
-Mantenha um validador real na aplicação (como Pydantic ou Zod) após toda chamada estruturada ao LLM. Deixe a decodificação restrita garantir JSON bem formado e tipos, e deixe seu validador checar contas de domínio, chaves estrangeiras e regras de política.
+Mantenha um validador real na aplicação (como Pydantic em Python ou Zod em TypeScript) após toda chamada estruturada ao LLM. Deixe a decodificação restrita garantir JSON bem formado e tipos, e deixe seu validador checar contas de domínio, **existência de chaves estrangeiras** (confirmar que um ID existe no banco de dados) e regras de política.
 :::
 
 ## Regras práticas de desenho de schemas
 
-Bons schemas trabalham *a favor* da decodificação autorregressiva da esquerda para a direita em vez de lutar contra ela:
+Bons schemas trabalham *a favor* da **decodificação autorregressiva da esquerda para a direita** (gerar um token por vez, em que cada novo token vê tudo o que já saiu antes) em vez de lutar contra ela:
 
 - **Ordene as chaves de propósito.** Coloque campos curtos de `evidence` ou `reasoning` antes de `label` ou `action`. Como todo token emitido condiciona os seguintes, o modelo lê a própria evidência extraída antes de escolher a classificação final.
-- **Evite schemas recursivos ou excessivamente dinâmicos.** Prefira objetos rasos, defina `additionalProperties: false` e limite a profundidade de aninhamento; schemas muito recursivos ou expressões regulares complexas inflam a latência de compilação da FSM e esbarram nos subconjuntos aceitos pelos provedores.
-- **Trate recusa e truncamento.** Inspecione `finish_reason` e o campo `refusal` do provedor antes de fazer o parse. Um corte por `length` ainda entrega JSON quebrado mesmo sob decodificação restrita porque a geração parou antes de a FSM atingir o estado final.
+- **Evite schemas recursivos ou excessivamente dinâmicos.** Prefira objetos rasos, defina `additionalProperties: false` (proibindo chaves não listadas) e limite a profundidade de aninhamento; **schemas recursivos** (tipos cujos campos podem conter cópias de si mesmos) ou **expressões regulares** complexas (regras de padrão de texto, chamadas de *regex*) inflam a latência de compilação da FSM e esbarram nos **limites de subconjunto do provedor** (recursos do JSON Schema que cada fornecedor não aceita).
+- **Trate recusa e truncamento.** Inspecione `finish_reason` e o campo `refusal` do provedor antes de fazer o parse. Um **truncamento** por `length` (corte da resposta no teto de tokens) ainda entrega JSON quebrado mesmo sob decodificação restrita porque a geração parou antes de a FSM atingir o estado final.

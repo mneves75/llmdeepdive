@@ -34,21 +34,21 @@ citations:
     authors: "Marc Brooker, Amazon Web Services"
     year: 2015
     url: "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Because an LLM request spends most of its life waiting on remote GPUs, writing a sequential `for` loop over 1,000 documents wastes minutes on idle network wait. Switching to `asyncio.gather` or `Promise.all` fixes the wait—and immediately triggers a wall of `HTTP 429 Too Many Requests` errors. Fast, reliable LLM clients do not maximize raw concurrency; they pace traffic to match both request and token quotas.
+Because an LLM request spends most of its life waiting on remote GPUs, writing a sequential `for` loop (finishing one item completely before starting the next) over 1,000 documents wastes minutes on idle network wait. Switching to `asyncio.gather` in Python or `Promise.all` in JavaScript (helpers that launch many network calls at the same time) fixes the wait—and immediately triggers a wall of `HTTP 429 Too Many Requests` errors (the standard web response meaning you exceeded your rate limit). Fast, reliable LLM clients do not maximize raw concurrency; they pace traffic to match both request and token quotas.
 
 ## Dual rate limits and Little's Law
 
-Unlike ordinary REST APIs that throttle only by requests per second, LLM providers enforce **dual rate limits**: **Requests Per Minute (RPM)** and **Tokens Per Minute (TPM)**, often split further into separate input-TPM and output-TPM buckets plus a concurrent-connections cap. Whichever bucket empties first stops your pipeline.
+Unlike ordinary **REST APIs** (standard web interfaces for exchanging data over HTTP) that throttle only by requests per second, LLM providers enforce **dual rate limits**: **Requests Per Minute (RPM)** and **Tokens Per Minute (TPM)**, often split further into separate input-TPM and output-TPM buckets plus a cap on simultaneous open connections. Whichever bucket empties first stops your pipeline.
 
 Work through a concrete example before jumping to the general formula. Suppose your tier allows `RPM = 500` and `TPM = 100,000`. Each API call uses `2,000` total tokens (input plus reserved output) and takes `2.0 s` end to end (matching the prefill plus decode duration from [Streaming SSE, Cancellation & Partial Output](/lessons/26-llm-apis-and-structured-outputs/26.2-streaming-sse-and-cancellation/)).
 
 - The RPM ceiling allows `500 / 60 = 8.33` requests per second.
 - The TPM ceiling allows `100,000 / 2,000 = 50` requests per minute, or `50 / 60 = 0.833` requests per second—ten times tighter than RPM.
 
-How many requests should be in flight at once? **Little's Law** from queueing theory links steady-state concurrency $C^*$ to arrival rate $\lambda$ and average service time $W$: $C^* = \lambda \cdot W$. Plugging in $\lambda = 0.833\text{ req/s}$ and $W = 2.0\text{ s}$ gives $C^* = 0.833 \times 2.0 = 1.67$ requests in flight. Running `2` concurrent workers saturates your entire quota smoothly. Launching `50` workers sends a burst of 100,000 tokens in the first second, blows past the minute budget instantly, and spends the next 58 seconds fighting 429 retries.
+How many requests should be in flight at once? **Little's Law** from **queueing theory** (the mathematics of waiting lines and service rates) links **steady-state concurrency** $C^*$ (average requests in flight under smooth traffic) to arrival rate $\lambda$ and average service time $W$: $C^* = \lambda \cdot W$. Plugging in $\lambda = 0.833\text{ req/s}$ and $W = 2.0\text{ s}$ gives $C^* = 0.833 \times 2.0 = 1.67$ requests in flight. Running `2` concurrent workers saturates your entire quota smoothly.
 
 In general, for mean token cost per request $\bar{T}$ and mean end-to-end latency $W$ (in seconds), the effective throughput cap $\lambda_{\max}$ (requests per second) and target concurrency $C^*$ are:
 
@@ -56,36 +56,35 @@ $$\lambda_{\max} = \min\!\left(\frac{\text{RPM}}{60},\; \frac{\text{TPM}}{60 \cd
 
 ## Client-side pacing: semaphores and token buckets
 
-Relying on server 429 responses as your primary throttle is expensive: failed attempts waste TCP handshakes, inflate p99 latency, and burn through your retry budget. Pace requests *before* they leave your process using two lightweight primitives:
+Relying on server `429` responses as your primary brake is expensive: rejected attempts waste **TCP handshakes** (the initial round-trip messages that open a connection), inflate **p99 latency** (how slow the slowest 1% of requests are), and burn through your **retry budget** (a hard cap on extra repeat calls). Pace requests *before* they leave your process using a **semaphore** (a digital counter that lets only a fixed number of tasks hold open **sockets**, or network connections, at once) paired with **dual token buckets** (rate-limiting counters that refill steadily over time and admit a call only when both RPM and TPM balances have room). Step through the two modes below to compare an unbounded burst against a paced client.
 
-- **A concurrency semaphore** bounds the maximum number of simultaneous open sockets (useful for memory, streaming buffers, and provider connection limits).
-- **Dual client-side token buckets** track both RPM and TPM locally. Before dispatching a request, estimate its token budget (`estimated_input_tokens + max_tokens`), wait until both the request bucket and token bucket have room, and reconcile the token bucket once the real `usage` arrives in the response.
+<Figure id="26-4-dual-quota-pacer" />
 
-Notice why `max_tokens` matters even when your model only writes 30 words. Many gateways deduct `input_tokens + max_tokens` at admission time because they cannot predict output length upfront, refunding the unused remainder only after completion. Leaving `max_tokens` at `4,096` for a short classifier can shrink effective admission throughput by more than half.
+Notice why `max_tokens` matters even when your model only writes 30 words. Many provider **gateways** (the front-door servers that meter incoming traffic) deduct `input_tokens + max_tokens` at admission time because they cannot know output length upfront, refunding the unused remainder only after completion. Leaving `max_tokens` at `4,096` for a short classifier can shrink effective admission throughput by more than half.
 
 :::insight
-Read provider rate-limit headers (`x-ratelimit-remaining-tokens`, `x-ratelimit-reset-tokens`, and RFC 9110 `Retry-After`) on every response. When a shared API key serves multiple workers, server headers tell each worker when global quota is nearly empty before a 429 even fires.
+Read provider **rate-limit headers** (metadata lines attached to each HTTP response, such as `x-ratelimit-remaining-tokens`, `x-ratelimit-reset-tokens`, and RFC 9110 `Retry-After`) on every reply. When a shared API key serves multiple workers, server headers tell each worker when global quota is nearly empty before a `429` even fires.
 :::
 
 ## Coordinating retries without retry storms
 
-Even well-paced clients see occasional `429` or `503` spikes when another tenant bursts or a GPU node restarts. Pair your pacer directly with the resilience controls from [Retries and Circuit Breakers](/lessons/24-agent-resilience-and-fallbacks/24.2-retries-and-circuit-breakers/):
+Even well-paced clients see occasional `429` or `503` (Service Unavailable) spikes when another **tenant** (customer sharing the same cloud hardware) bursts or a GPU node restarts. Pair your pacer directly with the resilience controls from [Retries and Circuit Breakers](/lessons/24-agent-resilience-and-fallbacks/24.2-retries-and-circuit-breakers/):
 
-- Honor `Retry-After` strictly when present; otherwise apply exponential backoff with full jitter (Brooker 2015) so workers spread out instead of hammering the boundary of the next minute window together.
+- Honor `Retry-After` strictly when present; otherwise apply **exponential backoff with full jitter** (Brooker 2015)—doubling the wait after each failure and randomizing the delay so workers spread out instead of hammering the boundary of the next minute window together.
 - Enforce a process-wide retry budget so a prolonged provider outage degrades fast instead of multiplying outbound load.
-- Add **adaptive concurrency** (additive increase, multiplicative decrease): when 429s appear, halve the local worker ceiling temporarily and ramp back up gradually after a clean window.
+- Add **adaptive concurrency** (additive increase, multiplicative decrease): when `429` errors appear, halve the local worker ceiling immediately and step it back up gradually after a clean window.
 
 :::warning
-Never retry non-idempotent requests blindly after a timeout without tracking whether the server charged tokens or executed side effects. Distinguish pre-dispatch `429` rejections (zero tokens consumed, safe to retry) from mid-stream disconnects after partial generation.
+Never retry **non-idempotent** requests (calls that cannot be repeated safely without creating duplicate charges or actions) blindly after a timeout without checking whether the server charged tokens or triggered **side effects** (real-world changes outside the call). Distinguish pre-dispatch `429` rejections (zero tokens consumed, safe to retry) from mid-stream disconnects after partial generation.
 :::
 
 ## Real-time lanes versus asynchronous Batch APIs
 
-Not every LLM call has a human waiting on a spinner. Mixing offline bulk jobs—nightly classification, synthetic dataset generation, embedding backfills, or evaluation sweeps—into the same quota pool as live user traffic is a classic production outage pattern: one backfill script consumes the account's TPM and freezes customer chat.
+Not every LLM call has a human waiting on a loading indicator. Mixing offline bulk jobs—nightly classification, synthetic dataset generation, embedding **backfills** (one-time runs over historical data), or evaluation sweeps—into the same quota pool as live user traffic is a classic production outage pattern: one backfill script consumes the account's TPM and freezes customer chat.
 
 Split workloads into two explicit lanes:
 
-- **Interactive lane** reserves dedicated API keys or project quotas, uses streaming SSE with tight timeouts, and keeps latency-sensitive requests isolated.
-- **Batch lane** uses asynchronous **Batch APIs** (uploading a JSONL file of requests for completion within a 24-hour window, typically at a 50% token discount on separate quota pools) or a bounded background worker queue throttled to a small fraction of spare TPM.
+- **Interactive lane** reserves dedicated API keys or project quotas, uses streaming SSE with tight **timeouts** (maximum wait limits), and keeps latency-sensitive requests isolated.
+- **Batch lane** uses asynchronous **Batch APIs**—uploading a **JSONL** (*JSON Lines*, a plain-text file holding one JSON object per line) file for completion within a 24-hour window, typically at a 50% token discount on separate quota pools—or a bounded background worker queue throttled to a small fraction of spare TPM.
 
-Separating interactive and batch traffic lets you hit tight latency budgets for users while paying half price on background processing.
+Separating interactive and batch traffic lets you hit tight latency budgets for live users while paying half price on background processing.

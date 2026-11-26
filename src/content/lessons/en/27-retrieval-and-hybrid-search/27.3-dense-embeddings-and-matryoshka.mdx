@@ -34,16 +34,16 @@ citations:
     authors: "Vladimir Karpukhin, Barlas Oğuz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, Wen-tau Yih"
     year: 2020
     url: "https://arxiv.org/abs/2004.04906"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-In [Embeddings: Meaning as Geometry](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/), you saw how a single token maps to a vector of numbers. Dense retrieval extends that idea from one token to an entire chunk from [Chunking Strategies & Boundary Tradeoffs](/lessons/27-retrieval-and-hybrid-search/27.2-chunking-strategies-and-boundaries/): a **bi-encoder** neural network encodes a user query into one vector $q \in \mathbb{R}^d$ and encodes every corpus chunk offline into its own vector $d_i \in \mathbb{R}^d$. Because documents are encoded independently of the query, you compute corpus vectors once at ingestion and compare them in milliseconds at search time.
+In [Embeddings: Meaning as Geometry](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/), you saw how a single token maps to a vector of numbers. Dense retrieval extends that idea from one token to an entire chunk from [Chunking Strategies & Boundary Tradeoffs](/lessons/27-retrieval-and-hybrid-search/27.2-chunking-strategies-and-boundaries/): a **bi-encoder** (a neural network that encodes a query and a document into separate vectors rather than reading them together) maps a user query into one vector $q \in \mathbb{R}^d$ and encodes every chunk in the corpus (the full document collection) offline (ahead of time, before any query arrives) into its own vector $d_i \in \mathbb{R}^d$. Because documents are encoded independently of the query, you compute corpus vectors once at ingestion and compare them in milliseconds at search time.
 
 ## Dot product, cosine similarity, and unit normalization
 
-Three distance functions dominate vector search: **dot product**, **cosine similarity**, and **Euclidean (L2) distance**. Work through a tiny 2D example first to see why vector length matters.
+Three distance functions dominate vector search: **dot product**, **cosine similarity**, and **Euclidean (L2) distance** (the straight-line distance between two points, matching the Pythagorean theorem in 2D). Work through a tiny 2D example first to see why vector length matters.
 
-Suppose a query vector is $q = (0.6, 0.8)$ (length $\|q\|_2 = \sqrt{0.36 + 0.64} = 1.0$). Consider two document vectors pointing in the *exact same direction*, where $d_2$ is twice as long as $d_1$:
+Suppose a query vector is $q = (0.6, 0.8)$, whose Euclidean length—called its **norm**—is $\|q\|_2 = \sqrt{0.36 + 0.64} = 1.0$. Consider two document vectors pointing in the *exact same direction*, where $d_2$ is twice as long as $d_1$:
 
 - $d_1 = (0.8, 0.6)$, norm $\|d_1\|_2 = 1.0$.
 - $d_2 = (1.6, 1.2)$, norm $\|d_2\|_2 = 2.0$.
@@ -59,32 +59,31 @@ $$\cos(q, d) = \frac{q \cdot d}{\|q\|_2 \,\|d\|_2}$$
 
 Both documents score identically: $\cos(q, d_1) = 0.96 / (1.0 \times 1.0) = 0.96$ and $\cos(q, d_2) = 1.92 / (1.0 \times 2.0) = 0.96$.
 
-Now normalize every vector to **unit L2 length** ($\hat{v} = v / \|v\|_2$, so $\|\hat{q}\|_2 = \|\hat{d}\|_2 = 1$). Once vectors are unit-normalized, all three metrics produce the exact same ranking:
+Now normalize every vector to **unit L2 length**—dividing each vector by its length ($\hat{v} = v / \|v\|_2$, so $\|\hat{q}\|_2 = \|\hat{d}\|_2 = 1$). Once vectors are unit-normalized, all three metrics produce the exact same ranking:
 
 $$\cos(\hat{q}, \hat{d}) = \hat{q} \cdot \hat{d}, \qquad \|\hat{q} - \hat{d}\|_2^2 = 2 - 2(\hat{q} \cdot \hat{d})$$
 
-Verify on $\hat{q} = (0.6, 0.8)$ and $\hat{d}_1 = (0.8, 0.6)$: squared L2 distance is $(0.6 - 0.8)^2 + (0.8 - 0.6)^2 = 0.04 + 0.04 = 0.08$, and $2 - 2(0.96) = 0.08$. That is why production vector indexes normalize vectors at ingestion and run raw SIMD dot products at query time—same ranking as cosine, fewer floating-point divisions.
+Verify on $\hat{q} = (0.6, 0.8)$ and $\hat{d}_1 = (0.8, 0.6)$: squared L2 distance is $(0.6 - 0.8)^2 + (0.8 - 0.6)^2 = 0.04 + 0.04 = 0.08$, and $2 - 2(0.96) = 0.08$. That is why production vector indexes normalize vectors once at ingestion and run raw SIMD (Single Instruction, Multiple Data—a processor feature that multiplies several pairs of numbers in one clock tick) dot products at query time: same ranking as cosine, fewer decimal (floating-point) divisions.
 
 ## Asymmetric search, domain shift, and model lock-in
 
-Contrastive bi-encoders (popularized by Karpukhin et al. 2020 in Dense Passage Retrieval) pull matching `(query, passage)` pairs close together and push unrelated negatives apart. Three practical quirks follow:
+Contrastive bi-encoders (popularized by Karpukhin et al. 2020 in Dense Passage Retrieval) are trained to pull matching `(query, passage)` pairs close together and push unrelated "negative" passages apart. Three practical quirks follow:
 
-- **Queries and passages are asymmetric.** A query is short (`"refund deadline"`), while a passage is a 250-token policy paragraph. Many modern bi-encoders require distinct input prefixes or task flags (`query:` vs `passage:`, or `RETRIEVAL_QUERY` vs `RETRIEVAL_DOCUMENT`); omitting them silently drops recall.
-- **General embeddings struggle on proprietary identifiers.** A model trained on web text maps `"reset 2FA"` cleanly near `"recover multi-factor authentication"`, yet it has no geometric intuition for internal part numbers (`SKU-9482-B`), rare error codes, or customer IDs. That exact blind spot is why hybrid search pairs dense vectors with lexical search later in this track.
-- **Embedding spaces are mutually incompatible.** Two different embedding models—even if both output 1,536 floats—assign completely different meanings to coordinate 42. You can never query an index built with Model A using query vectors from Model B. Upgrading an embedding model requires a versioned backfill into a fresh index before cutting traffic over.
+- **Queries and passages are asymmetric.** A query is short (`"refund deadline"`), while a passage is a 250-token policy paragraph. Many modern bi-encoders require distinct input prefixes or task flags (short role labels such as `query:` vs `passage:`, or `RETRIEVAL_QUERY` vs `RETRIEVAL_DOCUMENT`); omitting them lowers retrieval recall (the share of relevant passages found) without throwing an error.
+- **General embeddings struggle on proprietary identifiers.** A model trained on web text maps `"reset 2FA"` cleanly near `"recover multi-factor authentication"`, yet it has no geometric intuition for internal part numbers (`SKU-9482-B`), rare error codes, or customer IDs. That blind spot is why hybrid search pairs dense vectors with lexical (exact keyword) search later in this track.
+- **Embedding spaces are mutually incompatible.** Two different embedding models—even if both output 1,536 floats (decimal numbers)—assign completely different meanings to coordinate 42. You can never query an index built with Model A using query vectors from Model B. Upgrading an embedding model requires a versioned backfill (re-embedding the entire corpus into a fresh index) before cutting live traffic over.
 
 :::warning
-Always store `embedding_model_id` and `embedding_dim` alongside your index metadata and assert that the query encoder matches them at startup. Silent model-version drift is one of the hardest retrieval bugs to spot because the system still returns top-k results without throwing an error.
+Always store `embedding_model_id` and `embedding_dim` alongside your index metadata and assert that the query encoder matches them at startup. Unchecked model-version drift is one of the hardest retrieval bugs to spot because the system still returns top-k (highest-scoring) results without throwing an error.
 :::
 
 ## Matryoshka Representation Learning (MRL)
 
-High-dimensional embeddings (`1,536` or `3,072` floats per chunk) give strong accuracy but eat RAM and bandwidth fast. **Matryoshka Representation Learning (MRL)**, introduced by Kusupati et al. (2022), solves that cost-versus-quality dilemma inside training. Instead of computing the contrastive loss only on the full vector, MRL applies the training loss simultaneously to nested leading prefixes—such as the first `64`, `128`, `256`, `512`, and `1,536` dimensions—packing the coarsest semantic signal into the earliest coordinates like Russian nesting dolls.
+High-dimensional embeddings (`1,536` or `3,072` 32-bit `fp32` floats, at 4 bytes per number) give strong accuracy but consume working memory (RAM) and memory scan bandwidth (how fast the server reads vectors from memory) quickly. **Matryoshka Representation Learning (MRL)**, introduced by Kusupati et al. (2022), solves that cost-versus-quality dilemma inside training. Instead of computing the contrastive loss (the training error score) only on the full vector, MRL applies it simultaneously to nested leading prefixes—such as the first `64`, `128`, `256`, `512`, and `1,536` dimensions—packing the coarsest semantic signal into the earliest coordinates like Russian nesting dolls.
 
-Look at the concrete storage payoff on a single `1,536`-dim `fp32` vector (`6,144` bytes):
+<Figure id="27-3-matryoshka-two-stage" />
 
-- Truncating a Matryoshka vector to its first `256` dimensions shrinks storage to `256 × 4 = 1,024` bytes—a **6× reduction** in memory and scan bandwidth—typically retaining over 95% of full-dimension retrieval quality on standard benchmarks.
-- Because dropping trailing coordinates changes each vector's length, you **must re-normalize** the truncated 256-dim vector to unit L2 length immediately after slicing.
+Walk through the three frames above on a `1,536`-dim `fp32` vector (`6,144` bytes). Slicing to the first `256` dimensions shrinks storage to `256 × 4 = 1,024` bytes—a **6× reduction** that typically retains over 95% of full-dimension retrieval quality on standard benchmarks (public test sets)—provided you **re-normalize** the truncated prefix to unit L2 length immediately after slicing.
 
 :::insight
 Matryoshka prefixes unlock a fast two-stage funnel without changing models: keep compact 256-dim vectors in hot RAM to pull the top-100 candidates cheaply, then rescore only those 100 finalists with the full 1,536-dim vectors loaded from disk.

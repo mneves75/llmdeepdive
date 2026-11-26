@@ -34,17 +34,16 @@ citations:
     authors: "Roy T. Fielding, Mark Nottingham, Julian Reschke"
     year: 2022
     url: "https://www.rfc-editor.org/rfc/rfc9110"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Hit send on a non-streaming LLM call that writes a 400-token explanation and the browser sits frozen for eight seconds. Users assume the app crashed and click submit a second time. Streaming does not make the GPU generate tokens any faster, yet it transforms perceived responsiveness by exposing the two distinct phases you learned in [Prefill vs Decode: Two Different Machines](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/).
+Hit send on a non-streaming LLM call that writes a 400-token explanation and the browser sits frozen for eight seconds. Users assume the app crashed and click submit a second time. Streaming does not make the **graphics processing unit (GPU)** generate tokens any faster, yet it transforms perceived responsiveness by exposing the two distinct phases from [Prefill vs Decode: Two Different Machines](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/).
 
-## Why streaming changes UX without shrinking compute
+## Why streaming changes user experience without shrinking compute
 
-Consider a concrete request against the stateless API from [Stateless LLM APIs & Conversation State](/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/): prefill processes the prompt in `300 ms`, and decode emits `400` output tokens at a steady rate of `50` tokens per second (`20 ms` per token).
+Consider a concrete request against the stateless API from [Stateless LLM APIs & Conversation State](/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/): prefill processes the prompt in `300 ms`, and decode emits `400` output tokens at `50` tokens per second (`20 ms` per token). Two timings describe what the reader feels: **time to first token (TTFT)** is the initial prefill pause before the first word appears (`300 ms`), and **inter-token latency (ITL)** is the gap between consecutive tokens (`20 ms`). Humans read roughly 4 to 6 tokens per second, so `50` tokens per second already outpaces reading speed. Step through the three timelines below to see how blocking, streaming, and early cancellation behave on the exact same request.
 
-- **Without streaming**, the HTTP server holds the response open until token 400 finishes. The user waits `300 ms + 8,000 ms = 8,300 ms` (`8.3 s`) staring at a spinner.
-- **With streaming**, the first token arrives at `300 ms`—the **time to first token (TTFT)**—and each subsequent token arrives `20 ms` later—the **inter-token latency (ITL)**. Humans read roughly 4 to 6 tokens per second, so `50` tokens per second already outpaces reading speed.
+<Figure id="26-2-streaming-vs-blocking" />
 
 In general, for prefill latency $\text{TTFT}$, output length $N_{\text{out}}$, and decode throughput $r_{\text{decode}}$ (tokens per second), total generation duration is:
 
@@ -58,9 +57,9 @@ Always measure and log TTFT and total duration separately. A spike in TTFT point
 
 ## How Server-Sent Events works on the wire
 
-Most LLM providers stream over **Server-Sent Events (SSE)**, defined by the WHATWG HTML Living Standard, rather than WebSockets. The reason is simplicity: LLM generation is strictly unidirectional once the `POST` body is sent, so SSE rides over ordinary HTTP/1.1 or HTTP/2 connections, passes through corporate firewalls, and works with standard load balancers.
+Most LLM providers stream over **Server-Sent Events (SSE)**, defined by the WHATWG HTML Living Standard, rather than **WebSockets** (two-way persistent network connections). Once your `POST` request leaves the client, LLM generation flows strictly one way—server to client—so SSE rides over ordinary HTTP/1.1 or HTTP/2 connections, passes through corporate **firewalls** (network security filters), and works with standard load balancers.
 
-The server answers with `Content-Type: text/event-stream` and flushes UTF-8 text blocks separated by a blank line (`\n\n`). Each event carries optional `event:` and `id:` lines plus one or more `data:` lines containing a JSON delta:
+The server answers with the header `Content-Type: text/event-stream` and sends blocks of **UTF-8** text (the universal character encoding used on the web) separated by a blank line (`\n\n`). Each block carries optional `event:` and `id:` labels plus one or more `data:` lines holding a **JSON delta** (a small JSON packet with only the newest fragment of text). The sample wire transcript below shows two text chunks arriving in order, followed by a closing event that reports why generation stopped and how many tokens were billed:
 
 ```text
 event: content_block_delta
@@ -73,26 +72,26 @@ event: message_stop
 data: {"finish_reason":"stop","usage":{"input_tokens":512,"output_tokens":400}}
 ```
 
-Three wire-level details trip up first-time parsers:
+Three wire-level details trip up first-time **parsers** (the code that reads incoming text and turns it into structured data):
 
-- **TCP chunks do not align with SSE frames.** One network read may deliver half a JSON line or three complete events glued together. Buffer incoming bytes until you see the `\n\n` frame delimiter before calling `JSON.parse`.
-- **Keep-alive comments happen.** Providers send lines starting with a colon (`: ping`) during long prefill or reasoning pauses so idle proxies do not kill the socket. Your parser must ignore comment lines silently.
-- **Reverse proxies buffer by default.** Nginx, cloud gateways, and gzip middleware often accumulate 4 KB to 32 KB before flushing to the client, turning your stream back into a blocking wait. Disable response buffering (`X-Accel-Buffering: no`, `Cache-Control: no-cache`, and no buffered compression on `text/event-stream`).
+- **TCP chunks do not align with SSE frames.** **Transmission Control Protocol (TCP)** delivers a raw byte stream split into arbitrary network packets, so one read may hold half a JSON line or three complete events glued together. **Buffer** (temporarily accumulate) incoming bytes until you see the `\n\n` frame delimiter before calling `JSON.parse` (the function that decodes JSON text).
+- **Keep-alive comments happen.** Providers send lines starting with a colon (`: ping`) during long prefill or reasoning pauses so idle proxies do not close the **socket** (the open network connection). Your parser must skip comment lines without treating them as data.
+- **Reverse proxies buffer by default.** **Reverse proxies** (intermediary servers such as Nginx or cloud gateways sitting in front of your app) and **gzip** compression filters often collect 4 KB to 32 KB before forwarding bytes to the browser, turning your stream back into a blocking wait. Disable response buffering (`X-Accel-Buffering: no`, `Cache-Control: no-cache`, and no buffered compression on `text/event-stream`).
 
 ## Cancellation, backpressure, and partial billing
 
-A major practical win of streaming is early cancellation: if the user sees on token 30 that they asked the wrong question and clicks Stop, your frontend calls `AbortController.abort()`, which signals your backend to close the upstream HTTP stream. When the inference engine detects the closed socket, it evicts the sequence from the active decode batch so GPU slots free up immediately.
+A major practical win of streaming is early cancellation: if the user sees partway through (say at token 30, or at token 100 in the figure above) that they asked the wrong question and clicks Stop, your **frontend** (the browser interface) calls `AbortController.abort()`—the standard browser signal that cancels an active web request—which tells your backend to close the **upstream** (provider-facing) HTTP stream. Applying that **backpressure** (signaling the sender to stop when the receiver no longer wants data) lets the inference engine notice the closed socket and evict the sequence from its **active decode batch** (the live requests sharing the GPU), freeing capacity immediately.
 
-Be clear about what cancellation does and does not save. Prefill already completed before token 1 was emitted, so every input token is billed in full. Every output token generated before the close reaches the provider—often a few tokens beyond what reached the browser due to network buffers—is also billed. Because an abrupt socket close usually prevents the provider's terminal `usage` event from arriving, your backend needs a local tokenizer fallback to record estimated output tokens whenever a stream ends by cancellation or network drop.
+Be clear about what cancellation does and does not save. Prefill already completed before token 1 was emitted, so every input token is billed in full. Every output token generated before the close reaches the provider—often a few tokens beyond what reached the browser due to network buffers—is also billed. Because an abrupt socket close usually prevents the provider's terminal `usage` event from arriving, your backend needs a local **tokenizer** (the piece of code that splits text into tokens) to estimate output tokens whenever a stream ends by cancellation or network drop.
 
 :::warning
-Never assume a stream completed cleanly just because the TCP connection closed without an exception. Inspect the terminal `finish_reason`: `stop` means natural completion, `length` means the reply hit `max_tokens` and was cut off mid-sentence, and a missing terminal event means the stream died mid-flight.
+Never assume a stream completed cleanly just because the TCP connection closed without an exception. Inspect the terminal `finish_reason` (the label reporting why generation stopped): `stop` means natural completion, `length` means the reply hit `max_tokens` (your output length ceiling) and was cut off mid-sentence, and a missing terminal event means the stream died mid-flight.
 :::
 
 ## Persisting partial output without corrupting state
 
 Half-finished responses create subtle downstream bugs if you treat them like ordinary turns.
 
-- **Conversational text.** If the user clicked Stop intentionally, either discard the aborted turn pair or save the partial assistant text with an explicit `status: "cancelled"` marker so the UI renders it honestly and the model knows it was cut short on the next turn.
-- **Structured JSON or tool calls.** Never feed a truncated JSON delta into your application parser or persist half a tool invocation in the conversation log. Buffer structured deltas until the closing frame confirms `finish_reason: "stop"` (or `tool_calls`), and fail or retry cleanly if the stream terminates early.
-- **Mid-stream errors.** Once HTTP headers return `200 OK` for an SSE stream, the server can no longer switch the status code to `500` or `429` mid-flight. Providers instead emit an `event: error` frame inside the stream. Your SSE parser must treat in-band error frames as failures and route them to your error classifier instead of saving an empty reply.
+- **Conversational text.** If the user clicked Stop intentionally, either discard the aborted turn pair or save the partial assistant text with an explicit `status: "cancelled"` marker so the user interface renders it honestly and the model knows it was cut short on the next turn.
+- **Structured JSON or tool calls.** Never feed a truncated JSON delta into your application parser or save half a tool invocation in the conversation log. Buffer structured deltas until the closing frame confirms `finish_reason: "stop"` (or `tool_calls`), and fail or retry cleanly if the stream terminates early.
+- **Mid-stream errors.** Once HTTP headers return status `200 OK` (success) to open an SSE stream, the server can no longer switch the HTTP status code to `500` (server error) or `429` (rate limit) mid-flight. Providers instead emit an **in-band error frame** (`event: error`) inside the data stream itself. Your SSE parser must treat those error frames as failures and route them to your error classifier instead of saving an empty reply.

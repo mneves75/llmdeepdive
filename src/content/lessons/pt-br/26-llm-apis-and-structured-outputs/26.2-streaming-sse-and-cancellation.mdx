@@ -34,17 +34,16 @@ citations:
     authors: "Roy T. Fielding, Mark Nottingham, Julian Reschke"
     year: 2022
     url: "https://www.rfc-editor.org/rfc/rfc9110"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Aperte enviar numa chamada de LLM sem streaming que gera uma explicação de 400 tokens e o navegador fica congelado por oito segundos. O usuário acha que o sistema travou e clica de novo. O streaming não faz a GPU gerar tokens mais depressa, mas transforma a responsividade percebida ao expor as duas fases distintas que você viu em [Prefill vs Decode: duas máquinas diferentes](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/).
+Aperte enviar numa chamada de LLM sem streaming que gera uma explicação de 400 tokens e o navegador fica congelado por oito segundos. O usuário acha que o sistema travou e clica de novo. O streaming não faz a **GPU** (*graphics processing unit*, o processador gráfico que executa o modelo) gerar tokens mais depressa, mas transforma a responsividade percebida ao expor as duas fases distintas de [Prefill vs Decode: duas máquinas diferentes](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/).
 
 ## Por que o streaming muda a experiência sem reduzir o cálculo
 
-Considere uma requisição concreta para a API stateless vista em [APIs Stateless de LLM e Estado de Conversa](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/): o *prefill* processa o prompt em `300 ms`, e o *decode* emite `400` tokens de saída a um ritmo estável de `50` tokens por segundo (`20 ms` por token).
+Considere uma requisição concreta para a API stateless vista em [APIs Stateless de LLM e Estado de Conversa](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.1-stateless-apis-and-conversation-state/): o *prefill* processa o prompt em `300 ms`, e o *decode* emite `400` tokens de saída a `50` tokens por segundo (`20 ms` por token). Duas medidas capturam o que quem lê sente: o **tempo até o primeiro token (TTFT, *time to first token*)** é a pausa inicial do prefill antes de surgir a primeira palavra (`300 ms`), e a **latência entre tokens (ITL, *inter-token latency*)** é o intervalo entre tokens consecutivos (`20 ms`). Um humano lê cerca de 4 a 6 tokens por segundo, então `50` tokens por segundo já superam a velocidade de leitura. Avance pelos três cenários abaixo para comparar espera bloqueante, streaming e cancelamento antecipado na mesma chamada.
 
-- **Sem streaming**, o servidor HTTP segura a resposta até o token 400 terminar. O usuário espera `300 ms + 8.000 ms = 8.300 ms` (`8,3 s`) olhando para um indicador de carregamento.
-- **Com streaming**, o primeiro token chega em `300 ms`—o **tempo até o primeiro token (TTFT, *time to first token*)**—e cada token seguinte aparece `20 ms` depois—a **latência entre tokens (ITL, *inter-token latency*)**. Um humano lê cerca de 4 a 6 tokens por segundo, então `50` tokens por segundo já superam a velocidade de leitura.
+<Figure id="26-2-streaming-vs-blocking" />
 
 De modo geral, para latência de prefill $\text{TTFT}$, tamanho da saída $N_{\text{out}}$ e vazão de decode $r_{\text{decode}}$ (tokens por segundo), a duração total da geração é:
 
@@ -58,9 +57,9 @@ Registre TTFT e duração total separadamente na telemetria. Um pico de TTFT apo
 
 ## Como o Server-Sent Events funciona na rede
 
-A maioria dos provedores faz streaming com **Server-Sent Events (SSE)**, definido no HTML Living Standard da WHATWG, em vez de WebSockets. O motivo é simplicidade: depois que o corpo do `POST` sai do cliente, a geração do LLM é estritamente unidirecional, então o SSE trafega sobre HTTP/1.1 ou HTTP/2 comum, atravessa firewalls corporativos e funciona com balanceadores de carga padrão.
+A maioria dos provedores faz streaming com **Server-Sent Events (SSE)**, definido no HTML Living Standard da WHATWG, em vez de **WebSockets** (conexões persistentes de mão dupla). Depois que o corpo do `POST` sai do cliente, a geração do LLM corre em mão única—do servidor para o cliente—então o SSE trafega sobre HTTP/1.1 ou HTTP/2 comum, atravessa **firewalls** corporativos (filtros de segurança de rede) e funciona com balanceadores de carga padrão.
 
-O servidor responde com `Content-Type: text/event-stream` e descarrega blocos UTF-8 separados por uma linha em branco (`\n\n`). Cada evento traz campos opcionais `event:` e `id:` mais uma ou mais linhas `data:` com um delta JSON:
+O servidor responde com o cabeçalho `Content-Type: text/event-stream` e envia blocos de texto **UTF-8** (a codificação padrão de caracteres usada na web) separados por uma linha em branco (`\n\n`). Cada bloco traz rótulos opcionais `event:` e `id:` mais uma ou mais linhas `data:` contendo um **delta JSON** (um pacote JSON pequeno com apenas o trecho recém-gerado). O exemplo de tráfego abaixo mostra dois pedaços de texto chegando em sequência, seguidos de um evento final que informa o motivo da parada e quantos tokens foram cobrados:
 
 ```text
 event: content_block_delta
@@ -73,20 +72,20 @@ event: message_stop
 data: {"finish_reason":"stop","usage":{"input_tokens":512,"output_tokens":400}}
 ```
 
-Três detalhes de protocolo costumam quebrar parsers iniciantes:
+Três detalhes de protocolo costumam quebrar **parsers** (o código que lê texto recebido e o transforma em dados estruturados) iniciantes:
 
-- **Pacotes TCP não coincidem com frames SSE.** Uma leitura de rede pode entregar metade de uma linha JSON ou três eventos colados. Acumule bytes em buffer até encontrar o delimitador `\n\n` antes de chamar `JSON.parse`.
-- **Comentários de keep-alive existem.** Provedores enviam linhas iniciadas por dois-pontos (`: ping`) durante pausas longas de prefill ou raciocínio para evitar que proxies derrubem conexões ociosas. Seu parser deve ignorar comentários em silêncio.
-- **Proxies reversos fazem buffer por padrão.** Nginx, gateways em nuvem e filtros gzip costumam acumular de 4 KB a 32 KB antes de enviar ao navegador, convertendo o stream de volta numa espera bloqueante. Desative o buffering de resposta (`X-Accel-Buffering: no`, `Cache-Control: no-cache` e sem compressão em buffer para `text/event-stream`).
+- **Pacotes TCP não coincidem com frames SSE.** O **TCP** (*Transmission Control Protocol*) entrega um fluxo contínuo de bytes fatiado em pacotes arbitrários de rede, então uma leitura pode trazer metade de uma linha JSON ou três eventos colados. Acumule bytes num **buffer** (área temporária de espera na memória) até encontrar o delimitador `\n\n` antes de chamar `JSON.parse` (a função que decodifica texto JSON).
+- **Comentários de keep-alive existem.** Provedores enviam linhas iniciadas por dois-pontos (`: ping`) durante pausas longas de prefill ou raciocínio para evitar que proxies derrubem o **socket** (a conexão de rede aberta). Seu parser precisa pular comentários sem tratá-los como dados.
+- **Proxies reversos fazem buffer por padrão.** **Proxies reversos** (servidores intermediários como Nginx ou gateways em nuvem posicionados na frente do seu app) e filtros de compressão **gzip** costumam acumular de 4 KB a 32 KB antes de repassar ao navegador, convertendo o stream de volta numa espera bloqueante. Desative o buffering de resposta (`X-Accel-Buffering: no`, `Cache-Control: no-cache` e sem compressão em buffer para `text/event-stream`).
 
 ## Cancelamento, contrapressão e cobrança parcial
 
-Um ganho concreto do streaming é o cancelamento precoce: se o usuário percebe no token 30 que formulou mal a pergunta e clica em Parar, o frontend aciona `AbortController.abort()`, que faz o backend fechar o stream HTTP upstream. Ao detectar o socket fechado, o motor de inferência retira a sequência do lote ativo de decode e libera vagas na GPU imediatamente.
+Um ganho concreto do streaming é o cancelamento precoce: se o usuário percebe no meio do caminho (digamos no token 30, ou no token 100 da figura acima) que formulou mal a pergunta e clica em Parar, o **frontend** (a interface no navegador) aciona `AbortController.abort()`—o sinal padrão do navegador para cancelar uma requisição ativa—fazendo o backend fechar o stream HTTP **upstream** (voltado ao provedor). Essa **contrapressão** (avisar o remetente para parar quando o destinatário não quer mais dados) permite que o motor de inferência detecte o socket fechado, retire a sequência do **lote ativo de decode** (as chamadas concorrentes que dividem a GPU) e libere capacidade imediatamente.
 
-Tenha clareza sobre o que cancelar economiza e o que não economiza. O prefill já terminou antes de o token 1 sair, portanto todos os tokens de entrada são cobrados integralmente. Todos os tokens de saída gerados antes de o fechamento chegar ao provedor—muitas vezes alguns tokens além do que apareceu na tela por causa de buffers de rede—também entram na fatura. Como um encerramento abrupto impede a chegada do evento final `usage`, seu backend precisa de um contador local aproximado para registrar tokens gerados em chamadas canceladas ou derrubadas pela rede.
+Tenha clareza sobre o que cancelar economiza e o que não economiza. O prefill já terminou antes de o token 1 sair, portanto todos os tokens de entrada são cobrados integralmente. Todos os tokens de saída gerados antes de o fechamento chegar ao provedor—muitas vezes alguns tokens além do que apareceu na tela por causa de buffers de rede—também entram na fatura. Como um encerramento abrupto impede a chegada do evento final `usage`, seu backend precisa de um **tokenizer** local (o código que fatia texto em tokens) para estimar tokens gerados em chamadas canceladas ou derrubadas pela rede.
 
 :::warning
-Nunca presuma que um stream terminou bem só porque o socket TCP fechou sem exceção. Verifique sempre o campo terminal `finish_reason`: `stop` indica término natural, `length` indica corte abrupto no limite `max_tokens` e ausência de evento terminal indica queda no meio da transmissão.
+Nunca presuma que um stream terminou bem só porque o socket TCP fechou sem exceção. Verifique sempre o campo terminal `finish_reason` (o rótulo que indica por que a geração parou): `stop` indica término natural, `length` indica corte abrupto no limite `max_tokens` (o teto de saída definido na chamada) e ausência de evento terminal indica queda no meio da transmissão.
 :::
 
 ## Persistir saídas parciais sem corromper o estado
@@ -95,4 +94,4 @@ Respostas incompletas geram bugs difíceis quando tratadas como turnos normais.
 
 - **Texto conversacional.** Se o usuário clicou em Parar de propósito, descarte o par de turnos cancelado ou salve o trecho parcial com um marcador explícito `status: "cancelled"` para que a interface exiba o corte com honestidade e o modelo saiba que foi interrompido no próximo turno.
 - **JSON estruturado ou chamadas de ferramenta.** Nunca passe um delta JSON truncado ao parser da aplicação nem grave meia invocação de ferramenta no histórico. Acumule deltas estruturados até o evento final confirmar `finish_reason: "stop"` (ou `tool_calls`) e falhe ou refaça a chamada se o stream encerrar cedo.
-- **Erros no meio do stream.** Depois que os cabeçalhos HTTP retornam `200 OK` para abrir o SSE, o servidor não pode trocar o código para `500` ou `429` no meio da resposta. Em vez disso, provedores emitem um frame `event: error` dentro do próprio fluxo. Seu parser precisa tratar frames de erro em banda como falhas reais e encaminhá-los ao classificador de erros em vez de salvar uma resposta vazia.
+- **Erros no meio do stream.** Depois que os cabeçalhos HTTP retornam status `200 OK` (sucesso) para abrir o SSE, o servidor não pode trocar o código para `500` (erro interno) ou `429` (limite de taxa) no meio da resposta. Em vez disso, provedores emitem um **frame de erro em banda** (`event: error`) dentro do próprio fluxo de dados. Seu parser precisa tratar esses frames como falhas reais e encaminhá-los ao classificador de erros em vez de salvar uma resposta vazia.

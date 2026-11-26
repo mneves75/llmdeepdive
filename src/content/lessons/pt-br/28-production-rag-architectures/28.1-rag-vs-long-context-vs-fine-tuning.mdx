@@ -34,14 +34,14 @@ citations:
     authors: "Nelson F. Liu et al."
     year: 2023
     url: "https://arxiv.org/abs/2307.03172"
-updated: "2026-11-21"
+updated: "2026-11-26"
 ---
 
-Quando um modelo de linguagem erra uma pergunta sobre dados internos de uma empresa, as equipes costumam escolher uma de três saídas: colocar todos os arquivos em uma janela de contexto longo, montar uma arquitetura de *retrieval-augmented generation* (RAG, geração aumentada por recuperação) ou fazer *fine-tuning* (ajuste fino) dos pesos do modelo. Escolher a ferramenta errada custa meses. Há equipes treinando modelos sobre manuais que mudam toda sexta-feira, e outras enviando 200.000 tokens em toda requisição sem entender por que a latência dispara e a fatura mensal explode. Esta aula apresenta um critério quantitativo e de sistemas para escolher o mecanismo certo—ou a combinação certa—antes de escrever o pipeline.
+Quando um modelo de linguagem erra uma pergunta sobre dados internos de uma empresa, as equipes costumam escolher uma de três saídas: colocar todos os arquivos em uma janela de contexto longo (o limite de texto que o modelo lê de uma vez), montar um pipeline de *retrieval-augmented generation* (RAG, uma sequência automatizada de etapas que busca arquivos externos antes de responder) ou fazer *fine-tuning* (ajuste fino) dos pesos do modelo (os números aprendidos dentro da rede). Escolher a ferramenta errada custa meses. Há equipes treinando modelos sobre manuais que mudam toda sexta-feira, e outras enviando 200.000 tokens em toda requisição enquanto a latência (o tempo de espera até a resposta chegar) dispara e a fatura mensal explode. Esta aula apresenta um critério quantitativo e de sistemas para escolher o mecanismo certo—ou a combinação certa—antes de escrever o código do pipeline.
 
 ## Uma comparação concreta de custo e atualização
 
-Comece com números de um produto interno real: um manual de operações de 400 páginas somando 200.000 tokens, consultado 10.000 vezes por mês, com revisões semanais de política. Suponha que tokens de entrada custem USD 2,00 por milhão sem cache e USD 0,20 por milhão em acerto de cache de prefixo (desconto de 90%).
+Comece com números de um produto interno real: um manual de operações de 400 páginas somando 200.000 tokens, consultado 10.000 vezes por mês, com revisões semanais de política. Suponha que tokens de entrada custem USD 2,00 por milhão sem cache e USD 0,20 por milhão em acerto de cache de prefixo (reaproveitamento de cálculos guardados para texto inicial idêntico, com desconto de 90%).
 
 Se você enviar o manual inteiro em toda requisição sem cache, cada consulta paga por 200.000 tokens de entrada:
 
@@ -49,41 +49,41 @@ $$
 \text{Custo de contexto longo sem cache} = \frac{200{,}000}{1{,}000{,}000} \times 2.00 = 0.40\ \text{USD por consulta}.
 $$
 
-Em 10.000 consultas mensais, isso chega a USD 4.000 por mês antes de contar qualquer token de saída gerado. Mesmo que 90% das requisições acertem um cache de prefixo quente a USD 0,20 por milhão de tokens (USD 0,04 por consulta em cache), os 1.000 erros restantes ainda pagam USD 0,40 cada, somando `9.000 × USD 0,04 + 1.000 × USD 0,40 = USD 760` por mês—e toda edição semanal do manual invalida o prefixo guardado.
-
-Compare agora com um RAG básico usando a busca híbrida da [aula 27.5](/pt-br/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/). Em vez de enviar as 400 páginas, o recuperador seleciona os 6 trechos mais relevantes de 500 tokens cada, somando 3.000 tokens de contexto por consulta:
+Compare agora com um RAG básico usando a busca híbrida da [aula 27.5](/pt-br/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/). Em vez de enviar as 400 páginas, o recuperador seleciona os 6 trechos (*chunks*, pedaços curtos recortados de documentos maiores) mais relevantes de 500 tokens cada, somando 3.000 tokens de contexto por consulta:
 
 $$
 \text{Custo de contexto em RAG} = \frac{3{,}000}{1{,}000{,}000} \times 2.00 = 0.006\ \text{USD por consulta}.
 $$
 
-Em 10.000 consultas, o contexto recuperado custa USD 60 por mês—67 vezes mais barato que o contexto longo sem cache e cerca de 12,7 vezes mais barato que o contexto longo com 90% de acerto de cache. Mais importante: quando o corpus cresce de 400 páginas para 40.000 chamados de suporte somando 20.000.000 de tokens, o envio integral deixa de caber na janela, enquanto o RAG continua enviando os mesmos 3.000 tokens por requisição.
+<Figure id="28-1-rag-context-cost-curve" />
+
+O gráfico em etapas mostra como esses valores por consulta se distanciam ao longo de 10.000 requisições mensais, antes de contar qualquer token de saída gerado. Mesmo com 90% de acerto no cache de prefixo (USD 0,04 por consulta em cache e USD 0,40 nos erros), as revisões semanais invalidam o prefixo guardado repetidas vezes. Mais importante: quando o *corpus* (a coleção completa de documentos) cresce de 400 páginas para 40.000 chamados de suporte somando 20.000.000 de tokens, o envio integral deixa de caber na janela, enquanto o RAG continua enviando os mesmos 3.000 tokens por requisição.
 
 ## O que cada mecanismo altera de fato
 
 Cada abordagem atua sobre uma camada diferente do sistema, então elas não disputam o mesmo papel. Lewis et al. (2020) propuseram o RAG justamente para separar *memória paramétrica* (conhecimento gravado nos pesos da rede neural) de *memória não paramétrica* (um índice externo atualizado sem retreinar o modelo).
 
-- **Contexto longo** injeta o texto bruto direto no KV cache do prompt de uma requisição, dando à atenção acesso direto a cada token sem etapa prévia de indexação.
+- **Contexto longo** injeta o texto bruto direto no *KV cache* do prompt (a memória temporária que guarda as chaves e valores de atenção de cada token durante uma requisição), dando à atenção acesso direto a cada token sem etapa prévia de indexação.
 - **RAG** mantém o conhecimento em um índice de busca externo e injeta apenas um recorte recuperado em tempo de consulta, desacoplando tamanho do corpus, atualização e controle de acesso por usuário dos pesos do modelo.
 - **Fine-tuning**, incluindo adaptação de posto baixo (*LoRA*) da [aula 6.3](/pt-br/lessons/6-post-training-and-alignment/6.3-lora-qlora-and-peft/), altera pesos para mudar *como* o modelo se comporta: aderência a formato, vocabulário técnico, uso de ferramentas ou estilo conciso de raciocínio.
-- **Sistemas híbridos** combinam mecanismos quando o produto exige os dois lados: o RAG fornece fatos atualizados e filtrados por permissão, enquanto um adaptador leve molda o formato da resposta e o tom de recusa.
+- **Sistemas híbridos** combinam mecanismos quando o produto exige os dois lados: o RAG fornece fatos atualizados e filtrados por permissão, enquanto um adaptador leve (um pequeno conjunto extra de pesos treinados) molda o formato da resposta e o tom de recusa.
 
-Tentar gravar fatos voláteis nos pesos via fine-tuning esbarra em três barreiras estruturais. Primeiro, atualizar ou revogar uma política expirada exige preparar dados, retreinar, avaliar e implantar novos pesos, em vez de remover um registro no índice. Segundo, pesos não impõem controle de acesso por linha: depois que um contrato confidencial entra nos parâmetros, todos os usuários compartilham os mesmos pesos. Terceiro, pesos ajustados não carregam ponteiros de origem, o que impede citações auditáveis sem recuperação externa.
+Tentar gravar fatos voláteis nos pesos via fine-tuning esbarra em três barreiras estruturais. Primeiro, atualizar ou revogar uma política expirada exige preparar dados, retreinar, avaliar e implantar novos pesos, em vez de remover um registro no índice. Segundo, pesos não impõem controle de acesso por linha (restringir cada usuário apenas aos registros que tem permissão de ver): depois que um contrato confidencial entra nos parâmetros, todos os usuários compartilham os mesmos pesos. Terceiro, pesos ajustados não carregam ponteiros de origem, o que impede citações auditáveis sem recuperação externa.
 
 ## Onde o contexto longo vence e onde ele trava
 
-Contexto longo não é um antipadrão—ele é a arquitetura mais limpa para uma classe específica de tarefas. Imagine um advogado que envia um único contrato de fusão de 35.000 tokens e faz 25 perguntas analíticas na mesma sessão, incluindo perguntas globais como "liste toda cláusula que contradiz o limite de indenização da Seção 14".
+O contexto longo é a arquitetura mais limpa para uma classe específica de tarefas. Imagine um advogado que envia um único contrato de fusão de 35.000 tokens e faz 25 perguntas analíticas na mesma sessão, incluindo perguntas globais como "liste toda cláusula que contradiz o limite de indenização da Seção 14".
 
 Dividir esse contrato em chunks de 500 tokens corre o risco de cortar uma referência cruzada escondida em um anexo. Colocar os 35.000 tokens uma vez no prompt, apoiado por cache de prefixo ao longo das 25 interações, mantém o custo total baixo (uma escrita sem cache e 24 leituras em cache) enquanto permite que a atenção compare quaisquer duas cláusulas diretamente.
 
-O contexto longo trava assim que quatro limites aparecem: o corpus ultrapassa algumas centenas de milhares de tokens, os documentos mudam por usuário ou a cada minuto, o tempo até o primeiro token (*TTFT*) precisa ficar abaixo de poucas centenas de milissegundos, ou texto irrelevante ocupa a maior parte da janela. Liu et al. (2023) mostraram que, mesmo quando o modelo aceita entradas extensas, a acurácia cai quando os fatos decisivos ficam enterrados no meio de muitos trechos distratores—um modo de falha que detalhamos e mitigamos na próxima aula.
+O contexto longo trava assim que quatro limites aparecem: o corpus ultrapassa algumas centenas de milhares de tokens, os documentos mudam por usuário ou a cada minuto, o tempo até o primeiro token (*TTFT*, quanto tempo o usuário espera até a primeira palavra aparecer) precisa ficar abaixo de poucas centenas de milissegundos, ou texto irrelevante ocupa a maior parte da janela. Liu et al. (2023) mostraram que, mesmo quando o modelo aceita entradas extensas, a acurácia cai quando os fatos decisivos ficam enterrados no meio de muitos trechos distratores—um modo de falha que detalhamos e mitigamos na próxima aula.
 
 :::note
-Um modelo que anuncia janela de 1.000.000 de tokens não promete custo plano, latência constante nem recuperação uniforme em todos os 1.000.000 de tokens. O cálculo de *prefill*, a largura de banda de memória e a interferência de trechos irrelevantes sobem junto com o comprimento do prompt.
+Um modelo que anuncia janela de 1.000.000 de tokens não promete custo plano, latência constante nem recuperação uniforme em todos os 1.000.000 de tokens. O cálculo de *prefill* (a passagem inicial de leitura do prompt), a largura de banda de memória (a velocidade com que os dados saem da memória para o processador) e a interferência de trechos irrelevantes sobem junto com o comprimento do prompt.
 :::
 
 ## Quando o fine-tuning complementa o RAG
 
-Uma regra sólida de produção é tratar o RAG como a camada de *conhecimento* e o fine-tuning como a camada de *comportamento*. Comece com um modelo pronto competente, instruções claras, saídas estruturadas e busca híbrida confiável. Meça onde os erros realmente ocorrem.
+Uma regra sólida de produção é tratar o RAG como a camada de *conhecimento* e o fine-tuning como a camada de *comportamento*. Comece com um modelo pronto competente, instruções claras, saídas estruturadas (obrigar a resposta a seguir um modelo fixo de dados, como JSON) e busca híbrida confiável. Meça onde os erros realmente ocorrem.
 
 O fine-tuning paga seu custo de manutenção apenas quando a recuperação já coloca a evidência correta no prompt, mas o modelo ainda erra de forma repetida no estilo, no dialeto do domínio ou em raciocínio especializado—ou quando um modelo menor ajustado substitui um modelo de fronteira caro em alto volume para reduzir latência e custo unitário. Até existirem centenas de exemplos verificados de entrada e saída provando que prompt mais recuperação atingiu um teto, abrir pipelines de treino apenas desacelera a evolução do produto.

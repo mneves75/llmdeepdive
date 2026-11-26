@@ -34,21 +34,21 @@ citations:
     authors: "Marc Brooker, Amazon Web Services"
     year: 2015
     url: "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Como uma chamada de LLM passa a maior parte do tempo esperando GPUs remotas, processar 1.000 documentos num laço `for` sequencial desperdiça minutos em espera de rede ociosa. Trocar para `asyncio.gather` ou `Promise.all` elimina a espera—e dispara na hora uma parede de erros `HTTP 429 Too Many Requests`. Clientes rápidos e confiáveis não maximizam concorrência bruta; eles cadenciam o envio para caber nas cotas de requisições e de tokens.
+Como uma chamada de LLM passa a maior parte do tempo esperando GPUs remotas, processar 1.000 documentos num laço `for` sequencial (terminar um item por completo antes de começar o próximo) desperdiça minutos em espera de rede ociosa. Trocar para `asyncio.gather` em Python ou `Promise.all` em JavaScript (utilitários que disparam muitas chamadas de rede ao mesmo tempo) elimina a espera—e aciona na hora uma parede de erros `HTTP 429 Too Many Requests` (o código web padrão que avisa excesso de taxa). Clientes rápidos e confiáveis não maximizam concorrência bruta; eles cadenciam o envio para caber nas cotas de requisições e de tokens.
 
 ## Limites duplos de taxa e a Lei de Little
 
-Diferente de APIs REST comuns que limitam apenas requisições por segundo, provedores de LLM impõem **limites duplos**: **Requisições Por Minuto (RPM, *Requests Per Minute*)** e **Tokens Por Minuto (TPM, *Tokens Per Minute*)**, muitas vezes divididos em baldes separados para tokens de entrada e de saída mais um teto de conexões simultâneas. O balde que esvaziar primeiro trava o pipeline.
+Diferente de **APIs REST** comuns (interfaces web padrão para troca de dados sobre HTTP) que limitam apenas requisições por segundo, provedores de LLM impõem **limites duplos**: **Requisições Por Minuto (RPM, *Requests Per Minute*)** e **Tokens Por Minuto (TPM, *Tokens Per Minute*)**, muitas vezes divididos em baldes separados para tokens de entrada e de saída mais um teto de conexões abertas simultâneas. O balde que esvaziar primeiro trava o pipeline.
 
 Faça a conta concreta antes da fórmula geral. Suponha uma cota com `RPM = 500` e `TPM = 100.000`. Cada chamada usa `2.000` tokens totais (entrada mais saída reservada) e leva `2,0 s` ponta a ponta (combinando prefill e decode vistos em [Streaming SSE, Cancelamento e Saída Parcial](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.2-streaming-sse-and-cancellation/)).
 
 - O limite de RPM permite `500 / 60 = 8,33` requisições por segundo.
 - O limite de TPM permite `100.000 / 2.000 = 50` requisições por minuto, ou `50 / 60 = 0,833` requisições por segundo—dez vezes mais apertado que o RPM.
 
-Quantas chamadas devem ficar em voo ao mesmo tempo? A **Lei de Little**, da teoria de filas, liga a concorrência em regime permanente $C^*$ à taxa de chegada $\lambda$ e ao tempo médio de serviço $W$: $C^* = \lambda \cdot W$. Substituindo $\lambda = 0.833\text{ req/s}$ e $W = 2.0\text{ s}$, obtemos $C^* = 0.833 \times 2.0 = 1.67$ chamadas simultâneas. Rodar `2` workers em paralelo satura sua cota com suavidade. Disparar `50` workers envia uma rajada de 100.000 tokens no primeiro segundo, estoura o orçamento do minuto de imediato e passa os 58 segundos restantes brigando com retries de 429.
+Quantas chamadas devem ficar em voo ao mesmo tempo? A **Lei de Little**, da **teoria de filas** (o ramo da matemática que modela filas de espera e taxas de atendimento), liga a **concorrência em regime permanente** $C^*$ (média de chamadas em andamento num ritmo estável) à taxa de chegada $\lambda$ e ao tempo médio de serviço $W$: $C^* = \lambda \cdot W$. Substituindo $\lambda = 0.833\text{ req/s}$ e $W = 2.0\text{ s}$, obtemos $C^* = 0.833 \times 2.0 = 1.67$ chamadas simultâneas. Rodar `2` workers em paralelo satura sua cota com suavidade.
 
 Em geral, para custo médio por chamada $\bar{T}$ e latência média $W$ (em segundos), a vazão máxima sustentável $\lambda_{\max}$ (requisições por segundo) e a concorrência alvo $C^*$ são:
 
@@ -56,36 +56,35 @@ $$\lambda_{\max} = \min\!\left(\frac{\text{RPM}}{60},\; \frac{\text{TPM}}{60 \cd
 
 ## Cadência no cliente: semáforos e baldes de tokens
 
-Usar erros 429 do servidor como mecanismo principal de freio sai caro: tentativas rejeitadas desperdiçam conexões TCP, inflam a latência p99 e consomem seu orçamento de retries. Controle o ritmo *antes* de enviar a chamada com duas primitivas leves:
+Usar erros `429` do servidor como mecanismo principal de freio sai caro: tentativas rejeitadas desperdiçam **handshakes TCP** (a troca inicial de mensagens para abrir uma conexão), inflam a **latência p99** (o tempo do 1% mais lento das requisições) e esgotam seu **orçamento de retries** (um teto rígido para repetições). Controle o ritmo *antes* de enviar a chamada combinando um **semáforo** (um contador digital que permite apenas um número fixo de tarefas manterem **sockets**, ou conexões de rede, abertos ao mesmo tempo) com **baldes de tokens duplos** (contadores de cota que recarregam de forma contínua e só liberam a chamada quando RPM e TPM têm saldo). Avance pelos dois cenários abaixo para comparar uma rajada sem controle com um cliente cadenciado.
 
-- **Um semáforo de concorrência** limita o número máximo de sockets abertos simultaneamente (protegendo memória, buffers de streaming e limites de conexão do provedor).
-- **Baldes de tokens duplos no cliente** rastreiam RPM e TPM localmente. Antes de disparar uma chamada, estime o orçamento (`tokens_entrada_estimados + max_tokens`), aguarde até que os dois baldes tenham saldo e reconcilie o balde de tokens assim que o `usage` real chegar na resposta.
+<Figure id="26-4-dual-quota-pacer" />
 
-Repare por que `max_tokens` importa mesmo quando o modelo escreve apenas 30 palavras. Muitos gateways debitam `input_tokens + max_tokens` na admissão porque não sabem o tamanho final da saída de antemão, estornando a diferença só ao término. Deixar `max_tokens` em `4.096` para um classificador curto pode cortar sua vazão real pela metade.
+Repare por que `max_tokens` importa mesmo quando o modelo escreve apenas 30 palavras. Muitos **gateways** do provedor (os servidores de entrada que medem o tráfego recebido) debitam `input_tokens + max_tokens` na admissão porque não sabem o tamanho final da saída de antemão, estornando a diferença só ao término. Deixar `max_tokens` em `4.096` para um classificador curto pode cortar sua vazão real pela metade.
 
 :::insight
-Leia os cabeçalhos de limite do provedor (`x-ratelimit-remaining-tokens`, `x-ratelimit-reset-tokens` e `Retry-After` da RFC 9110) em toda resposta. Quando vários workers compartilham a mesma chave de API, esses cabeçalhos avisam que a cota global está secando antes mesmo de um 429 acontecer.
+Leia os **cabeçalhos de limite** do provedor (linhas de metadados em toda resposta HTTP, como `x-ratelimit-remaining-tokens`, `x-ratelimit-reset-tokens` e `Retry-After` da RFC 9110) em toda chamada. Quando vários workers compartilham a mesma chave de API, esses cabeçalhos avisam que a cota global está secando antes mesmo de um `429` acontecer.
 :::
 
 ## Coordenar retries sem tempestades de tentativas
 
-Mesmo clientes bem cadenciados enfrentam picos pontuais de `429` ou `503` quando outro cliente gera rajada ou um nó de GPU reinicia. Combine o controlador de ritmo com as proteções de [Novas tentativas e circuit breakers](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.2-retries-and-circuit-breakers/):
+Mesmo clientes bem cadenciados enfrentam picos pontuais de `429` ou `503` (Serviço Indisponível) quando outro **inquilino** (cliente que divide a mesma infraestrutura na nuvem) gera rajada ou um nó de GPU reinicia. Combine o controlador de ritmo com as proteções de [Novas tentativas e circuit breakers](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.2-retries-and-circuit-breakers/):
 
-- Respeite `Retry-After` à risca quando vier no cabeçalho; caso contrário, use backoff exponencial com *full jitter* (Brooker 2015) para espalhar os workers em vez de todos baterem juntos na virada do minuto.
+- Respeite `Retry-After` à risca quando vier no cabeçalho; caso contrário, use **backoff exponencial com *full jitter*** (Brooker 2015)—dobrar o tempo de espera a cada falha e sortear o atraso para espalhar os workers em vez de todos baterem juntos na virada do minuto.
 - Imponha um orçamento global de retries no processo para que uma queda longa do provedor degrade rápido sem multiplicar a carga.
-- Adote **concorrência adaptativa** (aumento aditivo, redução multiplicativa): ao surgir 429, reduza o teto local de workers pela metade e volte a subir aos poucos após uma janela limpa.
+- Adote **concorrência adaptativa** (aumento aditivo, redução multiplicativa): ao surgir `429`, reduza o teto local de workers pela metade na hora e volte a subir aos poucos após uma janela limpa.
 
 :::warning
-Nunca repita cegamente chamadas não idempotentes após timeout sem checar se o servidor consumiu tokens ou executou efeitos colaterais. Diferencie rejeições `429` antes da execução (zero tokens gastos, retry seguro) de quedas no meio do stream após geração parcial.
+Nunca repita cegamente chamadas **não idempotentes** (ações que não podem ser repetidas sem risco de cobranças ou efeitos duplicados) após timeout sem checar se o servidor consumiu tokens ou causou **efeitos colaterais** (mudanças reais fora da chamada). Diferencie rejeições `429` antes da execução (zero tokens gastos, retry seguro) de quedas no meio do stream após geração parcial.
 :::
 
 ## Faixas interativas versus Batch APIs assíncronas
 
-Nem toda chamada de LLM tem um usuário olhando para a tela. Misturar tarefas em lote—classificação noturna, geração sintética, reindexação ou rodadas de avaliação—na mesma cota do tráfego ao vivo é receita clássica de incidente: um script de backfill seca o TPM da conta e congela o chat dos clientes.
+Nem toda chamada de LLM tem um usuário olhando para a tela. Misturar tarefas em lote—classificação noturna, geração sintética, **backfills** de embeddings (processamento único de dados históricos) ou rodadas de avaliação—na mesma cota do tráfego ao vivo é receita clássica de incidente: um script de backfill seca o TPM da conta e congela o chat dos clientes.
 
 Separe as cargas em duas faixas explícitas:
 
-- **Faixa interativa** reserva chaves ou cotas dedicadas de projeto, usa streaming SSE com timeouts curtos e mantém chamadas sensíveis a latência isoladas.
-- **Faixa em lote** usa **Batch APIs** assíncronas (envio de arquivo JSONL processado em até 24 horas, geralmente com 50% de desconto em cota separada) ou uma fila de workers em segundo plano limitada a uma fração pequena do TPM ocioso.
+- **Faixa interativa** reserva chaves ou cotas dedicadas de projeto, usa streaming SSE com **timeouts** (limites máximos de espera) curtos e mantém chamadas sensíveis a latência isoladas.
+- **Faixa em lote** usa **Batch APIs** assíncronas—envio de arquivo **JSONL** (*JSON Lines*, arquivo de texto com um objeto JSON por linha) processado em até 24 horas, geralmente com 50% de desconto em cota separada—ou uma fila de workers em segundo plano limitada a uma fração pequena do TPM ocioso.
 
-Isolar tráfego interativo e em lote permite cumprir metas rígidas de latência para usuários enquanto paga metade do preço no processamento em segundo plano.
+Isolar tráfego interativo e em lote permite cumprir metas rígidas de latência para usuários ao vivo enquanto paga metade do preço no processamento em segundo plano.

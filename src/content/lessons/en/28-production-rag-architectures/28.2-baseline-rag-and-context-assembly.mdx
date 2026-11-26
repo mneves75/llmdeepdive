@@ -38,29 +38,26 @@ citations:
     authors: "Eric Wallace et al."
     year: 2024
     url: "https://arxiv.org/abs/2404.13208"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Retrieving the right document does not guarantee a right answer. Once your search engine returns candidate chunks, your code has to decide how many chunks fit, how to strip overlap, how to wrap untrusted text, and in what order to place them inside the prompt. Engineers often concatenate the top 20 results with newlines and ship it—then watch accuracy collapse on real traffic. This lesson builds a disciplined *context assembly* stage grounded in token budgets, prefix caching, and the empirical attention curve of transformer models.
+Retrieving the right document does not guarantee a right answer. Once your search engine returns candidate chunks, your code has to decide how many chunks fit, how to strip repeated overlap, how to wrap untrusted text, and in what order to place them inside the prompt. Engineers often concatenate (join end to end) the top 20 results with blank lines and ship the service—then watch accuracy collapse on real traffic. This lesson builds a disciplined *context assembly* stage grounded in token budgets, prefix caching, and the empirical attention curve of transformer models.
 
 ## Sizing the evidence budget with real numbers
 
-Every request to a language model works inside a fixed token ceiling. Before injecting a single retrieved chunk, subtract every non-negotiable slice of the prompt so evidence never truncates the user's question or forces the reply to cut off mid-sentence.
+Every request to a language model works inside a fixed token ceiling. Before injecting a single retrieved chunk, subtract every non-negotiable slice of the prompt so evidence never truncates (cuts off early) the user's question or forces the reply to stop mid-sentence.
 
-Work through an 8,192-token budget for a support assistant:
+Work through an 8,192-token budget for a support assistant. The stack below lays out every fixed and reserved slice in the exact top-to-bottom order sent to the model:
 
-- **Static system prompt and tool/citation rules:** 600 tokens.
-- **Recent conversation history (capped by turns):** 1,000 tokens.
-- **Current user question:** 150 tokens.
-- **Reserved output tokens for the answer:** 1,000 tokens.
+<Figure id="28-2-window-token-slices" />
 
-Adding those fixed allocations gives $600 + 1{,}000 + 150 + 1{,}000 = 2{,}750$ tokens, which leaves:
+Adding the four non-evidence slices—system prompt, conversation history, user question, and reserved answer—gives $600 + 1{,}000 + 150 + 1{,}000 = 2{,}750$ tokens, which leaves:
 
 $$
 B_{\text{evidence}} = 8{,}192 - 2{,}750 = 5{,}442\ \text{tokens}.
 $$
 
-Each chunk from the boundary pipeline in [lesson 27.2](/lessons/27-retrieval-and-hybrid-search/27.2-chunking-strategies-and-boundaries/) averages 500 body tokens plus 50 tokens of metadata wrapper (chunk ID, document title, section path, and revision date), totaling 550 tokens per formatted passage. At 550 tokens each, at most $\lfloor 5{,}442 / 550 \rfloor = 9$ chunks fit without truncation. Even when 9 chunks fit, sending 5 to 8 high-precision chunks after reranking usually outperforms filling every last slot with low-scoring distractors.
+Each chunk from the boundary pipeline in [lesson 27.2](/lessons/27-retrieval-and-hybrid-search/27.2-chunking-strategies-and-boundaries/) averages 500 body tokens plus 50 tokens of metadata wrapper (extra labels such as chunk ID, document title, section path, and revision date), totaling 550 tokens per formatted passage. At 550 tokens each, at most $\lfloor 5{,}442 / 550 \rfloor = 9$ chunks fit without truncation. Even when 9 chunks fit, sending 5 to 8 high-precision chunks after reranking usually outperforms filling every last slot with low-scoring distractors.
 
 In general, compute the available evidence budget before packing context:
 
@@ -74,32 +71,32 @@ where $W_{\max}$ is the request's chosen context ceiling (often much smaller tha
 
 Ordering retrieved chunks matters almost as much as selecting them. Liu et al. (2023) tested language models on multi-document question answering with 20 passages where exactly one passage held the ground-truth answer. Moving that single gold passage from position 1 or position 20 into position 10 produced a pronounced U-shaped accuracy curve—accuracy often dropped by more than 15 to 20 percentage points in the middle positions, even though the exact same words remained inside the context window.
 
-Two practical design choices follow directly from that curve. First, keep the final evidence set compact: pull 50 candidates broadly in stage one, trim to the strongest 5 to 8 passages in stage two, and never dump 30 marginal chunks "just in case." Second, use *edge-first* (or bookend) placement instead of plain descending rank order. Given 6 ranked chunks `[#1, #2, #3, #4, #5, #6]`, placing them as:
+Two practical design choices follow directly from that curve. First, keep the final evidence set compact: pull 50 candidates broadly in stage one, trim to the strongest 5 to 8 passages in stage two, and never dump 30 marginal chunks "just in case." Second, use *edge-first* (or bookend) placement instead of plain descending rank order. Given 6 ranked chunks `[#1, #2, #3, #4, #5, #6]`, the slot order below places the highest-scoring chunk at the very start, the second-highest at the very end just before the user's question, and the weaker background chunks in the middle:
 
 ```text
 [#1, #3, #5, #6, #4, #2]
 ```
 
-keeps the highest-scoring evidence right at the start of the context block and the second-highest evidence right at the end, immediately preceding the user's question, while lower-confidence background sits in the middle.
+The flow below connects both stages—broad recall, reranking, edge-first layout, and grounded generation—into one baseline RAG assembly path.
 
 <Figure id="28-2-rag-assembly-flow" />
 
 ## Deduplication, parent expansion, and provenance tags
 
-Raw top-k retrieval from overlapping chunk windows frequently returns three or four fragments of the same paragraph. Injecting all four wastes token budget and crowds out a second document needed to answer multi-part questions.
+Raw top-k retrieval from overlapping chunk windows (documents sliced so neighboring pieces share a short repeated strip) frequently returns three or four fragments of the same paragraph. Injecting all four wastes token budget and crowds out a second document needed to answer multi-part questions.
 
-A clean assembly loop runs three deterministic passes over the ranked candidate list before formatting the prompt:
+A clean assembly routine runs three deterministic (rule-based, producing the exact same output every time) passes over the ranked candidate list before formatting the prompt:
 
-1. **Deduplicate and merge overlaps:** drop exact duplicate hashes, and when two selected chunks come from adjacent offsets in the same document, stitch them into one continuous span (or fetch their shared parent section) so sentences never repeat or break mid-clause.
+1. **Deduplicate and merge overlaps:** drop exact duplicate hashes (short digital fingerprints computed from text so identical passages match instantly), and when two selected chunks come from adjacent offsets in the same document, stitch them into one continuous span (or fetch their shared parent section) so sentences never repeat or break mid-clause.
 2. **Enforce per-document diversity caps:** cap how many chunks any single document can claim (for example, at most 3 of 8 slots) when queries span multiple policies or repositories.
-3. **Attach stable provenance attributes:** wrap each chunk in explicit delimiters carrying its short ID, title, and timestamp, such as `<evidence id="c1" doc="refund-policy-v4" updated="2026-10-01">...</evidence>`. Short IDs (`c1`, `c2`) keep citations compact and easy to verify programmatically.
+3. **Attach stable provenance attributes:** wrap each chunk in explicit delimiters (opening and closing markers that separate data from instructions) carrying its short ID, title, and timestamp, such as `<evidence id="c1" doc="refund-policy-v4" updated="2026-10-01">...</evidence>`. Short IDs (`c1`, `c2`) keep citations compact and easy to verify in code.
 
 ## Preserving prompt hierarchy and prefix caching
 
-Order at the whole-prompt level governs both speed and security. As established in [lesson 26.5](/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/), KV-cache prefix reuse only hits when leading tokens match byte for byte across requests. Place the static system prompt and citation rules at the very top, followed by any static few-shot examples, followed by the dynamic `<evidence>` block, and finally the user's current question. Putting dynamic retrieved passages ahead of the system prompt destroys prefix caching on every request.
+Order at the whole-prompt level governs both speed and security. As established in [lesson 26.5](/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/), KV-cache prefix reuse (reusing stored prompt computations from earlier calls) only hits when leading tokens match byte for byte (identical down to every character and space) across requests. Place the static system prompt and citation rules at the very top, followed by any static few-shot examples, followed by the dynamic `<evidence>` block, and finally the user's current question. Putting dynamic retrieved passages ahead of the system prompt breaks prefix caching on every request.
 
 Delimiter separation also enforces the instruction hierarchy described by Wallace et al. (2024): system instructions carry the highest privilege, while retrieved passages are untrusted external data. Explicit data tags combined with an instruction stating that text inside `<evidence>` tags can supply facts but can never override system rules form the baseline structural boundary—one we harden further against adversarial corpus poisoning in track 30.
 
 :::warning
-Never interpolate raw retrieved text directly into the system prompt string. Treating retrieved passages as privileged system instructions turns any compromised document in your index into a direct prompt injection.
+Never interpolate (paste directly) raw retrieved text into the system prompt string. Treating retrieved passages as privileged system instructions turns any compromised document in your index into a direct prompt injection (hidden instructions planted inside data to hijack the model's behavior).
 :::

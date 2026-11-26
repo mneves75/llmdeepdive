@@ -38,44 +38,45 @@ citations:
     authors: "OpenAI"
     year: 2025
     url: "https://platform.openai.com/docs/guides/prompt-caching"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Two identical-looking prompt refactors can swing your monthly inference bill by 80% and open a security hole at the same time. Prompt engineering in production is less about clever phrasing tricks and more about two systems constraints: **trust hierarchy** (who is allowed to issue instructions) and **prefix stability** (which tokens stay byte-identical so the serving engine can skip recomputing the KV cache).
+Two identical-looking **prompt refactors** (reorganizing how a prompt is assembled without changing its goal) can swing your monthly inference bill by 80% and open a security hole at the same time. Prompt engineering in production depends less on clever phrasing tricks and more on two systems constraints: **trust hierarchy** (who is allowed to issue instructions) and **prefix stability** (which tokens stay byte-identical so the serving engine can skip recomputing the **KV cache**, the saved key and value vectors from already-processed tokens).
 
 ## The Instruction Hierarchy and trust boundaries
 
-Every message in a chat API carries a role, and modern models are post-trained to obey a strict priority order. As Wallace et al. (2024) formalized in *The Instruction Hierarchy*, privileged developer instructions sit above end-user messages, which in turn sit above third-party tool outputs and retrieved web pages:
+Every message in a chat API carries a role, and modern models are **post-trained** (further trained after initial pretraining to follow instructions and safety boundaries) to obey a strict priority order. As Wallace et al. (2024) formalized in *The Instruction Hierarchy*, privileged developer instructions sit above end-user messages, which in turn sit above third-party tool outputs and retrieved web pages:
 
 - **System / developer prompt:** defines immutable product policy, output contract, and refusal rules.
 - **User message:** expresses the caller's goal within the developer's boundaries.
 - **Tool / retrieved content:** untrusted external data that should be read as evidence, never executed as commands.
 
-Because of this hierarchy, never concatenate raw user profile bios, support tickets, or retrieved PDF excerpts into the `system` message. Placing untrusted text inside the privileged role tells the model to treat an attacker's text as developer policy. Keep untrusted data in `user` or `tool` messages inside clear delimiters, and treat instruction hierarchy as defense in depth rather than a cryptographic sandbox—irreversible actions still need deterministic code checks outside the model.
+Because of this hierarchy, never **concatenate** (glue directly into the same string) raw user profile bios, support tickets, or retrieved PDF excerpts into the `system` message. Placing untrusted text inside the privileged role tells the model to treat an attacker's text as developer policy. Keep untrusted data in `user` or `tool` messages inside clear **delimiters** (explicit separator tags or headings that fence off quoted text), and treat instruction hierarchy as **defense in depth** (layering multiple safeguards so one slip is not fatal) rather than a **cryptographic sandbox** (a mathematically unbreakable security wall)—irreversible actions still need **deterministic code checks** (ordinary rule-based code that always makes the same yes-or-no check) outside the model.
 
 ## Prompt sensitivity and disciplined specification
 
-Small surface changes—swapping two bullet points, adding contradictory adjectives like "be exhaustive yet brief", or changing few-shot label capitalization—measurably shift model outputs. Instead of layering ad-hoc reminders ("IMPORTANT!! DO NOT HALLUCINATE!!"), write prompts like specifications:
+Small surface changes—swapping two bullet points, adding contradictory adjectives like "be exhaustive yet brief", or changing **few-shot** (small handful of worked input–output examples placed in the prompt) label capitalization—measurably shift model outputs. Instead of layering ad-hoc reminders ("IMPORTANT!! DO NOT HALLUCINATE!!"), write prompts like specifications:
 
 - State the exact task, decision boundary, and fallback behavior ("If the policy does not cover the region, return `escalate`").
-- Pair rules with two or three concrete input–output examples that cover the tricky edge cases rather than obvious happy paths.
+- Pair rules with two or three concrete input–output examples that cover tricky **edge cases** (unusual boundary inputs) rather than obvious happy paths.
 - Offload syntactic structure to constrained decoding from [Structured Outputs & Constrained Decoding](/lessons/26-llm-apis-and-structured-outputs/26.3-structured-outputs-and-constrained-decoding/) so your prompt prose spends tokens on domain rules instead of begging for valid JSON.
 
 ## How prefix caching works on the KV cache
 
-In [The KV Cache](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/), you saw that during prefill each token attends only to itself and earlier tokens (causal masking). That mathematical property has a direct engineering payoff: if request B shares the exact same first $P$ tokens as request A, the key and value tensors for those first $P$ tokens are mathematically identical. Serving engines store recent prefix KV blocks in GPU or host RAM and skip recomputing them, cutting both **TTFT** and input token cost—typically by 50% to 90% on cached prefix reads across major providers (Anthropic 2025; OpenAI 2025).
+In [The KV Cache](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/), you saw that during prefill each token attends only to itself and earlier tokens (**causal masking**). That mathematical property has a direct engineering payoff: if request B shares the exact same first $P$ tokens as request A, the key and value tensors for those first $P$ tokens are mathematically identical. Serving engines store recent prefix KV blocks in GPU memory or **host RAM** (the server's main system memory) and skip recomputing them, cutting both **time to first token (TTFT)** and input token cost—typically by 50% to 90% on cached prefix reads across major providers (Anthropic 2025; OpenAI 2025).
 
-Walk through the arithmetic on a realistic support assistant before writing the general formula. Suppose your prompt has a `4,000`-token static prefix (system instructions, sorted tool schemas, and reference examples) plus a `500`-token dynamic user turn. Uncached input costs `USD 3.00` per million tokens and cached prefix reads cost `USD 0.30` per million (a 90% discount).
+Compare two layouts of the same `4,500`-token support assistant prompt (`4,000`-token static policy, sorted tool schemas, and examples plus a `500`-token dynamic user turn) at `USD 3.00` per million uncached tokens and `USD 0.30` per million cached reads (a 90% discount). Step between the two frames below to see what happens when `Current time: 2026-11-20T14:32:09Z` moves from line 1 into the user turn.
 
-- **Volatile metadata at the top (`0` cached tokens):** Someone puts `Current time: 2026-11-20T14:32:09Z` on line 1 of the system prompt. Because token 1 changes every second, every downstream KV vector changes too, yielding `0%` cache hits. Every call pays `4,500 × 3.00 / 1,000,000 = USD 0.0135`, or `USD 13.50` per `1,000` calls.
-- **Static prefix first, volatile metadata last (`4,000` cached tokens):** Moving the timestamp into the user turn keeps the first `4,000` tokens identical across callers. Each warm call pays `4,000 × 0.30 / 1,000,000 = USD 0.0012` for the cached prefix plus `500 × 3.00 / 1,000,000 = USD 0.0015` for the fresh suffix, totaling `USD 0.0027` per call—`USD 2.70` per `1,000` calls, an **80% reduction** in input spend.
+<Figure id="26-5-prompt-prefix-stack" />
 
 In general, for total input tokens $T_{\text{in}}$, matched prefix length $P_{\text{hit}}$, cached read price $c_{\text{cached}}$, and uncached price $c_{\text{uncached}}$ (per token):
 
 $$C_{\text{in}} = P_{\text{hit}} \cdot c_{\text{cached}} + (T_{\text{in}} - P_{\text{hit}}) \cdot c_{\text{uncached}}$$
 
+With the timestamp moved to the bottom, `4,000 × 0.30 / 1,000,000 = USD 0.0012` for the cached prefix plus `500 × 3.00 / 1,000,000 = USD 0.0015` for the fresh suffix totals `USD 0.0027` per call (`USD 2.70` per `1,000` calls)—an **80% reduction** compared with `USD 13.50` when line 1 changes every second.
+
 :::note
-Providers enforce a minimum prefix threshold (commonly 1,024 tokens) and a time-to-live window (often 5 minutes, refreshed on each hit, with optional extended TTL tiers). Some APIs also charge a one-time cache-write premium on the first miss, so prefix caching pays off most when a static prefix serves many calls inside its TTL.
+Providers enforce a minimum prefix threshold (commonly 1,024 tokens) and a **time-to-live (TTL)** window (how long a cached prefix stays warm before expiring—often 5 minutes, refreshed on each hit, with optional extended TTL tiers). Some APIs also charge a one-time cache-write premium on the first miss, so prefix caching pays off most when a static prefix serves many calls inside its TTL.
 :::
 
 ## Canonical layout: stable at the top, volatile at the bottom
@@ -89,5 +90,5 @@ To maximize both trust clarity and KV cache hit rate, assemble every request str
 5. The current user query, retrieved per-request chunks, and live metadata (timestamps, request IDs, user locale).
 
 :::warning
-Watch out for silent cache-busters: unordered JSON map serialization, injecting the current user's name into the system prompt, or shuffling few-shot examples per request. Log `cached_tokens / input_tokens` in production telemetry and alert when the ratio drops unexpectedly.
+Watch out for silent cache-busters: **unordered JSON map serialization** (converting a key–value dictionary into JSON text without fixing key order, which rearranges tokens across workers), injecting the current user's name into the system prompt, or shuffling few-shot examples per request. Log `cached_tokens / input_tokens` in production **telemetry** (live measurements collected from the running service) and alert when the ratio drops unexpectedly.
 :::

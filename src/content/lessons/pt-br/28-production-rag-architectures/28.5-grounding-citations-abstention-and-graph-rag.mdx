@@ -16,7 +16,7 @@ quiz:
   - question: "Qual defeito o pós-processamento determinístico detecta imediatamente sem chamar outro LLM?"
     options: ["Um ID de trecho inventado ausente do prompt", "Uma contradição sutil dentro de um ID de trecho válido", "Uma política desatualizada escrita dentro do PDF fonte", "Um vínculo ausente de múltiplos saltos entre três documentos"]
     correctIndex: 0
-    explanation: "Verificar se todo ID citado pertence ao conjunto de IDs de evidência enviados no prompt é uma consulta exata O(1) em conjunto hash. Verificar implicação semântica exige um modelo verificador ou classificador NLI."
+    explanation: "Verificar se todo ID citado pertence ao conjunto de IDs de evidência enviados no prompt é uma consulta exata O(1) em conjunto hash (verificação instantânea de pertinência). Verificar implicação semântica exige um modelo verificador ou classificador NLI."
   - question: "Em um assistente jurídico de conformidade, uma afirmação alucinada custa 10 vezes mais do que uma abstenção explícita. O reranker pontua todos os trechos abaixo de 0,35 para uma nova pergunta. O que o pipeline deve fazer?"
     options: ["Remover a exigência de citações para o modelo responder livremente direto dos pesos de pré-treino", "Baixar o corte do reranker para 0,05 e injetar 25 trechos até surgir resposta", "Abster-se explicitamente, avisando que nenhuma evidência cobre o tema", "Reescrever a pergunta cinco vezes até algum trecho passar de 0,35"]
     correctIndex: 2
@@ -38,22 +38,20 @@ citations:
     authors: "Brandon T. Willard e Rémi Louf"
     year: 2023
     url: "https://arxiv.org/abs/2307.09702"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-A busca, o reranking da [aula 28.3](/pt-br/lessons/28-production-rag-architectures/28.3-reranking-cross-encoders-and-colbert/) e o roteamento da [aula 28.4](/pt-br/lessons/28-production-rag-architectures/28.4-query-transformation-and-routing/) podem colocar evidências precisas no prompt—mas um modelo de linguagem ainda pode misturar essas passagens com memória paramétrica desatualizada, anexar citações falsas ou chutar com segurança quando o corpus não tem resposta. Um RAG de produção trata o *embasamento* (vincular toda afirmação factual às evidências recuperadas) e a *abstenção* (recusar de forma limpa quando falta evidência) como contratos explícitos de engenharia, e só recorre ao *GraphRAG* quando a pergunta realmente exige síntese sobre o corpus inteiro.
+A busca, o reranking da [aula 28.3](/pt-br/lessons/28-production-rag-architectures/28.3-reranking-cross-encoders-and-colbert/) e o roteamento da [aula 28.4](/pt-br/lessons/28-production-rag-architectures/28.4-query-transformation-and-routing/) podem colocar evidências precisas no prompt—mas um modelo de linguagem ainda pode misturar essas passagens com memória paramétrica desatualizada (fatos gravados nos pesos durante o treino, vistos na [aula 28.1](/pt-br/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/)), anexar citações falsas ou chutar com segurança quando o corpus não tem resposta. Um RAG de produção trata o *embasamento* (vincular toda afirmação factual às evidências recuperadas) e a *abstenção* (recusar de forma limpa quando falta evidência) como contratos explícitos de engenharia, e só recorre ao *GraphRAG* quando a pergunta realmente exige síntese sobre o corpus inteiro.
 
 ## Duas camadas de verificação de citações
 
-Pedir ao modelo que "inclua citações `[1]`" em texto livre parece confiável enquanto esconde erros silenciosos. Usando decodificação restrita da [aula 26.3](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.3-structured-outputs-and-constrained-decoding/) (Willard e Louf, 2023), vincule o gerador a um esquema estruturado que emparelha cada afirmação factual com uma lista de IDs de trechos presentes no prompt atual—mais um booleano `abstained`.
+Pedir ao modelo que "inclua citações `[1]`" em texto livre parece confiável enquanto esconde erros silenciosos. Usando decodificação restrita (obrigar a saída do modelo a seguir um modelo fixo de dados) da [aula 26.3](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.3-structured-outputs-and-constrained-decoding/) (Willard e Louf, 2023), vincule o gerador a um esquema estruturado (um conjunto predefinido de campos nomeados, como JSON) que emparelha cada afirmação factual com um *array* (lista ordenada) de IDs de trechos presentes no prompt atual—mais um booleano (campo verdadeiro ou falso) `abstained`.
 
-Percorra uma auditoria concreta de 3 afirmações quando o prompt recebeu cinco trechos `["c1", "c2", "c3", "c4", "c5"]`:
+Percorra uma auditoria concreta de 3 afirmações quando o prompt recebeu cinco trechos `["c1", "c2", "c3", "c4", "c5"]`. A Afirmação 1 cita `["c1"]`, e `c1` afirma de fato `"Devoluções na UE são aceitas em até 14 dias"`; a Afirmação 2 cita `["c7"]`, um ID ausente do prompt; a Afirmação 3 cita `["c2"]`, que existe mas trata de garantias de hardware em vez de assinaturas de software. O quadro 2 do fluxo em etapas abaixo mostra como duas checagens separadas barram ambos os erros:
 
-- **Afirmação 1 cita `["c1"]`:** o ID existe em `{c1..c5}`, e `c1` afirma `"Devoluções na UE são aceitas em até 14 dias"`. Sintaxe e suporte passam.
-- **Afirmação 2 cita `["c7"]`:** o ID `c7` não existe em `{c1..c5}`. Código determinístico flagra essa referência inválida em microssegundos sem chamar outro modelo.
-- **Afirmação 3 cita `["c2"]`:** o ID `c2` existe, mas `c2` trata de garantias de hardware enquanto a Afirmação 3 descreve uma regra para assinaturas de software. A sintaxe passa, mas a *fidelidade* (se o trecho citado realmente implica a afirmação) falha.
+<Figure id="28-5-grounding-and-graphrag-flow" />
 
-Esse caso concreto mostra por que embasamento exige duas checagens distintas: integridade referencial determinística (todo ID citado precisa existir no prompt e afirmações sem abstenção não podem ter lista vazia de evidências) seguida por verificação de implicação semântica (um classificador NLI ou verificador LLM calibrado, espelhando o sinal `ISSUP` de Asai et al., 2023). Nenhuma das duas substitui a outra.
+Esse caso concreto mostra por que embasamento exige duas checagens distintas: integridade referencial determinística (código baseado em regras fixas que confere se todo ID citado existe em `{c1..c5}` e se afirmações sem abstenção têm evidência não vazia) seguida por verificação de implicação semântica—um classificador NLI (*Natural Language Inference*, modelo que verifica se uma frase sustenta logicamente outra) ou verificador LLM calibrado, espelhando o sinal `ISSUP` de Asai et al. (2023). Nenhuma das duas substitui a outra.
 
 ## Abstenção calibrada quando falta evidência
 
@@ -64,7 +62,7 @@ Transforme a abstenção em um ramo explícito guiado pela assimetria de erro. S
 - **Sempre chutar (80% de erro):** $80 \times 10 = 800$ unidades de erro.
 - **Abster quando a maior nota do reranker $< 0.35$ (intercepta 85 das 100 sem resposta, com 5 abstenções falsas em perguntas respondíveis):** $15 \times 10 + 90 \times 1 = 240$ unidades de erro.
 
-A abstenção funciona melhor como um funil em dois portões. O Portão 1 fica antes da geração: se a melhor pontuação do reranker ficar abaixo de um limiar calibrado (ajustado em perguntas respondíveis e não respondíveis reservadas), pule o gerador e devolva o modelo de abstenção diretamente, economizando tokens e zerando o risco de alucinação. O Portão 2 vive no prompt e no esquema: instrua o modelo a marcar `abstained: true` sempre que os trechos não trouxerem a condição ou entidade pedida, e meça essa taxa em avaliações offline para evitar tanto chutes imprudentes quanto recusas exageradas.
+Como mostra o quadro 1 da figura acima, a abstenção funciona melhor como um funil em dois portões. O Portão 1 fica antes da geração: ajuste o corte do reranker em perguntas respondíveis e não respondíveis reservadas (exemplos separados de teste) para que consultas fracas pulem o gerador diretamente, economizando tokens e zerando o risco de alucinação. O Portão 2 vive no prompt e no esquema: instrua o modelo a marcar `abstained: true` sempre que os trechos não trouxerem a condição ou entidade pedida, e meça essa taxa em avaliações offline (testes automatizados em casos salvos) para evitar tanto chutes imprudentes quanto recusas exageradas.
 
 ## Quando o RAG por trechos encontra um muro: GraphRAG
 
@@ -78,16 +76,16 @@ $$
 \frac{8}{2{,}000} = 0.004 = 0.4\%\ \text{do corpus}.
 $$
 
-Nenhum recuperador top-k consegue contar temas nos outros 99,6% dos incidentes. Edge et al. (2024) introduziram o *GraphRAG* especificamente para esse modo de falha. Na indexação offline, um LLM extrai entidades (serviços, modos de falha, equipes) e relações direcionadas de cada trecho para montar um grafo de conhecimento. Um algoritmo de detecção de comunidades (como o agrupamento de Leiden) organiza nós densamente ligados em comunidades hierárquicas, e o pipeline pré-gera um resumo estruturado para cada comunidade.
+Nenhum recuperador top-k consegue contar temas nos outros 99,6% dos incidentes. Edge et al. (2024) introduziram o *GraphRAG* para esse modo de falha (quadro 3 da figura acima). Offline, um LLM lê cada trecho para extrair entidades (serviços, modos de falha, equipes) e relações direcionadas em um *grafo de conhecimento* (uma rede de itens nomeados ligados por conexões rotuladas). O *agrupamento de Leiden* (um algoritmo de grafos que reúne nós densamente conectados) divide esse grafo em comunidades hierárquicas, e o pipeline pré-gera um resumo estruturado para cada comunidade.
 
-Na hora da consulta, perguntas globais executam uma passagem *map-reduce* sobre os resumos de comunidades: cada resumo gera uma resposta parcial pontuada por relevância, e a etapa final de redução sintetiza as parciais mais fortes em uma resposta global com ponteiros de origem. Perguntas locais de múltiplos saltos (`"Quais serviços dependentes usam o serviço de autenticação mantido pela Equipe B?"`) percorrem vizinhos do grafo em vez de depender de similaridade vetorial entre dois trechos distantes.
+Na hora da consulta, perguntas globais executam uma passagem *map-reduce* (analisar cada resumo de comunidade separadamente para gerar respostas parciais pontuadas e depois combinar as parciais mais fortes em uma síntese global) com ponteiros de origem. Perguntas locais de *múltiplos saltos* (encadear dois ou mais fatos ligados em registros distintos, como `"Quais serviços dependentes usam o serviço de autenticação mantido pela Equipe B?"`) percorrem vizinhos do grafo em vez de depender de similaridade vetorial entre dois trechos distantes.
 
 ## Orçando o GraphRAG antes de adotá-lo
 
-O GraphRAG não é uma substituição universal para RAG padrão—seu custo de indexação é ordens de grandeza maior. Extrair entidades e relações de 2.000 documentos com média de 1.500 tokens envia 3.000.000 de tokens de entrada, mais saídas de extração e resumos de comunidade, através de um LLM *antes de o primeiro usuário fazer qualquer pergunta*, e cada atualização grande do corpus exige manutenção incremental do grafo e das comunidades.
+O GraphRAG traz um custo de indexação ordens de grandeza maior que o RAG padrão. Extrair entidades e relações de 2.000 documentos com média de 1.500 tokens envia 3.000.000 de tokens de entrada, mais saídas de extração e resumos de comunidade, através de um LLM *antes de o primeiro usuário fazer qualquer pergunta*, e cada atualização grande do corpus exige manutenção incremental do grafo e das comunidades.
 
 Use RAG híbrido por trechos com reranking para consultas localizadas e bases que mudam rápido. Adote GraphRAG (ou uma tabela estruturada de metadados e SQL mais enxuta) apenas quando consultas reais exigirem síntese temática global ou travessia relacional de múltiplos saltos que a recuperação top-k estruturalmente não enxerga.
 
 :::caveat
-Um JSON estruturado de citações prova que o modelo apontou para um ID de trecho real, nunca que a afirmação é verdadeira. Combine sempre validação de ID com checagens de fidelidade—e, na próxima trilha, monte a esteira de avaliação que mede recuperação, fidelidade e abstenção de forma sistemática.
+Um JSON (formato textual padrão para dados estruturados) de citações prova que o modelo apontou para um ID de trecho real, nunca que a afirmação é verdadeira. Combine sempre validação de ID com checagens de fidelidade—e, na próxima trilha, monte a esteira de avaliação que mede recuperação, fidelidade e abstenção de forma sistemática.
 :::

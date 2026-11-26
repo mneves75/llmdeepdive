@@ -34,40 +34,38 @@ citations:
     authors: "Patrick Lewis et al."
     year: 2020
     url: "https://arxiv.org/abs/2005.11401"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Hybrid search from [lesson 27.5](/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/) usually gets the right passage into your top 50 candidates, yet the single answer you need often lands at rank 14 instead of rank 1. If your context assembly stage from [lesson 28.2](/lessons/28-production-rag-architectures/28.2-baseline-rag-and-context-assembly/) only keeps 6 chunks, rank 14 never reaches the language model. *Reranking* solves that precision gap: a stronger, query-aware scorer inspects the top 30 to 100 candidates and promotes the true evidence to the top slots before context assembly.
+Hybrid search from [lesson 27.5](/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/) usually gets the right passage into your top 50 candidates, yet the single answer you need often lands at rank 14 instead of rank 1. If your context assembly stage from [lesson 28.2](/lessons/28-production-rag-architectures/28.2-baseline-rag-and-context-assembly/) only keeps 6 chunks, rank 14 never reaches the language model. *Reranking* closes that precision gap: a stronger, query-aware scorer inspects the top 30 to 100 candidates and promotes the true evidence to the top slots before context assembly.
 
 ## Why single-vector retrieval leaves precision on the table
 
-A *bi-encoder* (the standard dense embedding model) encodes the query and each chunk completely separately into one fixed-size vector each, then compares them with one dot product or cosine similarity. That independence makes fast approximate nearest-neighbor search possible over millions of chunks, because every chunk vector is computed once at indexing time.
+A *bi-encoder* (the standard dense embedding model) encodes the query and each chunk completely separately into one fixed-size vector (list of numbers) each, then compares them with one dot product or cosine similarity (numeric measures of how closely two vectors align). That independence enables fast approximate nearest-neighbor search (a shortcut index that finds nearby vectors without scanning every chunk one by one) over millions of passages, because every chunk vector is computed once at indexing time.
 
 The bottleneck is compression. Squeezing a 300-token troubleshooting passage into a single vector forces one point in space to represent product names, error codes, preconditions, and exceptions all at once. When a user asks `"refund deadline after customs delay"`, a chunk that discusses `"shipping deadlines"` and `"standard refunds"` in general can score higher than the exact clause covering `"customs holds"`—because the query and passage never saw each other's tokens inside the encoder.
 
 ## Cross-encoders: full attention on a small candidate set
 
-A *cross-encoder* removes that information bottleneck. Instead of encoding query and passage separately, it concatenates them into one input sequence—`[CLS] query [SEP] passage [SEP]`—and runs every transformer self-attention layer across both together. Every query token attends directly to every passage token, catching negations, exact conditions, and subtle entity links, before a linear head emits one scalar relevance score.
+A *cross-encoder* removes that information bottleneck. Instead of encoding query and passage separately, it concatenates (joins end to end) them into one input sequence—`[CLS] query [SEP] passage [SEP]`, where `[CLS]` and `[SEP]` are special boundary tokens—and runs every transformer self-attention layer across both together. Every query token attends directly to every passage token, catching negations, exact conditions, and subtle entity links, before a linear head (a final scoring layer) emits one scalar (single plain number) relevance score.
 
-Why not run a cross-encoder over the whole database? Check the latency arithmetic. Suppose your corpus holds 1,000,000 chunks and a GPU-batched cross-encoder averages 2 ms per query-passage pair:
+Why not run a cross-encoder over the whole database? Check the latency arithmetic. Suppose your corpus holds 1,000,000 chunks and a GPU-batched (grouped in parallel on a graphics processor) cross-encoder averages 2 ms per query-passage pair:
 
 $$
 T_{\text{full}} = 1{,}000{,}000 \times 0.002\ \text{s} = 2{,}000\ \text{s} \approx 33.3\ \text{minutes per query}.
 $$
 
-Running it on a two-stage pipeline changes the math completely. Stage 1 (BM25 plus dense hybrid search fused with Reciprocal Rank Fusion) retrieves 50 candidates in 25 ms. Stage 2 passes only those 50 pairs to the cross-encoder in one batch, taking roughly 60 to 100 ms depending on sequence length and hardware. Total retrieval latency stays near 100 ms, while the generator receives 6 tightly ranked chunks instead of 20 noisy ones.
+Running it in a two-stage pipeline changes the math completely. Stage 1 (BM25 keyword search plus dense vector search fused with Reciprocal Rank Fusion from [lesson 27.5](/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/)) retrieves 50 candidates in 25 ms. Stage 2 passes only those 50 pairs to the cross-encoder in one batch, taking roughly 60 to 100 ms depending on sequence length and hardware. Total retrieval latency stays near 100 ms, while the generator receives 6 tightly ranked chunks instead of 20 noisy ones.
 
 ## ColBERT late interaction and MaxSim by hand
 
-Khattab and Zaharia (2020) asked whether we can keep token-level matching without paying full cross-encoder inference on every pair. Their answer, *ColBERT* (Contextualized Late Interaction over BERT), encodes each document offline—just like a bi-encoder—but keeps one compact normalized vector (commonly 128 dimensions) per token instead of pooling the whole chunk into one vector. At query time, the query encoder produces one vector per query token, and a fast matrix operator called *MaxSim* scores each candidate.
+Khattab and Zaharia (2020) asked whether we can keep token-level matching without paying full cross-encoder inference on every pair. Their answer, *ColBERT* (Contextualized Late Interaction over BERT), encodes each document offline—just like a bi-encoder—but keeps one compact normalized vector (scaled to length 1, commonly 128 dimensions) per token instead of pooling (averaging) the whole chunk into one vector. At query time, the query encoder produces one vector per query token, and a fast matrix operator called *MaxSim* scores each candidate.
 
-Work through a tiny example by hand. Suppose the query has two tokens (`refund`, `delay`) and a candidate chunk has three tokens (`return`, `customs`, `hold`). Computing the cosine similarity between every query-token vector and every passage-token vector produces a $2 \times 3$ similarity matrix:
+Work through a tiny example by hand. Suppose the query has two tokens (`refund`, `delay`) and a candidate chunk has three tokens (`return`, `customs`, `hold`), giving a $2 \times 3$ cosine-similarity table:
 
-- **Query token 1 (`refund`)** against `[return, customs, hold]` gives `[0.82, 0.15, 0.20]`; its strongest match is $0.82$.
-- **Query token 2 (`delay`)** against `[return, customs, hold]` gives `[0.18, 0.40, 0.76]`; its strongest match is $0.76$.
-- **Total MaxSim score** sums those per-query maxima: $0.82 + 0.76 = 1.58$.
+<Figure id="28-3-colbert-maxsim-grid" />
 
-Notice what happened: each query token found its best evidence anywhere in the passage without being diluted by unrelated tokens in the same chunk. The general ColBERT scoring rule for query token embeddings $Q = \{q_1, \dots, q_{|Q|}\}$ and document token embeddings $D = \{d_1, \dots, d_{|D|}\}$ is:
+Step through the two frames above: `refund` finds its strongest match on `return` at $0.82$, `delay` finds its strongest match on `hold` at $0.76$, and summing those two row maxima gives a MaxSim score of $0.82 + 0.76 = 1.58$. Each query token picks up its best evidence anywhere in the passage without being diluted by unrelated words in the same chunk. The general ColBERT scoring rule for query token embeddings $Q = \{q_1, \dots, q_{|Q|}\}$ and document token embeddings $D = \{d_1, \dots, d_{|D|}\}$ is:
 
 $$
 S(Q, D) = \sum_{i=1}^{|Q|} \max_{j=1}^{|D|} \left( q_i \cdot d_j \right).
@@ -77,7 +75,7 @@ Because every $d_j$ is precomputed before the query arrives, MaxSim reduces to b
 
 ## Choosing between cross-encoders and ColBERT in production
 
-Each reranker sits at a distinct point on the accuracy, latency, and storage triangle:
+Each reranker sits at a distinct point on the accuracy, latency, and storage triangle (`fp32` and `fp16` refer to 4-byte and 2-byte floating-point number formats):
 
 | Architecture | Query–chunk interaction | Offline index storage per chunk | Typical production role |
 |---|---|---|---|
@@ -85,8 +83,8 @@ Each reranker sits at a distinct point on the accuracy, latency, and storage tri
 | ColBERT (late interaction) | Token-level MaxSim | $N_{\text{tokens}}$ vectors (~32 KiB at 128 tokens × 128 dims, fp16 before compression) | Fast stage-2 reranker or compressed multi-vector index |
 | Cross-encoder | Full multi-layer self-attention | None (reads raw text at query time) | Highest-precision stage-2 reranker on top 20–100 |
 
-Notice the storage jump for ColBERT: storing 128 token vectors of 128 dimensions in 2-byte fp16 takes $128 \times 128 \times 2 = 32{,}768$ bytes (32 KiB) per chunk before residual quantization—over 10 times a single fp32 bi-encoder vector. Production deployments either compress token vectors aggressively (2-bit residual codes) or use ColBERT strictly on the top 100 candidates while cross-encoders serve workloads that can afford 50 to 120 ms of GPU inference for maximum accuracy.
+Notice the storage jump for ColBERT: storing 128 token vectors of 128 dimensions in 2-byte fp16 takes $128 \times 128 \times 2 = 32{,}768$ bytes (32 KiB) per chunk before residual quantization (compressing vectors by storing compact offsets from reference prototypes)—over 10 times a single fp32 bi-encoder vector. Production deployments either compress token vectors aggressively (2-bit residual codes) or run ColBERT strictly on the top 100 candidates while cross-encoders serve workloads that can afford 50 to 120 ms of GPU inference for maximum accuracy.
 
 :::caveat
-Reranking can only promote chunks that stage 1 actually retrieved. If your hybrid search misses a relevant passage outside its top 50 candidates, even a perfect cross-encoder scores zero on it—always measure stage-1 Recall@50 before tuning stage-2 rerankers.
+Reranking can only promote chunks that stage 1 actually retrieved. If your hybrid search misses a relevant passage outside its top 50 candidates, even a perfect cross-encoder scores zero on it—always measure stage-1 Recall@50 (the share of truly relevant passages appearing in the top 50 results) before tuning stage-2 rerankers.
 :::
