@@ -12,7 +12,9 @@ web
 Independent English- and Brazilian Portuguese-speaking learners who want to
 understand large language models from first principles and to build
 software that acts on a model's output safely. The course must work for
-curious beginners while continuing far enough for technical practitioners who
+a first-year university student in any field (no programming assumed,
+school maths only), with a picture in every lesson, while continuing far
+enough for technical practitioners who
 want mathematical, implementation, training, inference, and frontier-systems
 depth. Learners study asynchronously on their own devices and need clear
 wayfinding through a long, cumulative curriculum.

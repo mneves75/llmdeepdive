@@ -6,12 +6,16 @@ voice. Read both before writing or revising a lesson.
 
 ## The reader
 
-Write for a junior developer. They can read code, they know what an array, a
-loop, a function and a hash map are, and they remember a little school
-algebra. They have never studied machine learning, and they get lost the
-moment a sentence leans on a word nobody has explained yet.
+Write for a first-year university student in any field: law, nursing,
+history or design as much as computer science. They read well, use a
+computer and a phone every day, and remember school maths (fractions,
+percentages, powers of ten, a little algebra). They have never written a
+program or studied machine learning, and they get lost the moment a
+sentence leans on a word nobody has explained yet. That includes computing
+words (array, function, server, API, GPU, cache, bandwidth) as much as
+machine-learning ones.
 
-The course also serves practitioners, so explaining better never means
+The course also serves developers and practitioners, so explaining better never means
 cutting the mechanism, the maths or the numbers. A lesson gets easier to
 *follow*, never shallower. Research on worked examples backs both halves:
 novices learn a procedure faster from a solved case than from the general
@@ -34,6 +38,17 @@ keeps its prose.
   an earlier lesson defined gets a few words of reminder and a link to that
   lesson, not a second definition. Spell out an acronym on its first use in
   each lesson, unless that first use already links the lesson that defines it.
+- **Draw a process instead of describing it.** Every lesson has at least
+  one figure (`content:figures` fails one without). When a passage walks
+  through a process or a structure, make it a figure and delete the
+  sentences the figure now carries: a picture that repeats its paragraph
+  doubles the reading, it does not halve it. A process with stages is a
+  stepped figure the reader advances. Motion shows only what changes from
+  one step to the next.
+- **Say what code does before showing it.** One or two plain sentences
+  before a code block say what it does and why it is there, so a reader
+  who skips the code loses no step of the argument. An identifier used in
+  prose gets a few words of gloss at first use.
 - **Concrete before abstract.** Show a small worked case with numbers, then
   the general formula. After a formula that is not self-evident, say what it
   does and when it holds, not each symbol in turn.
