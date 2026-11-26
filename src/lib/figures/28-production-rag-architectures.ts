@@ -243,8 +243,8 @@ export const TRACK_28_FIGURES = {
           steps: [
             { label: { en: 'Raw user prompt', 'pt-br': 'Prompt bruto do usuário' }, detail: { en: 'pronouns or two-part question', 'pt-br': 'pronomes ou pergunta composta' }, pigment: 'muted' },
             { label: { en: 'Fast rewriter', 'pt-br': 'Reescritor rápido' }, detail: { en: '180 ms; standalone sub-queries', 'pt-br': '180 ms; subconsultas autocontidas' }, pigment: 'accent' },
-            { label: { en: 'Parallel hybrid search', 'pt-br': 'Busca híbrida paralela' }, detail: { en: 'max(35, 35) = 35 ms', 'pt-br': 'max(35, 35) = 35 ms' }, pigment: 'accent' },
-            { label: { en: 'RRF merge and rerank', 'pt-br': 'Fusão RRF e rerank' }, detail: { en: '215 ms total vs 250 ms serial', 'pt-br': '215 ms no total vs 250 ms em série' }, pigment: 'success' },
+            { label: { en: 'Parallel hybrid search', 'pt-br': 'Busca híbrida paralela' }, detail: { en: 'max(35, 35) = 35 ms (215 ms vs 250 ms serial)', 'pt-br': 'max(35, 35) = 35 ms (215 ms vs 250 ms em série)' }, pigment: 'accent' },
+            { label: { en: 'RRF merge and rerank', 'pt-br': 'Fusão RRF e rerank' }, detail: { en: 'merges sub-query hits before generation', 'pt-br': 'funde resultados antes da geração' }, pigment: 'success' },
           ],
         },
       },
@@ -265,7 +265,7 @@ export const TRACK_28_FIGURES = {
         },
       },
       {
-        label: { en: 'Corrective RAG (max 1 retry)', 'pt-br': 'Corrective RAG (máx. 1 tentativa)' },
+        label: { en: 'Corrective RAG (max 1 retry)', 'pt-br': 'Corrective RAG (máx. 1 repetição)' },
         caption: {
           en: 'When stage-1 relevance scores fall below the confidence threshold, Corrective RAG rejects the weak chunks and triggers at most one corrective rewrite or fallback search.',
           'pt-br': 'Quando a relevância do estágio 1 cai abaixo do limiar de confiança, o Corrective RAG descarta os trechos fracos e aciona no máximo uma reescrita corretiva ou busca reserva.',
@@ -297,16 +297,16 @@ export const TRACK_28_FIGURES = {
       {
         label: { en: 'Two-gate abstention', 'pt-br': 'Abstenção em dois portões' },
         caption: {
-          en: 'Gate 1 skips the generator when the top reranker score falls below 0.35; Gate 2 lets the schema return abstained: true if a specific condition is missing — cutting 100-query error cost from 800 to 240 units.',
-          'pt-br': 'O Portão 1 pula o gerador quando a maior nota do reranker fica abaixo de 0,35; o Portão 2 permite ao esquema retornar abstained: true se faltar a condição pedida — reduzindo o custo de erro em 100 consultas de 800 para 240 unidades.',
+          en: 'Gate 1 skips the generator when top reranker score falls below 0.35 — cutting the worked example’s error cost from 800 to 240 units (80% caught on 100 unanswerable queries plus 5 answerable false abstentions). Gate 2 adds a schema abstained: true check when a required detail is absent.',
+          'pt-br': 'O Portão 1 pula o gerador quando a maior nota do reranker cai abaixo de 0,35 — reduzindo o custo de erro do exemplo de 800 para 240 unidades (80% barradas em 100 perguntas sem resposta mais 5 abstenções falsas em respondíveis). O Portão 2 adiciona abstained: true no esquema quando falta um detalhe exigido.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Reranked candidates', 'pt-br': 'Candidatos reordenados' }, detail: { en: 'top score checked first', 'pt-br': 'melhor nota checada primeiro' }, pigment: 'muted' },
-            { label: { en: 'Gate 1: score < 0.35?', 'pt-br': 'Portão 1: nota < 0,35?' }, detail: { en: 'if yes, abstain and skip LLM', 'pt-br': 'se sim, abster e pular LLM' }, pigment: 'caution' },
+            { label: { en: 'Gate 1: score < 0.35?', 'pt-br': 'Portão 1: nota < 0,35?' }, detail: { en: 'skips LLM; 800 → 240 units in example', 'pt-br': 'pula LLM; 800 → 240 unidades no exemplo' }, pigment: 'caution' },
             { label: { en: 'Gate 2: missing detail?', 'pt-br': 'Portão 2: falta detalhe?' }, detail: { en: 'model sets abstained: true', 'pt-br': 'modelo marca abstained: true' }, pigment: 'accent' },
-            { label: { en: 'Calibrated error cost', 'pt-br': 'Custo de erro calibrado' }, detail: { en: '240 units vs 800 guessing', 'pt-br': '240 unidades vs 800 chutando' }, pigment: 'success' },
+            { label: { en: 'Calibrated abstention', 'pt-br': 'Abstenção calibrada' }, detail: { en: 'trades false abstentions for fewer hallucinations', 'pt-br': 'troca abstenções falsas por menos alucinações' }, pigment: 'success' },
           ],
         },
       },
@@ -329,8 +329,8 @@ export const TRACK_28_FIGURES = {
       {
         label: { en: 'GraphRAG global synthesis', 'pt-br': 'Síntese global no GraphRAG' },
         caption: {
-          en: 'Because top-8 chunks cover only 0.4% of 2,000 incident reports, GraphRAG extracts entities upfront (3M input tokens) and runs map-reduce across precomputed community summaries at query time.',
-          'pt-br': 'Como 8 trechos cobrem apenas 0,4% de 2.000 relatórios, o GraphRAG extrai entidades antecipadamente (3 milhões de tokens) e executa map-reduce sobre resumos de comunidades na consulta.',
+          en: 'Because top-8 chunks cover at most 0.4% of 2,000 incident reports, GraphRAG extracts entities upfront (3M input tokens) and runs map-reduce across precomputed community summaries at query time.',
+          'pt-br': 'Como 8 trechos cobrem no máximo 0,4% de 2.000 relatórios, o GraphRAG extrai entidades antecipadamente (3 milhões de tokens) e executa map-reduce sobre resumos de comunidades na consulta.',
         },
         body: {
           kind: 'flow',

@@ -22,12 +22,12 @@ const streamingAxes = {
 
 const blockingSeries = {
   label: { en: 'Without streaming', 'pt-br': 'Sem streaming' },
-  points: [[0, 0], [2.3, 0], [4.3, 0], [6.3, 0], [8.2, 0], [8.3, 400]],
+  points: [[0, 0], [2.3, 0], [4.3, 0], [6.3, 0], [8.29, 0], [8.3, 400]],
 } as const
 
 const streamingSeries = {
   label: { en: 'SSE streaming', 'pt-br': 'Streaming SSE' },
-  points: [[0, 0], [0.3, 0], [2.3, 100], [4.3, 200], [6.3, 300], [8.3, 400]],
+  points: [[0, 0], [0.29, 0], [0.3, 1], [2.3, 100], [4.3, 200], [6.3, 300], [8.3, 400]],
 } as const
 
 export const TRACK_26_FIGURES = {
@@ -47,7 +47,7 @@ export const TRACK_26_FIGURES = {
         { label: { en: 'Client state store', 'pt-br': 'Estado no cliente' }, detail: { en: 'system + turns 1..t', 'pt-br': 'system + turnos 1..t' }, pigment: 'muted' },
         { label: { en: 'HTTP POST full message array', 'pt-br': 'HTTP POST com lista completa' }, detail: { en: 'stateless boundary', 'pt-br': 'fronteira stateless' }, pigment: 'accent' },
         { label: { en: 'Prefix cache lookup + prefill', 'pt-br': 'Busca no cache de prefixo + prefill' }, detail: { en: 'cached_tokens vs fresh suffix', 'pt-br': 'cached_tokens vs sufixo novo' }, pigment: 'caution' },
-        { label: { en: 'Assistant delta appended', 'pt-br': 'Resposta anexada ao histórico' }, detail: { en: 'turn t+1 persisted by app', 'pt-br': 'turno t+1 salvo pela aplicação' }, pigment: 'success' },
+        { label: { en: 'Assistant delta appended', 'pt-br': 'Resposta anexada ao histórico' }, detail: { en: 'turn t reply persisted by app', 'pt-br': 'resposta do turno t salva pela aplicação' }, pigment: 'success' },
       ],
     },
   },
@@ -108,8 +108,8 @@ export const TRACK_26_FIGURES = {
       {
         label: { en: 'Stopped at 100 tokens', 'pt-br': 'Parado aos 100 tokens' },
         caption: {
-          en: 'Aborting the stream at 2.3 s frees the GPU and avoids generating the remaining 300 tokens (6.0 s saved). The 0.3 s prefill and the 100 emitted tokens are still billed.',
-          'pt-br': 'Abortar o stream em 2,3 s libera a GPU e evita gerar os 300 tokens restantes (6,0 s economizados). O prefill de 0,3 s e os 100 tokens emitidos continuam cobrados.',
+          en: 'Aborting the stream at 2.3 s frees the GPU and avoids generating most of the remaining 300 tokens (up to 6.0 s saved). The 0.3 s prefill, the 100 emitted tokens, and any tokens generated while cancellation is in transit remain billed.',
+          'pt-br': 'Abortar o stream em 2,3 s libera a GPU e evita gerar a maior parte dos 300 tokens restantes (até 6,0 s economizados). O prefill de 0,3 s, os 100 tokens emitidos e quaisquer tokens gerados enquanto o cancelamento está em trânsito continuam cobrados.',
         },
         body: {
           kind: 'plot',
@@ -119,8 +119,8 @@ export const TRACK_26_FIGURES = {
             {
               label: { en: 'Aborted at token 100', 'pt-br': 'Abortado no token 100' },
               pigment: 'success',
-              points: [[0, 0], [0.3, 0], [2.3, 100]],
-              marks: [{ at: [2.3, 100], label: { en: 'Abort at 2.3 s (100 billed)', 'pt-br': 'Aborto em 2,3 s (100 cobrados)' } }],
+              points: [[0, 0], [0.29, 0], [0.3, 1], [2.3, 100]],
+              marks: [{ at: [2.3, 100], label: { en: 'Abort at 2.3 s (100+ billed)', 'pt-br': 'Aborto em 2,3 s (100+ cobrados)' } }],
             },
           ],
         },
@@ -135,15 +135,15 @@ export const TRACK_26_FIGURES = {
       'pt-br': 'A decodificação restrita mascara tokens inválidos antes da amostragem',
     },
     caption: {
-      en: 'A compiled JSON Schema finite-state machine sets illegal token logits to negative infinity at every decode step, guaranteeing syntactic validity while application validators still check semantic invariants.',
-      'pt-br': 'Uma máquina de estados compilada do JSON Schema zera a probabilidade de tokens ilegais em cada passo de decode, garantindo sintaxe válida enquanto validadores da aplicação ainda checam regras semânticas.',
+      en: 'A compiled JSON Schema grammar (a finite-state machine for flat schemas or a context-free grammar for recursive ones) masks illegal token logits to negative infinity at every decode step, enforcing valid syntax barring truncation or refusal while application validators check semantic invariants.',
+      'pt-br': 'Uma gramática compilada do JSON Schema (máquina de estados para esquemas planos ou gramática livre de contexto para esquemas recursivos) mascara tokens ilegais para menos infinito em cada passo, garantindo sintaxe válida salvo truncamento ou recusa enquanto validadores checam regras semânticas.',
     },
     body: {
       kind: 'flow',
       steps: [
-        { label: { en: 'JSON Schema compiled to FSM', 'pt-br': 'JSON Schema compilado em FSM' }, detail: { en: 'allowed token set per state', 'pt-br': 'tokens permitidos por estado' }, pigment: 'accent' },
+        { label: { en: 'Schema compiled to grammar', 'pt-br': 'Schema compilado em gramática' }, detail: { en: 'FSM or CFG allowed token set', 'pt-br': 'tokens permitidos por FSM ou CFG' }, pigment: 'accent' },
         { label: { en: 'Logit mask applied', 'pt-br': 'Máscara aplicada aos logits' }, detail: { en: 'illegal tokens → -∞', 'pt-br': 'tokens ilegais → -∞' }, pigment: 'caution' },
-        { label: { en: 'Token sampled & state advances', 'pt-br': 'Token amostrado e estado avança' }, detail: { en: '100% schema-valid syntax', 'pt-br': 'sintaxe 100% válida no schema' }, pigment: 'accent' },
+        { label: { en: 'Token sampled & state advances', 'pt-br': 'Token amostrado e estado avança' }, detail: { en: 'schema-valid unless truncated/refused', 'pt-br': 'válido salvo truncamento ou recusa' }, pigment: 'accent' },
         { label: { en: 'Semantic domain check', 'pt-br': 'Validação semântica de domínio' }, detail: { en: 'accept / repair / reject', 'pt-br': 'aceitar / reparar / rejeitar' }, pigment: 'success' },
       ],
     },
@@ -169,8 +169,8 @@ export const TRACK_26_FIGURES = {
       {
         label: { en: 'Unpaced burst (50 workers)', 'pt-br': 'Rajada sem freio (50 workers)' },
         caption: {
-          en: 'Launching 50 parallel calls sends 100,000 tokens in the first second, emptying the full minute budget immediately and forcing 58 seconds of HTTP 429 retries.',
-          'pt-br': 'Disparar 50 chamadas paralelas envia 100.000 tokens no primeiro segundo, esvazia o orçamento do minuto de imediato e força 58 segundos de novas tentativas após HTTP 429.',
+          en: 'Launching 50 parallel calls sends 100,000 tokens in the first second, exhausting the minute budget immediately; under a fixed-window reset that forces up to 58 seconds of HTTP 429 retries.',
+          'pt-br': 'Disparar 50 chamadas paralelas envia 100.000 tokens no primeiro segundo, esgotando o orçamento do minuto de imediato; numa janela fixa isso força até 58 segundos de novas tentativas após HTTP 429.',
         },
         body: {
           kind: 'flow',
@@ -178,7 +178,7 @@ export const TRACK_26_FIGURES = {
             { label: { en: '50 parallel calls', 'pt-br': '50 chamadas paralelas' }, detail: { en: 'unbounded async loop', 'pt-br': 'laço assíncrono sem limite' }, pigment: 'muted' },
             { label: { en: '100,000 tokens in 1 s', 'pt-br': '100.000 tokens em 1 s' }, detail: { en: 'minute TPM bucket empties at once', 'pt-br': 'balde de TPM do minuto zera na hora' }, pigment: 'danger' },
             { label: { en: 'HTTP 429 wall', 'pt-br': 'Barreira de HTTP 429' }, detail: { en: 'wasted sockets and p99 spikes', 'pt-br': 'conexões perdidas e pico de p99' }, pigment: 'danger' },
-            { label: { en: '58 s of retries', 'pt-br': '58 s de novas tentativas' }, detail: { en: 'workers collide at minute reset', 'pt-br': 'workers colidem na virada do minuto' }, pigment: 'caution' },
+            { label: { en: 'Retry storm until reset', 'pt-br': 'Tempestade até o reset' }, detail: { en: 'up to 58 s under fixed-window quota', 'pt-br': 'até 58 s em janela fixa de minuto' }, pigment: 'caution' },
           ],
         },
       },

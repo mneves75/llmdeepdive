@@ -127,15 +127,15 @@ export const TRACK_27_FIGURES = {
       {
         label: { en: 'Slice and re-normalize', 'pt-br': 'Fatiar e renormalizar' },
         caption: {
-          en: 'Dropping the trailing 1,280 coordinates shrinks every vector’s length below 1.0 by a different amount. Re-normalizing the 256-dim prefix restores unit L2 length so dot product matches cosine again.',
-          'pt-br': 'Descartar as 1.280 coordenadas finais encolhe o comprimento de cada vetor abaixo de 1,0 em proporções diferentes. Renormalizar o prefixo de 256 dims restaura a norma L2 unitária para o produto escalar voltar a equivaler ao cosseno.',
+          en: 'Dropping the trailing 1,280 coordinates typically shrinks a unit vector’s length below 1.0 by a different amount per document (unless all dropped coordinates are zero). Re-normalizing any non-zero 256-dim prefix restores unit L2 length so dot product matches cosine again.',
+          'pt-br': 'Descartar as 1.280 coordenadas finais normalmente encolhe o comprimento de um vetor unitário abaixo de 1,0 em proporções diferentes por documento (salvo se todas forem zero). Renormalizar um prefixo não nulo de 256 dims restaura a norma L2 unitária para o produto escalar voltar a equivaler ao cosseno.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Confirm MRL model', 'pt-br': 'Confirmar modelo MRL' }, detail: { en: '1,536-dim output, norm = 1.0', 'pt-br': 'saída de 1.536 dims, norma = 1,0' }, pigment: 'muted' },
-            { label: { en: 'Slice first 256 dims', 'pt-br': 'Fatiar 256 dims iniciais' }, detail: { en: '1,024 B; norm drops below 1.0', 'pt-br': '1.024 B; norma cai abaixo de 1,0' }, pigment: 'caution' },
-            { label: { en: 'L2 re-normalize', 'pt-br': 'Renormalizar norma L2' }, detail: { en: 'divide by new length → norm = 1.0', 'pt-br': 'dividir pelo novo tamanho → norma = 1,0' }, pigment: 'success' },
+            { label: { en: 'Slice first 256 dims', 'pt-br': 'Fatiar 256 dims iniciais' }, detail: { en: '1,024 B; norm ≤ 1.0 (typically < 1)', 'pt-br': '1.024 B; norma ≤ 1,0 (em geral < 1)' }, pigment: 'caution' },
+            { label: { en: 'L2 re-normalize', 'pt-br': 'Renormalizar norma L2' }, detail: { en: 'divide non-zero prefix → norm = 1.0', 'pt-br': 'dividir prefixo não nulo → norma = 1,0' }, pigment: 'success' },
             { label: { en: 'Index queries & docs', 'pt-br': 'Indexar consultas e docs' }, detail: { en: 'both sides must use 256 dims', 'pt-br': 'ambos os lados precisam usar 256 dims' }, pigment: 'accent' },
           ],
         },
