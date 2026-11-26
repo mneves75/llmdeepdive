@@ -104,8 +104,9 @@ class FetchVendorTest(unittest.TestCase):
         linked = tarball([('package/index.js', None), ('package/LICENSE', LICENSE.encode())])
         with self.assertRaisesRegex(fetch_vendor.VendorError, 'package/index.js: not a regular file'):
             self.run_fetch(self.write_lock(linked), linked)
-        with self.assertRaisesRegex(fetch_vendor.VendorError, 'plain file name'):
-            fetch_vendor.load_lock(self.write_lock(linked, output='../engine.js'))
+        for bad_output in ('../engine.js', 'dir\\engine.js'):
+            with self.subTest(output=bad_output), self.assertRaisesRegex(fetch_vendor.VendorError, 'plain file name'):
+                fetch_vendor.load_lock(self.write_lock(linked, output=bad_output))
         self.assertFalse((self.out / 'engine.js').exists())
 
     def test_patch_must_match_exactly_once(self):

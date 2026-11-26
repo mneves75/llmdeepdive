@@ -111,6 +111,44 @@ class BuildTest(unittest.TestCase):
             build.build(self.root)
         self.assertFalse((self.root / 'dist').exists())
 
+    def test_license_notice_escapes_mixed_case_closing_script_tags(self):
+        notice = b'MIT License </SCRIPT><script>alert(1)</script>\n'
+        (self.root / 'vendor/engine-LICENSE.txt').write_bytes(notice)
+        lock = json.loads((self.root / 'vendor/lock.json').read_text())
+        lock['packages'][0]['files'][1]['sha256'] = hashlib.sha256(notice).hexdigest()
+        (self.root / 'vendor/lock.json').write_text(json.dumps(lock))
+        build.build(self.root)
+        html = (self.root / 'dist/index.html').read_text()
+        self.assertNotIn('</SCRIPT>', html)
+        self.assertIn('<\\/script><script>alert(1)<\\/script>', html)
+
+    def test_local_server_rejects_symlinks_escaping_dist(self):
+        import http.client
+        import threading
+        from functools import partial
+        from http.server import ThreadingHTTPServer
+        import serve
+
+        build.build(self.root)
+        outside = self.root / 'secret.txt'
+        outside.write_text('do-not-serve')
+        (self.root / 'dist/escape.txt').symlink_to(outside)
+        handler = partial(serve.Handler, directory=str(self.root / 'dist'), headers=serve.read_headers(self.root / 'dist/_headers'))
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', server.server_address[1], timeout=5)
+            conn.request('GET', '/escape.txt')
+            resp = conn.getresponse()
+            body = resp.read()
+            conn.close()
+            self.assertEqual(resp.status, 403)
+            self.assertNotIn(b'do-not-serve', body)
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -23,6 +23,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.site_headers = headers
         super().__init__(*args, **kwargs)
 
+    def send_head(self):
+        root = Path(self.directory).resolve()
+        candidate = Path(self.translate_path(self.path)).resolve()
+        if candidate != root and root not in candidate.parents:
+            self.send_error(403, 'Forbidden')
+            return None
+        return super().send_head()
+
     def end_headers(self):
         for name, value in self.site_headers:
             self.send_header(name, value)

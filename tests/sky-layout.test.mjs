@@ -42,16 +42,34 @@ const PART_BOX = { w: 115, h: 66 }
 const { tracks, lessons } = corpus('en')
 const sky = buildSky(tracks, lessons)
 
-// The catalog the agent-engineering plan commits to (docs/specs/agent-engineering/
-// inventory.json): every planned track and lesson laid out before one is
-// written, so the 26-track sky is proven before content depends on it.
+// The planned catalogs across releases (agent-engineering + engineering + 0.19):
+// every planned track and lesson laid out so the full 35-track sky is proven
+// both from the published corpus and from the planned inventories.
 function plannedCatalog() {
-  const inventory = JSON.parse(readFileSync('docs/specs/agent-engineering/inventory.json', 'utf8'))
+  const inventories = [
+    JSON.parse(readFileSync('docs/specs/agent-engineering/inventory.json', 'utf8')),
+    JSON.parse(readFileSync('docs/plans/ai-engineering-roadmap/inventory.json', 'utf8')),
+    JSON.parse(readFileSync('docs/plans/0.19-pictures-and-the-browser-lab/inventory.json', 'utf8')),
+  ]
+  const extraTracks = []
+  const extraLessons = []
   const ids = new Set(tracks.map((track) => track.id))
   const known = new Set(lessons.map((lesson) => lesson.id))
+  for (const inventory of inventories) {
+    for (const track of inventory.tracks) {
+      if (ids.has(track.id)) continue
+      ids.add(track.id)
+      extraTracks.push({ id: track.id, order: track.order, tier: track.tier, title: track.titleEn, part: track.part })
+    }
+    for (const lesson of inventory.lessons) {
+      if (known.has(lesson.id)) continue
+      known.add(lesson.id)
+      extraLessons.push({ id: lesson.id, track: lesson.track, order: lesson.order, prerequisites: lesson.prerequisites })
+    }
+  }
   return {
-    tracks: [...tracks, ...inventory.tracks.filter((track) => !ids.has(track.id)).map((track) => ({ id: track.id, order: track.order, tier: track.tier, title: track.titleEn, part: track.part }))],
-    lessons: [...lessons, ...inventory.lessons.filter((lesson) => !known.has(lesson.id)).map((lesson) => ({ id: lesson.id, track: lesson.track, order: lesson.order, prerequisites: lesson.prerequisites }))],
+    tracks: [...tracks, ...extraTracks],
+    lessons: [...lessons, ...extraLessons],
   }
 }
 const planned = plannedCatalog()
