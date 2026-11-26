@@ -512,7 +512,7 @@ async function figureMotionFailures(browser, name, base) {
     if (hidden) failures.push(`${name} ${MOTION_ROUTES.flow} @print: steps hidden (${hidden})`)
     await print.goto(base + MOTION_ROUTES.plot, { waitUntil: 'load' })
     await settle(print)
-    const hiddenTables = await print.evaluate(() => [...document.querySelectorAll('.fig-data table')].filter((table) => table.getBoundingClientRect().height === 0).length)
+    const hiddenTables = await print.evaluate(() => [...document.querySelectorAll('.fig-plot__data table')].filter((table) => table.getBoundingClientRect().height === 0).length)
     if (hiddenTables) failures.push(`${name} ${MOTION_ROUTES.plot} @print: plot data tables hidden (${hiddenTables})`)
   } catch (error) {
     failures.push(`${name} figure motion @print: ${error.message}`)

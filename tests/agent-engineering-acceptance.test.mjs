@@ -220,6 +220,12 @@ test('every `# file:` excerpt quotes a module a test imports, a fixture the proj
   assert.ok(quoted.size >= 60, `only ${quoted.size} distinct excerpt files`)
   const problems = []
   for (const path of quoted) {
+    if (path.startsWith('examples/qwen-local-lab/')) {
+      if (!existsSync(path)) { problems.push(`${path}: missing`); continue }
+      const allowedLab = /^(?:examples\/qwen-local-lab\/(?:src\/(?:app|inference-worker)\.js|scripts\/(?:build|fetch_vendor)\.py|tests\/.+))$/u
+      if (!allowedLab.test(path)) problems.push(`${path}: unexpected qwen-local-lab excerpt`)
+      continue
+    }
     const inside = path.replace(`${EXAMPLES}/`, '')
     if (!existsSync(join(EXAMPLES, inside))) { problems.push(`${path}: missing`); continue }
     if (/^tests(_[a-z]+)?\/test_[a-z0-9_]+\.py$/u.test(inside)) continue

@@ -195,13 +195,19 @@ test('pausing the sky stops only its ambient motion, never the arrival', () => {
   assert.deepEqual([...css.matchAll(wildcard)].map((match) => match[0]), [], 'a pause must name what it stops')
 })
 
-/** The first declared step of every 'up' stack, in both locales: its foundation. */
-const UP_FOUNDATIONS = new Set(
-  Object.values(TRACK_17_FIGURES)
+/** The first declared step of every 'up' stack across all figure modules, in both locales: its foundation. */
+const UP_FOUNDATIONS = new Set([
+  ...Object.values(TRACK_17_FIGURES)
     .flatMap((figure) => [figure.body, ...(figure.steps ?? []).map((frame) => frame.body)])
     .filter((body) => body?.kind === 'stack' && body.direction === 'up')
     .flatMap((body) => Object.values(body.steps[0].label)),
-)
+  ...readdirSync('src/lib/figures')
+    .filter((name) => /^\d+-.*\.ts$/u.test(name))
+    .flatMap((name) => {
+      const source = readFileSync(join('src/lib/figures', name), 'utf8')
+      return [...source.matchAll(/direction:\s*'up',\s*steps:\s*\[\s*\{\s*label:\s*\{\s*en:\s*'([^']+)',\s*'pt-br':\s*'([^']+)'/gu)].flatMap((m) => [m[1], m[2]])
+    }),
+])
 
 test("an 'up' stack draws its foundation last, in markup as on screen", () => {
   // `direction: ltr` once stood in for the reversal and did nothing, so every
