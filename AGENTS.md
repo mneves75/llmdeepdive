@@ -35,6 +35,9 @@ pnpm render:check        # every route in Chromium, WebKit, Firefox: 320px overf
                          #   un-underlined links in running text, inline-maths baseline,
                          #   explorer leave-mid-boot and failed-import handling
                          #   (needs `pnpm build` and `pnpm exec playwright install`)
+pnpm verify:learning     # the lesson-completion record in Chromium and WebKit: present
+                         #   only while quiz and teach-back both pass, and never
+                         #   withdrawn by a reload (needs `pnpm build`)
 pnpm budget              # per-route JS budget
 pnpm privacy             # no machine path, account subdomain or unknown email
                          #   (+ PRIVATE_REFS_NAMES for client/tooling names)
@@ -487,7 +490,10 @@ claims. Read it before writing or revising prose.
 
 Every lesson is **concept → analogy → optional lab → teach-back → quiz**. A
 lesson completes only when the teach-back is ≥80 characters and ≥15 words *and*
-the quiz is answered correctly.
+the quiz is answered correctly. `pnpm verify:learning` drives the built lesson
+page in Chromium and WebKit to check that rule and that a reload never
+withdraws a recorded completion; the unit suite fakes the script ordering that
+makes the reload case real.
 
 **Quiz answers must not be guessable by length.** `content:parity` fails a
 locale where the correct option is uniquely the longest in more than 20% of
