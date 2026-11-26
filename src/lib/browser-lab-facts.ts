@@ -50,8 +50,8 @@ export const BROWSER_LAB = {
     'derived',
     'sum of the five embedded runtime/hasher binaries before base64 encoding (11,659,803 B)',
   ),
-  builtHtmlBytes: fact(15_658_412, 'bytes', 'lock', 'scripts/build.py deterministic dist/index.html size (2026-11-26)'),
-  builtHtmlMb: fact(15.66, 'MB', 'derived', '15,658,412 / 1,000,000'),
+  builtHtmlBytes: fact(15_658_390, 'bytes', 'lock', 'scripts/build.py deterministic dist/index.html size (2026-11-26)'),
+  builtHtmlMb: fact(15.66, 'MB', 'derived', '15,658,390 / 1,000,000'),
 
   // Runtime control-flow parameters from src/app.js & src/inference-worker.js
   maxCpuThreads: fact(4, 'threads', 'code', 'app.js:220 caps WASM threads at 4 when crossOriginIsolated'),

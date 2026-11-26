@@ -232,8 +232,14 @@ try {
         failures.push(`${displayPath(ledgerFile)}: lesson "${lesson.id}" has invalid verdict "${row[1]}"`)
         continue
       }
-      if (!row[2] || !row[3]) {
-        failures.push(`${displayPath(ledgerFile)}: lesson "${lesson.id}" must record its obstacle and figure decision`)
+      if (!row[2] || !row[3] || !row[4]) {
+        failures.push(`${displayPath(ledgerFile)}: lesson "${lesson.id}" must record its obstacle, figure decision, and changes`)
+        continue
+      }
+      const hasFigure = (usedByLesson.get(`en:${lesson.id}`)?.size ?? 0) > 0
+      const figureCell = row[3].replace(/[`*]/gu, '').trim().toLowerCase()
+      if (hasFigure && figureCell === 'none') {
+        failures.push(`${displayPath(ledgerFile)}: lesson "${lesson.id}" embeds a figure but its ledger Figure cell says "none"`)
         continue
       }
       triagedCount += 1

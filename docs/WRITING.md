@@ -57,10 +57,11 @@ keeps its prose.
   together when splitting would hide the cause.
 - **One topic per paragraph,** opened by a sentence that says what the
   paragraph is about. A paragraph over about 150 words is usually two.
-- **Use what the reader already knows** (arrays, lookups, caches, loops,
-  sorting) when a mechanism really works like it, and say where the
-  comparison stops. Systems ideas the reader may not know yet (batching,
-  bandwidth, latency) get defined like any other term.
+- **Use what the reader already knows** (recipes, filing cabinets, notebooks,
+  checklists, maps) when a mechanism really works like it, and say where the
+  comparison stops. Computing and systems ideas the reader may not know yet
+  (arrays, lookups, caches, batching, bandwidth, latency) get defined like any
+  other term.
 - **Headings follow the ideas.** In a long lesson, `##` headings name what
   each part answers, so readers can navigate and experts can skip ahead. The
   lesson's step list shows six at most. Never number them.

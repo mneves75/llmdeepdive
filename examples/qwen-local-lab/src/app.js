@@ -317,7 +317,7 @@ async function resetChat() {
   $('contextStatus').textContent = '2,048-token context · older turns may be omitted';
   setMetrics();
   remember();
-  setPhase(state.backend?'ready':previous==='error'?'idle':'idle');
+  setPhase(state.backend ? 'ready' : 'idle');
   $('prompt').focus();
 }
 

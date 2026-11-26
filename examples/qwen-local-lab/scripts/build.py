@@ -85,11 +85,11 @@ def build(root):
         for name, data in assets.items()
     )
     license_text = '\n\n'.join(f'{name}\n{text}' for name, text in notices)
-    licenses = '<script id="third-party-notices" type="text/plain">\n' + license_text.replace('</script', '<\\/script') + '\n</script>'
-    html = html.replace('<script type="module">', payload + '\n' + licenses + '\n<script type="module">')
-    html = html.replace('/* APP_SCRIPT */', script)
+    licenses = '<script id="third-party-notices" type="text/plain">\n' + re.sub(r'</script', r'<\\/script', license_text, flags=re.IGNORECASE) + '\n</script>'
+    html = html.replace('<script type="module">', payload + '\n' + licenses + '\n<script type="module">', 1)
+    html = html.replace('/* APP_SCRIPT */', script, 1)
     header_policy, meta_policy = content_security_policy(html)
-    html = html.replace(CHARSET_META, CHARSET_META + f'\n  <meta http-equiv="Content-Security-Policy" content="{meta_policy}">')
+    html = html.replace(CHARSET_META, CHARSET_META + f'\n  <meta http-equiv="Content-Security-Policy" content="{meta_policy}">', 1)
     dist = root / 'dist'
     dist.mkdir(exist_ok=True)
     target = dist / 'index.html'

@@ -318,8 +318,8 @@ export const TRACK_34_FIGURES = {
     lesson: '34.7-shipping-as-one-file',
     title: { en: 'What makes up the 15.66 MB single HTML file', 'pt-br': 'O que compõe o arquivo HTML único de 15,66 MB' },
     caption: {
-      en: 'Five verified vendor binaries total 11.66 MB raw; base64 encoding expands every 3 bytes into 4 ASCII characters (+33.3%), bringing dist/index.html to 15,658,412 bytes while keeping model weights separate.',
-      'pt-br': 'Cinco binários verificados somam 11,66 MB brutos; a codificação base64 expande cada 3 bytes em 4 caracteres ASCII (+33,3%), levando dist/index.html a 15.658.412 bytes mantendo os pesos do modelo separados.',
+      en: 'Five verified vendor binaries total 11.66 MB raw; base64 encoding expands every 3 bytes into 4 ASCII characters (+33.3%), bringing dist/index.html to 15,658,390 bytes while keeping model weights separate.',
+      'pt-br': 'Cinco binários verificados somam 11,66 MB brutos; a codificação base64 expande cada 3 bytes em 4 caracteres ASCII (+33,3%), levando dist/index.html a 15.658.390 bytes mantendo os pesos do modelo separados.',
     },
     body: {
       kind: 'stack',

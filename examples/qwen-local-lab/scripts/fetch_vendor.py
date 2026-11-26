@@ -48,7 +48,7 @@ def load_lock(lock_path):
             raise VendorError(f'{label}: integrity must be an npm sha512 value')
         for entry in package['files']:
             output = entry['output']
-            if PurePosixPath(output).name != output or output in outputs or output in ('.', '..'):
+            if PurePosixPath(output).name != output or '\\' in output or output in outputs or output in ('.', '..'):
                 raise VendorError(f'{output}: output must be a unique plain file name')
             if not safe_relative(entry['path']) or not safe_relative(entry.get('patch', 'x')):
                 raise VendorError(f'{output}: archive and patch paths must be relative, without ..')

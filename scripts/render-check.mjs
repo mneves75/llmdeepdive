@@ -419,12 +419,14 @@ const MOTION_ROUTES = {
   flow: '/lessons/1-text-to-tensors/1.3-bpe-step-by-step/',
   stack: '/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/',
   grid: '/lessons/4-transformer/4.4-causal-masking/',
+  plot: '/lessons/0-orientation-and-foundations/0.3-the-probability-you-need/',
   singleGrid: '/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/',
 }
 const MOTION_DEFECTS = {
   flow: '.fig-flow__step { animation: none !important; }',
   stack: '.fig-stack__bar { animation-duration: 3s !important; }',
   grid: '.fig-grid tbody tr { opacity: 0.5 !important; }',
+  plot: '.fig-plot__svg { animation: none !important; }',
   singleGrid: '.fig-grid tbody tr { animation-timeline: view() !important; }',
   reduced: '@media (prefers-reduced-motion: reduce) { .fig-flow__step { animation: fig-step 1s both !important; } }',
   print: '@media print { .fig-flow__step { animation: fig-step 1s both !important; } .figure .figure__frame .figure__panel:nth-child(2) { display: none !important; } }',
@@ -450,7 +452,7 @@ async function figureMotionFailures(browser, name, base) {
   const failures = []
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   try {
-    for (const kind of ['flow', 'stack', 'grid']) {
+    for (const kind of ['flow', 'stack', 'grid', 'plot']) {
       const route = MOTION_ROUTES[kind]
       await page.goto(base + route, { waitUntil: 'load' })
       if (selfTest) await injectStyle(page, MOTION_DEFECTS[kind])
@@ -463,6 +465,10 @@ async function figureMotionFailures(browser, name, base) {
       await page.waitForTimeout(Math.min(played.longest, 3000) + 250)
       const settled = await frame.evaluate(readStage, STAGE)
       if (settled.faded) failures.push(`${name} ${route}: a stepped ${kind} ended with ${settled.faded} element(s) not fully opaque`)
+      // Clicking the already-selected step must not retrigger motion.
+      await frame.locator('.figure__step-label').nth(1).click()
+      const reclicked = await frame.evaluate(readStage, STAGE)
+      if (reclicked.running > 0) failures.push(`${name} ${route}: re-clicking active step in ${kind} retriggered motion`)
     }
 
     const route = MOTION_ROUTES.singleGrid
@@ -504,6 +510,10 @@ async function figureMotionFailures(browser, name, base) {
     if (count) failures.push(`${name} ${MOTION_ROUTES.flow} @print: figure animations run (${count})`)
     const hidden = await print.evaluate(() => [...document.querySelectorAll('.figure__panel')].filter((panel) => getComputedStyle(panel).display === 'none').length)
     if (hidden) failures.push(`${name} ${MOTION_ROUTES.flow} @print: steps hidden (${hidden})`)
+    await print.goto(base + MOTION_ROUTES.plot, { waitUntil: 'load' })
+    await settle(print)
+    const hiddenTables = await print.evaluate(() => [...document.querySelectorAll('.fig-data table')].filter((table) => table.getBoundingClientRect().height === 0).length)
+    if (hiddenTables) failures.push(`${name} ${MOTION_ROUTES.plot} @print: plot data tables hidden (${hiddenTables})`)
   } catch (error) {
     failures.push(`${name} figure motion @print: ${error.message}`)
   } finally {
