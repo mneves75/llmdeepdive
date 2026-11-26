@@ -12,7 +12,9 @@
  * region semantics disagree with whether they overflow, then checks that inline
  * maths sits exactly where unstyled maths would. On /explore/ it leaves the
  * page while the 3D stage is still loading, which must not be reported as a
- * failure, and breaks the stage chunk, which must be.
+ * failure, and breaks the stage chunk, which must be. Figure motion must replay
+ * on every step change within 1.5s, end fully opaque, follow the page on a
+ * single-panel grid, and stay off under reduced motion and in print.
  *
  * The site uses system fonts only, so layout depends on what a visitor has
  * installed: CI's Linux fonts overflowed a pt-BR heading that condensed Avenir
@@ -401,8 +403,111 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
     if (explorer.covered) explorerEngines.push(name)
     failures.push(...await mechanicsAndStripFailures(browser, name, base))
     failures.push(...await learningStudioFailures(browser, name, base))
+    failures.push(...await figureMotionFailures(browser, name, base))
   } finally {
     await browser.close()
+  }
+  return failures
+}
+
+// Figure motion. A stepped figure replays a short animation on the document
+// clock whenever a step is picked; a single-panel grid fades its rows in on a
+// view timeline. Two defects here were invisible to every other gate: print
+// captured a first frame at opacity 0, and grid rows bound by view() to their
+// own scroll box sat at half opacity for good.
+const MOTION_ROUTES = {
+  flow: '/lessons/1-text-to-tensors/1.3-bpe-step-by-step/',
+  stack: '/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/',
+  grid: '/lessons/4-transformer/4.4-causal-masking/',
+  singleGrid: '/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/',
+}
+const MOTION_DEFECTS = {
+  flow: '.fig-flow__step { animation: none !important; }',
+  stack: '.fig-stack__bar { animation-duration: 3s !important; }',
+  grid: '.fig-grid tbody tr { opacity: 0.5 !important; }',
+  singleGrid: '.fig-grid tbody tr { animation-timeline: view() !important; }',
+  reduced: '@media (prefers-reduced-motion: reduce) { .fig-flow__step { animation: fig-step 1s both !important; } }',
+  print: '@media print { .fig-flow__step { animation: fig-step 1s both !important; } .figure .figure__frame .figure__panel:nth-child(2) { display: none !important; } }',
+}
+const STAGE = '.fig-flow__step, .fig-grid tbody tr, .fig-stack__bar, .fig-plot__svg'
+const MAX_STEP_MOTION_MS = 1500
+const scrollLinkedEngines = []
+
+function readStage(frame, selector) {
+  const shown = [...frame.querySelectorAll('.figure__panel')].filter((panel) => getComputedStyle(panel).display !== 'none')
+  const stage = shown.flatMap((panel) => [...panel.querySelectorAll(selector)])
+  const animations = stage.flatMap((element) => element.getAnimations())
+  return {
+    running: animations.filter((animation) => animation.playState === 'running' && animation.timeline === document.timeline).length,
+    longest: Math.max(0, ...animations.map((animation) => Number(animation.effect?.getComputedTiming().endTime) || 0)),
+    faded: stage.filter((element) => getComputedStyle(element).opacity !== '1').length,
+  }
+}
+
+const allAnimations = (page) => page.evaluate((selector) => [...document.querySelectorAll(selector)].flatMap((element) => element.getAnimations()).length, STAGE)
+
+async function figureMotionFailures(browser, name, base) {
+  const failures = []
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  try {
+    for (const kind of ['flow', 'stack', 'grid']) {
+      const route = MOTION_ROUTES[kind]
+      await page.goto(base + route, { waitUntil: 'load' })
+      if (selfTest) await injectStyle(page, MOTION_DEFECTS[kind])
+      const frame = page.locator('.figure__frame[data-stepped]').filter({ has: page.locator(`.fig-${kind}`) }).first()
+      await frame.scrollIntoViewIfNeeded()
+      await frame.locator('.figure__step-label').nth(1).click()
+      const played = await frame.evaluate(readStage, STAGE)
+      if (played.running === 0) failures.push(`${name} ${route}: a stepped ${kind} did not replay on a step change`)
+      if (played.longest > MAX_STEP_MOTION_MS) failures.push(`${name} ${route}: stepped ${kind} motion lasts ${Math.round(played.longest)}ms, over ${MAX_STEP_MOTION_MS}ms`)
+      await page.waitForTimeout(Math.min(played.longest, 3000) + 250)
+      const settled = await frame.evaluate(readStage, STAGE)
+      if (settled.faded) failures.push(`${name} ${route}: a stepped ${kind} ended with ${settled.faded} element(s) not fully opaque`)
+    }
+
+    const route = MOTION_ROUTES.singleGrid
+    await page.goto(base + route, { waitUntil: 'load' })
+    if (await page.evaluate(() => CSS.supports('animation-timeline', 'view()'))) scrollLinkedEngines.push(name)
+    if (selfTest) await injectStyle(page, MOTION_DEFECTS.singleGrid)
+    const grid = page.locator('.figure__frame:not([data-stepped])').filter({ has: page.locator('.fig-grid') }).first()
+    await grid.evaluate((element) => element.scrollIntoView({ block: 'center' }))
+    await page.waitForTimeout(300)
+    await settle(page)
+    const faded = await grid.evaluate((element) => [...element.querySelectorAll('.fig-grid tbody tr')].filter((row) => getComputedStyle(row).opacity !== '1').length)
+    if (faded) failures.push(`${name} ${route}: a single-panel grid in view has ${faded} row(s) not fully opaque`)
+  } catch (error) {
+    failures.push(`${name} figure motion: ${error.message}`)
+  } finally {
+    await page.close()
+  }
+
+  const reduced = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' })
+  try {
+    await reduced.goto(base + MOTION_ROUTES.flow, { waitUntil: 'load' })
+    if (selfTest) await injectStyle(reduced, MOTION_DEFECTS.reduced)
+    await reduced.locator('.figure__frame[data-stepped] .figure__step-label').nth(1).click()
+    const count = await allAnimations(reduced)
+    if (count) failures.push(`${name} ${MOTION_ROUTES.flow} @reduced-motion: figure animations run (${count})`)
+  } catch (error) {
+    failures.push(`${name} figure motion @reduced-motion: ${error.message}`)
+  } finally {
+    await reduced.close()
+  }
+
+  const print = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  try {
+    await print.emulateMedia({ media: 'print' })
+    await print.goto(base + MOTION_ROUTES.flow, { waitUntil: 'load' })
+    if (selfTest) await injectStyle(print, MOTION_DEFECTS.print)
+    await settle(print)
+    const count = await allAnimations(print)
+    if (count) failures.push(`${name} ${MOTION_ROUTES.flow} @print: figure animations run (${count})`)
+    const hidden = await print.evaluate(() => [...document.querySelectorAll('.figure__panel')].filter((panel) => getComputedStyle(panel).display === 'none').length)
+    if (hidden) failures.push(`${name} ${MOTION_ROUTES.flow} @print: steps hidden (${hidden})`)
+  } catch (error) {
+    failures.push(`${name} figure motion @print: ${error.message}`)
+  } finally {
+    await print.close()
   }
   return failures
 }
@@ -614,7 +719,7 @@ try {
   if (unknown.length) throw new Error('unknown engine(s): ' + unknown.join(', '))
   const allRoutes = routes()
   if (allRoutes.length === 0) throw new Error('dist/ has no routes; run pnpm build first')
-  for (const route of BASELINE_ROUTES) if (!allRoutes.includes(route)) throw new Error('baseline route missing from dist/: ' + route)
+  for (const route of [...BASELINE_ROUTES, ...Object.values(MOTION_ROUTES)]) if (!allRoutes.includes(route)) throw new Error('fixed route missing from dist/: ' + route)
   const checked = selfTest ? allRoutes.slice(0, 1) : allRoutes
 
   const failures = []
@@ -623,7 +728,8 @@ try {
   // An explorer check that ran nowhere would pass vacuously.
   if (explorerEngines.length === 0) failures.push('explorer: no engine had WebGL, so the stage lifecycle went unchecked')
   const explorerNote = `explorer lifecycle in ${explorerEngines.join(', ') || 'no engine'}` +
-    (explorerRestoreUncovered.length ? ` (restore replay not coverable in ${explorerRestoreUncovered.join(', ')}: a reload keeps the failed module)` : '')
+    (explorerRestoreUncovered.length ? ` (restore replay not coverable in ${explorerRestoreUncovered.join(', ')}: a reload keeps the failed module)` : '') +
+    `; scroll-linked figure motion in ${scrollLinkedEngines.join(', ') || 'no engine'}`
 
   if (selfTest) {
     const expected = engines.flatMap((engine) => [
@@ -637,6 +743,13 @@ try {
       ...BASELINE_ROUTES.map((route) => `${engine} ${route} @1280: inline maths moves`),
       `${engine} / @no-js: mechanics stage 1 visible panels`,
       `${engine} /explore/: strip .index__list did not reach its final item cleanly at 320px`,
+      `${engine} ${MOTION_ROUTES.flow}: a stepped flow did not replay on a step change`,
+      `${engine} ${MOTION_ROUTES.stack}: stepped stack motion lasts`,
+      `${engine} ${MOTION_ROUTES.grid}: a stepped grid ended with`,
+      ...(scrollLinkedEngines.includes(engine) ? [`${engine} ${MOTION_ROUTES.singleGrid}: a single-panel grid in view has`] : []),
+      `${engine} ${MOTION_ROUTES.flow} @reduced-motion: figure animations run`,
+      `${engine} ${MOTION_ROUTES.flow} @print: figure animations run`,
+      `${engine} ${MOTION_ROUTES.flow} @print: steps hidden`,
       ...(explorerEngines.includes(engine)
         ? [
             `${engine} /explore/: the stage was not still loading at the click`,

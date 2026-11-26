@@ -10,12 +10,20 @@
  * cheapest place in the pipeline to catch it.
  */
 import type { Figure, FigureRegistry } from './types'
+import { TRACK_0_FIGURES } from './0-orientation-and-foundations'
 import { TRACK_1_FIGURES } from './1-text-to-tensors'
+import { TRACK_2_FIGURES } from './2-neural-network-fundamentals'
+import { TRACK_3_FIGURES } from './3-sequence-models'
 import { TRACK_4_FIGURES } from './4-transformer'
 import { TRACK_5_FIGURES } from './5-pretraining-at-scale'
+import { TRACK_6_FIGURES } from './6-post-training-and-alignment'
 import { TRACK_7_FIGURES } from './7-inference-and-efficiency'
+import { TRACK_8_FIGURES } from './8-building-and-serving-stacks'
 import { TRACK_9_FIGURES } from './9-hardware-and-infrastructure'
 import { TRACK_10_FIGURES } from './10-video-and-world-models'
+import { TRACK_11_FIGURES } from './11-mac-studio-ultra-and-mlx'
+import { TRACK_12_FIGURES } from './12-dgx-and-cuda'
+import { TRACK_13_FIGURES } from './13-llama-cpp-in-depth'
 import { TRACK_14_FIGURES } from './14-agent-architecture-and-state'
 import { TRACK_15_FIGURES } from './15-tool-contracts-and-mcp'
 import { TRACK_16_FIGURES } from './16-agent-security-and-guardrails'
@@ -36,14 +44,23 @@ import { TRACK_30_FIGURES } from './30-rag-security-privacy-and-governance'
 import { TRACK_31_FIGURES } from './31-ai-system-design-and-caching'
 import { TRACK_32_FIGURES } from './32-llmops-and-managed-platforms'
 import { TRACK_33_FIGURES } from './33-multimodal-voice-and-system-defense'
+import { TRACK_34_FIGURES } from './34-a-model-in-your-browser'
 
 export const FIGURES = {
+  ...TRACK_0_FIGURES,
   ...TRACK_1_FIGURES,
+  ...TRACK_2_FIGURES,
+  ...TRACK_3_FIGURES,
   ...TRACK_4_FIGURES,
   ...TRACK_5_FIGURES,
+  ...TRACK_6_FIGURES,
   ...TRACK_7_FIGURES,
+  ...TRACK_8_FIGURES,
   ...TRACK_9_FIGURES,
   ...TRACK_10_FIGURES,
+  ...TRACK_11_FIGURES,
+  ...TRACK_12_FIGURES,
+  ...TRACK_13_FIGURES,
   ...TRACK_14_FIGURES,
   ...TRACK_15_FIGURES,
   ...TRACK_16_FIGURES,
@@ -64,6 +81,7 @@ export const FIGURES = {
   ...TRACK_31_FIGURES,
   ...TRACK_32_FIGURES,
   ...TRACK_33_FIGURES,
+  ...TRACK_34_FIGURES,
 } as const satisfies FigureRegistry
 
 export type FigureId = keyof typeof FIGURES

@@ -139,7 +139,9 @@ Measurements (34.8) are environment-tested runs on this Mac, recorded with brows
    - the motion primitive (time-based replay inside steppers, scroll-linked entrances only for single panels, print reset), checked on one bilingual page in three engines at 320px: switching steps A→B→A, a deep link, reduced motion, forced colours, print, and screen-reader output;
    - the figure-coverage gate is added in the commit that reaches 100%, so no exemption list ever exists;
    - CSS headroom under the 72 KB budget.
-2. **Pilot**: track 0, both locales, end to end. An independent read checks that each figure is true. Then adjust the brief.
+2. **Pilot**: track 0, both locales, end to end. An independent read checks that each figure is true and names the passage it replaced. Then adjust the brief.
+   - **Kill criterion for the 100% rule.** If the reader finds a track-0 figure that replaces no specific passage, the rule becomes "every lesson triaged; a figure wherever a passage teaches a process or a structure". Acceptance 1 and `docs/WRITING.md` change before any lane starts, and the coverage gate checks the triage ledger instead of figure counts.
+   - The pilot uses one stepped plot (where a curve changes between steps), or the stepped-plot motion rule is deleted.
 3. **Lab**:
    - vendor the lab source, the fetch-and-verify script and its tests;
    - fix the lab's security findings (pin and hash `model_lib`, full SHA-256 of the GGUF, a CSP in its headers, the GPU `top_k` mismatch);
