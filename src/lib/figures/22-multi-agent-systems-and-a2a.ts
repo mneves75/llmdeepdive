@@ -45,15 +45,15 @@ export const TRACK_22_FIGURES = {
       {
         label: { en: 'Team (4 invoices)', 'pt-br': 'Equipe (4 faturas)' },
         caption: {
-          en: 'Four workers run side by side after the planner, each reading only the plan and one message. Total: 6 calls, critical path 3, 422 estimated input tokens (about 0.72× baseline cost).',
-          'pt-br': 'Quatro workers rodam lado a lado após o planejador, cada um lendo só o plano e uma mensagem. Total: 6 chamadas, caminho crítico 3, 422 tokens de entrada estimados (cerca de 0,72× o custo do baseline).',
+          en: 'Four independent workers follow the planner, each reading only the plan and one message (giving dependency depth 3, though the test fixture calls them sequentially). Total: 6 calls, 422 estimated input tokens (about 0.72× baseline cost).',
+          'pt-br': 'Quatro workers independentes seguem o planejador, cada um lendo só o plano e uma mensagem (profundidade de dependência 3, embora a fixture de teste os chame em sequência). Total: 6 chamadas, 422 tokens de entrada estimados (cerca de 0,72× o custo do baseline).',
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Planner (step 1)', 'pt-br': 'Planejador (passo 1)' }, detail: { en: 'lists PO-1001 to PO-1004', 'pt-br': 'lista de PO-1001 a PO-1004' }, pigment: 'muted' },
-            { label: { en: '4 parallel workers (step 2)', 'pt-br': '4 workers em paralelo (passo 2)' }, detail: { en: 'each reads plan + 1 invoice only', 'pt-br': 'cada um lê só o plano + 1 fatura' }, pigment: 'accent' },
-            { label: { en: 'Synthesizer (step 3)', 'pt-br': 'Sintetizador (passo 3)' }, detail: { en: 'merges 4 lines · 422 in · path 3', 'pt-br': 'junta 4 linhas · 422 entr. · caminho 3' }, pigment: 'success' },
+            { label: { en: 'Planner (depth 1)', 'pt-br': 'Planejador (nível 1)' }, detail: { en: 'lists PO-1001 to PO-1004', 'pt-br': 'lista de PO-1001 a PO-1004' }, pigment: 'muted' },
+            { label: { en: '4 independent workers (depth 2)', 'pt-br': '4 workers independentes (nível 2)' }, detail: { en: 'each reads plan + 1 invoice only', 'pt-br': 'cada um lê só o plano + 1 fatura' }, pigment: 'accent' },
+            { label: { en: 'Synthesizer (depth 3)', 'pt-br': 'Sintetizador (nível 3)' }, detail: { en: 'merges 4 lines · 422 in · path 3', 'pt-br': 'junta 4 linhas · 422 entr. · caminho 3' }, pigment: 'success' },
           ],
         },
       },
@@ -283,15 +283,15 @@ export const TRACK_22_FIGURES = {
       'pt-br': 'Os agentes propõem; o controlador barra cada etapa',
     },
     caption: {
-      en: 'Each role holds one grant in ROLE_GRANTS and never hands raw text to the next role. Only controller-verified claims enter verified.csv, only the sandbox runs code, and acceptance requires both expected_report and a majority of valid reviews.',
-      'pt-br': 'Cada papel tem uma concessão em ROLE_GRANTS e nunca passa texto cru ao papel seguinte. Só afirmações verificadas pelo controlador entram em verified.csv, só o sandbox roda código, e a aceitação exige expected_report e maioria de revisões válidas.',
+      en: 'Each role holds one grant in ROLE_GRANTS. Only controller-verified claims enter verified.csv, only the sandbox runs code, reviewers see the coder’s report as untrusted data, and acceptance requires expected_report plus a majority of all reviews (invalid reviews count in the denominator).',
+      'pt-br': 'Cada papel tem uma concessão em ROLE_GRANTS. Só afirmações verificadas pelo controlador entram em verified.csv, só o sandbox roda código, revisores recebem o relatório do programador como dado não confiável, e a aceitação exige expected_report e maioria de todas as revisões (inválidas entram no denominador).',
     },
     steps: [
       {
         label: { en: 'Honest run', 'pt-br': 'Execução honesta' },
         caption: {
           en: 'Researcher looks up PO-1002 and cites the record; controller writes verified.csv (1134.00); Coder writes a script that runs in the sandbox; controller recomputes expected_report and Reviewer approves.',
-          'pt-br': 'O pesquisador consulta PO-1002 e cita o registro; o controlador escreve verified.csv (1134.00); o programador gera o script no sandbox; o controlador recalcula expected_report e o revisor aprova.',
+          'pt-br': 'O pesquisador consulta PO-1002 e cita o registro; o controlador escreve verified.csv (1134.00); o programador escreve um script que roda no sandbox; o controlador recalcula expected_report e o revisor aprova.',
         },
         body: {
           kind: 'flow',

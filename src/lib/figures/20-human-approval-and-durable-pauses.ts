@@ -77,7 +77,7 @@ export const TRACK_20_FIGURES = {
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Unbounded action arrives', 'pt-br': 'Chega ação sem regra' }, detail: { en: 'pay_invoice, email_supplier, or EUR draft', 'pt-br': 'pay_invoice, email_supplier ou rascunho em EUR' }, pigment: 'muted' },
+            { label: { en: 'Unbounded action arrives', 'pt-br': 'Chega ação sem regra' }, detail: { en: 'pay_invoice, email_supplier, or submit_invoice in EUR', 'pt-br': 'pay_invoice, email_supplier ou submit_invoice em EUR' }, pigment: 'muted' },
             { label: { en: 'Missing table entry or amount', 'pt-br': 'Falta entrada na tabela ou valor' }, detail: { en: 'no effect class, no draft, or no currency limit', 'pt-br': 'sem classe de efeito, sem rascunho ou sem limite de moeda' }, pigment: 'caution' },
             { label: { en: 'Held by default', 'pt-br': 'Retida por padrão' }, detail: { en: 'Need(True) · never fails open', 'pt-br': 'Need(True) · nunca falha aberta' }, pigment: 'danger' },
           ],
