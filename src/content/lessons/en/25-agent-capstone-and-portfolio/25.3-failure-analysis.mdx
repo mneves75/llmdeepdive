@@ -34,20 +34,20 @@ citations:
     authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
     year: 2026
     url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-The benchmark of [lesson 25.2](/lessons/25-agent-capstone-and-portfolio/25.2-a-reproducible-benchmark/) failed six runs: three trials each of two scenarios. A number says that something went wrong. It does not say what, why, or whether it will happen again. This lesson reconstructs a failed run from the only evidence that survives it, its event log, and turns the reconstruction into a postmortem that another person can review without seeing a secret or a line of anyone's raw data.
+The benchmark of [lesson 25.2](/lessons/25-agent-capstone-and-portfolio/25.2-a-reproducible-benchmark/) failed six runs: three trials each of two scenarios. A number says that something went wrong. It does not say what, why, or whether it will happen again. This lesson reconstructs a failed run from the only evidence that survives it, its *event log* (ordered record of system steps), and turns the reconstruction into a *postmortem* (a written incident report) that another person can review without seeing a secret or a line of anyone's raw data.
 
 ## What does the log hold?
 
-Every run records a list of `ExecutionEvent`s ([lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/)). Each event has a sequence number `seq`, a kind such as `policy.denied`, a time `at` from the run's injected clock, a small `data` dictionary and a `parent`: the `seq` of the event that caused it. The parent links turn a flat list into a chain of causes.
+Every run records a list of `ExecutionEvent` records ([lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/)). Each event has a sequence number `seq`, a kind such as `policy.denied`, a timestamp `at` from the run's injected clock, a small `data` *dictionary* (a key-value table of fields) and a `parent`: the `seq` of the event that caused it. The parent links turn a flat list into a chain of causes.
 
-What the log leaves out matters as much. The first event, `run.received`, records the fixture name and the SHA-256 of the supplier's message, never its text. A hash identifies the exact input, so two people can confirm they analysed the same message, but nobody can read the message back from the log. The model's prompts are not in the log either. Events record what the controller decided and why.
+What the log leaves out matters as much. The first event, `run.received`, records the test fixture name and the *SHA-256* (cryptographic fingerprint) of the supplier's message, never its text. A hash identifies the exact input, so two people can confirm they analysed the same message, but nobody can read the message back from the log. The model's prompts are not in the log either. Events record what the controller decided and why.
 
 ## Reading the timeline
 
-`timeline` prints the log in order, one line per event, with each string scrubbed:
+The function `timeline` below formats the event log into one readable line per event: it measures seconds elapsed since the first event, prints each event's sequence number, kind, and `<- #parent` cause link, and removes secrets from every field value before returning the lines:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/capstone/analysis.py
@@ -65,7 +65,7 @@ def timeline(events: Sequence[ExecutionEvent], secrets: tuple[str, ...] = ()) ->
     return lines
 ```
 
-For the first trial of the `memory-loss-po1001` scenario, with suite seed 0, it prints these lines (the hash shortened here):
+Running `timeline` on the first trial of the `memory-loss-po1001` scenario (with suite seed 0) produces these six lines, with the SHA-256 hash shortened for display:
 
 ```text
 +0.000s #0 run.received message=supplier_messages/benign.txt sha256=1ac0a35e…
@@ -80,11 +80,15 @@ The offsets are simulated time, so they show order and rough proportion, not a m
 
 ## From the first failure to the cause
 
-Two questions organise the analysis. The first is *where did the run first depart from normal?* `first_failure` returns the first event of a failure kind: here `#2 policy.denied`, the gate refusing a draft of USD 5,000.00 for an order whose record says 40 × USD 12.50 = USD 500.00. The second is *how did that lead to the verdict?* `causal_chain` walks parents back from the last event. From `#5 run.failed` it goes to `#4 draft.missing`, then `#3 run.finished`, then `#0 run.received`. The run ended because the model gave up after its only draft was refused.
+Two questions organise the analysis: *where did the run first depart from normal?* and *how did that lead to the verdict?* Step through both directions on `memory-loss-po1001` below:
 
-These answers separate three things a postmortem must not confuse. The *symptom* is the verdict, a run that sent nothing. The *first failure* is the refused draft. The *root cause* is why the draft was wrong: the scenario models an assistant that lost the unit price from its context and guessed a total. The gate is not the cause; it is the reason this failure was safe.
+<Figure id="t25-log-to-postmortem" />
 
-Google's SRE book describes a postmortem as a written record of an incident, its impact, the actions taken to mitigate or resolve it, the root causes and the follow-up actions to prevent recurrence. It also asks that the record be *blameless*: it looks for the systemic reasons someone had incomplete or wrong information, instead of blaming whoever was holding it. For an agent, that means "the model was careless" is not a root cause; "the unit price was not pinned in the run state, so the model had to recall it" is.
+Both functions answer different questions because the audit events from the model loop (`#1`, `#2`, `#3`) all point back to `#0 run.received`. `first_failure` catches `#2 policy.denied`, where the gate rejected USD 5,000.00 against a purchase order of 40 × USD 12.50 = USD 500.00, while `causal_chain` traces the verdict back from `#5` to show the model stopped after its only draft was refused.
+
+Those two readings separate three things a postmortem must not confuse: the *symptom* (`#5`, a run that sent nothing), the *first failure* (`#2`, the refused draft), and the *root cause* (the scenario models an assistant that lost the unit price from its context and guessed a total). The policy gate is not the cause; it is why this failure remained safe.
+
+Google's *Site Reliability Engineering* (*SRE*) book describes a postmortem as a written record of an incident, its impact, the actions taken to mitigate or resolve it, the root causes and the follow-up actions to prevent recurrence. It also asks that the record be *blameless*: it looks for the systemic reasons someone had incomplete or wrong information, instead of blaming whoever was holding it. For an agent, that means "the model was careless" is not a root cause; "the unit price was not pinned in the run state, so the model had to recall it" is.
 
 ## A counterfactual someone can check
 
@@ -92,7 +96,7 @@ A *counterfactual* says what change would have prevented the failure. It is only
 
 ## Keeping secrets and raw input out
 
-Postmortems are shared widely; that is their point. The SRE chapter notes that at Google even internal postmortems never include information that might identify an end user. Two protections apply here. Every string in the timeline passes through lesson 18.3's `scrub`, which removes the run's known secrets, and lesson 21.2's `redact`, which removes common shapes such as a bearer token or `api_key=...`. A test plants a synthetic token in a failure reason and a URL and checks that it is gone while the word `rejected` survives. Without that second check, a redactor that deleted the whole line would also pass.
+Postmortems are shared widely; that is their point. The SRE chapter notes that at Google even internal postmortems never include information that might identify an end user. Two protections apply here. Every string in the timeline passes through lesson 18.3's `scrub`, which removes the run's known secrets, and lesson 21.2's `redact`, which masks common secret patterns such as a *bearer token* (a secret credential string granting API access) or `api_key=...`. A test plants a *synthetic* (fake test) token in a failure reason and a *URL* (web address) and checks that it is gone while the word `rejected` survives. Without that second check, a *redactor* (pattern masker) that deleted the whole line would also pass.
 
 `review_postmortem` checks the human half. Every field must be filled, every cited event must exist in the log, no known secret may appear anywhere, and no line of 20 or more characters from the raw input may be quoted. A postmortem that quotes the supplier's "Payment terms are net 30 to the account already on file." is flagged; describing the message and citing its hash is the fix.
 

@@ -34,20 +34,20 @@ citations:
     authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
     year: 2026
     url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-O benchmark da [aula 25.2](/pt-br/lessons/25-agent-capstone-and-portfolio/25.2-a-reproducible-benchmark/) teve seis execuções com falha: três tentativas de cada um de dois cenários. Um número diz que algo deu errado. Não diz o quê, nem por quê, nem se vai acontecer de novo. Esta aula reconstrói uma execução que falhou a partir da única evidência que sobrevive a ela, o log de eventos, e transforma a reconstrução num *postmortem* (o relato escrito de um incidente) que outra pessoa consiga revisar sem ver um segredo nem uma linha dos dados brutos de ninguém.
+O benchmark da [aula 25.2](/pt-br/lessons/25-agent-capstone-and-portfolio/25.2-a-reproducible-benchmark/) teve seis execuções com falha: três tentativas de cada um de dois cenários. Um número diz que algo deu errado. Não diz o quê, nem por quê, nem se vai acontecer de novo. Esta aula reconstrói uma execução que falhou a partir da única evidência que sobrevive a ela, o *log de eventos* (o registro ordenado das etapas do sistema), e transforma a reconstrução num *postmortem* (o relato escrito de um incidente) que outra pessoa consiga revisar sem ver um segredo nem uma linha dos dados brutos de ninguém.
 
 ## O que o log guarda?
 
-Toda execução registra uma lista de `ExecutionEvent`s ([aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/)). Cada evento tem um número de sequência `seq`, um tipo como `policy.denied`, um instante `at` vindo do relógio injetado da execução, um pequeno dicionário `data` e um `parent`: o `seq` do evento que o causou. Os vínculos de `parent` transformam uma lista plana numa cadeia de causas.
+Toda execução registra uma lista de registros `ExecutionEvent` ([aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/)). Cada evento tem um número de sequência `seq`, um tipo como `policy.denied`, um instante `at` vindo do relógio injetado da execução, um pequeno *dicionário* (uma tabela de pares chave-valor) `data` e um `parent`: o `seq` do evento que o causou. Os vínculos de `parent` transformam uma lista plana numa cadeia de causas.
 
-O que o log deixa de fora importa tanto quanto isso. O primeiro evento, `run.received`, registra o nome da fixture e o SHA-256 da mensagem do fornecedor, nunca o texto dela. Um hash identifica a entrada exata, então duas pessoas conseguem confirmar que analisaram a mesma mensagem, mas ninguém consegue ler a mensagem de volta a partir do log. Os prompts do modelo também não estão no log. Os eventos registram o que o controlador decidiu e por quê.
+O que o log deixa de fora importa tanto quanto isso. O primeiro evento, `run.received`, registra o nome da fixture de teste e o *SHA-256* (a impressão digital criptográfica) da mensagem do fornecedor, nunca o texto dela. Um hash identifica a entrada exata, então duas pessoas conseguem confirmar que analisaram a mesma mensagem, mas ninguém consegue ler a mensagem de volta a partir do log. Os prompts do modelo também não estão no log. Os eventos registram o que o controlador decidiu e por quê.
 
 ## Lendo a linha do tempo
 
-`timeline` imprime o log em ordem, uma linha por evento, com cada texto limpo:
+A função `timeline` abaixo formata o log de eventos em uma linha legível por evento: mede os segundos decorridos desde o primeiro evento, imprime o número de sequência, o tipo e o vínculo de causa `<- #parent`, e limpa segredos de cada campo antes de devolver a lista de linhas:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/capstone/analysis.py
@@ -65,7 +65,7 @@ def timeline(events: Sequence[ExecutionEvent], secrets: tuple[str, ...] = ()) ->
     return lines
 ```
 
-Para a primeira tentativa do cenário `memory-loss-po1001`, com semente 0 na bateria, ela imprime estas linhas (com o hash encurtado aqui):
+Rodar `timeline` na primeira tentativa do cenário `memory-loss-po1001` (com semente 0 na bateria) produz estas seis linhas, com o hash SHA-256 encurtado para exibição:
 
 ```text
 +0.000s #0 run.received message=supplier_messages/benign.txt sha256=1ac0a35e…
@@ -80,11 +80,15 @@ Os deslocamentos são tempo simulado, então mostram ordem e proporção aproxim
 
 ## Do primeiro erro à causa
 
-Duas perguntas organizam a análise. A primeira é *onde a execução saiu do normal pela primeira vez?* `first_failure` devolve o primeiro evento de um tipo de falha: aqui `#2 policy.denied`, o gate recusando um rascunho de USD 5.000,00 para um pedido cujo registro diz 40 × USD 12,50 = USD 500,00. A segunda é *como isso levou ao veredito?* `causal_chain` segue os `parent` para trás a partir do último evento. De `#5 run.failed` vai para `#4 draft.missing`, depois `#3 run.finished`, depois `#0 run.received`. A execução terminou porque o modelo desistiu depois que seu único rascunho foi recusado.
+Duas perguntas organizam a análise: *onde a execução saiu do normal pela primeira vez?* e *como isso levou ao veredito?* Percorra as duas direções em `memory-loss-po1001` abaixo:
 
-Essas respostas separam três coisas que um postmortem não pode confundir. O *sintoma* é o veredito, uma execução que não enviou nada. A *primeira falha* é o rascunho recusado. A *causa raiz* é o motivo de o rascunho estar errado: o cenário modela um assistente que perdeu o preço unitário do contexto e chutou um total. O gate não é a causa; é o motivo de essa falha ter sido segura.
+<Figure id="t25-log-to-postmortem" />
 
-O livro de SRE do Google descreve um postmortem como o registro escrito de um incidente, do impacto, das ações tomadas para mitigá-lo ou resolvê-lo, das causas raiz e das ações de acompanhamento para evitar que se repita. Também pede que o registro seja *sem culpados*: procura os motivos sistêmicos que deixaram alguém com informação incompleta ou errada, em vez de culpar quem estava com ela. Para um agente, isso quer dizer que "o modelo foi descuidado" não é causa raiz; "o preço unitário não estava fixado no estado da execução, então o modelo precisou lembrá-lo" é.
+As duas funções respondem a perguntas diferentes porque os eventos de auditoria do laço do modelo (`#1`, `#2`, `#3`) apontam todos para `#0 run.received`. `first_failure` pega `#2 policy.denied`, onde o gate rejeitou USD 5.000,00 para um pedido de 40 × USD 12,50 = USD 500,00, enquanto `causal_chain` volta a partir de `#5` para mostrar que o modelo desistiu depois que seu único rascunho foi recusado.
+
+Essas duas leituras separam três coisas que um postmortem não pode confundir: o *sintoma* (`#5`, uma execução que não enviou nada), a *primeira falha* (`#2`, o rascunho recusado) e a *causa raiz* (o cenário modela um assistente que perdeu o preço unitário do contexto e chutou um total). O gate de política não é a causa; é o motivo de essa falha ter continuado segura.
+
+O livro de *Site Reliability Engineering* (*SRE*, engenharia de confiabilidade de sistemas) do Google descreve um postmortem como o registro escrito de um incidente, do impacto, das ações tomadas para mitigá-lo ou resolvê-lo, das causas raiz e das ações de acompanhamento para evitar que se repita. Também pede que o registro seja *sem culpados*: procura os motivos sistêmicos que deixaram alguém com informação incompleta ou errada, em vez de culpar quem estava com ela. Para um agente, isso quer dizer que "o modelo foi descuidado" não é causa raiz; "o preço unitário não estava fixado no estado da execução, então o modelo precisou lembrá-lo" é.
 
 ## Um contrafactual que alguém consiga verificar
 
@@ -92,7 +96,7 @@ Um *contrafactual* diz que mudança teria evitado a falha. Ele só é útil quan
 
 ## Mantendo segredos e entrada bruta de fora
 
-Postmortems circulam bastante; essa é a razão de existirem. O capítulo de SRE observa que, no Google, nem os postmortems internos incluem informação que possa identificar um usuário final. Duas proteções valem aqui. Todo texto da linha do tempo passa pelo `scrub` da aula 18.3, que remove os segredos conhecidos da execução, e pelo `redact` da aula 21.2, que remove formatos comuns como um token *bearer* ou `api_key=...`. Um teste planta um token sintético num motivo de falha e numa URL e confere que ele sumiu enquanto a palavra `rejected` sobrevive. Sem essa segunda verificação, um redator que apagasse a linha inteira também passaria.
+Postmortems circulam bastante; essa é a razão de existirem. O capítulo de SRE observa que, no Google, nem os postmortems internos incluem informação que possa identificar um usuário final. Duas proteções valem aqui. Todo texto da linha do tempo passa pelo `scrub` da aula 18.3, que remove os segredos conhecidos da execução, e pelo `redact` da aula 21.2, que mascara formatos comuns de segredo como um *token bearer* (uma credencial em texto que concede acesso a uma API) ou `api_key=...`. Um teste planta um token *sintético* (falso, só para teste) num motivo de falha e numa *URL* (endereço web) e confere que ele sumiu enquanto a palavra `rejected` sobrevive. Sem essa segunda verificação, um *redator* (mascarador por padrões) que apagasse a linha inteira também passaria.
 
 `review_postmortem` verifica a metade humana. Todo campo precisa estar preenchido, todo evento citado precisa existir no log, nenhum segredo conhecido pode aparecer em lugar nenhum, e nenhuma linha de 20 caracteres ou mais da entrada bruta pode ser citada. Um postmortem que cita o "Payment terms are net 30 to the account already on file." do fornecedor é apontado; descrever a mensagem e citar o hash dela é a correção.
 
