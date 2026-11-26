@@ -38,16 +38,16 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) terminou com um resultado desconfortável. Num acelerador de 80 GB, o Qwen3.8-27B em seu contexto nativo completo de 262.144 tokens cabe exatamente uma vez: uma conversa, uma placa, nenhum segundo usuário. Servir mesmo um punhado de sessões de contexto longo nesse hardware significa dividir o modelo entre dispositivos. Isso traz um **all-reduce** (um passo em que cada dispositivo envia seu resultado parcial e cada dispositivo recebe a soma combinada) duas vezes em cada uma das 64 camadas, mais um orçamento de interconnect que ninguém planejou. A linha Instinct da AMD responde a esse problema específico com um número específico. Esta aula percorre esse número, incluindo o que ele não resolve.
+A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) terminou com um resultado desconfortável. Num acelerador de 80 GB, o Qwen3.8-27B em seu contexto nativo completo de 262.144 tokens cabe exatamente uma vez: uma conversa, uma placa, nenhum segundo usuário. Servir mesmo um punhado de sessões de contexto longo nesse hardware significa dividir o modelo entre dispositivos. Isso traz um **all-reduce** (um passo em que cada dispositivo envia seu resultado parcial e cada dispositivo recebe a soma combinada) duas vezes em cada uma das 64 camadas, mais um orçamento de **interconnect** (as ligações de alta velocidade que unem GPUs) que ninguém planejou. A linha Instinct da AMD responde a esse problema específico com um número específico. Esta aula percorre esse número, incluindo o que ele não resolve.
 
 ## O que a classe MI300X oferece
 
 A peça classe MI300X carrega 192 GB de HBM3 (memória de alta banda empilhada) informados pelo fabricante, com pico informado pelo fabricante perto de 5,3 TB/s. Ela é construída com **chiplets**, vários dies menores empacotados juntos, com várias centenas de compute units, o equivalente da AMD aos streaming multiprocessors da NVIDIA. Esses números são de agosto de 2026, e SKUs (variantes de produto) dentro de uma família diferem.
 
-Programá-la passa pelo **ROCm**, a plataforma de software da AMD, em vez de CUDA. Os kernels são escritos em **HIP**, um dialeto de C++ próximo ao do CUDA. As principais stacks de serving mantêm caminhos de build para AMD, documentados ao lado dos de CUDA.
+Programá-la passa pelo **ROCm**, a plataforma de software da AMD, em vez de CUDA. Os kernels são escritos em **HIP**, uma variante da linguagem de programação C++ próxima ao CUDA. As principais stacks de serving mantêm **caminhos de build** para AMD (configurações para compilar e instalar o software), documentados ao lado dos de CUDA.
 
 ## Quanto cabe num só dispositivo?
 
@@ -65,7 +65,7 @@ $$
 
 contra exatamente uma na peça de 80 GB. Numa janela de 8.192 tokens, 656 MiB por sequência, o mesmo pool serve cerca de 208 conversas concorrentes contra cerca de 36.
 
-Essa é a proposta inteira, e ela é forte. Uma carga que exigia **tensor parallelism** (dividir cada matriz de pesos entre dispositivos), uma decisão de topologia, uma biblioteca de comunicação coletiva e uma história de depuração agora roda como um único processo num único dispositivo. Simplicidade operacional é um ativo real de engenharia, e raramente aparece numa ficha técnica.
+Essa é a proposta inteira, e ela é forte. Uma carga que exigia **tensor parallelism** (dividir cada matriz de pesos entre dispositivos), uma **decisão de topologia** (escolher como várias GPUs são interligadas), uma **biblioteca de comunicação coletiva** (software que coordena trocas de dados entre GPUs) e depuração em múltiplas placas agora roda como um **único processo** (um único programa em execução) num único dispositivo. Simplicidade operacional é um ativo real de engenharia, e raramente aparece numa ficha técnica.
 
 ## A capacidade deixa cada usuário mais rápido?
 
@@ -79,19 +79,14 @@ o que é uma heurística pelo tamanho do checkpoint derivada de uma alegação d
 
 ## O sharding compra bandwidth, além de espaço
 
-A correção vai além, e vira do avesso a visão usual de **sharding** (dividir um modelo entre dispositivos). Divida o Qwen3.8-27B entre duas peças de 80 GB em tensor parallel, e cada dispositivo guarda, e portanto lê, apenas cerca de 27 GB de pesos por passo de decode. A 3,35 TB/s, isso dá um quociente pelo tamanho do checkpoint perto de 8,1 milissegundos, ou cerca de 124 tokens por segundo como heurística antes dos passos de comunicação. A [aula 9.9](/pt-br/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) cobra os all-reduces por token que isso ignora e chega mais perto de 107.
+A correção vai além, e vira do avesso a visão usual de **sharding** (dividir um modelo entre dispositivos). O sharding é mais que um jeito de fazer caber um modelo que não cabe: é também um jeito de comprar bandwidth combinada para um único fluxo, paga com um all-reduce sobre o residual stream de dimensão 5.120 (o vetor que cada token carrega de camada em camada) depois de cada bloco de attention e de feed-forward. Alterne entre os dois painéis para ver a troca.
 
-Então o sharding é mais que um jeito de fazer caber um modelo que não cabe. É também um jeito de comprar bandwidth combinada para um único fluxo. O preço é um all-reduce sobre o residual stream de dimensão 5.120 (o vetor que cada token carrega de camada em camada) depois de cada bloco de attention e de feed-forward: duas vezes por camada, ao longo de 64 camadas. A aula 9.9 precifica isso direito, e esse custo come parte do ganho teórico.
+<Figure id="t9-single-vs-sharded" />
 
-O resumo justo tem dois lados:
-
-- Um único dispositivo de memória grande pode vencer em concorrência e simplicidade de implantação. Se ele também vence em custo por token servido depende de preços e utilização, as entradas da [aula 9.10](/pt-br/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/).
-- Um par bem interconectado pode vencer na latência que um único usuário impaciente percebe.
-
-Qual dessas o seu produto vende, conferida por um benchmark das duas opções na sua própria carga, decide a compra.
+Se um único dispositivo de memória grande também vence em custo por token servido depende de preços e utilização, as entradas da [aula 9.10](/pt-br/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/), enquanto a [aula 9.9](/pt-br/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) precifica diretamente os passos de comunicação. Qual objetivo o seu produto vende — concorrência e simplicidade operacional contra latência de usuário único —, conferido por um benchmark das duas opções na sua própria carga, decide a compra.
 
 :::warning
-O erro caro aqui é o reflexo de tratar aceleradores como intercambiáveis assim que a aritmética bate. Suporte a uma arquitetura de modelo é propriedade de uma versão específica da stack, não de um fabricante. O Qwen3.8-27B pertence à família Qwen3.8 que a equipe Qwen anunciou em agosto de 2026, e suas 48 camadas de Gated DeltaNet dependem de kernels fundidos (várias operações combinadas numa única função de GPU) mais novos que a maior parte do ecossistema. Formatos de quantização, kernels de attention, captura de grafo e backends de compilador chegam a alvos não CUDA cada um em seu próprio cronograma. Antes de se comprometer, verifique três coisas contra a release exata de ROCm, a release exata do framework de serving e a receita exata de quantização que você pretende usar em produção: que o modelo carrega, que as camadas híbridas usam kernels fundidos em vez de kernels de fallback (versões genéricas mais lentas) e que a qualidade de saída bate com a referência. Trate qualquer alegação de suporte que não venha atrelada a um número de versão como não verificada.
+O erro caro aqui é o reflexo de tratar aceleradores como intercambiáveis assim que a aritmética bate. Suporte a uma arquitetura de modelo é propriedade de uma versão específica da stack, não de um fabricante. O Qwen3.8-27B pertence à família Qwen3.8 que a equipe Qwen anunciou em agosto de 2026, e suas 48 camadas de Gated DeltaNet dependem de kernels fundidos (várias operações combinadas numa única função de GPU) mais novos que a maior parte do ecossistema. Formatos de quantização, kernels de attention, **captura de grafo** (gravar uma sequência de operações de GPU uma vez para reproduzi-las com menos overhead de lançamento) e **backends de compilador** (software que traduz operações do modelo em código de máquina específico do chip) chegam a alvos não CUDA cada um em seu próprio cronograma. Antes de se comprometer, verifique três coisas contra a **release** (versão numerada de software) exata de ROCm, a release exata do framework de serving e a receita exata de quantização que você pretende usar em produção: que o modelo carrega, que as camadas híbridas usam kernels fundidos em vez de kernels de fallback (versões genéricas mais lentas) e que a qualidade de saída bate com a referência. Trate qualquer alegação de suporte que não venha atrelada a um número de versão como não verificada.
 :::
 
 ## Verificar o suporte antes da compra
@@ -103,7 +98,7 @@ Essa verificação é barata e deve acontecer antes da conversa comercial:
 3. Confirme que a memória livre reportada bate com o orçamento acima.
 4. Refaça o teste com a quantização que você de fato planeja rodar.
 
-Falhas nesse estágio costumam ser regressões de desempenho sem nenhuma mensagem de erro, e não crashes: um kernel de fallback roda onde deveria rodar um fundido. Então compare a taxa de decode atingida com a heurística de checkpoint acima como um diagnóstico. Uma diferença sozinha não prova kernel faltante.
+Falhas nesse estágio costumam ser **regressões** de desempenho (quedas de velocidade) sem nenhuma mensagem de erro, e não crashes: um kernel de fallback roda onde deveria rodar um fundido. Então compare a taxa de decode atingida com a heurística de checkpoint acima como um diagnóstico. Uma diferença sozinha não prova kernel faltante.
 
 :::caveat
 Todo número de hardware aqui é informado pelo fabricante em agosto de 2026 e descreve uma família, não uma peça. Capacidade, bandwidth e contagem de compute units diferem entre SKUs MI3xx e entre as plataformas que os hospedam, e tipos de instância em nuvem podem expor dispositivos particionados. Rederive o orçamento com os números reportados pelo runtime na instância que você alugar, e trate os quocientes de tokens por segundo desta aula como heurísticas de ordem de grandeza, não limites rígidos.

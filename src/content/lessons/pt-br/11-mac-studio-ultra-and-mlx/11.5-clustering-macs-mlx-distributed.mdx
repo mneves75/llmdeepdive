@@ -62,7 +62,7 @@ citations:
     authors: "Ash Hart e contribuidores"
     year: 2026
     url: "https://github.com/ashhart/TensorFold/blob/v1.2.1/docs/speed-up-mode.md"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
 Quando um modelo é grande demais para um Mac, você pode dividi-lo entre vários Macs ligados por cabo, um **cluster**. O newsroom da Apple descreve o cluster de vários Mac Studios com Thunderbolt 5 e RDMA (*remote direct memory access*: uma máquina escreve na memória de outra sem que nenhuma das CPUs copie os dados). Ele diz que um cluster de quatro entrega inferência de IA até 3x mais rápida que a de um único sistema. É uma afirmação do fabricante. A nota de rodapé do cluster na página do Mac Studio descreve o teste: tempo de conclusão de uma sumarização de LLM com prompt de 32K tokens, num modelo denso de 72 bilhões de parâmetros, com mlx-lm, comparando um sistema com um cluster de 4 nós em malha completa via Thunderbolt 5 e RDMA.
@@ -79,11 +79,11 @@ $$
 \frac{80\ \text{Gb/s}}{8} = 10\ \text{GB/s}, \qquad \frac{1{,}200\ \text{GB/s}}{10\ \text{GB/s}} = 120.
 $$
 
-Nos 15 GB/s da Apple, a diferença é de 80 vezes. De qualquer forma, os pesos ficam onde estão, e só as ativações atravessam: os vetores intermediários que uma camada passa para a seguinte.
+Nos 15 GB/s da Apple, a diferença é de 80 vezes. De qualquer forma, os pesos ficam onde estão, e só as **ativações** atravessam: os vetores intermediários que uma camada passa para a seguinte.
 
-Quanto atravessa, e com que frequência? O modelo de tensor parallelism da aula 9.9 envia 128 all-reduces por token com 1,25 MiB de payload. Um **all-reduce** combina os valores correspondentes de todos os processos (aqui, somando-os) e entrega o resultado a cada um. (Um all-gather, que aparece na tabela de backends abaixo, junta o pedaço de cada máquina para que todas fiquem com todos os pedaços.) A 10 GB/s, esse payload dá cerca de 0,13 ms de tempo de transmissão por token (0,09 ms a 15), o que é pouco. O que custa são as 128 esperas, uma por operação coletiva. Cada espera paga a **latência** do link, o atraso fixo de uma mensagem seja qual for o tamanho, e as esperas acontecem uma depois da outra. Por isso o decode é limitado por latência.
+<Figure id="t11-cluster-wire-bottleneck" />
 
-O prefill é diferente. Um prefill de 4.096 tokens carrega cerca de 5 GiB do mesmo tráfego, algo como 0,54 s a 10 GB/s (0,36 s a 15); portanto o prefill é limitado por bandwidth. Os dois valores são heurísticas de planejamento, calculadas a partir de taxas de pico e sem considerar overhead de protocolo nem sobreposição.
+No passo de decode da figura, um **all-reduce** combina os valores correspondentes de todos os processos (aqui, somando-os) e entrega o resultado a cada um; já um **all-gather** (na tabela de backends abaixo) junta o pedaço de cada máquina para que todas fiquem com todos os pedaços. Como as 128 esperas acontecem uma depois da outra, cada espera paga a **latência** do link, o atraso fixo de uma mensagem seja qual for o tamanho, deixando o decode limitado por latência. O prefill move muito mais dados de uma vez e fica limitado por bandwidth. Os dois valores de tráfego na figura são heurísticas de planejamento calculadas a partir de taxas de pico, sem considerar **overhead** de protocolo (bytes extras e trabalho de coordenação) nem **sobreposição** (esconder a comunicação atrás do cálculo).
 
 ## Os backends
 
@@ -91,27 +91,29 @@ Um backend é a biblioteca que leva as mensagens entre as máquinas. O MLX ofere
 
 | Backend | O que é |
 |---|---|
-| ring | All-reduce e all-gather sobre sockets TCP. Sempre disponível. Funciona sobre Ethernet ou sobre um anel Thunderbolt. |
+| ring | All-reduce e all-gather sobre **sockets TCP** (conexões de rede padrão gerenciadas pelo sistema operacional). Sempre disponível. Funciona sobre Ethernet (cabeamento de rede local comum) ou sobre um anel Thunderbolt. |
 | MPI | Uma biblioteca madura que você instala; `mlx.launch --backend mpi` envolve o `mpirun`. |
 | JACCL | RDMA sobre Thunderbolt, a partir do macOS 26.2. A documentação lhe atribui latência de comunicação "uma ordem de grandeza menor" que a do ring e o chama de necessário para tensor parallelism com latência utilizável. |
-| NCCL | O backend de CUDA. |
+| NCCL | O backend de **CUDA** (a plataforma de GPU da NVIDIA). |
 
 O `mx.distributed.init(backend=...)` aceita `any`, `ring`, `jaccl`, `mpi` e `nccl`.
 
 O JACCL exige uma malha totalmente conectada: um cabo entre cada par de Macs, como exige a documentação distribuída. O v0.32.3 também traz um modo `jaccl-ring` no lançador, que confere só os vizinhos; esta aula não o testou. Quatro Macs precisam de seis cabos e de três portas Thunderbolt cada um, o que um M5 Ultra tem.
 
-O RDMA vem desligado por padrão. A documentação diz que você o ativa com `rdma_ctl enable` no modo de Recuperação do macOS, e que isso não pode ser feito remotamente nem com sudo. O `ibv_devices` deve então listar os dispositivos `rdma_en`. O `mlx.distributed_config` descobre o cabeamento, confere a malha e escreve o hostfile, um arquivo que lista as máquinas e como alcançá-las, para o `mlx.launch`:
+O RDMA vem desligado por padrão. A documentação diz que você o ativa com `rdma_ctl enable` no modo de **Recuperação** do macOS (o modo especial de inicialização usado para ajustes de baixo nível do sistema), e que isso não pode ser feito remotamente nem com `sudo` (o comando que executa uma ação com privilégios de administrador). O `ibv_devices` deve então listar os dispositivos `rdma_en`. O primeiro comando abaixo usa o `mlx.distributed_config` para descobrir o cabeamento, conferir a malha e gravar o **hostfile** (um arquivo que lista as máquinas e como alcançá-las); o segundo passa esse hostfile ao `mlx.launch` para rodar geração dividida sobre o JACCL:
 
 ```bash
 mlx.distributed_config --verbose --hosts host1,host2 --over thunderbolt --backend jaccl --auto-setup --output-hostfile hosts.json
 mlx.launch --backend jaccl --hostfile hosts.json --python /path/to/python sharded_generate.py --model MODEL --prompt "Hello"
 ```
 
-Não executado aqui: isso exige dois Macs, RDMA ativado pela Recuperação e sudo sem senha para o `--auto-setup`. As mudanças de rede são reais: o script desativa a ponte Thunderbolt e monta uma sub-rede privada por cabo.
+Não executado aqui: isso exige dois Macs, RDMA ativado pela Recuperação e sudo sem senha para o `--auto-setup`. As mudanças de rede são reais: o script desativa a ponte Thunderbolt (o ajuste do macOS que junta portas Thunderbolt numa só rede) e monta uma **sub-rede** privada (uma faixa isolada de endereços) por cabo.
 
 ## Teste o lançamento primeiro num só Mac
 
-Um job distribuído roda várias cópias do seu script, em geral uma por máquina, e cada cópia, ou processo, recebe um número chamado **rank**: sua posição no grupo. Uma máquina pode hospedar vários ranks. O `mlx.launch -n 2` inicia dois ranks em localhost com o backend ring; assim você confere o script, a linha de lançamento e o sharding do modelo (como os pesos são divididos) antes de ligar qualquer cabo. Aqui os dois ranks dividem uma GPU, então isso prova correção, não velocidade. Salve o exemplo da documentação e rode:
+Um job distribuído roda várias cópias do seu script, em geral uma por máquina, e cada cópia em execução, ou **processo**, recebe um número chamado **rank**: sua posição no grupo. Uma máquina pode hospedar vários ranks. O `mlx.launch -n 2` inicia dois ranks em **localhost** (este mesmo computador, sem rede externa) com o backend ring; assim você confere o script, a linha de lançamento e o **sharding** do modelo (como os pesos são divididos entre ranks) antes de ligar qualquer cabo. Aqui os dois ranks dividem uma GPU, então isso prova correção, não velocidade.
+
+Salve o script curto abaixo como `dist_sum.py`: ele entra no grupo distribuído, soma um array de 10 uns entre todos os ranks com `all_sum`, avalia o resultado e imprime o identificador de cada rank, o tamanho do grupo e o array somado:
 
 ```python
 import mlx.core as mx
@@ -122,11 +124,13 @@ mx.eval(x)
 print(world.rank(), world.size(), x)
 ```
 
+Inicie duas cópias locais desse script usando o caminho do Python informado pelo `mlx.launch`:
+
 ```bash
 mlx.launch -n 2 --python "$(mlx.launch --print-python)" dist_sum.py
 ```
 
-Os dois ranks imprimem seu rank, o tamanho 2 e um array de 2: cada rank contribuiu com um array de uns, e o `all_sum` os somou. Depois experimente o exemplo do mlx-lm em cada modo de sharding. Baixe o `sharded_generate.py` da tag fixada. Os ids abaixo são builds MLX do Hub que fazem as vezes do modelo do curso, um `qwen3` denso e um `qwen3_5` híbrido:
+Os dois ranks imprimem seu rank, o tamanho 2 e um array de 2: cada rank contribuiu com um array de uns, e o `all_sum` os somou. Em seguida, baixe o `sharded_generate.py` da tag fixada e teste os dois modos de sharding localmente. Os três comandos abaixo rodam tensor parallelism (o padrão) e pipeline parallelism (`--pipeline`) em dois builds MLX substitutos do Hub — um `qwen3_5` híbrido e um `qwen3` denso:
 
 ```bash
 PY="$(mlx.launch --print-python)"
@@ -135,7 +139,7 @@ mlx.launch -n 2 --python "$PY" sharded_generate.py --pipeline --model mlx-commun
 mlx.launch -n 2 --python "$PY" sharded_generate.py --pipeline --model mlx-community/Qwen3-4B-Instruct-2507-4bit --prompt "Name one planet." --max-tokens 12
 ```
 
-O primeiro roda tensor parallelism, o padrão. O segundo roda pipeline parallelism. O terceiro para com `ValueError: The model does not support pipelining but a pipeline_group was provided`, e o `mlx.launch` ainda sai com 0.
+O primeiro roda tensor parallelism, o padrão. O segundo roda pipeline parallelism. O terceiro para com `ValueError: The model does not support pipelining but a pipeline_group was provided`, e o `mlx.launch` ainda sai com **status de saída** 0 (o código numérico que um programa encerrado devolve ao terminal, onde 0 costuma indicar sucesso).
 
 O erro vem da classe do modelo. No mlx-lm 0.32.0, o `sharded_load` exige que a classe do modelo defina `shard` para o tensor parallelism e `pipeline` para o pipelining. O `qwen3` denso tem só o primeiro, e o `qwen3_5` tem os dois. O `mlx_lm.chat` e o `mlx_lm.server` aceitam a mesma flag `--pipeline`. No modo distribuído, o `mlx_lm.chat` rejeita adapters, e o `mlx_lm.server` rejeita adapters e modelos de rascunho. Para o Qwen3.8-27B, a aula 9.9 limita o tensor parallelism limpo aos 4 KV heads, que é também o tamanho do cluster da Apple. Esta aula não carregou nenhum 27B.
 
@@ -143,14 +147,14 @@ O erro vem da classe do modelo. No mlx-lm 0.32.0, o `sharded_load` exige que a c
 
 Fazer cluster de um modelo que já cabe numa máquina, esperando que ele fique mais rápido, inverte a troca. O artefato fixado de 17,1 GB cabe num único Mac Studio com folga de sobra; então dividi-lo acrescenta 128 esperas por token e não tira nada de que ele precisasse. Um cluster compensa em dois casos. Um é o modelo que não cabe no pool utilizável pela GPU de uma máquina, o número que você leu na aula 11.1. O outro é o prefill longo, o caso que o teste de 32K tokens da Apple mede. As 128 esperas por token pertencem ao tensor parallelism no decode. Para prever o decode num cluster de verdade, ponha a sua latência medida por operação coletiva no modelo da aula 9.9; a documentação do MLX não dá nenhuma.
 
-Um terceiro caso é parear dois Macs num motor nativo construído em torno do Thunderbolt 5 e do MCDMA. O TensorFold v1.2.1 ([aula 11.4](/pt-br/lessons/11-mac-studio-ultra-and-mlx/11.4-serving-from-a-mac-mlx-lm-server-and-mlx-serve/)) pareia dois sistemas M5 Ultra de 256 GB com `--speed-up`, relatando de 200 a 247 tok/s de decode de código em stream único (de 179 a 186 tok/s em chat) no `Qwen3.8-Flash-Next-MLX-6bit`, ou 53,7 tok/s no `kindlingai/glm-5.3-exlr8-k2-k3-k4` após baixar os shards de experts de cada nó com `tensorfold pull --exlr8 home --node 0/2` e `--node 1/2`. Para o `TensorFold/Qwen3.8-27B-MLX-4bit`, em contraste, um único M5 Ultra já alcança de 162 a 226 tok/s em decode greedy de stream único com o `z-lab/Qwen3.8-27B-DFlash2` (e a receita oficial relata 201,4 tok/s agregados em 8 streams concorrentes num único M5 Pro de 64 GB na execução anterior 0.3.5.1 em Python/MLX com `--parallel 8`), então o modelo de 27B permanece numa única máquina.
+Um terceiro caso é parear dois Macs num motor nativo construído em torno do Thunderbolt 5 e do **MCDMA** (*multi-channel direct memory access*, transferências em hardware pelos links sem travar a CPU). O TensorFold v1.2.1 ([aula 11.4](/pt-br/lessons/11-mac-studio-ultra-and-mlx/11.4-serving-from-a-mac-mlx-lm-server-and-mlx-serve/)) pareia dois sistemas M5 Ultra de 256 GB com `--speed-up`, relatando de 200 a 247 tok/s de decode de código em stream único (de 179 a 186 tok/s em chat) no `Qwen3.8-Flash-Next-MLX-6bit`, ou 53,7 tok/s no `kindlingai/glm-5.3-exlr8-k2-k3-k4` após baixar os shards de experts de cada nó (a fatia de blocos de pesos de experts de cada máquina) com `tensorfold pull --exlr8 home --node 0/2` e `--node 1/2`. Para o `TensorFold/Qwen3.8-27B-MLX-4bit`, em contraste, um único M5 Ultra já alcança de 162 a 226 tok/s em decode greedy (escolhendo sempre o token de maior pontuação) de stream único com o `z-lab/Qwen3.8-27B-DFlash2` (e a receita oficial relata 201,4 tok/s agregados em 8 streams concorrentes num único M5 Pro de 64 GB na execução anterior 0.3.5.1 em Python/MLX com `--parallel 8`), então o modelo de 27B permanece numa única máquina.
 
 :::warning
 Não confie no status de saída do lançador. Quando os dois ranks saíram com código 3, o `mlx.launch` imprimiu um aviso para cada um e mesmo assim devolveu 0 na v0.32.3. Leia a saída de cada rank antes de acreditar numa execução.
 :::
 
 :::caveat
-A documentação do MLX recomenda deixar `MLX_METAL_FAST_SYNCH` sem definir, porque ele pode causar deadlock e deixar a GPU travada (issue 3142), enquanto a docstring do exemplo do mlx-lm o define como 1. Siga a documentação. Além disso, não leia `mx.distributed.is_available("jaccl")` como prova de que o RDMA funciona: no Mac usado para conferir esta aula, `rdma_ctl status` imprimiu `disabled` e `ibv_devices` não listou nenhum dispositivo, e mesmo assim a chamada retornou verdadeiro. O 3x da Apple e toda afirmação sobre o JACCL nesta aula vêm de documentos do fabricante ou do projeto, não de uma execução em cluster feita para esta aula.
+A documentação do MLX recomenda deixar `MLX_METAL_FAST_SYNCH` sem definir, porque ele pode causar **deadlock** (travamento em que duas partes esperam para sempre uma pela outra) e deixar a GPU travada (issue 3142), enquanto a docstring do exemplo do mlx-lm o define como 1. Siga a documentação. Além disso, não leia `mx.distributed.is_available("jaccl")` como prova de que o RDMA funciona: no Mac usado para conferir esta aula, `rdma_ctl status` imprimiu `disabled` e `ibv_devices` não listou nenhum dispositivo, e mesmo assim a chamada retornou verdadeiro. O 3x da Apple e toda afirmação sobre o JACCL nesta aula vêm de documentos do fabricante ou do projeto, não de uma execução em cluster feita para esta aula.
 :::
 
 Um cluster troca um gargalo por outro: a capacidade deixa de ser o limite, e o fio passa a ser. A memória local é de 80 a 120 vezes mais rápida que o link; por isso o desenho que funciona mantém os pesos em casa e gasta o link com mensagens pequenas e raras.

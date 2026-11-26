@@ -42,12 +42,14 @@ citations:
     authors: "Georgi Gerganov e colaboradores"
     year: 2023
     url: "https://github.com/ggml-org/llama.cpp/blob/b11380/src/llama-context.cpp"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Um servidor é um scheduler com uma interface HTTP: ele aceita requisições de muitos usuários e decide de quem são os tokens que o modelo calcula em seguida. A [aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/) explicou o continuous batching em abstrato. Aqui você conhece as flags que o controlam no `llama-server`, mais as que protegem e observam um servidor em execução.
+Um servidor é um scheduler com uma interface HTTP (o protocolo de requisições e respostas da web): ele aceita requisições de muitos usuários e decide de quem são os tokens que o modelo calcula em seguida. A [aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/) explicou o continuous batching em abstrato. Aqui você conhece as flags (opções de linha de comando) que o controlam no `llama-server`, mais as que protegem e observam um servidor em execução.
 
-Toda flag abaixo vem do `tools/server/README.md` na tag `b11380`. As configurações de slots, batching, tipos de cache, reaproveitamento de prompt, chave de API e métricas foram executadas contra um servidor em 127.0.0.1, com o Qwen3-1.7B Q8_0 como modelo substituto. O aviso no fim lista as flags que foram só lidas, sem execução. Caminhos e chaves são marcadores.
+Toda flag abaixo vem do `tools/server/README.md` na tag `b11380`. As configurações de slots, batching, tipos de cache, reaproveitamento de prompt, chave de API e métricas foram executadas contra um servidor escutando em `127.0.0.1` (o endereço de loopback, acessível apenas a partir do mesmo computador), com o Qwen3-1.7B Q8_0 como modelo substituto. O aviso no fim lista as flags que foram só lidas, sem execução. Caminhos de arquivo e chaves são marcadores.
+
+O comando de inicialização abaixo reúne as flags principais de produção: um contexto de 16.384 tokens dividido em quatro slots, caches K e V quantizados em 8 bits com flash attention ligada, métricas Prometheus habilitadas, chaves de API lidas de um arquivo e acesso restrito à porta local (canal numerado de conexão) `8080`.
 
 ```
 llama-server -m MODEL.gguf -c 16384 -np 4 -fa on -ctk q8_0 -ctv q8_0 \
@@ -65,20 +67,17 @@ A suposição comum é que o `-c` se divide entre os slots. Isso só é meia ver
 | `-c 8192` | `n_slots = 4, n_ctx_slot = 8192, kv_unified = 'true'` |
 | `-c 8192 -np 4` | `n_slots = 4, n_ctx_slot = 2048, kv_unified = 'false'` |
 
-O `GET /slots` devolveu o mesmo `n_ctx` por slot, e o build 11146 do Homebrew imprimiu as mesmas duas linhas.
+Enviar uma requisição `GET /slots` (uma leitura HTTP do estado dos slots do servidor) devolveu o mesmo `n_ctx` por slot, e o build 11146 do Homebrew imprimiu as mesmas duas linhas.
 
-As duas linhas se comportam de forma diferente:
+<Figure id="t13-server-kv-pool-modes" />
 
-- **Unificado** (primeira linha). Cada slot pode crescer até o pool inteiro, mas os quatro juntos ainda cabem em 8.192 tokens. Se uma conversa ocupa 6.000 tokens, as outras três dividem os 2.192 restantes.
-- **Dividido** (segunda linha). O código divide o `-c` pelo número de slots e arredonda para múltiplos de 256, então nenhum slot passa de 2.048.
-
-O primeiro é melhor quando as requisições têm tamanhos diferentes. O segundo dá um teto rígido por usuário. Acrescentar `-kvu` religa o pool unificado: `-c 8192 -np 4 -kvu` registrou `n_ctx_slot = 8192` e `kv_unified = 'true'`. O `--kv-unified-per-slot N` dimensiona o pool como slots vezes N quando você omite o `-c`. A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) é dona do orçamento de memória para o contexto que você escolher.
+Use o pool unificado quando as requisições tiverem tamanhos diferentes, e slots divididos quando quiser um teto rígido por usuário. Acrescentar `-kvu` religa o pool unificado mesmo com contagem explícita de slots: `-c 8192 -np 4 -kvu` registrou `n_ctx_slot = 8192` e `kv_unified = 'true'`. O `--kv-unified-per-slot N` dimensiona o pool como slots vezes N quando você omite o `-c`. A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) é dona do orçamento de memória para o contexto que você escolher.
 
 ## Atendendo vários usuários ao mesmo tempo: batching e tipos de cache
 
 O continuous batching vem ligado por padrão (`-cb`). As requisições entram e saem do batch em andamento a cada passo de decode, então um passo carrega tokens de todos os slots ocupados. Duas gerações de 200 tokens enviadas ao mesmo tempo deram `llamacpp:n_busy_slots_per_decode` 1,957. Quase toda chamada de decode carregou tokens dos dois slots, que é a razão de ser do recurso.
 
-`-ctk` e `-ctv` definem os tipos dos caches K e V, as duas metades do KV cache. O README permite `f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1`, com padrão `f16`. Um tipo menor põe mais tokens na mesma memória, então cabem mais slots. O custo em qualidade é seu para medir com as ferramentas da [aula 13.2](/pt-br/lessons/13-llama-cpp-in-depth/13.2-making-your-own-gguf-convert-imatrix-quantize/).
+`-ctk` e `-ctv` definem os tipos numéricos dos caches K e V, as duas metades do KV cache. O README permite `f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1`, com padrão `f16`. Um tipo menor põe mais tokens na mesma memória, então cabem mais slots. O custo em qualidade é seu para medir com as ferramentas da [aula 13.2](/pt-br/lessons/13-llama-cpp-in-depth/13.2-making-your-own-gguf-convert-imatrix-quantize/).
 
 O cache V tem uma regra. Um cache V quantizado exige flash attention, o kernel de attention fundido da [aula 7.7](/pt-br/lessons/7-inference-and-efficiency/7.7-flashattention-and-io-awareness/). `-ctv q8_0 -fa off` saiu com status 1 e `quantized V cache requires flash_attn to be enabled`, nos dois builds. Com o `-fa` no padrão `auto`, `-ctk q8_0 -ctv q8_0` iniciou.
 
@@ -92,25 +91,25 @@ Existem três controles relacionados:
 
 - `--cache-reuse N` tenta reaproveitar trechos deslocando o KV cache (padrão 0, desligado).
 - `--cache-ram` limita o cache de prompts na memória do host (padrão 8192 MiB).
-- `--slot-save-path` habilita `POST /slots/{id}?action=save` e `restore` para snapshots explícitos.
+- `--slot-save-path` habilita `POST /slots/{id}?action=save` e `restore` (chamadas HTTP de escrita que gravam ou recarregam o KV cache de um slot como snapshots explícitos em disco).
 
 ## Quando uma conversa passa do tamanho do slot
 
 O `--context-shift` decide se o servidor pode descartar tokens antigos para continuar gerando, e o README o lista como desligado por padrão. O caminho de estouro não foi testado, então verifique com o seu próprio cliente antes do lançamento: envie um prompt maior que `n_ctx_slot` e veja se vem um erro, um truncamento ou um shift.
 
-Mais duas flags importam em tarefas longas. O `-to` define o timeout de leitura e escrita em segundos (padrão 3.600). O `--sleep-idle-seconds` deixa um servidor ocioso descarregar o modelo e o KV cache (padrão desligado). O `GET /slots` mostra o `n_ctx` de cada slot e se ele está processando. O `?fail_on_no_slot=1` devolve 503 quando não há slot livre, o que serve ao health check que um balanceador de carga envia para decidir para onde mandar o tráfego.
+Mais duas flags importam em tarefas longas. O `-to` define o timeout (tempo máximo de espera antes de cancelar uma conexão parada) de leitura e escrita em segundos (padrão 3.600). O `--sleep-idle-seconds` deixa um servidor ocioso descarregar o modelo e o KV cache (padrão desligado). O `GET /slots` mostra o `n_ctx` de cada slot e se ele está processando. Acrescentar `?fail_on_no_slot=1` devolve status HTTP 503 (temporariamente indisponível) quando não há slot livre, o que serve ao health check (verificação automática de prontidão) que um balanceador de carga (roteador que distribui tráfego entre servidores) envia para decidir para onde mandar o tráfego.
 
 ## O que o servidor expõe
 
 O `--jinja` vem habilitado por padrão, então o servidor renderiza o chat template do próprio modelo (o formato que embrulha as mensagens num único prompt). O `POST /apply-template` devolve o prompt renderizado, que é o jeito mais rápido de ver o que o modelo de fato recebe. Os templates do Qwen3 leem `enable_thinking`, que os testes definiram por requisição com `chat_template_kwargs`; o `--chat-template-kwargs` define isso para o servidor inteiro.
 
-Os endpoints são as rotas da OpenAI (`/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`), a rota da Anthropic (`/v1/messages`) e os nativos `/completion`, `/tokenize`, `/props`, `/slots` e `/metrics`.
+Os endpoints (caminhos de URL específicos no servidor) são as rotas da OpenAI (`/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`), a rota da Anthropic (`/v1/messages`) e os nativos `/completion`, `/tokenize`, `/props`, `/slots` e `/metrics`.
 
-Se você restringir uma resposta a um JSON schema, como descreve a [aula 8.5](/pt-br/lessons/8-building-and-serving-stacks/8.5-sglang/), um objeto válido pelo schema continua sendo só um pedido. Antes que qualquer coisa aja sobre ele, confira que a geração terminou normalmente e não num limite de comprimento, valide o que os argumentos significam e confira se quem chamou tem permissão para fazer o que pede. A [aula 15.1](/pt-br/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) constrói essa checagem.
+Se você restringir uma resposta a um JSON schema (um molde formal que define exatamente quais campos e tipos uma resposta JSON deve ter), como descreve a [aula 8.5](/pt-br/lessons/8-building-and-serving-stacks/8.5-sglang/), um objeto válido pelo schema continua sendo só um pedido. Antes que qualquer coisa aja sobre ele, confira que a geração terminou normalmente e não num limite de comprimento, valide o que os argumentos significam e confira se quem chamou tem permissão para fazer o que pede. A [aula 15.1](/pt-br/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) constrói essa checagem.
 
 ## Trancando o servidor e acompanhando o que ele faz
 
-O `--host` tem padrão `127.0.0.1`, então só a própria máquina consegue se conectar. Sem chave, o log avisa `no API key is set and CORS allows all origins`; o CORS é a regra do navegador que diz quais outros sites podem chamar o servidor. Com `--api-key` ou `--api-key-file` (uma chave por linha, `#` para comentários), os status medidos foram:
+O `--host` tem padrão `127.0.0.1`, então só a própria máquina consegue se conectar. Sem chave de API (um token secreto que os clientes enviam para provar permissão de acesso), o log avisa `no API key is set and CORS allows all origins`; o CORS é a regra do navegador que diz quais outros sites podem chamar o servidor. Com `--api-key` ou `--api-key-file` (uma chave por linha, `#` para comentários), os códigos de status HTTP medidos (`200` para OK, `401` para não autorizado) foram:
 
 | Requisição | Status |
 |---|---|
@@ -120,7 +119,7 @@ O `--host` tem padrão `127.0.0.1`, então só a própria máquina consegue se c
 | `/metrics`, `Authorization: Bearer KEY` | 200 |
 | `/v1/models`, `X-Api-Key: KEY` | 200 |
 
-Só `/health` e `/v1/health` são públicos, além dos assets da interface web.
+Só `/health` e `/v1/health` são públicos, além dos assets da interface web (os arquivos da página de navegador embutida no servidor).
 
 O `/metrics` fica desligado a menos que você passe `--metrics`, e o seu scraper então precisa da chave. Ele exporta métricas no formato do Prometheus, um sistema de monitoramento comum que consulta ("faz o scrape de") endpoints assim. Há dois tipos:
 
@@ -130,11 +129,11 @@ O `/metrics` fica desligado a menos que você passe `--metrics`, e o seu scraper
 O exportador também emitiu `llamacpp:prompt_tokens_cached_total`, que a tabela do README não lista.
 
 :::warning
-Uma chave de API na linha de comando fica visível na lista de processos, então prefira `--api-key-file`. Para uma implantação pública, o README recomenda uma chave de API e um proxy reverso (um servidor na frente, como o nginx, que recebe o tráfego público e o repassa). O `--tools` está marcado como experimental, e o `--agent` traz o aviso do README para não habilitá-lo em ambientes não confiáveis. Eles expõem acesso a arquivos e uma ferramenta de shell, então deixe-os desligados num servidor compartilhado.
+Uma chave de API na linha de comando fica visível na lista de processos, então prefira `--api-key-file`. Para uma implantação pública, o README recomenda uma chave de API e um proxy reverso (um servidor na frente, como o nginx, que recebe o tráfego público e o repassa). O `--tools` está marcado como experimental, e o `--agent` traz o aviso do README para não habilitá-lo em ambientes não confiáveis. Eles expõem acesso a arquivos e uma ferramenta de shell (execução de comandos do sistema operacional), então deixe-os desligados num servidor compartilhado.
 :::
 
 :::caveat
-Estas flags vêm só do README e não foram executadas: `--cache-reuse`, `--cache-ram`, `--slot-save-path`, `--context-shift`, `-to`, `--sleep-idle-seconds`, `--kv-unified-per-slot`, `--chat-template-kwargs`, `--tools` e `--agent`. TLS (`--ssl-key-file`, `--ssl-cert-file`), o modo roteador (`--models-dir`) e a lista de várias chaves também não foram testados.
+Estas flags vêm só do README e não foram executadas: `--cache-reuse`, `--cache-ram`, `--slot-save-path`, `--context-shift`, `-to`, `--sleep-idle-seconds`, `--kv-unified-per-slot`, `--chat-template-kwargs`, `--tools` e `--agent`. TLS (criptografia de rede, com `--ssl-key-file` e `--ssl-cert-file`), o modo roteador (`--models-dir`) e a lista de várias chaves também não foram testados.
 :::
 
-Resumindo, um servidor tem três orçamentos, o pool de contexto, os slots que o dividem e os tipos de cache que o encolhem. Escolha-os a partir do seu tráfego e depois leia o log de inicialização para confirmar o que você obteve. A seguir, a [aula 13.4](/pt-br/lessons/13-llama-cpp-in-depth/13.4-benchmarking-with-llama-bench/) mede o resultado com o `llama-bench`.
+Escolha o pool de contexto, o número de slots e os tipos de cache a partir do seu tráfego e depois leia o log de inicialização para confirmar o que você obteve. A seguir, a [aula 13.4](/pt-br/lessons/13-llama-cpp-in-depth/13.4-benchmarking-with-llama-bench/) mede o resultado com o `llama-bench`.

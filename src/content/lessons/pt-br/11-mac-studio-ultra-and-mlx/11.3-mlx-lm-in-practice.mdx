@@ -58,22 +58,18 @@ citations:
     authors: "Apple Machine Learning Research"
     year: 2026
     url: "https://github.com/ml-explore/mlx/blob/v0.32.3/python/src/ops.cpp"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-A [aula 8.9](/pt-br/lessons/8-building-and-serving-stacks/8.9-mlx/) mostrou um comando de conversão. Esta aula acompanha um checkpoint por todo o caminho do mlx-lm na versão 0.32.0, em cinco etapas:
+A [aula 8.9](/pt-br/lessons/8-building-and-serving-stacks/8.9-mlx/) mostrou um comando de conversão. Esta aula acompanha um **checkpoint** (um arquivo salvo com os pesos treinados do modelo) por todo o caminho do mlx-lm na versão 0.32.0, marcando as junções em que uma ferramenta refaz trabalho em silêncio.
 
-1. Converter: encolher os pesos para menos bits.
-2. Conferir: medir quanto esse encolhimento custou.
-3. Ajustar: treinar um pequeno adapter com os seus dados.
-4. Fazer o fuse: incorporar o adapter aos pesos.
-5. Guardar em cache: salvar o trabalho que prompts repetidos compartilham.
+<Figure id="t11-mlx-lm-pipeline" />
 
-No caminho, ela marca as junções em que uma ferramenta refaz trabalho em silêncio. Todos os comandos abaixo rodaram no mlx-lm 0.32.0 com MLX 0.32.3, usando um Qwen3 de 4B em 4 bits, que estava em cache, no lugar do modelo do curso. Um substituto de 4B confere o procedimento, não a qualidade nem a velocidade do 27B.
+Todos os comandos abaixo rodaram no mlx-lm 0.32.0 com MLX 0.32.3, usando um Qwen3 de 4B em 4 bits, que estava em cache, no lugar do modelo do curso. Um substituto de 4B confere o procedimento, não a qualidade nem a velocidade do 27B.
 
 ## Converta e leia os bits por peso
 
-**Quantizar** é guardar cada peso em menos bits, aqui 4 em vez de 16, como mostrou a [aula 7.9](/pt-br/lessons/7-inference-and-efficiency/7.9-quantization-i-int8-int4-the-basics/). Os pesos são divididos em grupos de tamanho fixo, e cada grupo guarda alguns dados extras que levam os pequenos códigos inteiros de volta a valores reais. O `mlx_lm.convert` aceita `-q` para quantizar, `--q-bits`, `--q-group-size`, `--q-mode` (`affine`, `mxfp4`, `nvfp4` ou `mxfp8`), `--dtype` para os tensores não quantizados e `-d` para desquantizar. Se você omitir bits e tamanho de grupo, os padrões dependem do modo:
+**Quantizar** é guardar cada peso em menos bits, aqui 4 em vez de 16, como mostrou a [aula 7.9](/pt-br/lessons/7-inference-and-efficiency/7.9-quantization-i-int8-int4-the-basics/). Os pesos são divididos em grupos de tamanho fixo, e cada grupo guarda alguns dados extras — uma **escala** (multiplicador) e, no modo affine, um **bias** (deslocamento) — que levam os pequenos códigos inteiros de volta a valores reais. O `mlx_lm.convert` usa **flags** de linha de comando (opções iniciadas por `-` ou `--`): `-q` para quantizar, `--q-bits`, `--q-group-size`, `--q-mode` (`affine`, `mxfp4`, `nvfp4` ou `mxfp8`), `--dtype` para o tipo numérico dos tensores não quantizados e `-d` para desquantizar. Se você omitir bits e tamanho de grupo, os padrões dependem do modo:
 
 - `affine`: 4 bits com grupo de 64
 - `mxfp4`: 4 bits com grupo de 32
@@ -82,7 +78,7 @@ No caminho, ela marca as junções em que uma ferramenta refaz trabalho em silê
 
 Uma camada cuja última dimensão não é múltipla do tamanho do grupo é pulada e fica sem quantizar. As receitas de `--quant-predicate`, `mixed_2_6`, `mixed_3_4`, `mixed_3_6` e `mixed_4_6`, mantêm algumas camadas na largura maior: o `lm_head` (a camada final, que transforma a saída do modelo numa pontuação para cada token do vocabulário) e partes de `v_proj` e `down_proj` (a projeção de value no attention e a projeção de saída do bloco feed-forward). Elas valem só para `affine`.
 
-O substituto já está em 4 bits; então o primeiro comando o desquantiza numa fonte de 16 bits. Conversões de verdade partem do checkpoint original, e esse vaivém serve apenas para rodar todas as flags:
+O substituto já está em 4 bits; por isso o primeiro comando abaixo o expande numa pasta fonte de 16 bits (`src16`), e os quatro seguintes quantizam essa fonte com quatro receitas diferentes para você comparar os bits por peso impressos. Conversões de verdade partem do checkpoint original, e esse vaivém serve apenas para rodar todas as flags:
 
 ```bash
 mlx_lm.convert --hf-path mlx-community/Qwen3-4B-Instruct-2507-4bit -d --mlx-path src16
@@ -96,9 +92,11 @@ Cada execução termina com uma linha como `Quantized model with 4.501 bits per 
 
 ## Confira e depois ajuste
 
-Um modelo quantizado precisa de uma conferência em texto separado, que o modelo não viu no ajuste. O `mlx_lm.perplexity` faz essa conferência. A perplexidade mede o quanto um modelo se surpreende com texto real, e menor é melhor ([aula 1.7](/pt-br/lessons/1-text-to-tensors/1.7-entropy-perplexity/)). O comando avalia um modelo num dataset do Hugging Face ou numa pasta local no formato do mlx-lm, e precisa do pacote `datasets` (`pip install "mlx-lm[train]"`).
+Um modelo quantizado precisa de uma conferência em texto separado, que o modelo não viu no ajuste. O `mlx_lm.perplexity` faz essa conferência. A perplexidade mede o quanto um modelo se surpreende com texto real, e menor é melhor ([aula 1.7](/pt-br/lessons/1-text-to-tensors/1.7-entropy-perplexity/)). O comando avalia um modelo num dataset do **Hugging Face** (um repositório online onde modelos e datasets abertos são publicados) ou numa pasta local no formato do mlx-lm, e precisa do pacote `datasets` (`pip install "mlx-lm[train]"`).
 
-O ajuste usa LoRA ([aula 6.3](/pt-br/lessons/6-post-training-and-alignment/6.3-lora-qlora-and-peft/)): os pesos da base ficam congelados, e um pequeno **adapter**, um par de pequenas matrizes de baixo rank ao lado de cada matriz de pesos adaptada, aprende a mudança. O `mlx_lm.lora` lê `train.jsonl`, um `valid.jsonl` opcional e `test.jsonl`, nos formatos `chat`, `completions`, `tools` ou `text`. Quando o `--model` é quantizado, o treino é QLoRA, isto é, LoRA sobre uma base quantizada. Monte um conjunto minúsculo e ajuste com ele:
+O ajuste usa LoRA ([aula 6.3](/pt-br/lessons/6-post-training-and-alignment/6.3-lora-qlora-and-peft/)): os pesos da base ficam congelados, e um pequeno **adapter**, um par de pequenas matrizes de baixo rank ao lado de cada matriz de pesos adaptada, aprende a mudança. O `mlx_lm.lora` lê `train.jsonl`, um `valid.jsonl` opcional e `test.jsonl` — arquivos **JSONL** com um registro JSON por linha — nos formatos `chat`, `completions`, `tools` ou `text`. Quando o `--model` é quantizado, o treino é QLoRA, isto é, LoRA sobre uma base quantizada.
+
+O script Python abaixo gera 24 exemplos minúsculos de chat para rotulagem de chamados e os divide em arquivos JSONL de treino, validação e teste numa pasta `data/`:
 
 ```python
 import json, os
@@ -116,6 +114,8 @@ for name, part in [("train", rows[:20]), ("valid", rows[20:22]), ("test", rows[2
         f.writelines(json.dumps(r) + "\n" for r in part)
 ```
 
+Com esse conjunto no disco, o primeiro comando abaixo confere a perplexidade do modelo quantizado, e o segundo treina um adapter LoRA pequeno por 30 iterações economizando memória em quatro camadas:
+
 ```bash
 mlx_lm.perplexity --model q4-g64 --data-path data --num-samples 2 --sequence-length 64 --batch-size 1
 mlx_lm.lora --model mlx-community/Qwen3-4B-Instruct-2507-4bit --train --data data \
@@ -123,18 +123,20 @@ mlx_lm.lora --model mlx-community/Qwen3-4B-Instruct-2507-4bit --train --data dat
   --adapter-path adapters --test
 ```
 
-O `--mask-prompt` calcula a loss (o erro de treino) só na completion, a resposta do assistente, e não no prompt. `--num-layers` (padrão 16), `--batch-size`, `--grad-accumulation-steps` e `--grad-checkpoint` são as alavancas de memória do `LORA.md`. A configuração do adapter registra rank 8, escala 20, sem dropout e learning rate de 1e-5. O ajuste também funcionou numa versão Qwen3.5 de 9B, da família de arquitetura do modelo do curso.
+O `--mask-prompt` calcula a loss (o erro de treino) só na completion, a resposta do assistente, e não no prompt. `--num-layers` (padrão 16), `--batch-size` (quantos exemplos entram juntos por atualização), `--grad-accumulation-steps` (somar atualizações de vários batches pequenos antes de alterar os pesos) e `--grad-checkpoint` (recalcular valores intermediários em vez de guardá-los na memória) são as alavancas de memória do `LORA.md`. A configuração do adapter registra rank 8 (a largura estreita no meio das matrizes LoRA), escala 20, sem dropout (desligar ativações ao acaso durante o treino) e learning rate (tamanho do passo de atualização) de 1e-5. O ajuste também funcionou numa versão Qwen3.5 de 9B, da família de arquitetura do modelo do curso.
 
 ## Por que o fuse numa base de 4 bits pode apagar o adapter
 
-O `mlx_lm.fuse` incorpora o adapter aos pesos, para que você distribua um único modelo em vez de uma base mais um adapter. Em `tuner/lora.py`, uma camada quantizada é desquantizada, o delta (a mudança trazida pelo adapter) é somado e a soma é quantizada de novo. Um delta pequeno pode desaparecer nesse novo arredondamento. O `--dequantize` mantém 16 bits.
+O `mlx_lm.fuse` incorpora o adapter aos pesos, para que você distribua um único modelo em vez de uma base mais um adapter. Como mostram os passos 2 e 3 da figura no topo, `tuner/lora.py` quantiza de novo a camada em 4 bits depois de somar o **delta** do adapter (a mudança aprendida nos pesos), e esse novo arredondamento pode engolir um delta pequeno; o `--dequantize` mantém 16 bits.
 
-Para ver se isso aconteceu, compare os **logits**, as pontuações brutas que o modelo dá a cada próximo token possível, na última posição de um prompt. Faça o fuse dos dois jeitos e compare cada um com a base mais o adapter:
+Para ver se isso aconteceu, compare os **logits**, as pontuações brutas que o modelo dá a cada próximo token possível, na última posição de um prompt. Os dois comandos abaixo fundem o mesmo adapter das duas formas — uma requantizada em 4 bits (`fused-q`) e outra mantida em 16 bits (`fused-16`):
 
 ```bash
 mlx_lm.fuse --model mlx-community/Qwen3-4B-Instruct-2507-4bit --adapter-path adapters --save-path fused-q
 mlx_lm.fuse --model mlx-community/Qwen3-4B-Instruct-2507-4bit --adapter-path adapters --save-path fused-16 --dequantize
 ```
+
+Em seguida, o script Python formata um prompt de teste com o **chat template** do modelo (o molde que transforma mensagens de usuário e assistente no texto exato esperado pelo modelo), carrega o modelo base, a base mais o adapter e os dois modelos fundidos, e imprime quanto os logits de cada fuse se afastaram da referência e se o token principal previsto ainda coincide:
 
 ```python
 import mlx.core as mx
@@ -166,7 +168,9 @@ Quantizar o fuse de 16 bits não ajudou neste substituto: a distância foi 25,62
 
 ## Prompt cache e flags de KV cache
 
-Ler um prompt, o prefill da [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/), produz um KV cache: as keys e values guardadas de todos os tokens até ali ([aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)). Quando muitos prompts começam com o mesmo texto longo, esse trabalho pode ser feito uma vez e salvo. O `mlx_lm.cache_prompt` salva o prefill de um prefixo compartilhado, e o `mlx_lm.generate --prompt-cache-file` o trata como prefixo do prompt novo (e lê o modelo a partir do arquivo):
+Ler um prompt, o prefill da [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/), produz um KV cache: as keys e values guardadas de todos os tokens até ali ([aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)). Quando muitos prompts começam com o mesmo **prefixo** longo (texto inicial compartilhado), esse trabalho pode ser feito uma vez e salvo num arquivo **safetensors** (um formato compacto para gravar arrays no disco). O `mlx_lm.cache_prompt` salva o prefill de um prefixo compartilhado, e o `mlx_lm.generate --prompt-cache-file` o trata como prefixo do prompt novo (e lê o modelo a partir do arquivo).
+
+Os comandos abaixo gravam uma nota curta em `doc.txt`, pré-calculam o prompt cache em `harbor.safetensors`, respondem a uma pergunta reaproveitando esse cache e, por fim, rodam uma geração curta separada com o KV cache quantizado em 4 bits a partir do token 0:
 
 ```bash
 printf 'Release notes for the fictional Harbor service. Version 4 adds a retry budget of three attempts per request. The retry delay doubles after each failure.\n' > doc.txt
@@ -182,7 +186,7 @@ As duas flags de cache não se combinam e nem sempre se aplicam. No substituto d
 
 Um modelo híbrido se comporta de outro jeito. Numa versão Qwen3.5 de 9B, cujo `model_type` o modelo do curso compartilha, o `make_prompt_cache` devolve o cache do próprio modelo, 24 camadas DeltaNet com `ArraysCache` e 8 camadas de attention com `KVCache`, seja qual for o `--max-kv-size`. Só as camadas de attention podem ser quantizadas. O estado DeltaNet, a memória de tamanho fixo das camadas Gated DeltaNet ([aula 4.15](/pt-br/lessons/4-transformer/4.15-gated-deltanet/)), não é um KV cache. Então a economia no 27B vale apenas para as suas 16 camadas de attention.
 
-Além disso, o arquivo `SERVER.md` avisa que o attention sobre um cache quantizado mantém uma matriz de scores do tamanho do passo de prefill por tamanho do contexto; portanto reduza o `--prefill-step-size` ao quantizar.
+Além disso, o arquivo `SERVER.md` avisa que o attention sobre um cache quantizado mantém uma matriz de scores (a tabela de pontuações de attention que compara tokens do prompt ao contexto anterior) do tamanho do passo de prefill por tamanho do contexto; portanto reduza o `--prefill-step-size` ao quantizar.
 :::
 
 :::caveat

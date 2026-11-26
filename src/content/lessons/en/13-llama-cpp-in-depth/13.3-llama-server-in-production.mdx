@@ -42,12 +42,14 @@ citations:
     authors: "Georgi Gerganov and contributors"
     year: 2023
     url: "https://github.com/ggml-org/llama.cpp/blob/b11380/src/llama-context.cpp"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-A server is a scheduler with an HTTP face: it accepts requests from many users and decides whose tokens the model computes next. [Lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/) explained continuous batching in the abstract. Here you meet the flags that control it in `llama-server`, plus the ones that protect and observe a running server.
+A server is a scheduler with an HTTP (web request-and-response) face: it accepts requests from many users and decides whose tokens the model computes next. [Lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/) explained continuous batching in the abstract. Here you meet the flags (command-line options) that control it in `llama-server`, plus the ones that protect and observe a running server.
 
-Every flag below comes from the `tools/server/README.md` at `b11380`. The slot, batching, cache-type, prompt-reuse, API-key and metrics settings were run against a server on 127.0.0.1, with Qwen3-1.7B Q8_0 as a stand-in model. The caveat at the end lists the flags that were read but not run. Paths and keys are placeholders.
+Every flag below comes from `tools/server/README.md` at `b11380`. The slot, batching, cache-type, prompt-reuse, API-key and metrics settings were run against a server listening on `127.0.0.1` (the loopback address reachable only from the same computer), with Qwen3-1.7B Q8_0 as a stand-in model. The caveat at the end lists the flags that were read but not run. File paths and keys are placeholders.
+
+The startup command below puts the core production flags together: a 16,384-token context divided across four slots, 8-bit quantized K and V caches with flash attention on, Prometheus metrics enabled, API keys loaded from a file, and network access restricted to local port (numbered connection channel) `8080`.
 
 ```
 llama-server -m MODEL.gguf -c 16384 -np 4 -fa on -ctk q8_0 -ctv q8_0 \
@@ -56,7 +58,7 @@ llama-server -m MODEL.gguf -c 16384 -np 4 -fa on -ctk q8_0 -ctv q8_0 \
 
 ## How `-c` is shared across slots
 
-A **slot** is one independent conversation with its own position in the KV cache (the stored keys and values of past tokens, from [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)). `-c` sets the context, the number of tokens of KV cache the server allocates. `-np` sets how many slots there are, and the README default is `-1`, meaning auto. In `server.cpp` auto means four slots and a **unified** KV pool, one pool that every slot draws from. An explicit `-np` turns that default off.
+A **slot** is one independent conversation with its own position in the KV cache (the stored keys and values of past tokens, from [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)). `-c` sets the context, the number of tokens of KV cache the server allocates. `-np` sets how many slots there are, and the README default is `-1`, meaning auto. In `server.cpp`, auto means four slots and a **unified** KV pool, one pool that every slot draws from. An explicit `-np` turns that default off.
 
 The common assumption is that `-c` is divided among the slots. That is only half true, and the log shows both halves:
 
@@ -65,20 +67,17 @@ The common assumption is that `-c` is divided among the slots. That is only half
 | `-c 8192` | `n_slots = 4, n_ctx_slot = 8192, kv_unified = 'true'` |
 | `-c 8192 -np 4` | `n_slots = 4, n_ctx_slot = 2048, kv_unified = 'false'` |
 
-`GET /slots` returned the same `n_ctx` per slot, and Homebrew's build 11146 printed the same two lines.
+Sending a `GET /slots` request (an HTTP read of the server's slot status) returned the same `n_ctx` per slot, and Homebrew's build 11146 printed the same two lines.
 
-The two rows behave differently:
+<Figure id="t13-server-kv-pool-modes" />
 
-- **Unified** (first row). Each slot may grow to the whole pool, but the four of them together still fit in 8192 tokens. If one conversation holds 6,000 tokens, the other three share the remaining 2,192.
-- **Divided** (second row). The code divides `-c` by the slot count and pads to a multiple of 256, so no slot can exceed 2048.
-
-The first is better when requests differ in length. The second gives a hard ceiling per user. Adding `-kvu` turns the unified pool back on: `-c 8192 -np 4 -kvu` logged `n_ctx_slot = 8192` and `kv_unified = 'true'`. `--kv-unified-per-slot N` sizes the pool as slots times N when you leave `-c` out. [Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns the memory budget for the context you choose.
+Use the unified pool when requests differ in length, and divided slots when you want a hard ceiling per user. Adding `-kvu` turns the unified pool back on even with an explicit slot count: `-c 8192 -np 4 -kvu` logged `n_ctx_slot = 8192` and `kv_unified = 'true'`. `--kv-unified-per-slot N` sizes the pool as slots times N when you leave `-c` out. [Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns the memory budget for the context you choose.
 
 ## Serving several users at once: batching and cache types
 
 Continuous batching is on by default (`-cb`). Requests join and leave the running batch at every decode step, so one step carries tokens from every busy slot. Two 200-token generations sent at once gave `llamacpp:n_busy_slots_per_decode` 1.957. Almost every decode call carried tokens from both slots, which is the point of the feature.
 
-`-ctk` and `-ctv` set the types of the K and V caches, the two halves of the KV cache. The README allows `f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1`, default `f16`. A smaller type fits more tokens into the same memory, so you can afford more slots. The quality cost is yours to measure with the tools of [lesson 13.2](/lessons/13-llama-cpp-in-depth/13.2-making-your-own-gguf-convert-imatrix-quantize/).
+`-ctk` and `-ctv` set the number types of the K and V caches, the two halves of the KV cache. The README allows `f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1`, default `f16`. A smaller type fits more tokens into the same memory, so you can afford more slots. The quality cost is yours to measure with the tools of [lesson 13.2](/lessons/13-llama-cpp-in-depth/13.2-making-your-own-gguf-convert-imatrix-quantize/).
 
 The V cache has a rule. A quantized V cache needs flash attention, the fused attention kernel from [lesson 7.7](/lessons/7-inference-and-efficiency/7.7-flashattention-and-io-awareness/). `-ctv q8_0 -fa off` exited with status 1 and `quantized V cache requires flash_attn to be enabled`, on both builds. With `-fa` at its default of `auto`, `-ctk q8_0 -ctv q8_0` started.
 
@@ -92,25 +91,25 @@ Three related controls exist:
 
 - `--cache-reuse N` tries to reuse chunks by shifting the KV cache (default 0, off).
 - `--cache-ram` caps the prompt cache in host memory (default 8192 MiB).
-- `--slot-save-path` enables `POST /slots/{id}?action=save` and `restore` for explicit snapshots.
+- `--slot-save-path` enables `POST /slots/{id}?action=save` and `restore` (HTTP write calls that save or reload a slot's KV cache as explicit snapshots on disk).
 
 ## When a conversation outgrows its slot
 
 `--context-shift` decides whether the server may discard old tokens to keep generating, and the README lists it as disabled by default. The overflow path was not tested, so check it with your own client before launch: send a prompt longer than `n_ctx_slot` and see whether you get an error, a truncation or a shift.
 
-Two more flags matter for long jobs. `-to` sets the read and write timeout in seconds (default 3600). `--sleep-idle-seconds` lets an idle server unload its model and KV cache (default off). `GET /slots` shows each slot's `n_ctx` and whether it is processing. `?fail_on_no_slot=1` returns 503 when no slot is free, which suits the health probe a load balancer sends to decide where to route traffic.
+Two more flags matter for long jobs. `-to` sets the read and write timeout (the maximum wait before cancelling a stalled connection) in seconds (default 3600). `--sleep-idle-seconds` lets an idle server unload its model and KV cache (default off). `GET /slots` shows each slot's `n_ctx` and whether it is processing. Adding `?fail_on_no_slot=1` returns HTTP status 503 (temporarily unavailable) when no slot is free, which suits the health probe (automated readiness check) a load balancer (a front traffic router across servers) sends to decide where to route traffic.
 
 ## What the server exposes
 
 `--jinja` is enabled by default, so the server renders the model's own chat template (the format that wraps messages into one prompt). `POST /apply-template` returns the rendered prompt, which is the quickest way to see what the model actually receives. Qwen3 templates read `enable_thinking`, which the tests set per request with `chat_template_kwargs`; `--chat-template-kwargs` sets it for the whole server.
 
-The endpoints are the OpenAI routes (`/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`), the Anthropic route (`/v1/messages`), and the native `/completion`, `/tokenize`, `/props`, `/slots` and `/metrics`.
+The endpoints (specific URL paths on the server) are the OpenAI routes (`/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`), the Anthropic route (`/v1/messages`), and the native `/completion`, `/tokenize`, `/props`, `/slots` and `/metrics`.
 
-If you constrain a reply to a JSON schema, as [lesson 8.5](/lessons/8-building-and-serving-stacks/8.5-sglang/) describes, a schema-valid object is still only a request. Before anything acts on it, check that generation ended normally rather than at a length limit, validate what the arguments mean, and check that this caller is allowed to do what they ask. [Lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) builds that check.
+If you constrain a reply to a JSON schema (a formal template specifying the exact fields and types a JSON reply must contain), as [lesson 8.5](/lessons/8-building-and-serving-stacks/8.5-sglang/) describes, a schema-valid object is still only a request. Before anything acts on it, check that generation ended normally rather than at a length limit, validate what the arguments mean, and check that this caller is allowed to do what they ask. [Lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) builds that check.
 
 ## Locking it down and watching it
 
-`--host` defaults to `127.0.0.1`, so only the same machine can connect. Without a key the log warns `no API key is set and CORS allows all origins`; CORS is the browser rule for which other websites may call the server. With `--api-key` or `--api-key-file` (one key per line, `#` for comments), the measured statuses were:
+`--host` defaults to `127.0.0.1`, so only the same machine can connect. Without an API key (a secret token callers send to prove access), the log warns `no API key is set and CORS allows all origins`; CORS is the browser rule for which other websites may call the server. With `--api-key` or `--api-key-file` (one key per line, `#` for comments), the measured HTTP status codes (`200` for OK, `401` for unauthorized) were:
 
 | Request | Status |
 |---|---|
@@ -120,7 +119,7 @@ If you constrain a reply to a JSON schema, as [lesson 8.5](/lessons/8-building-a
 | `/metrics`, `Authorization: Bearer KEY` | 200 |
 | `/v1/models`, `X-Api-Key: KEY` | 200 |
 
-Only `/health` and `/v1/health` are public, plus the web UI assets.
+Only `/health` and `/v1/health` are public, plus the web UI assets (the files for the server's built-in browser page).
 
 `/metrics` is off unless you pass `--metrics`, and your scraper then needs the key. It exports metrics in the format of Prometheus, a common monitoring system that polls ("scrapes") such endpoints. There are two kinds:
 
@@ -130,11 +129,11 @@ Only `/health` and `/v1/health` are public, plus the web UI assets.
 The exporter also printed `llamacpp:prompt_tokens_cached_total`, which the README table does not list.
 
 :::warning
-An API key on the command line is visible in the process list, so prefer `--api-key-file`. For a public deployment, the README advises an API key and a reverse proxy (a front server, such as nginx, that receives public traffic and forwards it). `--tools` is marked experimental, and `--agent` carries the README's warning not to enable it in untrusted environments. They expose file access and a shell tool, so leave them off on a shared server.
+An API key on the command line is visible in the process list, so prefer `--api-key-file`. For a public deployment, the README advises an API key and a reverse proxy (a front server, such as nginx, that receives public traffic and forwards it). `--tools` is marked experimental, and `--agent` carries the README's warning not to enable it in untrusted environments. They expose file access and a shell tool (running operating-system commands), so leave them off on a shared server.
 :::
 
 :::caveat
-These flags come from the README only and were not run: `--cache-reuse`, `--cache-ram`, `--slot-save-path`, `--context-shift`, `-to`, `--sleep-idle-seconds`, `--kv-unified-per-slot`, `--chat-template-kwargs`, `--tools` and `--agent`. TLS (`--ssl-key-file`, `--ssl-cert-file`), router mode (`--models-dir`) and the multi-key list were not tested either.
+These flags come from the README only and were not run: `--cache-reuse`, `--cache-ram`, `--slot-save-path`, `--context-shift`, `-to`, `--sleep-idle-seconds`, `--kv-unified-per-slot`, `--chat-template-kwargs`, `--tools` and `--agent`. TLS (network encryption, via `--ssl-key-file` and `--ssl-cert-file`), router mode (`--models-dir`) and the multi-key list were not tested either.
 :::
 
-To sum up, a server has three budgets, the context pool, the slots that share it and the cache types that shrink it. Choose them from your traffic, then read the startup log to confirm what you got. Next, [lesson 13.4](/lessons/13-llama-cpp-in-depth/13.4-benchmarking-with-llama-bench/) measures the result with `llama-bench`.
+Choose the context pool, slot count and cache types from your traffic, then read the startup log to confirm what you got. Next, [lesson 13.4](/lessons/13-llama-cpp-in-depth/13.4-benchmarking-with-llama-bench/) measures the result with `llama-bench`.

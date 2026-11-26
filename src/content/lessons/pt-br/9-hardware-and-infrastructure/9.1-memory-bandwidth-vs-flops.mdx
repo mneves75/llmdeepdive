@@ -38,14 +38,14 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Alugue uma única GPU classe H100, carregue o Qwen3.8-27B em bf16, abra uma janela de chat e cronometre a saída. Os tokens chegam a algumas dezenas por segundo, enquanto a ficha técnica da placa anuncia throughput aritmético na casa dos petaflops (um petaflop é um milhão de bilhões de operações de ponto flutuante por segundo). Nada está quebrado e nada está mal configurado. Neste exemplo, a principal restrição é a bandwidth de memória: você está pagando a máquina na moeda errada. Esta aula mostra qual moeda a geração de um único chat realmente gasta, para você distinguir uma configuração lenta de uma que está funcionando como deveria.
+Alugue uma única GPU (unidade de processamento gráfico) classe H100, carregue o Qwen3.8-27B em bf16 (bfloat16, um formato numérico decimal de dois bytes por valor), abra uma janela de chat e cronometre a saída. Os tokens chegam a algumas dezenas por segundo, enquanto a ficha técnica da placa anuncia throughput aritmético (quantidade de trabalho concluído por segundo) na casa dos petaflops (um petaflop é um milhão de bilhões de operações de ponto flutuante por segundo). Nada está quebrado e nada está mal configurado. Neste exemplo, a principal restrição é a bandwidth de memória: você está pagando a máquina na moeda errada. Esta aula mostra qual moeda a geração de um único chat realmente gasta, para você distinguir uma configuração lenta de uma que está funcionando como deveria.
 
 ## O que um acelerador vende de fato?
 
-Todo acelerador vende duas coisas, e elas têm preços independentes.
+Todo acelerador (um chip processador voltado para cargas pesadas de matemática) vende duas coisas, e elas têm preços independentes.
 
 - **Aritmética**, contada em FLOP/s: operações de ponto flutuante por segundo. Numa GPU NVIDIA, a maior parte vem dos **tensor cores**, unidades pequenas especializadas em multiplicação de matrizes, espalhadas pelos **streaming multiprocessors** do chip (os blocos de processamento independentes da GPU).
 - **Tráfego de memória**, contado em bytes por segundo e chamado de **memory bandwidth** (largura de banda de memória): a velocidade com que os dados se movem entre a **HBM** da GPU (*high-bandwidth memory*, os chips de memória empilhados onde ficam os pesos) e essas unidades de compute.
@@ -67,7 +67,7 @@ Agora o exemplo trabalhado. A [aula 7.3](/pt-br/lessons/7-inference-and-efficien
 1. Cada passo avança uma posição por sequência, através de todas as camadas.
 2. Em batch 1 (uma sequência), a arithmetic intensity de uma matriz de pesos é de cerca de uma operação por byte de peso, porque cada leitura de peso serve a um único token.
 
-Os bytes são concretos. O Qwen3.8-27B guarda aproximadamente 27 bilhões de parâmetros em bfloat16, dois bytes cada, o que dá cerca de 54 GB de pesos. Mas 54 GB são o artefato completo residente na memória, não os bytes exatos que um passo de decode de texto lê. Alguns tensors são lidos a cada passo: toda projeção do decoder, as matrizes de feed-forward com gate e a cabeça de linguagem não amarrada (a matriz final que transforma o estado oculto em pontuações sobre o vocabulário, guardada separadamente do embedding de entrada). Outros não são lidos por inteiro: o embedding de entrada é um lookup de uma única linha, e a vision tower não roda em input apenas textual.
+Os bytes são concretos. O Qwen3.8-27B guarda aproximadamente 27 bilhões de parâmetros em bfloat16, dois bytes cada, o que dá cerca de 54 GB de pesos. Mas 54 GB são o **checkpoint** completo (o arquivo salvo de pesos residente na memória), não os bytes exatos que um passo de decode de texto lê. Alguns **tensors** (grades multidimensionais de números) são lidos a cada passo: toda projeção do decoder, as matrizes de feed-forward com gate e a cabeça de linguagem não amarrada (a matriz final que transforma o estado oculto em pontuações sobre o vocabulário, guardada separadamente do embedding de entrada). Outros não são lidos por inteiro: o embedding de entrada é uma consulta direta de uma única linha na tabela, e a vision tower (a parte do modelo que lê imagens) não roda em input apenas textual.
 
 Então o checkpoint completo dá um quociente de planejamento, não uma contagem exata. Divida os bytes pela bandwidth para obter o tempo de transmiti-los uma vez:
 
@@ -81,7 +81,7 @@ $$
 \text{heurística de taxa pelo tamanho do checkpoint} \approx \frac{1}{16.1\times10^{-3}\ \text{s}} \approx 62.
 $$
 
-Chame de cerca de 60 tokens por segundo. Isso não é um benchmark, e ninguém aqui mediu esse número. É uma estimativa conservadora a partir do tamanho do checkpoint e de uma alegação de bandwidth do fabricante. Ela ignora o trabalho de attention, as leituras crescentes de key-value da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) (o cache de keys e values passados que cada passo relê), as atualizações de estado do DeltaNet, o overhead de lançamento de kernel e toda ineficiência entre a bandwidth de pico e a atingida.
+Chame de cerca de 60 tokens por segundo. Isso não é um benchmark, e ninguém aqui mediu esse número. É uma estimativa conservadora a partir do tamanho do checkpoint e de uma alegação de bandwidth do fabricante. Ela ignora o trabalho de attention, as leituras crescentes de key-value da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) (o cache de keys e values passados que cada passo relê), as atualizações de estado do DeltaNet, o **overhead de lançamento de kernel** (o atraso fixo de preparo cada vez que a CPU manda a GPU iniciar um kernel) e toda ineficiência entre a bandwidth de pico e a atingida.
 
 Uma taxa medida pode cair de qualquer lado desse quociente. Tensors do checkpoint que um passo de texto não lê reduzem os bytes ativos, o que empurra a taxa para cima. Cache, estado, kernels e bandwidth de pico não atingida acrescentam custo, o que a empurra para baixo. O quociente serve para a ordem de grandeza; um roofline exato (o gráfico da [aula 9.2](/pt-br/lessons/9-hardware-and-infrastructure/9.2-the-roofline-model/)) usa bytes ativos medidos por token.
 
@@ -89,32 +89,34 @@ Uma taxa medida pode cair de qualquer lado desse quociente. Tensors do checkpoin
 
 Aqui está o desvio errado, e ele é caro o bastante para as pessoas o cometerem com ordens de compra. O decode parece lento, então o time conclui que a GPU ficou sem aritmética e especifica uma peça com mais FLOPs.
 
-Rode a aritmética sobre a proposta, em vez disso. Sob a heurística pelo tamanho do checkpoint, a placa realiza aproximadamente duas operações por parâmetro (uma multiplicação e uma soma, um multiply-accumulate). Isso dá cerca de 54 bilhões de operações no total, contra um pico de mil teraflops. Distribuído pelos 16,1 ms que o passo leva, dá algo como três décimos de um por cento da aritmética que a máquina pode entregar. Os tensor cores ficam ociosos por mais de 99 por cento do passo. Dobrá-los dobra a ociosidade.
+Rode a aritmética sobre a proposta, em vez disso. Sob a heurística pelo tamanho do checkpoint, a placa realiza aproximadamente duas operações por parâmetro (uma multiplicação e uma soma, um multiply-accumulate), ou cerca de 54 bilhões de operações ao longo do passo de 16,1 ms — aproximadamente três décimos de um por cento de um pico de mil teraflops. Dobrar os tensor cores apenas dobra a ociosidade deles.
 
 A correção é cortar bytes, e não operações. Todo remédio eficaz de decode neste curso faz exatamente isso:
 
 - **Pesos validados de bits mais baixos** reduzem os bytes ativos lidos por token.
 - **Batching** distribui uma leitura de pesos entre muitas sequências.
-- **Speculative decoding** verifica vários tokens candidatos por leitura.
+- **Speculative decoding** (técnica que verifica vários tokens candidatos de rascunho em paralelo) dilui cada leitura de pesos por mais de um token.
 
 ## Batching: a alavanca mais barata
 
-O batching merece sua própria linha de aritmética, porque é a alavanca mais barata e a mais mal compreendida. Fazer decode de 32 sequências independentes juntas ainda lê os pesos uma vez por passo. Cada byte agora serve a 32 tokens, então a intensidade sobe de cerca de uma operação por byte para cerca de 32. Num modelo simplificado só de pesos, que conta os bytes de peso e ignora todo o resto, o throughput total sobe aproximadamente 32 vezes, enquanto a latência que cada sequência percebe quase não se move. O batching real ganha menos: cada sequência a mais também lê o seu próprio KV cache e o seu estado recorrente a cada passo, o trabalho de attention cresce com o contexto e o escalonamento tem overhead, então meça a taxa em batch em vez de multiplicar.
+<Figure id="t9-two-currencies" />
 
-Mas 32 ainda está muito abaixo do ponto de equilíbrio de 300, então o passo continua limitado por bandwidth; a bandwidth só está fazendo mais trabalho útil por leitura. É por isso que a economia de serving (tokens totais por segundo por dólar) e a latência de chat (a rapidez com que um usuário vê os tokens) são problemas diferentes, com respostas diferentes. Um sistema ajustado para um pode parecer quebrado quando medido pelo outro.
+Avance pelas etapas da figura para ver como o mesmo fluxo de pesos muda de limite conforme a carga de trabalho. O batching é a alavanca mais barata e a mais mal compreendida: num modelo simplificado só de pesos, fazer decode de 32 sequências independentes juntas eleva o throughput total aproximadamente 32 vezes enquanto a **latência** (o atraso que cada usuário espera por token) quase não se move. O batching real ganha menos: cada sequência a mais também lê o seu próprio KV cache e o seu estado recorrente a cada passo, o trabalho de attention cresce com o contexto e o escalonamento acrescenta overhead, então meça a taxa em batch em vez de multiplicar.
+
+Como 32 operações por byte ainda ficam bem abaixo do ponto de equilíbrio de 300, a economia de serving (tokens totais por segundo por dólar) e a latência de chat (a rapidez com que um usuário vê os tokens) são problemas diferentes, com respostas diferentes. Um sistema ajustado para um pode parecer quebrado quando medido pelo outro.
 
 :::warning
-A porcentagem de utilização reportada pelas ferramentas comuns de monitoramento não é eficiência aritmética. Ela reporta a fração dos intervalos amostrados durante os quais algum kernel estava rodando no dispositivo. Um passo de decode que gasta dezesseis milissegundos esperando leituras de HBM aparece, portanto, como totalmente utilizado enquanto os tensor cores quase nada fazem. Uma placa pode estar ao mesmo tempo a 100 por cento de utilização e a 0,3 por cento do pico de FLOPs. A aula 9.2 dá o gráfico que separa os dois, e ferramentas de profiling reportam bandwidth atingida e aritmética atingida como contadores separados exatamente por essa razão.
+A porcentagem de utilização reportada pelas ferramentas comuns de monitoramento não é eficiência aritmética. Ela reporta a fração dos intervalos amostrados durante os quais algum kernel estava rodando no dispositivo. Um passo de decode que gasta dezesseis milissegundos esperando leituras de HBM aparece, portanto, como totalmente utilizado enquanto os tensor cores quase nada fazem. Uma placa pode estar ao mesmo tempo a 100 por cento de utilização e a 0,3 por cento do pico de FLOPs. A aula 9.2 dá o gráfico que separa os dois, e **ferramentas de profiling** (programas que medem onde o tempo da GPU e o tráfego de memória de fato vão parar) reportam bandwidth atingida e aritmética atingida como contadores separados exatamente por essa razão.
 :::
 
 ## O treinamento gasta a outra moeda
 
-O treinamento corre no sentido oposto, o que vale manter ao lado da [aula 5.13](/pt-br/lessons/5-pretraining-at-scale/5.13-pretraining-costs/). O custo de pré-treinamento é estimado como aproximadamente seis operações por parâmetro por token. Essa fórmula conta FLOPs porque o pré-treinamento processa batches enormes de tokens, então cada leitura de peso serve a muitos tokens e o trabalho fica bem do lado rico em aritmética do ponto de equilíbrio.
+O treinamento corre no sentido oposto, como mostra o terceiro painel ao lado da [aula 5.13](/pt-br/lessons/5-pretraining-at-scale/5.13-pretraining-costs/). O custo de pré-treinamento é estimado em aproximadamente seis operações por parâmetro por token porque os batches enormes do treinamento mantêm a arithmetic intensity muito acima do ponto de equilíbrio.
 
 Os mesmos pesos que fizeram do treinamento uma questão de comprar FLOPs fazem do serving de fluxo único uma questão de comprar bandwidth. Um modelo roda sob dois limites de hardware diferentes, então a compra certa se inverte dependendo de qual fase você está pagando.
 
 :::caveat
-Ambos os números usados aqui são alegações do fabricante e devem ser tratados como âncoras de ordem de grandeza, não como especificações às quais você possa cobrar um sistema. A bandwidth de pico da HBM nunca é plenamente atingida. Taxas de FLOP citadas frequentemente assumem esparsidade estruturada ou um formato numérico mais estreito do que você planeja usar. E o número de 54 GB de pesos omite ativações, cache e overhead de runtime. Derive um limite exato a partir dos bytes ativos medidos na peça e no runtime que você de fato alugar, e então meça o throughput.
+Ambos os números usados aqui são alegações do fabricante e devem ser tratados como âncoras de ordem de grandeza, não como especificações às quais você possa cobrar um sistema. A bandwidth de pico da HBM nunca é plenamente atingida. Taxas de FLOP citadas frequentemente assumem **esparsidade estruturada** (um padrão de pesos zerados que o hardware consegue pular) ou um formato numérico mais estreito do que você planeja usar. E o número de 54 GB de pesos omite **ativações** (os resultados intermediários de cada camada), cache e overhead de runtime. Derive um limite exato a partir dos bytes ativos medidos na peça e no runtime que você de fato alugar, e então meça o throughput.
 :::
 
 O modelo para guardar é uma máquina de duas moedas. Para qualquer kernel, pergunte quantas operações ele realiza por byte que precisa mover e compare isso com o ponto de equilíbrio da máquina. Antes de escrever uma linha de otimização, você já sabe de qual recurso está carente. A aula 9.2 transforma essa comparação num único gráfico onde você pode posicionar cada kernel. A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) gasta a outra metade do orçamento de hardware, a capacidade em vez da bandwidth, no key-value cache.

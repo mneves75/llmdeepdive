@@ -38,20 +38,20 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-A [aula 7.12](/pt-br/lessons/7-inference-and-efficiency/7.12-running-models-locally/) deixou uma ponta solta. Ela dimensionou um build de 4 bits do Qwen3.8-27B em cerca de 17,1 GB e observou que máquinas de unified memory (memória unificada) "jogam acima da classe aparente", mas não disse por quê, nem até onde. Esta aula responde a isso. A resposta se divide em duas perguntas que iniciantes rotineiramente fundem numa só: o modelo carrega, e quão rápido ele roda?
+A [aula 7.12](/pt-br/lessons/7-inference-and-efficiency/7.12-running-models-locally/) deixou uma ponta solta. Ela dimensionou um build de **4 bits** (meio byte por peso em vez de dois) do Qwen3.8-27B em cerca de 17,1 GB e observou que máquinas de unified memory (memória unificada) "jogam acima da classe aparente", mas não disse por quê, nem até onde. Esta aula responde a isso. A resposta se divide em duas perguntas que iniciantes rotineiramente fundem numa só: o modelo carrega, e quão rápido ele roda?
 
 ## O modelo carrega? A fronteira que a unified memory remove
 
-A pergunta do carregamento é de arquitetura. Uma workstation convencional tem uma **GPU discreta**: uma placa separada com sua própria memória, chamada **VRAM**, ligada ao resto da máquina pelo **PCIe** (o barramento de expansão padrão). O arquivo do modelo é lido primeiro para a RAM do host, a memória principal da máquina, e depois copiado pelo PCIe para a VRAM da placa. Para operação totalmente residente na GPU, os pesos que a GPU usa precisam estar nessa VRAM, e não na memória da máquina. Runtimes como o llama.cpp conseguem descarregar algumas camadas para a CPU e a RAM do sistema ([aula 8.7](/pt-br/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/)), então um modelo maior ainda roda, mas essas camadas passam a andar na velocidade da memória do sistema, o que costuma custar desempenho interativo. Então uma máquina com 128 GB de RAM e uma placa de 24 GB é, para serving totalmente residente na GPU, uma máquina de 24 GB.
+A pergunta do carregamento é de arquitetura. Uma **workstation** (um computador de mesa voltado para trabalho técnico pesado) convencional tem uma **GPU discreta**: uma placa separada com sua própria memória, chamada **VRAM** (RAM de vídeo), ligada ao resto da máquina pelo **PCIe** (o barramento de expansão padrão). Para operação totalmente residente na GPU, os pesos que a GPU usa precisam estar nessa VRAM, e não na RAM do host. Runtimes como o llama.cpp conseguem fazer **offload** (descarregar) de algumas camadas para a **CPU** (unidade central de processamento, o processador principal) e a RAM do sistema ([aula 8.7](/pt-br/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/)), então um modelo maior ainda roda, mas essas camadas passam a andar na velocidade da memória do sistema, o que costuma custar desempenho interativo.
 
-O Apple silicon remove a fronteira. A CPU, a GPU e o Neural Engine (o acelerador de machine learning dentro do chip da Apple) endereçam um único pool físico, e um tensor produzido por um é visível aos outros sem cópia. Pense em duas threads de um mesmo processo compartilhando uma variável, em vez de dois processos trocando uma mensagem: nada é serializado nem enviado.
+<Figure id="t9-discrete-vs-unified" />
 
-A Apple documenta isso como a arquitetura de unified memory subjacente ao Metal, sua interface de programação de GPU. O MLX, o framework de arrays da Apple visto na [aula 8.9](/pt-br/lessons/8-building-and-serving-stacks/8.9-mlx/), é construído diretamente sobre essa propriedade: arrays vivem em memória compartilhada, e uma operação é enviada a um dispositivo em vez de um buffer ser despachado para ele.
+O Apple silicon remove essa fronteira. A CPU, a GPU e o Neural Engine (o acelerador de machine learning dentro do chip da Apple) endereçam um único pool físico, de modo que um tensor produzido por um fica visível aos outros sem cópia. Pense em duas pessoas lendo o mesmo caderno sobre uma única mesa em vez de tirar cópias das páginas e levá-las entre escritórios: nada é duplicado nem despachado.
 
-Então um artefato de 17,1 GB numa máquina com 64 GB de unified memory fica residente assim que carrega. Nada é transferido e nada é duplicado. O KV cache da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/), as keys e values guardados dos tokens passados, se serve do mesmo pool em vez de competir por um pool privado menor.
+A Apple documenta isso como a arquitetura de unified memory subjacente ao Metal, sua interface de programação de GPU. O MLX, o **framework de arrays** (biblioteca de software para matemática em grades de números) da Apple visto na [aula 8.9](/pt-br/lessons/8-building-and-serving-stacks/8.9-mlx/), é construído diretamente sobre essa propriedade: arrays vivem em memória compartilhada, e uma operação é enviada a um dispositivo em vez de um **buffer** (bloco reservado de memória) ser despachado para ele. O KV cache da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/), as keys e values guardados dos tokens passados, se serve do mesmo pool em vez de competir por um pool privado menor.
 
 ## Quão rápido ele roda?
 
@@ -65,8 +65,8 @@ $$
 
 Isso dá cerca de 47 tokens por segundo como heurística pelo tamanho do artefato, e os erros empurram para os dois lados:
 
-- Ela supõe que cada byte do arquivo seja tráfego ativo de pesos, mas o arquivo GGUF também contém metadados e tensors mistos que não são necessariamente lidos a cada passo. Isso torna os bytes ativos reais menores.
-- Ela supõe uso perfeito da bandwidth, enquanto cache, estado, kernels e limites térmicos acrescentam outro tráfego e outras perdas.
+- Ela supõe que cada byte do arquivo seja tráfego ativo de pesos, mas o arquivo GGUF também contém **metadados** (cabeçalhos e descrições do arquivo) e tensors mistos que não são necessariamente lidos a cada passo. Isso torna os bytes ativos reais menores.
+- Ela supõe uso perfeito da bandwidth, enquanto cache, estado, kernels e **limites térmicos** (o chip reduzindo velocidade para não superaquecer) acrescentam outro tráfego e outras perdas.
 
 Como esses efeitos se movem em direções opostas, o quociente não é um limite superior rígido. Meça bytes ativos e throughput.
 
@@ -88,7 +88,7 @@ O equívoco mais frequente sobre unified memory é que um pool grande substitui 
 
 ## O que o cache e o estado recorrente acrescentam
 
-Dois efeitos de segunda ordem merecem ser nomeados.
+Dois efeitos adicionais merecem ser nomeados depois que a leitura principal de pesos fica clara.
 
 Primeiro, o cache se serve do mesmo pool. Aos 64 KiB por token da aula 7.2, uma conversa de 32.768 tokens acrescenta 2 GiB de estado de KV residente. Cada byte dele também é lido durante o decode, então contextos longos baixam o teto de velocidade, além de ocupar capacidade.
 
