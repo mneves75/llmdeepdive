@@ -83,32 +83,31 @@ export const TRACK_33_FIGURES = {
       'pt-br': 'Compressão latente, trajetórias retas no Flow Matching e a curva de latência do CFG',
     },
     caption: {
-      en: 'Modern generators shrink pixels 48× with a VAE before iterating, follow constant-velocity straight lines in Flow Matching, and cut H100 latency 6× by distilling Classifier-Free Guidance into fewer steps.',
-      'pt-br': 'Geradores modernos encolhem pixels 48× com um VAE antes de iterar, seguem linhas retas de velocidade constante no Flow Matching e reduzem a latência em H100 em 6× destilando o Classifier-Free Guidance em menos passos.',
+      en: 'Modern generators operate inside a 48× smaller VAE latent grid, train Flow Matching on straight conditional paths, and in the illustrative H100 budget below cut latency 6× by distilling Classifier-Free Guidance into fewer steps.',
+      'pt-br': 'Geradores modernos operam em uma grade latente VAE 48× menor, treinam o Flow Matching sobre trajetórias condicionais retas e, no orçamento ilustrativo em H100 abaixo, cortam a latência em 6× destilando o Classifier-Free Guidance em menos passos.',
     },
     steps: [
       {
         label: { en: '1. 48× latent pipeline', 'pt-br': '1. Pipeline latente 48×' },
         caption: {
-          en: 'All iterative denoising runs inside the 64 × 64 × 4 latent grid (16,384 values instead of 786,432 RGB values); the VAE decoder runs once at the end.',
-          'pt-br': 'Todo o refinamento iterativo ocorre na grade latente 64 × 64 × 4 (16.384 valores em vez de 786.432 valores RGB); o decodificador VAE roda uma única vez no fim.',
+          en: 'Training compresses RGB images 48× with the VAE encoder into a 64 × 64 × 4 grid (16,384 vs 786,432 values). Text-to-image inference starts directly from random 64 × 64 × 4 latent noise, runs N DiT steps, and decodes once to RGB.',
+          'pt-br': 'O treino comprime imagens RGB em 48× com o codificador VAE para uma grade 64 × 64 × 4 (16.384 contra 786.432 valores). Na inferência texto-para-imagem, o processo parte direto de ruído latente 64 × 64 × 4, roda N passos DiT e decodifica uma vez para RGB.',
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Raw RGB image', 'pt-br': 'Imagem RGB bruta' }, detail: { en: '512 × 512 × 3 = 786,432 values', 'pt-br': '512 × 512 × 3 = 786.432 valores' }, pigment: 'muted' },
-            { label: { en: 'VAE encoder', 'pt-br': 'Codificador VAE' }, detail: { en: '8× down per side (48× smaller)', 'pt-br': 'redução 8× por lado (48× menor)' }, pigment: 'accent' },
-            { label: { en: 'Latent tensor', 'pt-br': 'Tensor latente' }, detail: { en: '64 × 64 × 4 = 16,384 values', 'pt-br': '64 × 64 × 4 = 16.384 valores' }, pigment: 'accent' },
-            { label: { en: 'Iterative DiT', 'pt-br': 'DiT iterativo' }, detail: { en: 'N denoising steps in latent space', 'pt-br': 'N passos de denoising no espaço latente' }, pigment: 'caution' },
-            { label: { en: 'VAE decoder (1×)', 'pt-br': 'Decodificador VAE (1×)' }, detail: { en: 'maps clean latent back to RGB', 'pt-br': 'converte o latente limpo de volta a RGB' }, pigment: 'success' },
+            { label: { en: 'Latent noise (+ text)', 'pt-br': 'Ruído latente (+ texto)' }, detail: { en: '64 × 64 × 4 = 16,384 values (48× smaller than RGB)', 'pt-br': '64 × 64 × 4 = 16.384 valores (48× menor que RGB)' }, pigment: 'muted' },
+            { label: { en: 'Iterative DiT', 'pt-br': 'DiT iterativo' }, detail: { en: 'N denoising steps in compressed latent space', 'pt-br': 'N passos de denoising no espaço latente comprimido' }, pigment: 'caution' },
+            { label: { en: 'Clean latent', 'pt-br': 'Latente limpo' }, detail: { en: 'same 64 × 64 × 4 grid trained via VAE encoder', 'pt-br': 'mesma grade 64 × 64 × 4 treinada via codificador VAE' }, pigment: 'accent' },
+            { label: { en: 'VAE decoder (1×)', 'pt-br': 'Decodificador VAE (1×)' }, detail: { en: 'expands to 512 × 512 × 3 = 786,432 RGB values', 'pt-br': 'expande para 512 × 512 × 3 = 786.432 valores RGB' }, pigment: 'success' },
           ],
         },
       },
       {
         label: { en: '2. Linear Flow Matching', 'pt-br': '2. Flow Matching linear' },
         caption: {
-          en: 'From noise x0 = -1.0 to target x1 = 3.0, the linear path x_t = (1 - t)x0 + t·x1 crosses 0.0 at t = 0.25 with constant velocity v = 4.0.',
-          'pt-br': 'Do ruído x0 = -1,0 ao alvo x1 = 3,0, o caminho linear x_t = (1 - t)x0 + t·x1 passa por 0,0 em t = 0,25 com velocidade constante v = 4,0.',
+          en: 'For a training pair (x0 = -1.0, x1 = 3.0), the conditional linear path x_t = (1 - t)x0 + t·x1 crosses 0.0 at t = 0.25 with constant velocity v = 4.0.',
+          'pt-br': 'Para um par de treino (x0 = -1,0, x1 = 3,0), a trajetória condicional linear x_t = (1 - t)x0 + t·x1 passa por 0,0 em t = 0,25 com velocidade constante v = 4,0.',
         },
         body: {
           kind: 'plot',
@@ -201,7 +200,7 @@ export const TRACK_33_FIGURES = {
             { label: { en: '24 kHz waveform', 'pt-br': 'Onda a 24 kHz' }, detail: { en: '24,000 samples/second', 'pt-br': '24.000 amostras/segundo' }, pigment: 'muted' },
             { label: { en: '320× conv encoder', 'pt-br': 'Codificador conv. 320×' }, detail: { en: '75 continuous frames/s', 'pt-br': '75 quadros contínuos/s' }, pigment: 'accent' },
             { label: { en: 'Codebook 1 (c1)', 'pt-br': 'Codebook 1 (c1)' }, detail: { en: '1,024 centroids; coarse speech & pitch', 'pt-br': '1.024 centróides; fala e entonação' }, pigment: 'caution' },
-            { label: { en: 'Codebooks 2–8', 'pt-br': 'Codebooks 2 a 8' }, detail: { en: 'quantize residual error r = z - e(c)', 'pt-br': 'quantizam o erro residual r = z - e(c)' }, pigment: 'accent' },
+            { label: { en: 'Codebooks 2–8', 'pt-br': 'Codebooks 2 a 8' }, detail: { en: 'each quantizes the prior stage’s residual', 'pt-br': 'cada um quantiza o resíduo do estágio anterior' }, pigment: 'accent' },
             { label: { en: 'Discrete stream', 'pt-br': 'Fluxo discreto' }, detail: { en: '600 tokens/s at 6.0 kbps', 'pt-br': '600 tokens/s a 6,0 kbps' }, pigment: 'success' },
           ],
         },
@@ -209,8 +208,8 @@ export const TRACK_33_FIGURES = {
       {
         label: { en: '3. Variable bitrate', 'pt-br': '3. Taxa de bits variável' },
         caption: {
-          en: 'Because every codebook adds 75 tokens/s × 10 bits = 0.75 kbps, dropping upper codebooks scales cleanly from 6.0 kbps (K = 8) down to 0.75 kbps (K = 1) without retraining.',
-          'pt-br': 'Como cada codebook soma 75 tokens/s × 10 bits = 0,75 kbps, descartar codebooks superiores reduz a taxa de 6,0 kbps (K = 8) até 0,75 kbps (K = 1) sem retreinar.',
+          en: 'Because every codebook adds 75 tokens/s × 10 bits = 0.75 kbps, dropping upper codebooks scales the released 24 kHz checkpoint cleanly across 1.5, 3.0, and 6.0 kbps (K = 2, 4, 8) without retraining.',
+          'pt-br': 'Como cada codebook soma 75 tokens/s × 10 bits = 0,75 kbps, descartar codebooks superiores escala o checkpoint de 24 kHz entre 1,5, 3,0 e 6,0 kbps (K = 2, 4, 8) sem retreinar.',
         },
         body: {
           kind: 'plot',
@@ -218,11 +217,11 @@ export const TRACK_33_FIGURES = {
           yAxis: { label: { en: 'Audio bitrate', 'pt-br': 'Taxa de bits de áudio' }, scale: 'linear', min: 0, max: 6.5, unit: 'kbps' },
           series: [
             {
-              label: { en: 'EnCodec at 75 frames/s, 10 bits/token', 'pt-br': 'EnCodec a 75 quadros/s, 10 bits/token' },
+              label: { en: 'EnCodec 24 kHz (75 frames/s, 10 bits/token)', 'pt-br': 'EnCodec 24 kHz (75 quadros/s, 10 bits/token)' },
               pigment: 'accent',
-              points: [[1, 0.75], [2, 1.5], [4, 3], [8, 6]],
+              points: [[2, 1.5], [4, 3], [8, 6]],
               marks: [
-                { at: [1, 0.75], label: { en: 'K=1: 75 tok/s (0.75 kbps)', 'pt-br': 'K=1: 75 tok/s (0,75 kbps)' } },
+                { at: [2, 1.5], label: { en: 'K=2: 150 tok/s (1.5 kbps)', 'pt-br': 'K=2: 150 tok/s (1,5 kbps)' } },
                 { at: [8, 6], label: { en: 'K=8: 600 tok/s (6.0 kbps)', 'pt-br': 'K=8: 600 tok/s (6,0 kbps)' } },
               ],
             },
@@ -324,16 +323,16 @@ export const TRACK_33_FIGURES = {
       {
         label: { en: '2. Mixed-batch serving', 'pt-br': '2. Serving em lote misto' },
         caption: {
-          en: 'The shared base runs once for the entire batch while Unified Paging brings active adapters from host RAM and custom kernels apply each request’s A and B adapter deltas in parallel.',
-          'pt-br': 'A base compartilhada roda uma vez para o lote inteiro enquanto o Unified Paging traz adaptadores ativos da RAM do host e kernels em lote aplicam os deltas A e B de cada requisição em paralelo.',
+          en: 'For each mixed batch, the shared frozen base runs once while Unified Paging loads active adapters from host RAM for a separate batched LoRA pass, and both outputs are added together.',
+          'pt-br': 'Em cada lote misto, a base congelada roda uma vez enquanto o Unified Paging carrega adaptadores ativos da RAM para um passo LoRA em lote separado, e as duas saídas são somadas.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Mixed tenant batch', 'pt-br': 'Lote misto de tenants' }, detail: { en: 'each request tags its adapter_id', 'pt-br': 'cada pedido marca seu adapter_id' }, pigment: 'muted' },
-            { label: { en: 'Shared frozen base', 'pt-br': 'Base congelada compartilhada' }, detail: { en: '54 GB in GPU VRAM, runs once', 'pt-br': '54 GB na VRAM da GPU, roda uma vez' }, pigment: 'accent' },
-            { label: { en: 'Unified Paging pool', 'pt-br': 'Pool de Unified Paging' }, detail: { en: 'active 60 MB adapters paged from host RAM', 'pt-br': 'adaptadores ativos de 60 MB paginados da RAM' }, pigment: 'caution' },
-            { label: { en: 'Parallel adapter deltas', 'pt-br': 'Deltas de adaptador em paralelo' }, detail: { en: 'batched kernels add each tenant’s A, B update', 'pt-br': 'kernels em lote somam o delta A, B de cada tenant' }, pigment: 'success' },
+            { label: { en: 'Base + Unified Paging', 'pt-br': 'Base fixa + Unified Paging' }, detail: { en: '54 GB base runs once; active 60 MB adapters paged', 'pt-br': 'base de 54 GB roda uma vez; adaptadores ativos paginados' }, pigment: 'accent' },
+            { label: { en: 'Batched LoRA branch', 'pt-br': 'Ramo LoRA em lote' }, detail: { en: 'custom kernels compute each tenant’s A·B delta', 'pt-br': 'kernels em lote calculam o delta A·B de cada tenant' }, pigment: 'caution' },
+            { label: { en: 'Sum base + delta', 'pt-br': 'Soma base + delta' }, detail: { en: 'y = Wx + B(Ax) returned per tenant', 'pt-br': 'y = Wx + B(Ax) devolvido por tenant' }, pigment: 'success' },
           ],
         },
       },

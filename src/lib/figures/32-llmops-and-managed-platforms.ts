@@ -109,7 +109,7 @@ export const TRACK_32_FIGURES = {
             },
             {
               label: { en: 'LLM decode tail — remaining output tokens', 'pt-br': 'Cauda de decodificação — demais tokens de saída' },
-              detail: { en: '380 ms · 240 output tokens · finish = stop', 'pt-br': '380 ms · 240 tokens de saída · finish = stop' },
+              detail: { en: '380 ms · remaining 239 of 240 output tokens · finish = stop', 'pt-br': '380 ms · 239 de 240 tokens restantes · finish = stop' },
               pigment: 'danger',
               weight: 380,
             },
@@ -213,8 +213,8 @@ export const TRACK_32_FIGURES = {
       {
         label: { en: '3. Automated rollback', 'pt-br': '3. Rollback automático' },
         caption: {
-          en: 'When a silent regression trips a fast trigger (schema failures > 0.5%, cost +30%) or a powered quality trigger (length truncations or escalations), the controller flips the single release_id pointer back to the prior immutable bundle.',
-          'pt-br': 'Quando uma regressão silenciosa dispara um gatilho rápido (falhas de esquema > 0,5%, custo +30%) ou de qualidade (truncamentos length ou escaladas), o controlador reverte o ponteiro único de release_id para o pacote imutável anterior.',
+          en: 'When a silent regression trips a fast trigger (schema failures > 0.5%, p95 latency +30%) or a powered quality trigger (length truncations, cost spikes, or escalations), the controller flips the single release_id pointer back to the prior immutable bundle.',
+          'pt-br': 'Quando uma regressão silenciosa dispara um gatilho rápido (falhas de esquema > 0,5%, latência p95 +30%) ou de qualidade (truncamentos length, alta de custo ou escaladas), o controlador reverte o ponteiro único de release_id para o pacote imutável anterior.',
         },
         body: {
           kind: 'flow',
@@ -259,7 +259,7 @@ export const TRACK_32_FIGURES = {
             {
               label: { en: 'Cached PAYG API', 'pt-br': 'API PAYG com cache' },
               pigment: 'accent',
-              points: [[0, 0], [0.7, 2047.5], [0.889, 2600], [1.0, 2925], [1.2, 3510]],
+              points: [[0, 0], [0.7, 2047.5], [1.0, 2925], [1.2, 3510]],
             },
             {
               label: { en: 'Managed provisioned + overflow', 'pt-br': 'Provisionado gerenciado + transbordo' },
@@ -289,7 +289,7 @@ export const TRACK_32_FIGURES = {
             {
               label: { en: 'Cached PAYG API', 'pt-br': 'API PAYG com cache' },
               pigment: 'accent',
-              points: [[0, 0], [1.0, 2925], [1.248, 3650], [2.615, 7650], [3.5, 10237.5]],
+              points: [[0, 0], [1.0, 2925], [2.0, 5850], [3.5, 10237.5]],
             },
             {
               label: { en: '2 GPUs (hardware only)', 'pt-br': '2 GPUs (só hardware)' },
@@ -344,13 +344,13 @@ export const TRACK_32_FIGURES = {
       {
         label: { en: 'Hardened enterprise path', 'pt-br': 'Caminho corporativo protegido' },
         caption: {
-          en: 'Every retrieval filter and cache key carries tenant_id + ACL (or uses a dedicated silo), a thin internal gateway routes over private VPC links to a region-pinned ZDR endpoint with CMEK, and conversation state stays in your own database.',
-          'pt-br': 'Todo filtro de busca e chave de cache carrega tenant_id + ACL (ou usa silo dedicado), um gateway interno fino roteia por enlace VPC privado até um endpoint regional com ZDR e CMEK, e o histórico permanece no seu próprio banco.',
+          en: 'Every retrieval filter and cache key carries tenant_id + ACL (paired with a dedicated silo when required), a thin internal gateway routes over private VPC links to a region-pinned ZDR endpoint with CMEK, and conversation state stays in your own database.',
+          'pt-br': 'Todo filtro de busca e chave de cache carrega tenant_id + ACL (somado a silo dedicado quando exigido), um gateway interno fino roteia por enlace VPC privado até um endpoint regional com ZDR e CMEK, e o histórico permanece no seu próprio banco.',
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Tenant-scoped retrieval & cache', 'pt-br': 'Busca e cache por tenant' }, detail: { en: 'tenant_id + ACL pre-filter or dedicated silo', 'pt-br': 'pré-filtro tenant_id + ACL ou silo dedicado' }, pigment: 'success' },
+            { label: { en: 'Tenant-scoped retrieval & cache', 'pt-br': 'Busca e cache por tenant' }, detail: { en: 'tenant_id + ACL pre-filter (+ silo if needed)', 'pt-br': 'pré-filtro tenant_id + ACL (+ silo se exigido)' }, pigment: 'success' },
             { label: { en: 'Thin internal gateway', 'pt-br': 'Gateway interno fino' }, detail: { en: 'unifies IAM, retries & OTel gen_ai.* spans', 'pt-br': 'unifica IAM, retries e spans OTel gen_ai.*' }, pigment: 'accent' },
             { label: { en: 'Private VPC endpoint', 'pt-br': 'Endpoint privado de VPC' }, detail: { en: 'PrivateLink / PSC; zero public egress', 'pt-br': 'PrivateLink / PSC; zero saída pública' }, pigment: 'accent' },
             { label: { en: 'Region-pinned ZDR + CMEK', 'pt-br': 'Região fixa com ZDR + CMEK' }, detail: { en: 'locked geography; root keys in own KMS', 'pt-br': 'geografia travada; chaves raiz no seu KMS' }, pigment: 'success' },
