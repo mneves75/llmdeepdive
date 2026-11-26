@@ -1,0 +1,207 @@
+---
+id: "34.5-chat-tokens-and-context"
+track: "34-a-model-in-your-browser"
+order: 5
+title: "How a Chat Becomes Tokens and Comes Back"
+summary: "How qwen-local-lab formats Qwen3-0.6B chat markers, fits turns into a 2,048-token budget on CPU and GPU, handles sampling differences, and reuses the prefix cache."
+tier: "frontier"
+locale: "en"
+prerequisites: ["1.2-tokenization-i", "7.2-the-kv-cache", "7.4-sampling", "34.3-two-engines-one-tab"]
+unlocks: ["34.6-keeping-it-local-and-stoppable", "34.8-measuring-browser-inference"]
+analogy: "Packing a multi-turn chat into a 2,048-token window is like laying printed pages into a binder with fixed ring capacity. Each turn carries colored divider tabs so the reader knows who spoke, and you reserve blank sheets at the back for the reply you are about to write. When the binder runs out of room, you remove the oldest complete question-and-answer pair from the front rather than ripping the bottom half off the question you just asked. The comparison stops at token counting: on CPU you count the exact pages, while on GPU the worker measures the raw envelope weight in UTF-8 bytes so it never overflows the rings."
+teachBack:
+  prompt: "Explain how qwen-local-lab formats Qwen3-0.6B chat history and suppresses long reasoning blocks, why CPU and GPU count prompt size differently inside fitContext, why identical UI controls still produce different answers across the two backends, and why turn 2 starts faster than turn 1."
+  modelAnswer: "On CPU, formatQwen wraps each message in <|im_start|>role and <|im_end|> markers and appends an empty <think>\\n\\n</think>\\n\\n block after the assistant header so Qwen3-0.6B skips chain-of-thought tokens; on GPU, WebLLM takes structured messages with extra_body.enable_thinking set to false, though WebLLM 0.2.89 still streams the empty <think>\\n\\n</think>\\n\\n markers verbatim in delta.content. Inside fitContext, the worker keeps promptTokens + maxTokens + 8 <= 2048. CPU counts exact tokens with runtime.tokenize(prompt, true) plus 1 if a beginning-of-sequence token is required, while GPU avoids private tokenizer calls by using a conservative UTF-8 byte upper bound plus 64 bytes because byte-level BPE uses at most one token per UTF-8 byte. When a chat overflows, fitContext removes the oldest complete user/assistant pair via splice(1, 2) and notifies the UI, never silently truncating the latest user turn, and rejects a single oversized turn. Even with identical temperature and maxTokens, CPU passes top_k: 20 alongside top_p: 0.8 while WebLLM 0.2.89 exposes top_p: 0.8 without top_k, so outputs can diverge. Finally, with useCache: true, follow-up turns reuse only the matching token prefix in the KV cache up to the first divergence (because a prior assistant reply is serialized back into history without the original <think> prefill cue), cutting CPU time to first token from 0.65 s to 0.44 s on Apple M5 Pro (4 threads) and from 10.91 s to 6.92 s on 1-thread cloud Chromium."
+quiz:
+  - question: "In CPU mode (CONTEXT_SIZE = 2,048), the system prompt and chat history tokenize to 1,810 tokens including BOS, and maxTokens is 256. Given the 8-token safety margin, what does fitContext do?"
+    options: ["Drops the oldest complete user/assistant turn pair, recounts, and notifies the UI", "Trims 26 tokens off the end of the latest user message so the reply fits in context", "Lowers maxTokens from 256 to 230 automatically so older turns stay inside the prompt", "Switches from tokenizer counting to UTF-8 bytes so the prompt fits without dropping"]
+    correctIndex: 0
+    explanation: "The budget check requires promptTokens + maxTokens + 8 <= 2,048. Here 1,810 + 256 + 8 = 2,074, which exceeds 2,048. Because there is at least one older turn pair, fitContext removes the oldest complete user/assistant pair with messages.splice(1, 2), recounts, and reports droppedTurns to the page."
+  - question: "You send the same prompt at temperature 0.7 and maxTokens 256 on CPU (wllama) and GPU (WebLLM 0.2.89). Which pair explains two real differences between the two outputs?"
+    options: ["CPU skips top_k and strips <think> tags, while GPU adds top_k 20 and pre-fills them", "CPU adds top_k 20 and pre-fills <think>, while WebLLM omits top_k and streams empty tags", "CPU estimates context with UTF-8 bytes, while WebLLM counts exact tokens before sampling", "CPU disables prefix caching across turns, while WebLLM locks temperature to 0 in shaders"]
+    correctIndex: 1
+    explanation: "generateCpu passes sampling: { temp, top_k: 20, top_p: 0.8 } and pre-fills <think>\\n\\n</think>\\n\\n in formatQwen. generateGpu passes top_p: 0.8 without top_k (WebLLM 0.2.89 does not accept top_k) and sets enable_thinking: false, which suppresses reasoning tokens but still streams the empty <think>\\n\\n</think>\\n\\n markers verbatim."
+  - question: "On Apple M5 Pro with 4 WASM threads, turn 1 took 0.65 s to emit its first token and turn 2 took 0.44 s (and 10.91 s dropped to 6.92 s on 1-thread cloud Chromium). Why did turn 2 start faster even though the conversation grew longer?"
+    options: ["Turn 2 removes the system prompt from the template after the first reply succeeds", "WebAssembly recompiles the Q8_0 weight matrices into native CPU code after turn 1", "The worker shrinks CONTEXT_SIZE from 2,048 to 1,024 tokens on every follow-up turn", "useCache reuses the shared prefix KV cache so only the new turn requires prefill"]
+    correctIndex: 3
+    explanation: "In generateCpu, useCache: true tells wllama to keep the key-value tensors computed for the matching token prefix. Because turn 1's assistant reply is serialized back into history without the original <think> prefill cue, turn 2 reuses tokens up to that first divergence (system prompt, turn 1 user message, and the assistant header) and prefills from there onward."
+citations:
+  - title: "Qwen3-0.6B-GGUF Model Repository"
+    authors: "Qwen Team"
+    year: 2025
+    url: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF"
+  - title: "wllama: WebAssembly Binding for llama.cpp"
+    authors: "Xuan-Son Nguyen (ngxson)"
+    year: 2025
+    url: "https://github.com/ngxson/wllama"
+  - title: "WebLLM: High-Performance In-Browser LLM Inference Engine"
+    authors: "MLC AI"
+    year: 2025
+    url: "https://github.com/mlc-ai/web-llm"
+updated: "2026-11-26"
+---
+
+A language model does not understand chat bubbles, user names, or a scrollbar. When you press Enter in `examples/qwen-local-lab/`, the engine expects one flat sequence of integer token IDs—the subword pieces introduced in [lesson 1.2](/lessons/1-text-to-tensors/1.2-tokenization-i/)—and it gives back one token ID at a time. Everything that makes a browser tab feel like a multi-turn conversation happens in the worker code between the message list and the engine call.
+
+In [lesson 34.3](/lessons/34-a-model-in-your-browser/34.3-two-engines-one-tab/), you saw why one tab ships two separate engines: `wllama` (WebAssembly on CPU) and `WebLLM` (WebGPU on GPU). This lesson traces one complete chat turn through both engines inside `src/inference-worker.js`: formatting chat markers, fitting a growing history into a fixed 2,048-token window, sampling the next token, and reusing the prefix cache on follow-up turns.
+
+<Figure id="browser-chat-turn" />
+
+## Chat markers and the empty thinking block
+
+Before turning text into tokens, the worker normalizes the conversation so it always begins with a system instruction and strictly alternates `user` and `assistant` messages. On the CPU route, the worker must serialize that list into the exact plain-text template that **Qwen3-0.6B** was trained to read.
+
+The `formatQwen` function wraps every message in `<|im_start|>` and `<|im_end|>` control tokens, then opens the next assistant turn with an already-closed `<think>` block so the model skips long internal scratchpad reasoning and answers directly.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+function formatQwen(messages) {
+  return messages.map(message => `<|im_start|>${message.role}\n${message.content}<|im_end|>\n`).join("")
+    + "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+}
+```
+
+Why suppress reasoning mode in a small browser model? Qwen3-0.6B has a tight **2,048-token** context budget in this lab and runs at a few tokens per second on a single CPU thread. Spending 180 tokens inside `<think>...</think>` before answering `"17 + 25"` wastes latency and risks hitting the response limit before the final answer appears.
+
+The GPU route handles the same goal differently. Instead of passing a formatted string, `generateGpu` passes the structured `messages` array to `WebLLM 0.2.89` with `extra_body: { enable_thinking: false }`. During real-browser verification on Apple M5 Pro (`VERIFICATION.md`, 2026-11-26), that flag did stop Qwen3-0.6B from generating reasoning tokens, yet WebLLM 0.2.89 still streamed the empty `<think>\n\n</think>\n\n` markers verbatim in `delta.content`. On CPU, those same markers sit inside the prompt prefix before generation begins, so the visible reply starts straight at `"ORBIT-731"`.
+
+## Fitting a growing chat inside 2,048 tokens
+
+Every turn in a conversation appends both your question and the model's answer, so the prompt grows until it threatens to overflow the allocated context window (`CONTEXT_SIZE = 2048`). The worker must guarantee room for three parts before generation starts: the formatted prompt, the maximum number of output tokens the learner requested (`maxTokens`, between 1 and 1,024), and an 8-token safety margin for end-of-turn or boundary tokens:
+
+$$
+\text{promptTokens} + \text{maxTokens} + 8 \le 2{,}048
+$$
+
+Work through one concrete turn. Suppose your system prompt and three previous turns tokenize to **1,810** tokens, and your response limit is **256** tokens:
+
+$$
+1{,}810 + 256 + 8 = 2{,}074 > 2{,}048
+$$
+
+The turn misses the ceiling by 26 tokens. Instead of quietly chopping words off your latest question or shrinking your output limit behind your back, the worker drops the oldest complete `user` + `assistant` pair (`messages.splice(1, 2)`), recounts, and tells the interface how many older turns were omitted so the page can display a notice while keeping your visible transcript intact.
+
+The `fitContext` function below runs that pruning loop and raises `PROMPT_TOO_LONG` if even the system prompt plus your single latest message cannot fit.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+async function fitContext(messages, maxTokens, op) {
+  let droppedTurns = 0;
+  let promptTokens;
+  let prompt;
+  while (true) {
+    assertActive(op);
+    prompt = formatQwen(messages);
+    if (backend === "wasm") {
+      const tokens = await runtime.tokenize(prompt, true);
+      promptTokens = tokens.length + (runtime.mustAddBosToken() && tokens[0] !== runtime.getBOS() ? 1 : 0);
+    } else {
+      // Qwen's byte-level BPE cannot exceed one token per UTF-8 byte; reserve extra template space.
+      promptTokens = encoder.encode(prompt).byteLength + 64;
+    }
+    if (promptTokens + maxTokens + 8 <= CONTEXT_SIZE) break;
+    if (messages.length <= 2) {
+      throw new AppError(
+        backend === "wasm"
+          ? `The current message and system prompt need ${promptTokens} tokens. Shorten them or reduce the response limit to fit the ${CONTEXT_SIZE}-token context.`
+          : `The current message and system prompt exceed the GPU mode's conservative context budget. Shorten them, reduce the response limit, or use CPU mode for exact token counting.`,
+        "PROMPT_TOO_LONG"
+      );
+    }
+    messages.splice(1, 2);
+    droppedTurns++;
+  }
+  op.promptTokens = backend === "wasm" ? promptTokens : null;
+  reply(op.id, "context", {
+    promptTokens,
+    estimated: backend === "webgpu",
+    promptTokenUpperBound: backend === "webgpu" ? promptTokens : null,
+    droppedTurns,
+  });
+  return { messages, prompt };
+}
+```
+
+## Exact token counts on CPU vs byte bounds on GPU
+
+Look closely at the `if (backend === "wasm")` branch inside `fitContext`. Both engines run Qwen3-0.6B, yet they count prompt length in two distinct ways because they expose different public APIs:
+
+- **CPU (`wllama`) counts exact tokens.** `runtime.tokenize(prompt, true)` runs the loaded GGUF file's actual tokenizer, including special chat markers. The worker also checks `runtime.mustAddBosToken()` so a required beginning-of-sequence (BOS) token never surprises the budget by one slot.
+- **GPU (`WebLLM`) uses a conservative UTF-8 byte upper bound.** WebLLM's public chat API does not expose a stable pre-flight tokenizer method. Rather than reaching into private internal fields that could break across releases, the worker encodes `prompt` into UTF-8 bytes with `TextEncoder` and adds a 64-byte reserve ($\text{UTF-8 bytes} + 64$).
+
+Why is byte length a safe upper bound for Qwen3-0.6B? Because Qwen uses byte-level Byte-Pair Encoding (BPE): every valid UTF-8 byte is in the base alphabet, so merging adjacent bytes can only produce **fewer or equal** tokens than the number of bytes in the input. For English prose, one token averages roughly 3 to 4 bytes, so a 400-byte prompt might only need ~110 actual tokens while GPU mode budgets $400 + 64 = 464$. The UI labels that reading with a `≤` prefix (`estimated: true`) so the learner knows GPU mode may prune an older turn earlier than CPU mode, while never crashing the GPU engine with a surprise context overflow.
+
+## Why identical settings diverge across backends
+
+Once the prompt fits inside 2,048 tokens, the engine predicts logits over the vocabulary and chooses the next token using sampling, the temperature and cutoff rules covered in [lesson 7.4](/lessons/7-inference-and-efficiency/7.4-sampling/). Both engines read the same `temperature` slider and `maxTokens` field from the sidebar, yet their sampling pipelines are not identical.
+
+On CPU, `generateCpu` passes your temperature along with both `top_k: 20` (keep only the 20 highest-scoring candidate tokens) and `top_p: 0.8` (keep the smallest prefix of those candidates whose probabilities sum to 0.8), while streaming each new piece back to the page.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+async function generateCpu(op, prompt, options) {
+  op.tokens = 0;
+  await runtime.createCompletion(prompt, {
+    nPredict: options.maxTokens,
+    sampling: { temp: options.temperature, top_k: 20, top_p: 0.8 },
+    useCache: true,
+    abortSignal: op.controller.signal,
+    onNewToken(token, piece, text) {
+      if (op.stopped) return;
+      if (op.firstTokenAt === null) op.firstTokenAt = performance.now();
+      op.tokens++;
+      op.text = text;
+      emitToken(op);
+    },
+  });
+  op.finishReason = op.stopped ? "stop" : op.tokens >= options.maxTokens ? "length" : "stop";
+}
+```
+
+On GPU, `generateGpu` sends `top_p: 0.8` and `temperature`, but omits `top_k` completely because `WebLLM 0.2.89`'s OpenAI-style chat completions interface does not accept a `top_k` parameter. It also reads final token counts and decode throughput from the trailing `chunk.usage` record enabled by `stream_options: { include_usage: true }`.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+async function generateGpu(op, messages, options) {
+  const stream = await runtime.chat.completions.create({
+    messages,
+    max_tokens: options.maxTokens,
+    temperature: options.temperature,
+    top_p: 0.8,
+    stream: true,
+    stream_options: { include_usage: true },
+    extra_body: { enable_thinking: false },
+  });
+  for await (const chunk of stream) {
+    if (op.stopped) await runtime.interruptGenerate();
+    const choice = chunk.choices?.[0];
+    const delta = choice?.delta?.content;
+    if (typeof delta === "string" && delta.length && !op.stopped) {
+      if (op.firstTokenAt === null) op.firstTokenAt = performance.now();
+      op.text += delta;
+      emitToken(op);
+    }
+    if (choice?.finish_reason) op.finishReason = choice.finish_reason;
+    if (chunk.usage) {
+      const usage = chunk.usage;
+      if (Number.isFinite(usage.completion_tokens)) op.tokens = usage.completion_tokens;
+      if (Number.isFinite(usage.prompt_tokens)) op.promptTokens = usage.prompt_tokens;
+      const decodeTps = usage.extra?.decode_tokens_per_s;
+      if (Number.isFinite(decodeTps) && decodeTps > 0) op.decodeTps = decodeTps;
+    }
+  }
+}
+```
+
+Between different weight quantizations (Q8_0 on CPU vs Q4 `q4f16_1` on GPU), different floating-point rounding on CPU vs WebGPU shaders, and `top_k: 20` existing only on CPU, setting the exact same temperature on both backends will not guarantee word-for-word identical text. Documenting that gap explicitly prevents learners from mistaking an API constraint for a hidden bug.
+
+## Prefix-cache reuse on follow-up turns
+
+During prefill, the model computes key and value tensors—the **KV cache** from [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)—for every prompt token before emitting the first output token. On turn 2 of a chat, the beginning of the formatted prompt—the system instruction, your first question, and the opening `<|im_start|>assistant\n` header—matches what the engine already processed on turn 1. However, because the prior assistant reply is serialized back into history without the original `<think>\n\n</think>\n\n` prefill cue, the token sequence diverges right after that assistant header.
+
+Because `generateCpu` passes `useCache: true`, `wllama` compares the new prompt token array against the tokens already sitting in its KV cache and reuses **only the matching token prefix** up to that first divergence, running prefill from there through the prior reply and the new user message. Even that partial prefix reuse yields a measurable drop in **time to first token (TTFT)** on both fast and slow hardware in `VERIFICATION.md`:
+
+- **Apple M5 Pro (4 WASM threads, `ORBIT-731` dialogue):** TTFT dropped from $0.65\ \text{s}$ on turn 1 to $0.44\ \text{s}$ on turn 2—about 32% faster even though the conversation had grown by an entire turn.
+- **Cloud Chromium (1 WASM thread, same two-turn test):** TTFT dropped from $10.91\ \text{s}$ on turn 1 to $6.92\ \text{s}$ on turn 2—saving nearly four full seconds of prefill wait.
+
+That reuse breaks the moment `fitContext` drops an older turn pair from the front of `messages` or the learner edits the system prompt. Once token 1 changes, the cached prefix no longer matches, and the engine must prefill the entire sliding window from scratch. In [lesson 34.6](/lessons/34-a-model-in-your-browser/34.6-keeping-it-local-and-stoppable/), we examine what happens when a long prefill or generation needs to be stopped mid-flight—and how the worker keeps every token strictly inside the tab.

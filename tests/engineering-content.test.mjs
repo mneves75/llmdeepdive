@@ -137,7 +137,7 @@ function extractLabOut(html, labId, outKey) {
 }
 
 for (const locale of LOCALES) {
-  test(`${locale}: built /roadmap/ links all 34 tracks and both new labs render exact [data-out] defaults`, () => {
+  test(`${locale}: built /roadmap/ links all 35 tracks and both new labs render exact [data-out] defaults`, () => {
     const prefix = locale === 'en' ? '' : 'pt-br'
     const roadmapHtml = readFileSync(join(DIST, prefix, 'roadmap', 'index.html'), 'utf8')
     assert.ok(roadmapHtml.includes('roadmap-view-full'), `${locale} roadmap missing full view radio`)
@@ -145,7 +145,7 @@ for (const locale of LOCALES) {
     assert.ok(roadmapHtml.includes('L15'), `${locale} roadmap missing level L15`)
     assert.ok(existsSync(join(DIST, 'og', ...(prefix ? [prefix] : []), 'roadmap.png')), `${locale} roadmap OG card missing`)
     const linkedTracks = new Set([...roadmapHtml.matchAll(/\/lessons\/(\d+)-[^/"']+\//gu)].map((m) => Number(m[1])))
-    assert.equal(linkedTracks.size, 34, `${locale} roadmap should link all 34 tracks (got ${linkedTracks.size})`)
+    assert.equal(linkedTracks.size, 35, `${locale} roadmap should link all 35 tracks (got ${linkedTracks.size})`)
 
     const ragLabHtml = readFileSync(join(DIST, prefix, 'lessons', '29-llm-and-rag-evaluations', '29.2-retrieval-and-generation-metrics', 'index.html'), 'utf8')
     assert.equal(extractLabOut(ragLabHtml, 'rag-eval', 'recall'), locale === 'pt-br' ? '60,0%' : '60.0%')
