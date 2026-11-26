@@ -42,8 +42,8 @@ export const TRACK_19_FIGURES = {
       {
         label: { en: 'Corroborated by system of record', 'pt-br': 'Corroborada pelo sistema de registro' },
         caption: {
-          en: 'With PO-1001 from the company’s purchase database agreeing in the same tenant, promote() creates a semantic fact whose derived_from lists both records and whose readers are the narrowest set allowed by both.',
-          'pt-br': 'Com o PO-1001 do banco de compras da empresa concordando no mesmo tenant, promote() cria um fato semântico cujo derived_from lista os dois registros e cujos leitores são o conjunto mais restrito permitido por ambos.',
+          en: 'When a same-tenant system_of_record entry (such as PO-1001’s received row) is supplied as corroboration, promote() creates a semantic fact whose derived_from lists both records and whose readers are the narrowest set allowed by both.',
+          'pt-br': 'Quando um registro system_of_record do mesmo tenant (como a linha de recebimento do PO-1001) é passado como corroboração, promote() cria um fato semântico cujo derived_from lista os dois registros e cujos leitores são o conjunto mais restrito permitido por ambos.',
         },
         body: {
           kind: 'flow',

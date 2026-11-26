@@ -258,8 +258,8 @@ export const TRACK_18_FIGURES = {
       {
         label: { en: 'Good export (March)', 'pt-br': 'Exportação boa (março)' },
         caption: {
-          en: 'March arrives 400 ms after the status banner and clears all six gates, leaving four verified rows saved in the run’s folder.',
-          'pt-br': 'Março chega 400 ms depois do aviso de status e passa pelos seis portões, deixando quatro linhas verificadas salvas na pasta da execução.',
+          en: 'In the browser test, March arrives 400 ms after the status banner and clears all six gates, leaving four verified rows saved in the run’s folder.',
+          'pt-br': 'No teste de navegador, março chega 400 ms depois do aviso de status e passa pelos seis portões, deixando quatro linhas verificadas salvas na pasta da execução.',
         },
         body: {
           kind: 'flow',
@@ -276,15 +276,15 @@ export const TRACK_18_FIGURES = {
       {
         label: { en: 'Planted failures (April–July)', 'pt-br': 'Falhas plantadas (abril–julho)' },
         caption: {
-          en: 'Four bad months stop at four different gates. May’s HTML page clears failure() and origin because the transfer succeeded, and any file rejected after saving is deleted.',
-          'pt-br': 'Quatro meses ruins param em quatro portões diferentes. A página HTML de maio passa por failure() e origem porque a transferência terminou, e todo arquivo recusado após salvo é apagado.',
+          en: 'Four bad months stop at four different gates. April triggers no download at all; May’s HTML page clears failure() because the transfer completed and clears origin because its URL shares the portal’s origin; any file rejected after saving is deleted.',
+          'pt-br': 'Quatro meses ruins param em quatro portões diferentes. Abril nem gera download; a página HTML de maio passa por failure() porque a transferência terminou e pela origem porque sua URL tem a mesma origem do portal; todo arquivo recusado após salvo é apagado.',
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Download event', 'pt-br': 'Evento de download' }, detail: { en: 'April: HTTP 500, no file despite banner → failed', 'pt-br': 'Abril: HTTP 500, sem arquivo apesar do aviso → failed' }, pigment: 'danger' },
-            { label: { en: 'Transfer status', 'pt-br': 'Status da transferência' }, detail: { en: 'May–July finish transferring; failure() sees no error', 'pt-br': 'Maio–julho terminam a transferência; failure() não vê erro' }, pigment: 'muted' },
-            { label: { en: 'Origin', 'pt-br': 'Origem' }, detail: { en: 'blocks downloads served from another origin', 'pt-br': 'bloqueia downloads servidos de outra origem' }, pigment: 'accent' },
+            { label: { en: 'Download event', 'pt-br': 'Evento de download' }, detail: { en: 'April: HTTP 500 produces no download despite banner → failed', 'pt-br': 'Abril: HTTP 500 não gera download apesar do aviso → failed' }, pigment: 'danger' },
+            { label: { en: 'Transfer status', 'pt-br': 'Status da transferência' }, detail: { en: 'May–July finish transferring; failure() returns None', 'pt-br': 'Maio–julho terminam a transferência; failure() devolve None' }, pigment: 'muted' },
+            { label: { en: 'Origin', 'pt-br': 'Origem' }, detail: { en: 'May–July share portal origin; foreign origins blocked', 'pt-br': 'Maio–julho têm a origem do portal; origens externas bloqueadas' }, pigment: 'accent' },
             { label: { en: 'Destination', 'pt-br': 'Destino' }, detail: { en: 'July: ../../report-2026-07.csv refused → failed', 'pt-br': 'Julho: ../../report-2026-07.csv recusado → failed' }, pigment: 'danger' },
             { label: { en: 'Format & columns', 'pt-br': 'Formato e colunas' }, detail: { en: 'May: HTML error page named .csv deleted → failed', 'pt-br': 'Maio: página HTML chamada .csv apagada → failed' }, pigment: 'danger' },
             { label: { en: 'Rows & period', 'pt-br': 'Linhas e período' }, detail: { en: 'June: rows carry 2026-03 instead of 2026-06; deleted → failed', 'pt-br': 'Junho: linhas trazem 2026-03 em vez de 2026-06; apagado → failed' }, pigment: 'danger' },
@@ -302,8 +302,8 @@ export const TRACK_18_FIGURES = {
     lesson: '18.5-recover-and-verify',
     title: { en: 'Four mornings through the recovery loop', 'pt-br': 'Quatro manhãs pelo laço de recuperação' },
     caption: {
-      en: 'Step through Monday to Thursday. Every pass spends from ActionBudget, re-observes after any page change, escalates anything unknown, and calls the run done only after file validation.',
-      'pt-br': 'Avance de segunda a quinta-feira. Cada volta gasta do ActionBudget, observa de novo depois de qualquer mudança na página, escala o desconhecido e só declara done após validar o arquivo.',
+      en: 'Step through Monday to Thursday. Every pass spends from ActionBudget, loops to re-observe after dismissing a known dialog, escalates anything unknown, and returns the validation outcome after the download click.',
+      'pt-br': 'Avance de segunda a quinta-feira. Cada volta gasta do ActionBudget, reinicia o laço para observar de novo após fechar um diálogo conhecido, escala o desconhecido e devolve o resultado da validação após o clique de download.',
     },
     steps: [
       {

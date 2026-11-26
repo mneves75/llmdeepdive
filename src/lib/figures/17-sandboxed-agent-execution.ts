@@ -135,16 +135,16 @@ export const TRACK_17_FIGURES = {
           steps: [
             { label: { en: 'Parent starts child', 'pt-br': 'Pai inicia o filho' }, detail: { en: 'new process group, empty env, temp output files', 'pt-br': 'novo grupo de processos, env vazio, arquivos temporários' }, pigment: 'muted' },
             { label: { en: 'Bootstrap sets rlimits', 'pt-br': 'Bootstrap aplica rlimits' }, detail: { en: 'CPU 2/3 s, file 1 MiB, 64 FDs, 0 forks; memory best effort', 'pt-br': 'CPU 2/3 s, arquivo 1 MiB, 64 FDs, 0 forks; memória se aceita' }, pigment: 'caution' },
-            { label: { en: 'Required limit refused?', 'pt-br': 'Limite obrigatório recusado?' }, detail: { en: 'writes error to pipe, exits 125; SandboxSetupError raised', 'pt-br': 'envia erro no pipe, sai com 125; levanta SandboxSetupError' }, pigment: 'danger' },
-            { label: { en: 'Report pipe closed', 'pt-br': 'Pipe de relatório fechado' }, detail: { en: 'reports memory_limited; guest script cannot forge it', 'pt-br': 'informa memory_limited; script convidado não pode falsificá-lo' }, pigment: 'success' },
+            { label: { en: 'Write report or fail closed', 'pt-br': 'Reportar ou falhar fechado' }, detail: { en: 'ok → sends memory_limited; refused → writes error, exits 125', 'pt-br': 'ok → envia memory_limited; recusado → erro no pipe e sai 125' }, pigment: 'danger' },
+            { label: { en: 'Close pipe, run or abort', 'pt-br': 'Fechar pipe, rodar ou abortar' }, detail: { en: 'guest cannot forge report; refusal raises SandboxSetupError', 'pt-br': 'convidado não falsifica o pipe; recusa gera SandboxSetupError' }, pigment: 'success' },
           ],
         },
       },
       {
         label: { en: 'Busy or noisy script', 'pt-br': 'Script ocupado ou ruidoso' },
         caption: {
-          en: 'An unprivileged child cannot raise a lowered hard limit. Runaway CPU loops hit SIGXCPU then SIGKILL, output floods stop at max_file_bytes, and the parent still kills the group at exit.',
-          'pt-br': 'Um filho sem privilégios não sobe um limite rígido já reduzido. Laços de CPU atingem SIGXCPU e depois SIGKILL, enxurradas param em max_file_bytes, e o pai ainda mata o grupo na saída.',
+          en: 'An unprivileged child cannot raise a lowered hard limit. Runaway CPU loops hit SIGXCPU at the soft limit and SIGKILL if the process reaches the hard limit; output floods stop at max_file_bytes, and the parent still kills the group at exit.',
+          'pt-br': 'Um filho sem privilégios não sobe um limite rígido já reduzido. Laços de CPU atingem SIGXCPU no limite flexível e SIGKILL se o processo alcançar o limite rígido; enxurradas param em max_file_bytes, e o pai ainda mata o grupo na saída.',
         },
         body: {
           kind: 'flow',
@@ -275,13 +275,13 @@ export const TRACK_17_FIGURES = {
       {
         label: { en: 'Scoped cleanup by ID', 'pt-br': 'Limpeza precisa por ID' },
         caption: {
-          en: 'Cleanup removes only the workspace path, process group, jail directory and cgroup recorded for this run — on normal exit, timeout or chmod 0 — never by wildcard.',
-          'pt-br': 'A limpeza remove só o caminho da workspace, o grupo de processos, o diretório de jail e o cgroup registrados para esta execução — na saída normal, no timeout ou após chmod 0 — nunca por curinga.',
+          en: 'SubprocessBackend removes only the workspace path and process group recorded for this run — on normal exit, timeout or chmod 0 — never by wildcard. A microVM backend must apply the same rule to its jail directory and cgroup.',
+          'pt-br': 'O SubprocessBackend remove só o caminho da workspace e o grupo de processos registrados para esta execução — na saída normal, no timeout ou após chmod 0 — nunca por curinga. Um backend de microVM precisa aplicar a mesma regra ao diretório de jail e ao cgroup.',
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Record exact IDs', 'pt-br': 'Registrar IDs exatos' }, detail: { en: 'workspace path, process group, or jailer id', 'pt-br': 'caminho da workspace, grupo de processos ou id do jailer' }, pigment: 'accent' },
+            { label: { en: 'Record exact IDs', 'pt-br': 'Registrar IDs exatos' }, detail: { en: 'workspace path and process group (or VM jailer id)', 'pt-br': 'caminho da workspace e grupo de processos (ou id do jailer)' }, pigment: 'accent' },
             { label: { en: 'Clean on every exit', 'pt-br': 'Limpar em toda saída' }, detail: { en: 'normal exit, timeout, or guest chmod 0', 'pt-br': 'saída normal, timeout ou chmod 0 do convidado' }, pigment: 'caution' },
             { label: { en: 'Neighbour untouched', 'pt-br': 'Vizinho intacto' }, detail: { en: 'agentlab-sandbox-neighbour survives beside it', 'pt-br': 'agentlab-sandbox-neighbour sobrevive ao lado' }, pigment: 'success' },
             { label: { en: 'Never wildcards', 'pt-br': 'Nunca curingas' }, detail: { en: 'rm -rf *-sandbox-* or pkill python hits other runs', 'pt-br': 'rm -rf *-sandbox-* ou pkill python atinge outras execuções' }, pigment: 'danger' },
