@@ -13,6 +13,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Redesigned the course shell, curriculum, roadmap, reading view, labs, assessments, anatomy explorer, search, 404s and sharing cards across both languages. The temperature diagram shows probability changes through branch weight, the section navigator follows the reader, and selecting a model port updates its evidence panel. Motion respects the system preference.
 - Search distinguishes an unavailable index from an empty result. Quizzes distinguish skipped questions from wrong answers, and wide inline equations can be scrolled with the keyboard.
 
+### Changed
+
+- **Lesson 5.2** now carries a published pipeline a reader can audit: FineWeb's 15 trillion tokens from 96 Common Crawl snapshots, its documented filtering and deduplication ablations, and the 1.3-trillion-token FineWeb-Edu subset, set against Qwen3.8-27B's undisclosed mixture.
+- **Lesson 7.12** gains a second bilingual case study: colibri v2.2.0's `coli setup`, which measures RAM and card bandwidth before recommending a model, and the release's own CUDA/Vulkan table on one RTX PRO 4000, which shows a tenfold prefill change between builds and a backend ranking that reversed.
+
 ## [0.17.1] — 2026-11-21
 
 ### Changed
