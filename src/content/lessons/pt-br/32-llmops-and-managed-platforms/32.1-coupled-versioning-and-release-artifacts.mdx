@@ -34,40 +34,42 @@ citations:
     authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
     year: 2026
     url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Em software web convencional, um release costuma ser uma única imagem de contêiner marcada com o SHA de um commit Git. Se um endpoint começa a falhar depois do deploy, reverter aquela imagem restaura o comportamento anterior. Sistemas de IA em produção quebram essa premissa. Mesmo sem mudar uma linha do código da aplicação, editar um template de prompt em um painel, sofrer uma troca silenciosa de alias de modelo pelo provedor ou reindexar uma tabela de embeddings pode derrubar a qualidade das respostas enquanto cada servidor continua devolvendo HTTP 200.
+Em software web convencional, um release costuma ser uma única imagem de contêiner (um pacote fechado com o código e suas dependências) marcada com o SHA de um commit Git (uma impressão digital única daquele retrato no controle de versão). Se um endpoint web (o endereço de rede que recebe requisições) começa a falhar depois do deploy, reverter aquela única imagem restaura o comportamento anterior. Sistemas de IA em produção quebram essa premissa. Mesmo sem mudar uma linha do código da aplicação, editar um template de prompt em um painel web, sofrer uma troca silenciosa de alias de modelo pelo provedor ou reconstruir um índice de busca com outro modelo de embedding pode derrubar a qualidade das respostas enquanto cada servidor continua devolvendo HTTP 200 (o código web padrão que significa "requisição bem-sucedida").
 
-Esta aula explica por que um release de IA é um **artefato acoplado** (um pacote de arquivos e versões interdependentes que só funcionam como conjunto verificado), como fixar cada componente em um manifesto imutável e como tornar rollbacks atômicos.
+Esta aula explica por que um release de IA é um **artefato acoplado** (um pacote de arquivos e versões interdependentes que só funcionam como conjunto verificado), como fixar cada componente em um manifesto imutável e como tornar rollbacks atômicos (todas as peças voltam juntas em um só passo).
 
 ## Por que deploys independentes geram deriva silenciosa
 
-Imagine um assistente RAG de suporte atendendo 10.000 consultas por dia. Cinco artefatos distintos determinam o que o usuário vê em cada requisição:
+Imagine um assistente de suporte baseado em *Retrieval-Augmented Generation* (RAG)—um sistema que busca documentos da empresa antes de pedir ao modelo de linguagem para redigir a resposta—atendendo 10.000 consultas por dia. Cinco artefatos distintos determinam o que o usuário vê em cada requisição:
 
-- **Template de prompt e instruções de sistema**: a redação exata, os exemplos few-shot e as regras de formatação da [aula 26.5](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/).
-- **Esquema de saída e parser**: o JSON Schema que impõe campos estruturados e assinaturas de ferramentas.
-- **Snapshot do modelo e parâmetros de decodificação**: o ID fixo do checkpoint (por exemplo `model-2026-08-15`, nunca um alias flutuante), a temperature e o teto de tokens de saída.
-- **Modelo de embedding e revisão do índice de recuperação**: o codificador exato e o snapshot de chunks usado na busca de documentos.
-- **Configuração de guardrails e roteamento**: limiares de classificadores, listas de permissão e rotas de fallback.
+- **Template de prompt e instruções de sistema**: a redação exata, os exemplos few-shot (pares modelo de pergunta e resposta incluídos no prompt) e as regras de formatação da [aula 26.5](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/).
+- **Esquema de saída e parser**: o JSON Schema (o contrato que lista os campos obrigatórios e seus tipos de dado) e o parser (o código que lê o texto estruturado e preenche campos do programa) impondo respostas estruturadas e assinaturas de ferramentas.
+- **Snapshot do modelo e parâmetros de decodificação**: o ID fixo do checkpoint (os pesos salvos do modelo em uma data específica, como `model-2026-08-15`, nunca um alias flutuante como `latest`), a temperature (o controle de aleatoriedade da saída) e o teto de tokens de saída.
+- **Modelo de embedding e revisão do índice de recuperação**: o codificador exato (o modelo que transforma texto em listas de números que representam significado) e o snapshot de chunks (trechos curtos cortados de documentos) guardado no índice vetorial.
+- **Configuração de guardrails e roteamento**: limiares de classificadores de segurança, listas de permissão (ações ou temas liberados) e rotas de fallback (modelos reserva acionados quando o principal falha).
 
-Agora acompanhe o que acontece quando a equipe gerencia essas cinco peças de forma independente. Suponha que cada componente mude uma vez por semana no próprio ritmo. Na segunda-feira, alguém edita o prompt em uma interface web para incluir um campo `refund_tier`. Na terça, o pipeline de dados atualiza o codificador de documentos de `embed-v2` para `embed-v3` (ambos gerando vetores de 1.536 dimensões, então o banco aceita as gravações sem reclamar), mas a API online continua codificando perguntas com `embed-v2`. Na quarta, o provedor aponta silenciosamente o alias `fast-latest` para um checkpoint novo.
+Agora acompanhe o que acontece quando a equipe gerencia essas cinco peças de forma independente. Suponha que cada componente mude uma vez por semana no próprio ritmo. Na segunda-feira, alguém edita o prompt em um painel web para incluir um campo `refund_tier`. Na terça, o pipeline de dados atualiza o codificador de documentos de `embed-v2` para `embed-v3` (ambos gerando vetores de 1.536 números, então o banco vetorial aceita as novas linhas sem reclamar), mas a *Application Programming Interface* (API) online continua codificando perguntas com `embed-v2`. Como cada modelo de embedding organiza significados em eixos diferentes, a similaridade de cosseno (a medida de proximidade angular entre dois vetores) cai para perto de ruído aleatório. Na quarta, o provedor aponta silenciosamente o alias `fast-latest` para um checkpoint mais recente.
 
-Na quinta-feira, a fidelidade às fontes nos chamados caiu de 91% para 74%. Nenhum alerta de queda disparou. Nenhum job de CI falhou porque a edição do prompt contornou o Git, a atualização do índice ocorreu fora do repositório da API e a troca do modelo aconteceu fora do seu cluster. Quando o engenheiro reverte a edição do prompt de segunda-feira, a qualidade continua quebrada porque o codificador de consultas e o índice de documentos seguem em dois espaços vetoriais incompatíveis.
+Na quinta-feira, a fidelidade às fontes (a parcela das respostas cujas afirmações estão amparadas nos documentos recuperados) nos chamados caiu de 91% para 74%. Nenhum alerta de queda disparou. Nenhuma verificação de Integração Contínua (CI, a bateria automática de testes que roda antes do merge) falhou porque a edição do prompt contornou o Git, a atualização do índice ocorreu fora do repositório da API e a troca do modelo aconteceu fora do seu cluster (o conjunto de servidores que executa o serviço). Quando o engenheiro reverte a edição do prompt de segunda-feira, a qualidade continua quebrada porque o codificador de consultas e o índice de documentos seguem em dois espaços vetoriais incompatíveis.
 
 <Figure id="32-1-coupled-release-flow" />
 
 ## Contando a superfície de acoplamento
 
-Uma conta curta mostra por que o rastreamento improvisado desmorona assim que o produto cresce. Se $k$ componentes têm cada um $v$ versões alternadas independentemente em produção, o número de combinações distintas em execução é:
+Uma conta curta mostra por que rastrear cada peça separadamente desmorona assim que o produto cresce. Se $k$ componentes têm cada um $v$ versões alternadas independentemente em produção, o número de combinações distintas em execução é:
 
 $$
 N_{\text{configs}} = v^{k}
 $$
 
-Com $k = 5$ componentes e apenas $v = 3$ versões ativas cada (por exemplo anterior, atual e canary), existem $3^{5} = 243$ estados possíveis em execução. A sua suíte de avaliação offline da [aula 29.5](/pt-br/lessons/29-llm-and-rag-evaluations/29.5-offline-to-online-eval-flywheels/) testou no máximo uma ou duas dessas 243 combinações. Os outros 241 estados são software em produção nunca testado.
+Com $k = 5$ componentes e apenas $v = 3$ versões ativas cada (por exemplo anterior, atual e canary—uma pequena fatia do tráfego real usada para testar a versão nova), existem $3^{5} = 243$ estados possíveis em execução. A sua suíte de avaliação offline da [aula 29.5](/pt-br/lessons/29-llm-and-rag-evaluations/29.5-offline-to-online-eval-flywheels/) testou no máximo uma ou duas dessas 243 combinações. Os outros 241 estados são software em produção nunca testado.
 
-Fixar as cinco referências dentro de um único **manifesto de release** (um documento JSON ou YAML imutável identificado por resumo criptográfico) colapsa $v^{k}$ combinações soltas em um único pacote nomeado por release. Você nunca faz deploy de "prompt v18" ou "índice rev 42" isoladamente. Você publica o manifesto `rel-042`, cujo hash prova exatamente qual prompt, esquema, snapshot de modelo, modelo de embedding, revisão de índice e política de guardrails passaram juntos no CI.
+Fixar as cinco referências dentro de um único **manifesto de release** (um arquivo de configuração JSON ou YAML imutável identificado por resumo criptográfico—uma impressão digital única calculada a partir do seu conteúdo exato) colapsa $v^{k}$ combinações soltas em um único pacote nomeado por release. Você nunca faz deploy de "prompt v18" ou "índice rev 42" sozinho. Você publica o manifesto `rel-042`, cujo resumo prova exatamente qual prompt, esquema, snapshot de modelo, modelo de embedding, revisão de índice e política de guardrails passaram juntos no CI.
+
+O manifesto JSON abaixo mostra como um pacote fixado aparece na prática: um único `release_id` trava o resumo SHA-256 do prompt, a versão do esquema de saída, o snapshot datado do modelo, os limites de decodificação, o modelo de embedding, a revisão do índice vetorial e a política de segurança em um só registro imutável.
 
 ```json
 {
@@ -86,14 +88,14 @@ O guia de engenharia de releases do Google coloca builds herméticos e reprodut�
 
 ## Lidando com migrações de índice e snapshots blue-green
 
-Código e prompts são baratos de versionar no Git porque ocupam kilobytes de texto. Um índice vetorial com 2.000.000 de chunks ocupa gigabytes de estado, então não dá para copiá-lo a cada commit. Equipes evitam desalinhamento entre embeddings e índices com **revisões de índice blue-green** (manter a revisão anterior legível ao lado da nova até o rollout consolidar).
+Código e prompts são baratos de guardar no Git porque ocupam kilobytes de texto puro. Um índice vetorial com 2.000.000 de chunks ocupa gigabytes de dados, então não dá para copiá-lo a cada commit. Equipes evitam desalinhamento entre embeddings e índices com **revisões de índice blue-green** (manter a revisão anterior legível ao lado da nova até o rollout consolidar).
 
 Suponha que o manifesto `rel-041` aponte para `embedding_model: embed-v2` e `index_revision: kb-rev-41`. Para migrar para `embed-v3`:
 
-1. Um job offline em lote codifica o corpus com `embed-v3` e grava uma coleção imutável nova `kb-rev-42`. O tráfego de produção segue lendo `kb-rev-41`.
-2. Um pull request cria o manifesto `rel-042`, alterando `embedding_model` e `index_revision` juntos em um único commit.
-3. O CI executa a suíte de avaliação offline completa contra `rel-042` apontando para `kb-rev-42`, conferindo Recall@k, validade de esquema e fidelidade antes do merge.
-4. A produção libera `rel-042` via tráfego shadow e canary enquanto `kb-rev-41` permanece quente e intacto.
+1. Um job offline em lote codifica todo o corpus de documentos com `embed-v3` e grava uma coleção imutável nova `kb-rev-42`, enquanto o tráfego de produção segue lendo `kb-rev-41`.
+2. Um pull request (uma proposta de alteração de código enviada para revisão) cria o manifesto `rel-042`, atualizando `embedding_model` e `index_revision` juntos em um único commit.
+3. O CI executa a suíte de avaliação offline completa contra `rel-042` apontando para `kb-rev-42`, conferindo Recall@k (a fração de documentos relevantes encontrada entre os $k$ primeiros resultados), validade de esquema e fidelidade antes do merge.
+4. A produção libera `rel-042` via tráfego shadow (cópias silenciosas em segundo plano) e canary (uma pequena fatia de usuários reais) enquanto `kb-rev-41` permanece quente e intacto.
 5. Só depois de `rel-042` ficar estável em 100% do tráfego pela janela de retenção (digamos 72 horas) um job de limpeza aposenta `kb-rev-41`.
 
 Como `kb-rev-41` fica preservado durante todo o rollout, reverter de `rel-042` para `rel-041` exige apenas trocar um ponteiro atômico e zero tempo de reindexação.
@@ -104,9 +106,9 @@ Painéis de gerenciamento de prompts que editam prompts ao vivo em produção—
 
 ## Marcando cada trace com o ID do manifesto
 
-Um manifesto só rende frutos durante um incidente se você souber exatamente qual pacote gerou cada resposta. Todo manipulador de requisição deve anexar `release_id` como campo obrigatório em cada linha de log, rótulo de métrica e span de trace distribuído.
+Um manifesto só rende frutos durante um incidente se você souber exatamente qual pacote gerou cada resposta. Todo manipulador de requisição deve anexar `release_id` como campo obrigatório em cada linha de log (registro textual de um evento), rótulo de métrica (etiqueta em um contador numérico) e span de trace distribuído (registro cronometrado de uma etapa da requisição).
 
-Quando um usuário relata uma política de reembolso alucinada às 14h32 UTC, o engenheiro de plantão lê `release_id: rel-2026-11-20-a4f2` no trace, faz checkout desse manifesto exato no Git, reproduz a entrada contra o mesmo snapshot de modelo e a mesma revisão de índice e confirma se a falha é uma regressão trazida pela `rel-042` ou uma lacuna antiga na base de conhecimento. Sem versionamento acoplado, depurar vira arqueologia em quatro painéis separados.
+Quando um usuário relata uma política de reembolso alucinada (inventada pelo modelo) às 14h32 no Tempo Universal Coordenado (UTC), o engenheiro de plantão lê `release_id: rel-2026-11-20-a4f2` no trace, faz checkout desse manifesto exato no Git, reproduz a entrada contra o mesmo snapshot de modelo e a mesma revisão de índice e confirma se a falha é uma regressão trazida pela `rel-042` ou uma lacuna antiga na base de conhecimento. Sem versionamento acoplado, depurar vira tentativa e erro em quatro painéis separados.
 
 :::caveat
 Fixar o snapshot datado de um provedor protege contra trocas silenciosas de pesos no meio da semana, mas não contra a descontinuação eventual do modelo. Provedores aposentam snapshots datados em ciclos de 6 a 18 meses. Registre a data de encerramento do snapshot nos metadados do manifesto e dispare um lembrete automático com 60 dias de antecedência para que a migração passe pela sua esteira normal de CI, não por um corte de emergência.

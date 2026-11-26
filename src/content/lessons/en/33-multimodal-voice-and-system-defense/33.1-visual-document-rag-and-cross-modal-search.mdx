@@ -38,76 +38,71 @@ citations:
     authors: "Xiaohua Zhai, Basil Mustafa, Alexander Kolesnikov, Lucas Beyer"
     year: 2023
     url: "https://arxiv.org/abs/2303.15343"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-In [lesson 27.1](/lessons/27-retrieval-and-hybrid-search/27.1-document-ingestion-and-layout-parsing/), you saw how messy PDF ingestion pipelines become: OCR engines scramble multi-column layouts, table parsers merge adjacent columns, and every chart, blueprint, or slide diagram turns into empty space unless a separate captioning job describes it. Even a near-perfect text extractor throws away spatial structure—which footnote belongs to which column, or which bar on a chart crossed the red threshold.
+In [lesson 27.1](/lessons/27-retrieval-and-hybrid-search/27.1-document-ingestion-and-layout-parsing/), you saw how brittle PDF ingestion pipelines become. Optical Character Recognition (OCR, software that reads printed letters out of page images) scrambles multi-column layouts, table parsers merge neighboring columns, and every chart, blueprint, or slide diagram turns into empty space unless a separate background task writes captions for it. Even a near-perfect text extractor strips away spatial layout—which footnote belongs to which column, or which bar on a chart crossed the red threshold.
 
-**Visual document RAG** skips brittle text extraction during retrieval. Instead of converting a PDF into plain text first, it renders each page as an image, indexes visual patch embeddings directly, and passes the top retrieved page images straight into a vision-language model ([lesson 4.17](/lessons/4-transformer/4.17-multimodal-vision-encoder/)) to generate the grounded answer.
+**Visual document Retrieval-Augmented Generation (RAG)** skips text extraction during search. Instead of turning a PDF into flat text first, the system treats each rendered page as an image, indexes small visual tiles directly, and passes the matching page images straight into a Vision-Language Model (VLM, a model that reads both images and text from [lesson 4.17](/lessons/4-transformer/4.17-multimodal-vision-encoder/)) to answer the question.
 
 ## Cross-modal search: CLIP and SigLIP
 
-Retrieving images from text queries starts with **cross-modal alignment** (training a vision encoder and a text encoder to place matching image-text pairs near each other in the same vector space).
+Searching images with text questions begins with **cross-modal alignment**: training an image encoder and a text encoder to map matching image-text pairs to nearby vectors (lists of numbers that capture meaning) in one shared space.
 
-**CLIP** (Contrastive Language-Image Pre-Training, Radford et al., 2021) trains on hundreds of millions of `(image, caption)` pairs. For a batch of $B$ pairs, CLIP computes all $B \times B$ cosine similarities, applies a temperature-scaled softmax across every row and column (InfoNCE loss), and pushes the $B$ matching diagonal pairs up while pushing all $B^2 - B$ off-diagonal pairs apart. Because the denominator sums over the entire batch, CLIP works best with huge global batch sizes (32,768 pairs) and heavy cross-GPU synchronization.
+**CLIP** (Contrastive Language-Image Pre-Training, Radford et al., 2021) trains on hundreds of millions of `(image, caption)` pairs. For a batch (a group of examples processed together) of $B$ pairs, CLIP computes all $B \times B$ cosine similarities (a score measuring whether two vectors point in the same direction), runs a temperature-scaled softmax across every row and column (InfoNCE loss), and pulls the $B$ matching diagonal pairs together while pushing all $B^2 - B$ mismatched pairs apart. Because the denominator sums over every pair in the batch, CLIP needs huge global batch sizes (32,768 pairs) and heavy coordination across graphics processing units (GPUs).
 
-**SigLIP** (Sigmoid Loss for Language Image Pre-Training, Zhai et al., 2023) removes that global batch coupling. Instead of normalizing across an entire $B \times B$ softmax row, SigLIP evaluates each `(image_i, text_j)` pair independently with a binary **sigmoid loss**: label $+1$ when $i = j$ and $-1$ when $i \neq j$. That change eliminates global all-gather softmax bottlenecks, works cleanly at both modest and huge batch sizes, and powers the vision backbone inside many modern vision-language models.
+**SigLIP** (Sigmoid Loss for Language Image Pre-Training, Zhai et al., 2023) removes that batch-wide coupling. Instead of normalizing across an entire $B \times B$ softmax row, SigLIP scores each `(image_i, text_j)` pair on its own with a binary **sigmoid loss**: label $+1$ when $i = j$ and $-1$ when $i \neq j$. That change removes global synchronization bottlenecks across GPUs, works well at both small and huge batch sizes, and serves as the vision backbone (base image network) inside many modern VLMs.
 
-Yet a single-vector bi-encoder like CLIP or SigLIP hits a wall on dense enterprise PDFs. Compressing an entire 10-K filing page—40 table rows, three footnotes, and a scatter plot—into one single vector blurs fine details together. A query asking for "Q3 operating margin in Brazil" gets drowned out by every other word on the page.
+Yet a single-vector **bi-encoder** (a two-tower model that compresses an entire query or entire page into one vector) hits a wall on dense corporate PDFs. Squeezing a whole annual financial report (10-K filing) page—40 table rows, three footnotes, and a scatter plot—into one vector blurs fine details together. A question asking for "Q3 operating margin in Brazil" gets drowned out by every other number on the page.
 
 ## Worked example: ColPali late-interaction MaxSim
 
-**ColPali** (Faysse et al., 2024) solves the single-vector bottleneck by combining a Vision-Language Model backbone (PaliGemma, built on a SigLIP vision encoder) with the **ColBERT late-interaction MaxSim** mechanism from [lesson 28.3](/lessons/28-production-rag-architectures/28.3-reranking-cross-encoders-and-colbert/).
+**ColPali** (Faysse et al., 2024) avoids the single-vector bottleneck by pairing a VLM base (PaliGemma, built on SigLIP) with the **ColBERT late-interaction MaxSim** scoring rule from [lesson 28.3](/lessons/28-production-rag-architectures/28.3-reranking-cross-encoders-and-colbert/). Instead of summarizing a page into one vector, ColPali keeps one 128-dimensional embedding for every visual patch on the page (typically a $32 \times 32 = 1{,}024$ tile grid, plus a few instruction tokens) and one 128-dimensional vector per text query token.
 
-Instead of collapsing a PDF page into one vector, ColPali keeps one 128-dimensional embedding for every visual patch on the page (typically a $32 \times 32 = 1{,}024$ patch grid, plus a few instruction tokens). At query time, the text prompt also produces one 128-dimensional vector per query token.
-
-Trace a tiny worked example with a 2-token query ($q_1$ = `"Brazil"`, $q_2$ = `"margin"`) scored against a 3-patch page ($p_1$ = chart title, $p_2$ = country table row, $p_3$ = footer):
-
-- Dot products for $q_1$ with $(p_1, p_2, p_3)$: $(0.2,\ 0.9,\ 0.4)$ -> best patch match is $0.9$ (patch $p_2$).
-- Dot products for $q_2$ with $(p_1, p_2, p_3)$: $(0.8,\ 0.3,\ 0.5)$ -> best patch match is $0.8$ (patch $p_1$).
-
-Sum the best match for each query token:
+Trace a small worked example: a 2-token query ($q_1$ = `"Brazil"`, $q_2$ = `"margin"`) scored against a 3-patch page ($p_1$ = chart title, $p_2$ = country table row, $p_3$ = footer). Step 2 of the figure below lists all six dot products (a similarity score computed by multiplying matching entries of two vectors and adding them up). Taking each query token's highest match gives $0.9$ at $p_2$ and $0.8$ at $p_1$, which sum to the page score:
 
 $$
 \text{MaxSim}(Q, P) = \sum_{i=1}^{|Q|} \max_{j=1}^{|P|} \left( q_i \cdot p_j \right) = 0.9 + 0.8 = 1.7
 $$
 
-Each query term can lock onto its *own* exact region of the page—one token finds `"Brazil"` inside a dense table while another finds `"margin"` in the chart legend—without forcing a single vector to represent the whole document.
+Each query word locks onto its *own* region of the page—one token finds `"Brazil"` inside a dense table while another finds `"margin"` in the chart title—without forcing a single vector to represent the whole document.
+
+<Figure id="33-1-colpali-maxsim" />
 
 ## The storage and latency price of patch vectors
 
-Keeping 1,024 vectors per page instead of 1 vector per chunk is not free. Work out the exact memory math for a 50,000-page corporate archive storing $M = 1{,}024$ patches per page at $d = 128$ dimensions:
+Keeping 1,024 vectors per page instead of 1 vector per text chunk carries a real memory bill. Work out the exact vector storage for a 50,000-page corporate archive with $M = 1{,}024$ patches per page at $d = 128$ dimensions:
 
-- **In 16-bit floats (2 bytes per dimension)**:
+- **In 16-bit floats (bf16, 2 bytes per number)**:
 
 $$
 \text{Bytes/page}_{\text{bf16}} = 1{,}024 \times 128 \times 2 = 262{,}144\ \text{bytes} = 256\ \text{KiB}
 $$
 
-Across 50,000 pages, raw vectors alone take $50{,}000 \times 256\ \text{KiB} \approx 12.2\ \text{GiB}$ (compared with ~150 MiB for one 1,536-dim bf16 vector per page).
+Across 50,000 pages, raw vectors alone take $50{,}000 \times 256\ \text{KiB} \approx 12.2\ \text{GiB}$ (compared with about 150 MiB for a single 1,536-dim bf16 vector per page; 1 KiB = 1,024 bytes).
 
-- **With 1-bit binary quantization (1/8 byte per dimension)**:
+- **With 1-bit binary quantization (shrinking each number to a single 0 or 1 bit, or 1/8 byte)**:
 
 $$
 \text{Bytes/page}_{\text{bin}} = \frac{262{,}144}{16} = 16{,}384\ \text{bytes} = 16\ \text{KiB}
 $$
 
-Binary quantization shrinks the 50,000-page archive 16x down to ~0.76 GiB and lets CPUs compute fast Hamming-distance approximations over the patch matrix, before fetching full-precision patch vectors from disk for the top 50 candidate pages and computing exact MaxSim.
+Binary quantization shrinks the 50,000-page archive 16x down to about 0.76 GiB. Central processing units (CPUs) can then score pages rapidly with **Hamming distance** (counting how many bits differ between two binary strings) before loading full-precision bf16 vectors from disk for the top 50 candidate pages and computing exact MaxSim (Step 1 of the figure above).
 
 :::warning
-Visual document RAG changes the generation budget too. Sending 5 high-resolution retrieved page images into a Vision-Language Model consumes roughly 1,000–2,000 visual tokens per page—5,000 to 10,000 input tokens per query—raising both TTFT and per-query cost compared with 5 short text chunks. Keep top-k tight (3 to 5 pages) and cap image resolution to the minimum legibility threshold your eval set proves works.
+Visual document RAG changes the generation budget too. Sending 5 high-resolution page images into a VLM consumes roughly 1,000–2,000 visual tokens per page—5,000 to 10,000 input tokens per query—raising both Time to First Token (TTFT, the wait before the first word appears) and per-query cost compared with 5 short text chunks. Keep `top-k` (how many retrieved pages you pass in) tight at 3 to 5 pages and cap image resolution to the lowest legible size your evaluation set proves works.
 :::
 
 ## When to use text RAG, visual RAG, or hybrid
 
-Do not replace every plain-text knowledge base with visual indexing. Match the pipeline to the document distribution:
+Do not replace every plain-text knowledge base with visual indexing. Match the pipeline to the documents you actually store:
 
-- **Plain-text hybrid RAG (BM25 + dense + RRF)** wins on clean Markdown docs, source code, support tickets, and plain prose where exact SKU or symbol matching matters and storage/token costs stay low.
-- **Visual document RAG (ColPali / VLM patch retrieval)** wins on financial filings, slide decks, engineering schematics, medical scans with annotations, and scanned forms where tables, charts, and layout carry the answer.
-- **Hybrid routing** pairs both: run fast BM25 + dense text retrieval alongside visual patch retrieval (or trigger ColPali selectively on PDFs flagged with high table/image density), fuse ranks with RRF, and send page images to the VLM only when visual evidence is retrieved.
+- **Plain-text hybrid RAG (BM25 keyword search + dense vectors + Reciprocal Rank Fusion, or RRF)** wins on clean Markdown docs, source code, support tickets, and plain prose where exact product codes (SKUs) or symbols matter and memory and token budgets must stay low.
+- **Visual document RAG (ColPali / VLM patch retrieval)** wins on financial filings, slide decks, engineering schematics, annotated medical scans, and scanned forms where tables, charts, and layout hold the answer.
+- **Hybrid routing** pairs both: run fast BM25 and dense text search alongside visual patch search (or trigger ColPali only on PDFs flagged for heavy tables or images), fuse the rankings with RRF, and pass page images to the VLM only when visual evidence ranks at the top.
 
 :::caveat
-ColPali retrieves whole pages, not exact character spans, so compliance workflows that need word-level PII redaction before generation or exact text highlighting still need OCR coordinate overlays or a redaction pass on rendered images before indexing.
+ColPali retrieves whole pages rather than exact character spans. Compliance workflows that require word-level redaction of Personally Identifiable Information (PII, such as names or account numbers) before generation, or exact text highlighting, still need OCR coordinate overlays or a redaction pass on the rendered page images before indexing.
 :::
 
-Visual RAG handles *understanding* images inside documents. Next, lesson 33.2 crosses to the generative side of multimodal AI—explaining how modern image and video models turn pure noise into coherent frames via diffusion and flow matching.
+Visual RAG handles *reading* images inside documents. Next, lesson 33.2 crosses to the generative side of multimodal AI—explaining how modern image and video models turn random noise into coherent frames via diffusion and flow matching.

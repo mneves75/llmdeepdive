@@ -34,33 +34,35 @@ citations:
     authors: "Mike Ulrich (Google; O'Reilly Media)"
     year: 2017
     url: "https://sre.google/sre-book/addressing-cascading-failures/"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Offline evaluations from [lesson 29.5](/lessons/29-llm-and-rag-evaluations/29.5-offline-to-online-eval-flywheels/) catch obvious breaks before merge, yet they never see everything production throws at a model. Live users paste broken PDFs, switch languages mid-sentence, and ask about policies published twenty minutes ago. Meanwhile, a broken AI deploy rarely crashes with HTTP 500. Instead, it returns HTTP 200 while subtly refusing valid questions, omitting citations, or ballooning output tokens by 60%.
+Offline evaluations from [lesson 29.5](/lessons/29-llm-and-rag-evaluations/29.5-offline-to-online-eval-flywheels/) catch obvious breaks before code merges, yet they never see everything production throws at a model. Live users paste broken PDFs, switch languages mid-sentence, and ask about policies published twenty minutes ago. Meanwhile, a broken AI deploy rarely crashes with HTTP 500 (the web status code for a server crash). Instead, it returns HTTP 200 ("request succeeded") while subtly refusing valid questions, omitting citations, or ballooning output tokens by 60%.
 
-This lesson covers the progressive delivery ladder that catches **silent regressions** (quality, safety, or cost failures hidden behind healthy HTTP status codes): shadow traffic, sticky canary slices, sample-size math, and automated rollback drills building on [lesson 24.5](/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/).
+This lesson covers the progressive delivery ladder that catches **silent regressions** (quality, safety, or cost failures hidden behind healthy HTTP status codes): shadow traffic, sticky canary slices, sample-size math, and automated rollback drills building on [lesson 24.5](/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/). Step through the three stages below to see how traffic routing, tool safety, and rollback control shift at each step.
+
+<Figure id="32-3-progressive-rollout-ladder" />
 
 ## Stage 1: shadow traffic (dark launches)
 
-In a **shadow deployment** (also called a dark launch), your gateway duplicates a slice of live production requests—say 10%—and forwards the copy asynchronously to the candidate manifest from [lesson 32.1](/lessons/32-llmops-and-managed-platforms/32.1-coupled-versioning-and-release-artifacts/). The user still receives only the baseline manifest's response. The candidate's output goes strictly to your telemetry pipeline ([lesson 32.2](/lessons/32-llmops-and-managed-platforms/32.2-opentelemetry-genai-observability/)) and asynchronous graders.
+In a **shadow deployment** (also called a dark launch), your gateway (the entry server routing incoming requests) sends a background copy of live traffic to the candidate manifest from [lesson 32.1](/lessons/32-llmops-and-managed-platforms/32.1-coupled-versioning-and-release-artifacts/) while users still receive only the baseline (currently trusted) release. The candidate's output flows strictly into your OpenTelemetry pipeline ([lesson 32.2](/lessons/32-llmops-and-managed-platforms/32.2-opentelemetry-genai-observability/)) and background graders.
 
 Shadowing gives you four real-traffic measurements at zero user risk:
 
 - **Schema and parser pass rate**: does the candidate satisfy every JSON constraint on messy live inputs?
-- **Latency and token distribution**: what are the real p95 TTFT, decode length, and `finish_reason = "length"` rates?
+- **Latency and token distribution**: what are the real 95th-percentile (p95) Time To First Token (TTFT), decode length, and `finish_reason = "length"` truncation rates?
 - **Cost delta**: how much more (or less) does the candidate spend per 1,000 live turns?
-- **Side-by-side quality diff**: on a sampled batch, how often do calibrated judges prefer the candidate over the baseline?
+- **Side-by-side quality diff**: on a sampled batch, how often do calibrated graders prefer the candidate over the baseline?
 
-Shadow mode carries one strict boundary: **read-only execution**. If the candidate is an agent that calls external tools—sending emails, refunding charges, or updating CRM tickets—the shadow harness must stub every mutating tool at the tool gateway and log the intended call arguments instead of executing them. Otherwise a dark launch silently creates duplicate real-world side effects.
+Shadow mode carries one strict boundary: **read-only execution**. If the candidate is an agent that calls external tools—sending emails, refunding charges, or updating Customer Relationship Management (CRM) tickets—the shadow harness must replace every mutating (write) tool with a **stub** (a stand-in that logs the intended call arguments without executing the action). Otherwise a dark launch silently creates duplicate real-world side effects.
 
 ## Stage 2: sticky canary rollouts and sample-size math
 
-Shadowing cannot measure human reactions—whether real users stop clicking "talk to a human", accept suggested edits, or abandon the chat. That requires a **canary rollout**, where a small live slice (commonly 5%, then 25%, then 50%, then 100%) actually receives the candidate's answers.
+Shadowing cannot measure human reactions—whether real users stop clicking "talk to a human", accept suggested edits, or abandon the chat. That requires a **canary rollout**, where a small live slice of users actually receives the candidate's answers before traffic ramps up to 100%.
 
-Always route canaries by **sticky session or tenant hash**, never by coin flip on each turn. If turn 1 of a chat hits `rel-042` and turn 2 flips to `rel-043`, the conversation context mixes two different system prompts, invalidates prefix caches, and corrupts session-level metrics like resolution rate.
+Always route canaries by **sticky session or tenant hash** (a deterministic rule that maps each conversation or customer ID to one release), never by coin flip on each turn. If turn 1 of a chat hits `rel-042` and turn 2 flips to `rel-043`, the conversation history mixes two different system prompts, invalidates prefix caches (saved early prompt calculations reused across turns), and corrupts session-level metrics such as resolution rate.
 
-The most common canary mistake is promoting after 15 minutes because "it looks green." Check the numbers before setting a promotion window. Suppose your baseline passes an automated groundedness check on $p_0 = 0.92$ (92%) of turns, and you want to detect a drop of $\Delta = 0.03$ (3 percentage points, down to 89%) with 80% statistical power at a 5% significance level. A standard two-proportion sample-size estimate per arm is:
+The most common canary mistake is promoting after 15 minutes because the dashboard looks green. Check the numbers before setting a promotion window. Suppose your baseline passes an automated groundedness check on $p_0 = 0.92$ (92%) of turns, and you want to detect a drop of $\Delta = 0.03$ (3 percentage points, down to 89%) with 80% statistical power (an 80% chance of catching a real drop of that size) at a 5% significance level (at most a 5% false-alarm rate when nothing changed). A standard two-proportion sample-size estimate per arm is:
 
 $$
 n \approx \frac{2 \times (1.96 + 0.84)^{2} \times \bar{p}(1 - \bar{p})}{\Delta^{2}}
@@ -72,13 +74,13 @@ $$
 n \approx \frac{2 \times 7.84 \times 0.086}{0.03^{2}} \approx \frac{1.348}{0.0009} \approx 1{,}498\ \text{requests per arm}
 $$
 
-Round up to about 1,500 requests in the canary arm. On a service handling 20,000 requests per day, a 5% canary collects 1,000 requests per day, so it needs roughly 36 hours to reach statistical power for a 3-point quality shift. At just 40 requests, a single failure moves the metric by 2.5 percentage points—pure noise.
+Round up to about 1,500 requests in the canary arm. On a service handling 20,000 requests per day, a 5% canary collects 1,000 requests per day, so it needs roughly 36 hours to reach statistical power for a 3-point quality shift. At just 40 requests, a single failure swings the rate by 2.5 percentage points and the standard error (the typical random wiggle in a sample percentage) is roughly 4 percentage points—larger than the 3-point drop you are trying to spot. Small canary slices do not distort network round-trip time (RTT); what makes a 40-request verdict unreliable is sampling noise.
 
 ## Automated rollback gates for silent regressions
 
-A rollback gate watches candidate telemetry against the baseline manifest in real time and flips the active release pointer back to the previous immutable manifest when any guardrail trips. Define two tiers of triggers:
+A rollback gate watches candidate telemetry against the baseline manifest in real time and flips the active release pointer back to the previous immutable manifest when any threshold trips. Define two tiers of triggers:
 
-- **Fast hard triggers (minutes, small sample)**: HTTP 5xx rate above 1%, structured JSON parse failures above 0.5%, p95 latency up more than 30%, or average output tokens per request up more than 35% (which catches runaway loops and budget burns immediately).
+- **Fast hard triggers (minutes, small sample)**: HTTP 5xx (server error) rate above 1%, structured JSON parse failures above 0.5%, p95 latency up more than 30%, or average output tokens per request up more than 35% (catching runaway loops and budget burns right away).
 - **Quality and product triggers (hours, powered sample)**: `finish_reason = "length"` truncation rate up more than 2 percentage points, guardrail refusal rate up more than 2 percentage points, user thumbs-down or human-escalation rate up more than 2 percentage points, or sampled online groundedness dropping below threshold.
 
 | Signal | Healthy baseline | Automated rollback threshold | Why HTTP 200 misses it |
@@ -94,10 +96,10 @@ Never roll back by manually editing a prompt string or toggling an environment v
 
 ## Rehearsing the rollback before you need it
 
-Google's SRE guidance on cascading failures notes that an untested recovery path rarely works under pressure, and [lesson 24.5](/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/) proved that rule on agent batches. Run a scheduled rollback drill once a quarter in staging:
+Google's Site Reliability Engineering (SRE) guidance on cascading failures notes that an untested recovery path rarely works under pressure, and [lesson 24.5](/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/) proved that rule on agent batches. Run a scheduled rollback drill once a quarter in staging (a private test environment mirroring production):
 
 1. Deploy a deliberately degraded candidate manifest (for example a prompt missing citation rules or a capped token limit that triggers `length` truncations).
-2. Replay 500 synthetic traces through the canary router.
+2. Replay 500 synthetic traces (simulated test requests) through the canary router.
 3. Verify that OpenTelemetry metrics trip the alert, the controller reverts the pointer to the prior manifest automatically, and recovery completes in under two minutes with zero dropped traffic.
 
 :::caveat

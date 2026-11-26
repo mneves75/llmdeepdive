@@ -34,33 +34,35 @@ citations:
     authors: "Mike Ulrich (Google; O'Reilly Media)"
     year: 2017
     url: "https://sre.google/sre-book/addressing-cascading-failures/"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-As avaliações offline da [aula 29.5](/pt-br/lessons/29-llm-and-rag-evaluations/29.5-offline-to-online-eval-flywheels/) pegam quebras óbvias antes do merge, mas nunca enxergam tudo o que a produção joga no modelo. Usuários reais colam PDFs quebrados, trocam de idioma no meio da frase e perguntam sobre políticas publicadas vinte minutos atrás. Enquanto isso, um deploy ruim de IA raramente cai com HTTP 500. Em vez disso, devolve HTTP 200 enquanto recusa perguntas válidas, omite citações ou infla os tokens de saída em 60%.
+As avaliações offline da [aula 29.5](/pt-br/lessons/29-llm-and-rag-evaluations/29.5-offline-to-online-eval-flywheels/) pegam quebras óbvias antes do merge, mas nunca enxergam tudo o que a produção joga no modelo. Usuários reais colam PDFs quebrados, trocam de idioma no meio da frase e perguntam sobre políticas publicadas vinte minutos atrás. Enquanto isso, um deploy ruim de IA raramente cai com HTTP 500 (o código web para falha interna do servidor). Em vez disso, devolve HTTP 200 ("requisição bem-sucedida") enquanto recusa perguntas válidas, omite citações ou infla os tokens de saída em 60%.
 
-Esta aula cobre a escada de entrega progressiva que captura **regressões silenciosas** (falhas de qualidade, segurança ou custo escondidas atrás de códigos HTTP saudáveis): tráfego shadow, fatias canary fixas por sessão, matemática de tamanho amostral e exercícios de rollback apoiados na [aula 24.5](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/).
+Esta aula cobre a escada de entrega progressiva que captura **regressões silenciosas** (falhas de qualidade, segurança ou custo escondidas atrás de códigos HTTP saudáveis): tráfego shadow, fatias canary fixas por sessão, matemática de tamanho amostral e exercícios de rollback apoiados na [aula 24.5](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/). Avance pelas três etapas abaixo para ver como roteamento, segurança de ferramentas e controle de rollback mudam a cada passo.
+
+<Figure id="32-3-progressive-rollout-ladder" />
 
 ## Etapa 1: tráfego shadow (lançamentos escuros)
 
-Em um **deploy shadow** (também chamado de *dark launch*), seu gateway duplica uma fração das requisições reais—digamos 10%—e envia a cópia de forma assíncrona para o manifesto candidato da [aula 32.1](/pt-br/lessons/32-llmops-and-managed-platforms/32.1-coupled-versioning-and-release-artifacts/). O usuário continua recebendo apenas a resposta do manifesto baseline. A saída do candidato vai exclusivamente para a telemetria ([aula 32.2](/pt-br/lessons/32-llmops-and-managed-platforms/32.2-opentelemetry-genai-observability/)) e para avaliadores assíncronos.
+Em um **deploy shadow** (também chamado de *dark launch*), seu gateway (o servidor de entrada que roteia as requisições) envia uma cópia em segundo plano do tráfego real para o manifesto candidato da [aula 32.1](/pt-br/lessons/32-llmops-and-managed-platforms/32.1-coupled-versioning-and-release-artifacts/), enquanto os usuários seguem recebendo apenas o baseline (a versão atualmente confiável). A saída do candidato vai exclusivamente para a telemetria OpenTelemetry ([aula 32.2](/pt-br/lessons/32-llmops-and-managed-platforms/32.2-opentelemetry-genai-observability/)) e para avaliadores em segundo plano.
 
 O shadow entrega quatro medições em tráfego real com risco zero ao usuário:
 
 - **Taxa de aprovação de esquema e parser**: o candidato respeita todas as restrições JSON em entradas reais bagunçadas?
-- **Distribuição de latência e tokens**: quais são o TTFT p95 real, o comprimento de decodificação e a taxa de `finish_reason = "length"`?
+- **Distribuição de latência e tokens**: quais são o *Time To First Token* (TTFT) no percentil 95 (p95), o comprimento de decodificação e a taxa de truncamento `finish_reason = "length"`?
 - **Diferença de custo**: quanto a mais (ou a menos) o candidato gasta a cada 1.000 turnos reais?
-- **Comparação de qualidade lado a lado**: em um lote amostrado, com que frequência juízes calibrados preferem o candidato ao baseline?
+- **Comparação de qualidade lado a lado**: em um lote amostrado, com que frequência avaliadores calibrados preferem o candidato ao baseline?
 
-O modo shadow tem uma fronteira rígida: **execução somente leitura**. Se o candidato for um agente que aciona ferramentas externas—enviando e-mails, estornando cobranças ou atualizando chamados de CRM—o ambiente shadow precisa substituir toda ferramenta de mutação por um stub no gateway e apenas registrar os argumentos pretendidos em vez de executá-los. Caso contrário, o teste silencioso gera efeitos colaterais duplicados no mundo real.
+O modo shadow tem uma fronteira rígida: **execução somente leitura**. Se o candidato for um agente que aciona ferramentas externas—enviando e-mails, estornando cobranças ou atualizando chamados de *Customer Relationship Management* (CRM, sistema de atendimento ao cliente)—o ambiente shadow precisa trocar toda ferramenta de mutação (escrita) por um **stub** (um substituto que apenas registra os argumentos pretendidos sem executar a ação). Caso contrário, o teste silencioso gera efeitos colaterais duplicados no mundo real.
 
 ## Etapa 2: rollouts canary fixos e matemática de amostra
 
-O shadow não mede reações humanas—se usuários reais param de clicar em "falar com atendente", aceitam sugestões ou abandonam o chat. Isso exige um **rollout canary**, em que uma fatia real pequena (em geral 5%, depois 25%, 50% e 100%) recebe de fato as respostas do candidato.
+O shadow não mede reações humanas—se usuários reais param de clicar em "falar com atendente", aceitam sugestões ou abandonam o chat. Isso exige um **rollout canary**, em que uma fatia pequena de usuários reais recebe as respostas do candidato antes de o tráfego subir até 100%.
 
-Roteie canaries sempre por **hash fixo de sessão ou tenant**, nunca por sorteio isolado a cada turno. Se o turno 1 de um chat cair em `rel-042` e o turno 2 saltar para `rel-043`, o histórico mistura dois prompts de sistema diferentes, invalida caches de prefixo e corrompe métricas de sessão como taxa de resolução.
+Roteie canaries sempre por **hash fixo de sessão ou tenant** (uma regra determinística que sempre envia a mesma conversa ou cliente para a mesma versão), nunca por sorteio isolado a cada turno. Se o turno 1 de um chat cair em `rel-042` e o turno 2 saltar para `rel-043`, o histórico mistura dois prompts de sistema diferentes, invalida caches de prefixo (cálculos iniciais do prompt guardados para reaproveitamento entre turnos) e corrompe métricas de sessão como taxa de resolução.
 
-O erro mais comum em canaries é promover após 15 minutos porque "parece verde". Faça a conta antes de definir a janela de promoção. Suponha que o baseline passe na checagem automática de fidelidade em $p_0 = 0.92$ (92%) dos turnos, e você queira detectar uma queda de $\Delta = 0.03$ (3 pontos percentuais, para 89%) com 80% de poder estatístico e 5% de significância. A estimativa padrão de tamanho amostral por braço para duas proporções é:
+O erro mais comum em canaries é promover após 15 minutos porque o painel parece verde. Faça a conta antes de definir a janela de promoção. Suponha que o baseline passe na checagem automática de fidelidade em $p_0 = 0.92$ (92%) dos turnos, e você queira detectar uma queda de $\Delta = 0.03$ (3 pontos percentuais, para 89%) com 80% de poder estatístico (80% de chance de enxergar uma queda real desse tamanho) e 5% de significância (no máximo 5% de falso alarme quando nada mudou). A estimativa padrão de tamanho amostral por braço para duas proporções é:
 
 $$
 n \approx \frac{2 \times (1.96 + 0.84)^{2} \times \bar{p}(1 - \bar{p})}{\Delta^{2}}
@@ -72,13 +74,13 @@ $$
 n \approx \frac{2 \times 7.84 \times 0.086}{0.03^{2}} \approx \frac{1.348}{0.0009} \approx 1{,}498\ \text{requests per arm}
 $$
 
-Arredonde para cerca de 1.500 requisições no braço canary. Em um serviço com 20.000 requisições por dia, um canary de 5% coleta 1.000 requisições por dia e precisa de aproximadamente 36 horas para atingir poder estatístico contra um desvio de 3 pontos. Com apenas 40 requisições, uma única falha move a métrica em 2,5 pontos percentuais—ruído puro.
+Arredonde para cerca de 1.500 requisições no braço canary. Em um serviço com 20.000 requisições por dia, um canary de 5% coleta 1.000 requisições por dia e precisa de aproximadamente 36 horas para atingir poder estatístico contra um desvio de 3 pontos. Com apenas 40 requisições, uma única falha move a métrica em 2,5 pontos percentuais e o erro padrão (a oscilação aleatória típica de um percentual amostral) fica em torno de 4 pontos—maior que a queda de 3 pontos que você tenta flagrar. Fatias pequenas de canary não distorcem o tempo de ida e volta na rede (*round-trip time*, RTT); o que torna um veredito de 40 requisições pouco confiável é o ruído amostral.
 
 ## Gates automáticos de rollback para regressões silenciosas
 
 Um gate de rollback compara a telemetria do candidato contra o manifesto baseline em tempo real e reverte o ponteiro de release ativo para o manifesto imutável anterior quando algum limite dispara. Defina duas camadas de gatilhos:
 
-- **Gatilhos rápidos rígidos (minutos, amostra pequena)**: taxa de HTTP 5xx acima de 1%, falhas de parsing JSON acima de 0,5%, latência p95 subindo mais de 30% ou média de tokens de saída por requisição subindo mais de 35% (pegando loops e estouros de orçamento na hora).
+- **Gatilhos rápidos rígidos (minutos, amostra pequena)**: taxa de erros de servidor HTTP 5xx acima de 1%, falhas de parsing JSON acima de 0,5%, latência p95 subindo mais de 30% ou média de tokens de saída por requisição subindo mais de 35% (pegando loops e estouros de orçamento na hora).
 - **Gatilhos de qualidade e produto (horas, amostra com poder estatístico)**: taxa de truncamento `finish_reason = "length"` subindo mais de 2 pontos percentuais, recusas de guardrail subindo mais de 2 pontos, feedback negativo ou escalada para humano subindo mais de 2 pontos ou fidelidade amostrada caindo abaixo do piso.
 
 | Sinal | Baseline saudável | Limiar de rollback automático | Por que HTTP 200 não enxerga |
@@ -94,10 +96,10 @@ Nunca faça rollback editando manualmente uma string de prompt ou alternando uma
 
 ## Ensaiando o rollback antes de precisar dele
 
-O guia de SRE do Google sobre falhas em cascata lembra que um caminho de recuperação nunca exercitado raramente funciona sob pressão, e a [aula 24.5](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/) provou essa regra em lotes de agentes. Rode um exercício agendado de rollback uma vez por trimestre em staging:
+O guia de *Site Reliability Engineering* (SRE) do Google sobre falhas em cascata lembra que um caminho de recuperação nunca exercitado raramente funciona sob pressão, e a [aula 24.5](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.5-recovery-drills/) provou essa regra em lotes de agentes. Rode um exercício agendado de rollback uma vez por trimestre em staging (ambiente privado de testes espelhado na produção):
 
 1. Faça deploy de um manifesto candidato propositalmente degradado (por exemplo um prompt sem regras de citação ou um teto curto de tokens que dispare truncamentos `length`).
-2. Reproduza 500 traces sintéticos pelo roteador canary.
+2. Reproduza 500 traces sintéticos (requisições simuladas de teste) pelo roteador canary.
 3. Confirme que as métricas OpenTelemetry disparam o alerta, o controlador reverte o ponteiro para o manifesto anterior automaticamente e a recuperação conclui em menos de dois minutos sem perder tráfego.
 
 :::caveat
