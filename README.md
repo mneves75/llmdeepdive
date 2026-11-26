@@ -24,13 +24,14 @@ The pedagogy is Feynman's, applied literally. Each lesson runs:
 4. **Teach-back** — you explain it, then compare against a model answer
 5. **Quiz** — with an explanation of *why* the answer is right
 
-Lessons are written for a developer who has never studied machine learning:
-every new term is defined where it first appears, a worked case with small
-numbers comes before the general formula, headings name the question each
-part answers, and the first mention of another lesson links to it. The depth
-stays: the maths and the numbers are all there, after the example rather than
-instead of it. [`docs/WRITING.md`](docs/WRITING.md) is the standard every
-lesson is written and reviewed against.
+Lessons are written for a first-year university student in any field (no
+programming assumed, school maths only): every new term is defined where it
+first appears, a worked case with small numbers comes before the general
+formula, every code block is preceded by a plain-words line, headings name the
+question each part answers, and the first mention of another lesson links to it.
+The depth stays: the maths and the numbers are all there, after the example
+rather than instead of it. [`docs/WRITING.md`](docs/WRITING.md) is the standard
+every lesson is written and reviewed against.
 
 A lesson counts as complete only when your teach-back is substantive **and**
 the quiz is right. Clicking "reveal" is not learning: each explanation opens
@@ -105,8 +106,9 @@ site deliberately does not use, are in `AGENTS.md` under **Search metadata**.
 
 ## Current scale
 
-460 lessons live (230 English, 230 Portuguese) across 34 tracks in three parts,
-with full parity enforced by the build. Part one, tracks 0–13, is how a model
+476 lessons live (238 English, 238 Portuguese) across 35 tracks in three parts,
+with 248 zero-JS animated figures (237 of 238 lessons) and full parity enforced
+by the build. Part one, tracks 0–13, is how a model
 works. Tracks 0–7 carry the model from first principles
 to efficient inference; track 8 covers the serving stacks that run it (PyTorch,
 Transformers, vLLM, SGLang, TensorRT-LLM, llama.cpp, Ollama, MLX, Modular MAX)
@@ -135,17 +137,20 @@ whose tests CI runs on every change: every code block a lesson calls runnable
 is checked against that project by `pnpm content:excerpts`. nothing there needs an API key, a model or a paid service; commands that need
 KVM, a Slack workspace or a cloud account are labelled as not run by CI.
 
-Part three, tracks 26–33, is AI engineering in production: stateless APIs, SSE
+Part three, tracks 26–34, is AI engineering in production: stateless APIs, SSE
 streaming and constrained structured outputs, document ingestion and hybrid
 BM25 + HNSW + RRF search, production RAG architectures, retrieval and judge
 evaluation (`rag-eval` lab), RAG tenant security and EU AI Act / OWASP / NIST
 governance, end-to-end latency budgets and multi-layer caching (`ai-system-budget`
-lab), LLMOps and managed-vs-self-hosted economics, and multimodal/voice/system
-defense (including discrete masked and block text diffusion in lesson 33.2).
+lab), LLMOps and managed-vs-self-hosted economics, multimodal/voice/system
+defense (including discrete masked and block text diffusion in lesson 33.2),
+and Track 34 — running Qwen3-0.6B completely inside one browser tab with
+[`examples/qwen-local-lab/`](examples/qwen-local-lab/), whose reproducible npm
+vendor rebuild, single-file build, and worker/Python tests run in CI.
 Lesson 7.4 adds an interactive next-token `token-sampling` lab (temperature, top-k,
 top-p and min-p), the home page adds a zero-JS 5-stage forward-pass pipeline
 walkthrough, and a bilingual [`/roadmap/`](https://llmdeepdive.com/roadmap/)
-maps all 34 tracks into 16 progressive levels, a 100-day accelerated path,
+maps all 35 tracks into 16 progressive levels, a 100-day accelerated path,
 portfolio blueprints, and production defense drills.
 
 Each lesson is a course player: the track's syllabus with reading times and

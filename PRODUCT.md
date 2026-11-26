@@ -13,8 +13,9 @@ Independent English- and Brazilian Portuguese-speaking learners who want to
 understand large language models from first principles and to build
 software that acts on a model's output safely. The course must work for
 a first-year university student in any field (no programming assumed,
-school maths only), with a picture in every lesson, while continuing far
-enough for technical practitioners who
+school maths only), with zero-JS animated figures wherever a passage teaches
+a process or structure (237 of 238 lessons, 248 figures total, every lesson
+triaged in its track ledger), while continuing far enough for technical practitioners who
 want mathematical, implementation, training, inference, and frontier-systems
 depth. Learners study asynchronously on their own devices and need clear
 wayfinding through a long, cumulative curriculum.
@@ -46,17 +47,19 @@ The interface supports light, dark, and operating-system themes.
 
 ## Capabilities and Constraints
 
-- 230 current lessons in each of English and pt-BR across 34 ordered tracks in
+- 238 current lessons in each of English and pt-BR across 35 ordered tracks in
   three parts, with parity enforced at build time. Part one (tracks 0–13) is how
   a model works: track 10 covers video models and JEPA-family world models,
   and tracks 11–13 cover running models on a Mac Studio Ultra with MLX, on
   NVIDIA DGX machines with CUDA, and with llama.cpp. Part two (tracks 14–25) is
   building agent systems, with a runnable Python project
   (`examples/agent-engineering/`) whose tests CI runs and whose code the
-  lessons quote verbatim. Part three (tracks 26–33) is AI engineering in
+  lessons quote verbatim. Part three (tracks 26–34) is AI engineering in
   production (LLM APIs, hybrid search, production RAG, evaluations, security and
   governance, latency budgets and caching, LLMOps, multimodal/voice and system
-  defense), paired with a bilingual `/roadmap/` route mapping all 34 tracks into
+  defense, and Track 34 — running Qwen3-0.6B completely inside one browser tab
+  backed by `examples/qwen-local-lab/` whose vendored rebuild and tests CI runs),
+  paired with a bilingual `/roadmap/` route mapping all 35 tracks into
   16 levels, a 100-day path, portfolio blueprints and defense drills.
 - eleven interactive labs (memory budget, cost per token, sampling distribution,
   video tokens, MoE balancing, context budget, repair-loop budget, trajectory

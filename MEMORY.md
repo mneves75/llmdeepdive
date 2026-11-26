@@ -2,6 +2,9 @@
 
 ## Current Direction
 
+- **2026-11-26, 0.19.0: pictures for every lesson, first-year reader pass across all 35 tracks, and Track 34 (`examples/qwen-local-lab/`).**
+  Triaged all 238 lessons per locale (476 MDX files across 35 tracks) under the first-year university student reader contract (`docs/WRITING.md`), adding 208 new zero-JS animated bilingual figures (**248 figures across 237 of 238 lessons**; `0.8` stayed prose-only after the Wave 2 pilot kill criterion). `scripts/content-figures.mjs` enforces 100% triage-ledger coverage across all 35 track ledgers (`docs/plans/0.19-pictures-and-the-browser-lab/ledger/`) with no exemption list. Extracted figure BEM styles to `src/styles/figure.css` (keeping worst-route CSS at 70.0 KB <= 72 KB and CSP at 560 chars with 2 inline script + 1 inline style hashes). Added Track 34 (`34-a-model-in-your-browser`, 8 bilingual lessons, 10 figures, facts in `src/lib/browser-lab-facts.ts`) backed by `examples/qwen-local-lab/` (reproducible npm vendor fetch + SHA-512/SHA-256 verification, streaming `hash-wasm` SHA-256 on downloaded & cached 639.45 MB GGUF, pinned SHA-256 `model_lib` WASM `blob:` handoff, hashed CSP, CI `lab` job, real-browser verified on Apple M5 Pro Chromium 156 in CPU 4-thread WASM and Metal-3 WebGPU). Every track underwent an independent cross-model fact check, followed by two-axis `code-review`, `security-audit` (0 confirmed/candidate vulnerabilities), and fresh-context independent verification.
+
 - **2026-11-21, 0.17.1: test suite maintenance.** The contributor policy uses
   `cccc` for the threshold on new tests. The suite keeps unique behavior
   checks. `progress.md` records why each removed check was redundant or

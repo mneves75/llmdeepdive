@@ -3,6 +3,44 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.19.0] — 2026-11-26
+
+### Added
+
+- **Track 34 — A Model in Your Browser (`34-a-model-in-your-browser`, 8 bilingual lessons = 16 MDX files, 10 zero-JS figures) and [`examples/qwen-local-lab/`](examples/qwen-local-lab/):**
+  - Teaches running Qwen3-0.6B completely inside a single browser tab (`34.1` architecture & privacy boundary, `34.2` GGUF format & 639.45 MB arithmetic, `34.3` WebAssembly vs WebGPU feature routing, `34.4` streaming incremental SHA-256 verification without a duplicate model buffer, `34.5` chat templates, 2,048-token context fitting, sampling differences & prefix-cache reuse, `34.6` CSP, fetch guard & 3-second stop-to-terminate fallback, `34.7` single-file 15.66 MB base64 packaging, `34.8` honest measurement).
+  - Single numeric source of truth in `src/lib/browser-lab-facts.ts` (structurally separate from Qwen3.8-27B in `src/lib/model-facts.ts`). Every quoted code block is checked verbatim by `pnpm content:excerpts` (314 excerpts total across both example projects).
+  - Hardened `examples/qwen-local-lab/`: `scripts/fetch_vendor.py` reproduces all vendored engines (`@wllama/wllama@2.3.7` + 1-line worker base-URL patch, `@mlc-ai/web-llm@0.2.89`, `hash-wasm@4.13.0`) from npm with pinned SHA-512 tarball integrity, strict safe archive extraction, exact patch-application count, and pinned SHA-256 output verification; `src/inference-worker.js` streams full SHA-256 over downloaded and cached 639.45 MB GGUF files via `hash-wasm` and pins + SHA-256-verifies the 6.56 MB WebGPU `model_lib` WASM before `blob:` handoff; `scripts/build.py` emits matching hashed CSP in `dist/_headers` and `<meta>`. Wired into CI as the `lab` job (12 Node worker tests + 7 Python build/fetch tests).
+  - Real-browser verification on Apple M5 Pro (64 GiB, macOS 27.3, Chromium `156.0.8078.4`, 2026-11-26): CPU 4-thread WASM cold load 40.93 s, warm Cache API re-hash 1.89 s (0 HTTP requests), 43.7–52.1 tok/s decode, 0.65 s -> 0.44 s TTFT via prefix cache; Metal-3 WebGPU (`shader-f16`) cold load 26.87 s, warm reload 1.22 s, 133.7 tok/s warm-shader decode, 0.18 s TTFT; 0 CSP violations, 0 console/page errors.
+- **208 new zero-JS animated bilingual figures (248 figures across 237 of 238 lessons, 35 tracks):**
+  - Expanded from 40 lessons with figures in 0.18.0 to 237 of 238 lessons (`0.8` intentionally kept prose-only after the Track 0 pilot kill criterion fired).
+  - Every lesson in all 35 tracks triaged in `docs/plans/0.19-pictures-and-the-browser-lab/ledger/` (`keep|clarify|restructure|rewrite`, obstacle removed, figure replacing prose, facts checked).
+  - `scripts/content-figures.mjs` enforces 100% triage-ledger coverage across all 238 lessons with no exemption list, cross-checks `none` rows against actual `<Figure>` tags, and checks all 11 lab IDs against collisions, backed by a negative-control unit test.
+- **Zero-JS figure motion contract & real-engine verification:**
+  - Time-based replay inside stepped figures (`<= 1.5 s`, no loop, clicking the active step replays nothing), scroll-linked entrances on single panels (`@supports (animation-timeline: view())` with named `--fig-rows` timeline for grids), instant end state under `prefers-reduced-motion: reduce`, pure-CSS print expansion (`@media print` revealing all panels and plot `<details>` data tables with zero JavaScript), and forced-colors distinctions.
+  - Extended `scripts/render-check.mjs` and its `--self-test` across all four figure kinds (`flow`, `stack`, `grid`, `plot`) plus active-step re-click, reduced motion, print panels and plot tables, and forced colors in Chromium, WebKit, and Firefox.
+
+### Changed
+
+- **First-year university student reader contract across all 35 tracks (238 lessons per locale = 476 MDX files):**
+  - Updated `docs/WRITING.md`, `PRODUCT.md`, and every lesson across tracks 0–34 so new terms (including computing terms) are glossed or linked at first use, code blocks are preceded by plain-words introductions, and process/structure passages are carried by figures rather than repeated in prose. All 35 tracks underwent independent fresh-context cross-model fact checks.
+- **CSS delivery & figure styling:**
+  - Extracted `Figure.astro` and `FigureBody.astro` BEM styles into `src/styles/figure.css` (same pattern as `prose.css` and `lab.css`), eliminating duplicated Astro scope classes and bringing worst-route render-blocking CSS to **70.0 KB** (under the 72 KB budget; CSP remains 560 chars <= 1,900 with pinned `2` inline script + `1` inline style hashes).
+  - Stripped duplicate leading step numbers (`1. `, `2. `) in `Figure.astro` stepped tabs so the `01`/`02` counter never doubles up, and raised `.figure` list/caption specificity against `.prose`.
+- **Frontend accessibility & UI polish (Wave 5 & 6):**
+  - Restored focus deterministically on `<dialog>` search close, hardened `LessonQuiz.astro` and `Lesson.astro` DOM guards, prevented `Pagefind` from indexing stepped labels and non-default panels, and verified desktop (1440 px) and mobile (390 px) layouts in both Desk and Field editions plus two angles of the 3D Explorer.
+- **Corpus scale & roadmap:**
+  - Site now serves **35 tracks / 238 lessons per locale (476 MDX files, 556 built HTML pages)**; `/roadmap/` links Track 34 lessons in Level 16.
+- **Readability metrics (reported, not accepted on; text measurements only — no learners were tested):**
+
+| Corpus slice | EN words | EN words/sentence | EN Flesch–Kincaid grade | pt-BR words | pt-BR words/sentence | pt-BR Flesch–Kincaid grade |
+|---|---:|---:|---:|---:|---:|---:|
+| Baseline `0.18.0` (`c7148f3`, 230 lessons) | 260,439 | 18.24 | 9.60 | 284,680 | 19.87 | 14.45 |
+| `0.19.0` same 230 lessons (excl. Track 34) | 279,351 | 20.61 | 10.61 | 305,650 | 22.48 | 15.65 |
+| `0.19.0` full corpus (238 lessons incl. Track 34) | 287,657 | 20.80 | 10.69 | 314,726 | 22.69 | 15.72 |
+
+  *(Inline definitions and plain-words code introductions added ~18.9k English words across the 230 existing lessons and slightly lengthened average sentences because technical terms are glossed in-sentence.)*
+
 ## [0.18.0] — 2026-11-21
 
 ### Changed

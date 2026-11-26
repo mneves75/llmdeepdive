@@ -5,27 +5,15 @@ Test status: `tests.json`.
 
 ## Done
 
-- 2026-11-26. Built the integration branch `release/0.19-qwen-lab` from `origin/main`, merging PRs #26 (v0.18.0, which production serves), #29 and #30 without conflicts. Pushed it with upstream tracking.
-- Baseline on the merged tree: 12 gates pass and 331/331 tests pass. The worst route's CSS is 69.9 KB of 72 KB. Only 40 of 230 lessons per locale have a figure.
-- Confirmed that the CSP has no `media-src`, so `default-src 'none'` blocks video. Motion therefore stays CSS inside the figure system.
-- The lab's vendored engines reproduce byte for byte from npm (`@wllama/wllama@2.3.7`, `@mlc-ai/web-llm@0.2.89`). The one exception is `wllama.js`, which carries a one-line patch: it replaces `document.baseURI` with `self.location.href` when `document` is undefined, as it is in a Worker.
-- Changed the reader contract in `docs/WRITING.md` and `PRODUCT.md` to a first-year university student in any field. WRITING.md also gains two tools: draw a process instead of describing it, and say what code does before showing it.
+- **Wave 1 (Foundation):** Built `release/0.19-qwen-lab` from `origin/main` (`c7148f3`); updated reader contract (`docs/WRITING.md`, `PRODUCT.md`); implemented zero-JS CSS figure motion (`Figure.astro`, `FigureBody.astro`, extracted to `src/styles/figure.css` in Wave 7); extended `scripts/render-check.mjs` and `--self-test` across all four figure kinds, reduced motion, print, and forced colors; registered all 35 track figure modules.
+- **Wave 2 (Pilot):** Rewrote/clarified Track 0 (`0.1`–`0.8`, both locales) with 7 figures (including 2 stepped plots on `0.3` and `0.6`). Independent review fired the kill criterion on `0.8` (kept prose-only), updating Acceptance 1 and `docs/WRITING.md` to "every lesson triaged in its track ledger; a figure wherever a passage teaches a process, architecture, comparison, or numerical/visual structure".
+- **Wave 3 (Lab & Track 34):** Vendored and hardened `examples/qwen-local-lab/` (`fetch_vendor.py` npm SHA-512/SHA-256 verification + 1-line `wllama.js` worker patch, streaming `hash-wasm` SHA-256 on downloaded & cached 639.45 MB GGUF, pinned SHA-256 WebGPU `model_lib` `blob:` handoff, hashed CSP in `dist/_headers` and `<meta>`, CI `lab` job with 12 Node + 7 Python tests). Ran real-browser verification on Apple M5 Pro (macOS 27.3, Chromium `156.0.8078.4`) across CPU 4-thread WASM and Metal-3 WebGPU. Authored `src/lib/browser-lab-facts.ts` and Track 34 (`34.1`–`34.8`, both locales, 10 figures, all code blocks verified by `content:excerpts`).
+- **Wave 4 (Lanes, Tracks 1–33):** Triaged and updated all 33 remaining tracks in both locales (476 MDX files total across 35 tracks), adding 208 new zero-JS animated figures (**248 figures across 237 of 238 lessons**), recording every lesson in `docs/plans/0.19-pictures-and-the-browser-lab/ledger/`, and running fresh-context cross-model fact checks on every track. Added strict 100% triage-ledger coverage gate + negative-control test in `scripts/content-figures.mjs` and `tests/content-checkers.test.mjs`.
+- **Wave 5 (Front end):** Completed design critique and UI accessibility audit; applied focus-restore, keyboard, print, forced-colors, and mobile fixes; inspected desktop (1440 px) and mobile (390 px) screenshots in Desk and Field editions plus two angles of `/explore/`.
+- **Wave 6 (Review & Security Audit):** Completed two-axis `code-review` (Standards + Spec) and `security-audit` (**GO — 0 confirmed or candidate exploitable vulnerabilities**); fixed all review findings (removed `beforeprint` JS from `Lesson.astro`, fixed `WRITING.md` self-contradiction, hardened `build.py`/`fetch_vendor.py`/`serve.py`/`app.js`, extended `render-check.mjs`, synced deterministic 15,658,390-byte `dist/index.html`).
+- **Wave 7 (Integration):** Extracted `src/styles/figure.css` (worst-route CSS `70.0 KB` <= `72 KB`, CSP `560` chars <= `1,900`), stripped duplicate step tab prefixes in `Figure.astro`, raised `.figure` specificity over `.prose`, verified `cccc` cognitive complexity on new/edited code (0 parse errors; no redundant tests to prune), passed 332/332 website tests + 12/12 lab worker tests + 7/7 lab Python tests + all content/budget/contrast/privacy/audit gates.
+- **Wave 8 (Release prep):** Bumped `package.json` to `0.19.0`, `wrangler.jsonc` `compatibility_date` to `2026-11-26`, and updated `CHANGELOG.md` (with measured baseline vs 0.19 readability metrics), `PRODUCT.md`, `README.md`, `MEMORY.md`, `AGENTS.md`, `FOR_YOU_KNOW.md`, `progress.md`, and `tests.json`.
 
-- Red team (fresh context, another model) returned "run this experiment first". Its gaps are folded into the plan's acceptance criteria. Firefox 159 turned scroll-driven animation on by default (MDN release notes, read 2026-11-26).
-- Motion (`858a74e` plus this commit): stepped figures replay on the document clock on every step change, within 880–900 ms. All motion is screen-only. Verified with probes in Chromium and WebKit at 320px:
-  - stepped flow 1.3, stack 7.2 (pt-BR) and grid 4.4 replay on A→B→A; clicking the selected step replays nothing; every stage ends fully opaque;
-  - reduced motion and print run no figure animation; print shows every panel and the plot data table;
-  - **two defects found and fixed:** print captured animations (the first frame is at opacity 0), and single-panel grid rows bound by `view()` to their own `.fig-scroll` box sat at 0.5 opacity forever. Rows now use the named timeline `--fig-rows`.
-- `render:check` now asserts all of the above in three engines, with a planted defect per check. `--self-test` passes in Chromium and WebKit.
-- Firefox 157, the flashwright-pinned build, does not launch on this Mac even outside the sandbox; Firefox coverage comes from CI. Because 157 predates 159, no engine in CI exercises Firefox's scroll-linked path; Firefox gets the static figure there.
-- Flashwright downloads browsers from the official Playwright mirrors (`cdn.playwright.dev`, `playwright.download.prss.microsoft.com`). A note for the security audit.
-- Empty figure registries now exist for tracks 0, 2, 3, 6, 8, 11, 12, 13 and 34, all registered in `src/lib/figures/index.ts`. Lanes never edit that file.
-- Worst route CSS: 70.8 of 72 KB. The CSS headroom task has to land before the front-end wave.
+## Pending owner confirmation
 
-## In progress
-
-- Draft PR, so CI runs the three-engine gates on every wave.
-
-## Next
-
-- Pilot on track 0 (kill criterion for the 100% figure rule in the plan), then the lab clean-checkout rebuild and the 34.1 pilot.
+- Merge PR #31 (`release/0.19-qwen-lab`) to `main`, tag `v0.19.0`, deploy production, run `verify:live --target production`, turn staging off, and run `devtrim purge`.
