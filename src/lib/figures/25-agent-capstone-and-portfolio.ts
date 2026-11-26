@@ -33,7 +33,7 @@ const PER_SUCCESS_24 = round4(BASELINE_WORKED.perSuccess ?? 0)
 
 const messageHashed: FigureStep = {
   label: { en: 'Message hashed', 'pt-br': 'Mensagem com hash' },
-  detail: { en: 'run.received · SHA-256 logged, text omitted', 'pt-br': 'run.received · só SHA-256 no log, sem texto' },
+  detail: { en: 'run.received · fixture name + SHA-256 logged, text omitted', 'pt-br': 'run.received · nome da fixture e SHA-256 no log, sem texto' },
   pigment: 'muted',
 }
 
@@ -53,8 +53,8 @@ export const TRACK_25_FIGURES = {
     lesson: '25.1-architecture-and-threat-model-review',
     title: { en: 'One supplier message through the assembled system', 'pt-br': 'Uma mensagem de fornecedor pelo sistema montado' },
     caption: {
-      en: 'Every path logs only the message’s SHA-256 hash, routes tool calls through the policy gate, and ends by checking environment invariants on the outbox and back office rather than the model’s last sentence.',
-      'pt-br': 'Todo caminho grava só o hash SHA-256 da mensagem, passa chamadas de ferramenta pelo gate de política e termina conferindo invariantes no outbox e no back office, nunca a última frase do modelo.',
+      en: 'Every path logs the fixture name and the message’s SHA-256 hash without raw text, routes tool calls through the policy gate, and ends by checking environment invariants on the outbox and back office rather than the model’s last sentence.',
+      'pt-br': 'Todo caminho grava o nome da fixture e o hash SHA-256 da mensagem sem o texto bruto, passa chamadas de ferramenta pelo gate de política e termina conferindo invariantes no outbox e no back office, nunca a última frase do modelo.',
     },
     steps: [
       {
@@ -194,7 +194,7 @@ export const TRACK_25_FIGURES = {
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: '#0 run.received', 'pt-br': '#0 run.received' }, detail: { en: 'SHA-256 only · root event', 'pt-br': 'só SHA-256 · evento raiz' }, pigment: 'muted' },
+            { label: { en: '#0 run.received', 'pt-br': '#0 run.received' }, detail: { en: 'fixture name + SHA-256 · root event', 'pt-br': 'nome da fixture e SHA-256 · evento raiz' }, pigment: 'muted' },
             { label: { en: '#1 run.started', 'pt-br': '#1 run.started' }, detail: { en: '<- #0 · flagged=False', 'pt-br': '<- #0 · sem alerta (flagged=False)' }, pigment: 'muted' },
             { label: { en: '#2 policy.denied', 'pt-br': '#2 policy.denied' }, detail: { en: '<- #0 · first failure: USD 5,000 vs 500', 'pt-br': '<- #0 · primeira falha: USD 5.000 vs 500' }, pigment: 'danger' },
             { label: { en: '#3 run.finished', 'pt-br': '#3 run.finished' }, detail: { en: '<- #0 · denied=1, executed=0', 'pt-br': '<- #0 · 1 recusada, 0 executadas' }, pigment: 'caution' },
@@ -231,8 +231,8 @@ export const TRACK_25_FIGURES = {
     lesson: '25.4-write-the-teardown',
     title: { en: 'What the fresh-process reproduction check catches', 'pt-br': 'O que o teste de reprodução em processo limpo pega' },
     caption: {
-      en: 'Running the benchmark inside a fresh isolated process (`python -I`) in an empty directory verifies that identical inputs produce identical bytes, and `reproduces` names the exact run or fixture when they do not.',
-      'pt-br': 'Rodar o benchmark num processo isolado novo (`python -I`) em diretório vazio confirma que as mesmas entradas dão os mesmos bytes, e `reproduces` nomeia a execução ou fixture exata quando diferem.',
+      en: 'Running the benchmark inside a fresh isolated process (`python -I`) in an empty directory verifies that identical inputs produce identical bytes, and `reproduces` flags the exact changed trial field or a fixture-manifest mismatch when they do not.',
+      'pt-br': 'Rodar o benchmark num processo isolado novo (`python -I`) em diretório vazio confirma que as mesmas entradas dão os mesmos bytes, e `reproduces` aponta o campo exato da tentativa alterada ou a divergência no manifesto de fixtures quando diferem.',
     },
     steps: [
       {
@@ -270,16 +270,16 @@ export const TRACK_25_FIGURES = {
       {
         label: { en: 'Tampered run or fixture', 'pt-br': 'Execução ou fixture alterada' },
         caption: {
-          en: 'Instead of stopping at "hash mismatch", reproduces checks every trial field and the fixture manifest so the reviewer sees which run or input file changed.',
-          'pt-br': 'Em vez de parar em "hash diferente", reproduces compara cada campo de cada tentativa e o manifesto de fixtures para o revisor ver qual execução ou arquivo mudou.',
+          en: 'Instead of stopping at "hash mismatch", reproduces checks every trial field and compares the fixture manifests so the reviewer sees which trial field changed or that the fixture manifest differs.',
+          'pt-br': 'Em vez de parar em "hash diferente", reproduces compara cada campo de cada tentativa e os manifestos de fixtures para o revisor ver qual campo mudou ou se o manifesto de fixtures diverge.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'One change introduced', 'pt-br': 'Uma mudança introduzida' }, detail: { en: 'flipped success or edited fixture file', 'pt-br': 'sucesso invertido ou fixture editada' }, pigment: 'caution' },
             { label: { en: 'Digest mismatch', 'pt-br': 'Digest diferente' }, detail: { en: 'first 12 hex chars of both digests logged', 'pt-br': 'primeiros 12 dígitos dos dois digests' }, pigment: 'danger' },
-            { label: { en: 'Field & manifest diff', 'pt-br': 'Comparação de campos e manifesto' }, detail: { en: 'scans every case_id.tN and file hash', 'pt-br': 'varre cada case_id.tN e hash de arquivo' }, pigment: 'accent' },
-            { label: { en: 'Exact culprit named', 'pt-br': 'Causa exata nomeada' }, detail: { en: 'ordinary-po1001.t1: success or manifest differs', 'pt-br': 'ordinary-po1001.t1: success ou manifesto difere' }, pigment: 'success' },
+            { label: { en: 'Field & manifest diff', 'pt-br': 'Comparação de campos e manifesto' }, detail: { en: 'scans every case_id.tN and compares manifests', 'pt-br': 'varre cada case_id.tN e compara os manifestos' }, pigment: 'accent' },
+            { label: { en: 'Mismatch reported', 'pt-br': 'Divergência relatada' }, detail: { en: 'names changed trial field or flags fixture manifest', 'pt-br': 'nomeia o campo da tentativa ou aponta o manifesto' }, pigment: 'success' },
           ],
         },
       },
@@ -302,8 +302,8 @@ export const TRACK_25_FIGURES = {
       {
         label: { en: 'Course benchmark (CI)', 'pt-br': 'Benchmark do curso (CI)' },
         caption: {
-          en: 'All eight artifacts, three postmortems and zero violations pass the project verdict. Because CI runs only scripted fixtures, applied mastery stays false.',
-          'pt-br': 'Os oito artefatos, três postmortems e zero violações aprovam o veredito de projeto. Como a CI roda só fixtures roteirizadas, a maestria aplicada fica falsa.',
+          en: 'All eight artifacts, three postmortems and zero violations pass the project verdict. Because the capstone benchmark runs only scripted fixtures, applied mastery stays false.',
+          'pt-br': 'Os oito artefatos, três postmortems e zero violações aprovam o veredito de projeto. Como o benchmark do projeto final roda só fixtures roteirizadas, a maestria aplicada fica falsa.',
         },
         body: {
           kind: 'flow',
@@ -318,8 +318,8 @@ export const TRACK_25_FIGURES = {
       {
         label: { en: 'Complete live submission', 'pt-br': 'Entrega completa ao vivo' },
         caption: {
-          en: 'Passing is_live with at least ten held-out scenarios × three trials, all 30 outcomes reported and all seven capabilities succeeding at least once earns applied mastery — private or public.',
-          'pt-br': 'Passar em is_live com pelo menos dez cenários reservados × três tentativas, todos os 30 resultados relatados e as sete capacidades com ao menos um sucesso dá maestria aplicada — privada ou pública.',
+          en: 'Passing is_live with at least ten scenarios × three trials (held-out by course rule), all 30 outcomes reported and all seven capabilities succeeding at least once earns applied mastery — private or public.',
+          'pt-br': 'Passar em is_live com pelo menos dez cenários × três tentativas (reservados por regra do curso), todos os 30 resultados relatados e as sete capacidades com ao menos um sucesso dá maestria aplicada — privada ou pública.',
         },
         body: {
           kind: 'flow',

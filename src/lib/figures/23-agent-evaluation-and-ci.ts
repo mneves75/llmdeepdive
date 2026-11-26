@@ -27,10 +27,10 @@ const passAtKPoints = [
   [2, 0.96],
   [3, 0.992],
   [4, 0.9984],
-  [5, 0.9997],
-  [6, 0.9999],
-  [7, 1],
-  [8, 1],
+  [5, 0.99968],
+  [6, 0.999936],
+  [7, 0.9999872],
+  [8, 0.99999744],
 ] as const
 
 const passPowerKPoints = [
@@ -54,8 +54,8 @@ export const TRACK_23_FIGURES = {
     lesson: '23.1-define-success-and-capture-traces',
     title: { en: 'One trial as a causal chain of events', 'pt-br': 'Uma tentativa como cadeia causal de eventos' },
     caption: {
-      en: 'Each event gets a sequence number (seq) and links back to the event that caused it (parent). Reading the denial in place, between the two tool calls, is what makes a trace useful for debugging.',
-      'pt-br': 'Cada evento recebe um número de sequência (seq) e aponta para o evento que o causou (parent). Ler a recusa no lugar em que ocorreu, entre as duas chamadas de ferramenta, é o que torna um trace útil para depurar.',
+      en: 'Each event gets a sequence number (seq), and causally dependent events (tool.call and run.reply) record the seq of the event that caused them (parent). Reading the denial in place, between the two tool calls, is what makes a trace useful for debugging.',
+      'pt-br': 'Cada evento recebe um número de sequência (seq), e eventos causalmente ligados (tool.call e run.reply) gravam o seq do evento que os causou (parent). Ler a recusa no lugar em que ocorreu, entre as duas chamadas de ferramenta, é o que torna um trace útil para depurar.',
     },
     steps: [
       {
@@ -255,8 +255,8 @@ export const TRACK_23_FIGURES = {
       {
         label: { en: 'Effect check passes', 'pt-br': 'Efeito passa' },
         caption: {
-          en: 'Only when effects are clean does ModelJudge send the rubric as the system message and the reply inside <reply> tags. Only exact PASS passes; FAIL or invalid fails the trial.',
-          'pt-br': 'Só quando os efeitos passam é que ModelJudge envia a rubrica como mensagem de sistema e a resposta dentro de tags <reply>. Só PASS exato aprova; FAIL ou invalid reprova a tentativa.',
+          en: 'Only when effects are clean does ModelJudge send the rubric as the system message and the reply inside <reply> tags. After trimming whitespace and uppercasing, only PASS passes; FAIL or invalid fails the trial.',
+          'pt-br': 'Só quando os efeitos passam é que ModelJudge envia a rubrica como mensagem de sistema e a resposta dentro de tags <reply>. Depois de remover espaços nas pontas e converter para maiúsculas, só PASS aprova; FAIL ou invalid reprova a tentativa.',
         },
         body: {
           kind: 'flow',
@@ -286,14 +286,14 @@ export const TRACK_23_FIGURES = {
       {
         label: { en: 'Real gate', 'pt-br': 'Gate real' },
         caption: {
-          en: 'The working gate passes all 65 controls: it refuses the 35 bad calls and injections while letting all 30 ordinary cases complete.',
-          'pt-br': 'O gate funcional passa nos 65 controles: recusa as 35 chamadas erradas e injeções e deixa os 30 casos comuns concluírem.',
+          en: 'With the working gate in place, all 65 controls pass: 35 negative controls stay blocked (the gate stops 30, malformed-name checks stop 4 before the gate, and the renderer strips 1 unsafe link) while all 30 ordinary cases complete.',
+          'pt-br': 'Com o gate funcional ativo, todos os 65 controles passam: 35 controles negativos ficam bloqueados (o gate barra 30, a validação de nomes barra 4 antes do gate e o renderizador remove 1 link inseguro) enquanto os 30 casos comuns concluem.',
         },
         body: {
           kind: 'stack',
           direction: 'down',
           steps: [
-            { label: { en: 'Negative controls refused', 'pt-br': 'Controles negativos recusados' }, detail: { en: '35 of 35 pass (20 tool failures + 15 injections)', 'pt-br': '35 de 35 passam (20 falhas de ferramenta + 15 injeções)' }, weight: 35, pigment: 'success' },
+            { label: { en: 'Negative controls blocked', 'pt-br': 'Controles negativos bloqueados' }, detail: { en: '35 of 35 pass (30 gate + 4 malformed names + 1 renderer)', 'pt-br': '35 de 35 passam (30 gate + 4 nomes malformados + 1 renderizador)' }, weight: 35, pigment: 'success' },
             { label: { en: 'Positive controls allowed', 'pt-br': 'Controles positivos permitidos' }, detail: { en: '30 of 30 pass (ordinary drafts)', 'pt-br': '30 de 30 passam (rascunhos comuns)' }, weight: 30, pigment: 'success' },
           ],
         },
