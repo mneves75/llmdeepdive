@@ -42,17 +42,19 @@ citations:
     authors: "PyTorch Team"
     year: 2024
     url: "https://pytorch.org/blog/efficient-large-scale-training-with-pytorch/"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Baixe o Qwen3.8-27B e os safetensors lançados estão em bf16: cerca de 2 bytes por parâmetro armazenado. Esse fato descreve o checkpoint distribuído. Ele não diz nada sobre os dtypes (formatos numéricos) usados no treino para o estado do optimizer, os master weights, a acumulação ou os gradientes, e a receita de treino não foi publicada. Por isso esta aula ensina o design de mixed precision como um conjunto de políticas explícitas e salvaguardas medidas. Ela não reconstrói a história do Qwen a partir do dtype de saída.
+Baixe o Qwen3.8-27B e os safetensors (o formato de arquivo de pesos na página do modelo) lançados estão em bf16: cerca de 2 bytes por parâmetro armazenado. Esse fato descreve o checkpoint distribuído. Ele não diz nada sobre os dtypes (formatos numéricos) usados no treino para o estado do optimizer, os master weights, a acumulação ou os gradientes, e a receita de treino não foi publicada. Por isso esta aula ensina o design de mixed precision como um conjunto de políticas explícitas e salvaguardas medidas. Ela não reconstrói a história do Qwen a partir do dtype de saída.
 
 ## O que um formato de ponto flutuante troca?
 
-Um número de ponto flutuante funciona como notação científica em base 2. O valor 1,25 × 2³ tem um sinal (positivo), um expoente (3) e uma fração (o ,25). Os bits de um formato se dividem entre essas três partes. Mais bits de expoente ampliam o **alcance dinâmico**, a distância entre o menor e o maior número que o formato guarda. Mais bits de fração afiam a **precisão local**, o quão finamente ele distingue dois números próximos.
+Um número de ponto flutuante funciona como notação científica em base 2. O valor 1,25 × 2³ tem um sinal (positivo), um expoente (3) e uma fração (o ,25). Os bits de um formato se dividem entre essas três partes: mais bits de expoente ampliam o **alcance dinâmico** (evitando overflow, um número grande demais para guardar, e underflow, um número pequeno demais que se arredonda para zero), enquanto mais bits de fração afiam a **precisão local** (distinguir dois números próximos). Avance pelos quatro formatos abaixo para ver onde cada um gasta seus bits:
 
-- O **fp16** gasta cinco bits no expoente e dez bits explícitos na fração. É preciso perto de uma dada magnitude, mas seu alcance é tão estreito que overflow (um número grande demais para guardar) e underflow (um número pequeno demais para guardar com precisão total, que perde dígitos ou é arredondado para zero) são rotina no treino.
-- O **bf16** gasta oito bits no expoente, a mesma largura do fp32, e sete bits explícitos na fração. Então ele quase nunca transborda, e é correspondentemente grosseiro.
+<Figure id="t5-float-bit-budgets" />
+
+- O **fp16** troca alcance dinâmico por precisão local, então overflow e underflow são rotina no treino sem salvaguardas extras.
+- O **bf16** mantém o alcance completo de expoente do fp32, quase nunca transbordando, ao preço de passos muito mais grosseiros entre números próximos.
 
 ## Como um update pequeno pode sumir?
 
@@ -79,7 +81,7 @@ A [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsd
 Agora a comparação que costuma ser feita errado. Treinar tudo em fp32, a 4 bytes cada para pesos, gradientes e os dois momentos, também custa 16 bytes por parâmetro. Sob essa receita conservadora, **mixed precision não reduz a pegada persistente por parâmetro.** O que ela compra são três outras coisas:
 
 - acesso às unidades matriciais rápidas de precisão reduzida do acelerador,
-- aproximadamente metade da largura de banda em cada peso e gradiente que ela move,
+- aproximadamente metade da largura de banda de memória (bytes movidos por segundo entre a memória do chip e as unidades de cálculo) em cada peso e gradiente que ela move,
 - ativações armazenadas em 2 bytes em vez de 4, que é a memória que de fato domina um passo de contexto longo, como a [aula 5.10](/pt-br/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/) desenvolve.
 
 Alternativas numericamente seguras podem usar outros dtypes de estado, mas cada uma precisa ser validada contra uma baseline de precisão mais larga.
@@ -94,14 +96,14 @@ O **dynamic loss scaling** é a salvaguarda específica do fp16 para a falha opo
 
 ## O que torna o fp8 mais difícil?
 
-O **fp8** vai além, com oito bits no total em formatos que trocam expoente por fração, comumente E4M3 e E5M2 (quatro bits de expoente e três de fração, ou cinco e dois). Reduzir o armazenamento de pesos à metade de novo levaria nossos 54 GB a 27 GB, e as unidades matriciais que o suportam ficam ainda mais rápidas, mas fazer cast de valores brutos para fp8 é inseguro. Receitas que funcionam fazem várias coisas:
+O **fp8** vai além, com oito bits no total em formatos que trocam expoente por fração, comumente E4M3 e E5M2 (quatro bits de expoente e três de fração, ou cinco e dois). Reduzir o armazenamento de pesos à metade de novo levaria nossos 54 GB a 27 GB, e as unidades matriciais que o suportam ficam ainda mais rápidas, mas fazer cast (conversão) de valores brutos para fp8 é inseguro. Receitas que funcionam fazem várias coisas:
 
 - mantêm escalas para que os valores dos tensores ocupem a parte útil do alcance representável,
 - escolhem um formato por operação,
 - acumulam em precisão mais larga,
 - monitoram saturação, valores travados no máximo do formato.
 
-O escalonamento pode ser por tensor, por canal ou por bloco. Uma única escala para o tensor inteiro é barata, mas um outlier pode desperdiçar a maior parte do alcance. Escalas mais finas acomodam distribuições variadas, ao preço de metadados e complexidade de kernel. O escalonamento atrasado reaproveita máximos recentes para escolher uma escala para passos posteriores, trocando responsividade por estabilidade.
+O escalonamento pode ser por tensor, por canal ou por bloco. Uma única escala para o tensor inteiro é barata, mas um outlier (um valor extraordinariamente grande) pode desperdiçar a maior parte do alcance. Escalas mais finas acomodam distribuições variadas, ao preço de metadados e complexidade de kernel (rotina de baixo nível executada na GPU). O escalonamento atrasado reaproveita máximos recentes para escolher uma escala para passos posteriores, trocando responsividade por estabilidade.
 
 A distribuição torna isso mais difícil de formas que vale antecipar. Um gradiente pode ser finito em todo rank e mesmo assim transbordar durante a redução que os soma. A comunicação pode usar um dtype distinto do armazenamento do optimizer. De forma mais sutil, a [aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) particiona um tensor lógico entre ranks de tensor parallel. Se a receita usa uma escala para o tensor inteiro, esses ranks precisam concordar sobre ela, ou seus produtos parciais não estarão na mesma unidade quando combinados. Receitas por bloco dão a cada bloco sua própria escala e evitam essa sincronização. Checkpoints precisam de metadados suficientes para retomar a receita de precisão inteira, gradient scaler incluído.
 

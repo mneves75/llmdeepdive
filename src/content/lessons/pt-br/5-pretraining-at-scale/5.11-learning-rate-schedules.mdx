@@ -38,10 +38,10 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Pouco antes de uma run longa de pretraining começar, a alocação do cluster cresce. O dobro de nós entra, o batch global dobra de quatro milhões de tokens por passo para oito milhões, o throughput melhora lindamente, e todo mundo fica satisfeito. A run termina no prazo em termos de tokens, e a curva de loss parece razoável. Mas o checkpoint final é pior do que deveria: perceptivelmente pior na avaliação downstream do que um piloto menor previu. A causa não são os dados, nem a arquitetura, nem os nós extras. É que o schedule de learning rate foi escrito em steps.
+Pouco antes de uma run longa de pretraining começar, a alocação do cluster cresce. O dobro de nós entra, o batch global dobra de quatro milhões de tokens por passo para oito milhões, o throughput (tokens processados por segundo) melhora lindamente, e todo mundo fica satisfeito. A run termina no prazo em termos de tokens, e a curva de loss parece razoável. Mas o checkpoint final é pior do que deveria: perceptivelmente pior na avaliação downstream (benchmarks de tarefas reais, como código ou perguntas e respostas) do que um piloto menor previu. A causa não são os dados, nem a arquitetura, nem os nós extras. É que o schedule de learning rate foi escrito em steps.
 
 ## O que um schedule de learning rate faz?
 
@@ -87,10 +87,14 @@ A curva é suave perto das duas pontas e mais íngreme no meio. É por isso que 
 
 ## Por que um schedule precisa ser medido em tokens?
 
-Agora volte ao cenário de abertura com esses números na mão. Suponha que o plano fosse um orçamento de dois trilhões de tokens a quatro milhões de tokens por passo, dando 500.000 steps, e que o horizonte do scheduler estivesse configurado como 500.000 steps. Dobrar o batch global para oito milhões de tokens significa que os mesmos dois trilhões de tokens são consumidos em 250.000 steps. A run termina quando os dados terminam, em $p=0.5$, com o learning rate ainda em 1,65e-4. Ela completou só a primeira metade do decaimento cosseno e nunca chegou às taxas finais baixas. Todo o refinamento que a segunda metade de um cosseno proporciona não aconteceu, e nada nos logs pareceu anormal, porque a taxa seguiu fielmente a curva configurada.
+Agora volte ao cenário de abertura com esses números na mão. Suponha que o plano fosse um orçamento de dois trilhões de tokens a quatro milhões de tokens por passo, dando 500.000 steps, e que o horizonte do scheduler estivesse configurado como 500.000 steps. Alterne entre as duas curvas abaixo para ver o que acontece quando dobrar o batch global para oito milhões de tokens consome todos os dois trilhões em 250.000 steps:
+
+<Figure id="t5-cosine-step-vs-token" />
+
+A run termina quando os dados terminam, em $p=0.5$, com o learning rate ainda em 1,65e-4. Todo o refinamento que a segunda metade de um cosseno proporciona nunca aconteceu, e nada nos logs pareceu anormal porque a taxa seguiu fielmente a curva configurada em steps.
 
 :::warning
-Esta é a concepção equivocada mais comum sobre schedules: que um step é uma unidade de progresso de treino. Não é. Um step é uma *chamada do optimizer*, e quantos tokens ele contém depende do tamanho do mundo, do microbatch, da acumulação de gradientes e do padding. Defina warmup e horizonte em tokens, idealmente os tokens efetivos que carregam loss, excluindo padding. Assim o schedule sobrevive a mudanças de topologia, a reinícios em outra escala e às decisões de memória e throughput da [aula 5.10](/pt-br/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/), que mudam o tempo de passo sem mudar em nada a exposição aos dados.
+Esta é a concepção equivocada mais comum sobre schedules: que um step é uma unidade de progresso de treino. Não é. Um step é uma *chamada do optimizer*, e quantos tokens ele contém depende do tamanho do mundo, do microbatch, da acumulação de gradientes e do padding (tokens de enchimento usados para igualar o comprimento das sequências). Defina warmup e horizonte em tokens, idealmente os tokens efetivos que carregam loss, excluindo padding. Assim o schedule sobrevive a mudanças de topologia, a reinícios em outra escala e às decisões de memória e throughput da [aula 5.10](/pt-br/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/), que mudam o tempo de passo sem mudar em nada a exposição aos dados.
 :::
 
 ## Quais são as alternativas ao cosseno?
@@ -113,8 +117,8 @@ Três vizinhos do schedule merecem uma frase cada:
 
 - **Weight decay.** O AdamW separa a otimização baseada em gradiente do weight decay (uma puxada constante dos pesos em direção a zero), mas o scheduler e o decay ainda interagem. Parâmetros como escalas de normalização e biases costumam ser excluídos do decay inteiramente.
 - **Gradient clipping** limita o tamanho de um update causado por um gradiente descomunal, antes do passo do optimizer. É um guarda-corpo, não um substituto de um schedule sensato.
-- **Tamanho do batch.** Escalar o batch global pode justificar ajustar o pico, mas as regras de escala linear e de raiz quadrada são heurísticas que só valem dentro de certos limites. Batches maiores reduzem o ruído de gradiente e podem querer warmup mais longo ou outra afinação do optimizer, então rode varreduras piloto em vez de extrapolar uma regra por ordens de magnitude.
+- **Tamanho do batch.** Escalar o batch global pode justificar ajustar o pico, mas as regras de escala linear e de raiz quadrada são heurísticas (regras práticas aproximadas) que só valem dentro de certos limites. Batches maiores reduzem o ruído de gradiente e podem querer warmup mais longo ou outra afinação do optimizer, então rode varreduras piloto (pequenas runs de teste entre valores candidatos) em vez de extrapolar uma regra por ordens de magnitude.
 
-Registre a taxa realizada em cada passo junto com contagem de tokens, loss, norma de gradiente, estatísticas do optimizer e updates pulados de mixed precision. Na retomada, restaure a posição do scheduler. Reiniciar o warmup por acidente depois de um checkpoint muda o caminho de otimização, e saltar para uma taxa errada de fim de run fabrica exatamente o tipo de spike de loss que a aula 5.12 precisa diagnosticar. Sobrepor a taxa à curva de loss ajuda a correlacionar instabilidade com escala de update, embora correlação sozinha nunca prove que o schedule causou um spike.
+Registre a taxa realizada em cada passo junto com contagem de tokens, loss, norma de gradiente (a magnitude geral do vetor de gradientes), estatísticas do optimizer e updates pulados de mixed precision. Na retomada, restaure a posição do scheduler. Reiniciar o warmup por acidente depois de um checkpoint muda o caminho de otimização, e saltar para uma taxa errada de fim de run fabrica exatamente o tipo de spike de loss que a aula 5.12 precisa diagnosticar. Sobrepor a taxa à curva de loss ajuda a correlacionar instabilidade com escala de update, embora correlação sozinha nunca prove que o schedule causou um spike.
 
 Pense no schedule como momento controlado para o aprendizado. O warmup evita sacudir uma rede descalibrada, a fase central se move rápido por um espaço de parâmetros útil, e o decaimento estreita o passo conforme a run se aproxima do fim planejado. O schedule é parte da especificação do experimento e parte do estado do checkpoint. Não é configuração cosmética do optimizer, e nunca deve ser expresso numa unidade que muda quando o seu cluster muda.

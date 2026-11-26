@@ -46,12 +46,14 @@ citations:
     authors: "SGLang project"
     year: 2026
     url: "https://lmsysorg.mintlify.app/cookbook/autoregressive/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 You have chosen Qwen3.8-27B; now something has to serve it. A **serving engine** is the program that loads the weights onto accelerators, accepts requests from many users, schedules them, and streams tokens back. The model card names vLLM, SGLang, and Transformers as supported paths. SGLang maintains an official cookbook page for this exact model. TensorRT-LLM is NVIDIA's own engine, the option that ties you most closely to NVIDIA hardware and tooling.
 
-This lesson is deliberately a decision map, not a manual. Each stack gets its own lesson in Track 8, where the flags, configs, and failure modes live. Here you learn only which door to walk through.
+This lesson is deliberately a decision map, not a manual. Each stack gets its own lesson in Track 8, where the flags (command-line configuration switches), configs (configuration files), and failure modes live. Here you learn which door to walk through, and in what order:
+
+<Figure id="t7-serving-decision-map" />
 
 ## First gate: does the model fit on your hardware?
 
@@ -65,11 +67,11 @@ If your hardware budget is a 24 or 48 GB card, the bf16 checkpoint does not fit,
 
 With capacity settled, match the engine to the shape of your traffic.
 
-**vLLM** is the default for a high-concurrency API (many users at once) over conversations of varying length, on GPUs you control. It grew around exactly the PagedAttention and continuous-batching machinery of [lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/): the KV cache stored in small fixed-size pages, and a running batch that finished requests leave and new ones join at every step. It serves an OpenAI-style API and covers the broadest range of open models. Details in [lesson 8.4](/lessons/8-building-and-serving-stacks/8.4-vllm/).
+**vLLM** is the default for a high-concurrency API (application programming interface — a structured way software sends requests to a server, here serving many users at once) over conversations of varying length, on GPUs you control. It grew around exactly the PagedAttention and continuous-batching machinery of [lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/): the KV cache stored in small fixed-size pages, and a running batch that finished requests leave and new ones join at every step. It serves an OpenAI-style API (the common HTTP request format popularized by OpenAI) and covers the broadest range of open models. Details in [lesson 8.4](/lessons/8-building-and-serving-stacks/8.4-vllm/).
 
-**SGLang** fits when your traffic is not isolated prompts but structured programs: agent pipelines making many related calls, long prompt beginnings (prefixes) shared across calls, and JSON output constrained to a schema. Its RadixAttention keeps the KV cache of shared prefixes so later calls can reuse it, and its scheduler orders requests so that ones sharing a prefix run close together, which pays off when many calls come from the same program. Its official Qwen3.8-27B cookbook means this model is directly supported there. Details in [lesson 8.5](/lessons/8-building-and-serving-stacks/8.5-sglang/).
+**SGLang** fits when your traffic is not isolated prompts but structured programs: agent pipelines making many related calls, long prompt beginnings (prefixes) shared across calls, and JSON output constrained to a schema (a formal blueprint specifying required fields and types). Its RadixAttention keeps the KV cache of shared prefixes so later calls can reuse it, and its scheduler orders requests so that ones sharing a prefix run close together, which pays off when many calls come from the same program. Its official Qwen3.8-27B cookbook means this model is directly supported there. Details in [lesson 8.5](/lessons/8-building-and-serving-stacks/8.5-sglang/).
 
-**TensorRT-LLM** fits a fleet already committed to NVIDIA that is chasing the last percent of latency. The 1.3 pre-releases use PyTorch as the sole backend (the serialized TensorRT-engine backend was removed in July 2026, from v1.3.0rc21; the stable 1.2 releases still include it), so on them there is no ahead-of-time compile step and trtllm-serve loads a Hugging Face checkpoint directly. The cost is operational: an ops team must own version pinning and revalidate whenever the model, precision, runtime version or traffic mix changes. Details in [lesson 8.6](/lessons/8-building-and-serving-stacks/8.6-tensorrt-llm/).
+**TensorRT-LLM** fits a fleet already committed to NVIDIA that is chasing the last percent of latency. The 1.3 pre-releases use PyTorch as the sole backend (the serialized TensorRT-engine backend was removed in July 2026, from v1.3.0rc21; the stable 1.2 releases still include it), so on them there is no ahead-of-time compile step (converting weights into a hardware-specific binary before serving starts) and trtllm-serve loads a Hugging Face checkpoint directly. The cost is operational: an ops team must own version pinning (locking software to one exact release) and revalidate whenever the model, precision, runtime version or traffic mix changes. Details in [lesson 8.6](/lessons/8-building-and-serving-stacks/8.6-tensorrt-llm/).
 
 Plain **Transformers**, the Hugging Face library, remains right for one researcher on one GPU checking that outputs are correct, not maximizing throughput. Details in [lesson 8.2](/lessons/8-building-and-serving-stacks/8.2-huggingface-transformers-ecosystem/).
 
@@ -88,11 +90,7 @@ No GPUs at all? A managed endpoint such as Workers AI serves this model per toke
 
 The classic wrong turn is picking by headline throughput. A vendor benchmark at one batch size, one prompt length, and one quantization tells you almost nothing about your **goodput**: the rate of requests completed within your latency target, as opposed to raw tokens per second.
 
-The corrected order has three steps:
-
-1. Confirm the engine version supports your exact model.
-2. Verify correctness: the tokenizer and **chat template** (the format that wraps messages into one prompt) match the reference, thinking mode is handled, generation stops where it should, and structured output is valid.
-3. Only then benchmark pinned versions on your hardware, with your own prompt and output lengths, identical decoding settings, and production-like concurrency.
+Follow stages 3 and 4 of the map above before trusting any speed number. Confirm that your exact engine version supports this model, verify that the tokenizer, **chat template** (the format that wraps messages into one prompt), thinking mode, stop tokens, and structured output match the reference, and only then benchmark pinned versions on your hardware with identical decoding settings, prompt and output lengths, and production-like concurrency.
 
 Measure time to first token (how long until the first token arrives), inter-token latency (the gap between later tokens), and goodput against your latency objective, not a single peak number.
 
@@ -106,8 +104,8 @@ An OpenAI-compatible API is a transport shape, not semantic equivalence. Default
 
 ## What decides a tie between engines?
 
-Operations often decide ties: metrics and traces, health checks, rolling upgrades, cleanup when a request is cancelled, admission control (deciding which requests to accept under load), multi-tenancy, container size, and cold-start time. A marginal kernel gain rarely justifies an engine your team cannot diagnose at 3 a.m.
+Operations often decide ties: metrics and traces (step-by-step timing logs of a request), health checks (automated probes confirming a server responds), rolling upgrades (updating servers one at a time without downtime), cleanup when a request is cancelled, admission control (deciding which requests to accept under load), multi-tenancy (serving separate customers on shared hardware), container size, and cold-start time (the delay to start a fresh server and load weights before answering). A marginal kernel gain rarely justifies an engine your team cannot diagnose at 3 a.m.
 
 Mixing stacks is legitimate, for example throughput-oriented batch generation on one and interactive serving on another. But every extra runtime multiplies conformance testing.
 
-Hold the map, not the manuals. Hardware gate first. Then workload shape: concurrency to vLLM, program structure to SGLang, last-percent latency on NVIDIA to TensorRT-LLM, simplicity to Transformers, no hardware to a managed endpoint. Then correctness, then your own benchmark. Track 8 now goes down the stack properly, starting where every engine begins: [lesson 8.1](/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/), PyTorch as the reference runtime.
+Hold the four-gate map, not the manuals. Track 8 now goes down the stack properly, starting where every engine begins: [lesson 8.1](/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/), PyTorch as the reference runtime.

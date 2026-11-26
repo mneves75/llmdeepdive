@@ -54,7 +54,7 @@ citations:
     authors: "Hugging Face"
     year: 2026
     url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
-updated: "2026-11-06"
+updated: "2026-11-26"
 ---
 
 ## De onde vêm os pesos
@@ -67,27 +67,27 @@ Na inicialização o MoE carrega o conhecimento do bloco denso: as oito fatias j
 
 <Figure id="moe-upcycle-slices" />
 
-Dois detalhes mantêm a cópia honesta. O estado do otimizador não é transportado — o Megatron salva o MoE recém-upcyclado na iteração 1 sem estado de otimizador —, então o MoE começa um cronograma novo. E o Megatron reescala os pesos copiados, porque os oito experts de um token agora *somam* o que um bloco mais largo computava; o fator depende da ativação (raiz cúbica para uma FFN com porta, raiz quadrada para uma ReLU simples). Leia a reescala como correção por somar cópias, não como hiperparâmetro a ajustar.
+Dois detalhes mantêm a cópia honesta. O estado do otimizador não é transportado — o Megatron salva o MoE recém-upcyclado na iteração 1 sem estado de otimizador —, então o MoE começa um cronograma novo. E o Megatron reescala os pesos copiados, porque os oito experts de um token agora *somam* o que um bloco mais largo computava; o fator depende da ativação (raiz cúbica para uma FFN com porta, raiz quadrada para uma ReLU simples). Leia a reescala como correção por somar cópias, não como hiperparâmetro (configuração de treino escolhida à mão) a ajustar.
 
 :::note
-Um MoE com um expert e top-1 computa exatamente a função densa, o que permite uma execução de paridade: faça upcycling do checkpoint denso, treine o MoE de um expert ao lado do modelo denso, e as duas losses devem acompanhar. O handbook relata uma diferença de 0,00087 em 15 passos alinhados na sua execução. Isso é um teste do encanamento, não um resultado sobre qualidade de MoE.
+Um MoE com um expert e top-1 computa exatamente a função densa, o que permite uma execução de paridade (uma checagem de equivalência para verificar se duas implementações batem): faça upcycling do checkpoint denso, treine o MoE de um expert ao lado do modelo denso, e as duas losses devem acompanhar. O handbook relata uma diferença de 0,00087 em 15 passos alinhados na sua execução. Isso é um teste do encanamento, não um resultado sobre qualidade de MoE.
 :::
 
 ## Quanto vale o avanço
 
 O avanço é o compute já gasto na execução densa. Uma execução do zero acaba alcançando, e quando isso acontece decide se o upcycling valeu.
 
-No OLMoE, um MoE do zero alcançou o upcyclado depois de 500B tokens, um quarto dos 2T de tokens em que o modelo denso treinou. Nas execuções de sparse upcycling de Komatsuzaki et al., alcançar levou 120% do compute do checkpoint denso — mais do que simplesmente treinar o modelo denso tinha custado. Então a troca é: faça upcycling quando a execução MoE é curta em relação à densa, e espere que uma execução longa pague a conta inteira de qualquer forma.
+No OLMoE, um MoE do zero alcançou o upcyclado depois de 500B tokens, um quarto dos 2T de tokens em que o modelo denso treinou. Nas execuções de sparse upcycling de Komatsuzaki et al., alcançar levou 120% do compute do checkpoint denso — mais do que treinar o modelo denso tinha custado sozinho. Então a troca é: faça upcycling quando a execução MoE é curta em relação à densa, e espere que uma execução longa pague a conta inteira de qualquer forma.
 
-Uma cópia sem perturbação empata com o original, então um token divide o peso entre duas funções idênticas e não ganha nada. Perturbar a cópia quebra o empate e dá ao router algo a aprender; experts novos aleatórios evitam o empate mas começam sem treino.
+A mesma ideia vale para expandir um MoE já existente: copie experts e suas linhas no router para ir de 32 a 64. Uma cópia sem perturbação empata com o original, então um token divide o peso entre duas funções idênticas e não ganha nada. Perturbar (somar um pequeno ruído aleatório a) a cópia quebra o empate e dá ao router algo a aprender; experts novos aleatórios evitam o empate mas começam sem treino. Ambas as opções já foram usadas, e o handbook nomeia qual modelo usou qual.
 
 ## O otimizador vê outro problema
 
 Cada expert vê só os tokens roteados para ele. Num lote de milhões de tokens, um expert raro pode ver um punhado. Essa assimetria é onde AdamW e Muon se comportam diferente.
 
-O **Muon** primeiro ortogonaliza a atualização, nivelando seus valores singulares não nulos em um, e depois aplica um fator que depende só das dimensões da matriz.
+O **AdamW** divide a atualização de cada peso pelo histórico de gradiente daquele peso. Um expert com poucos tokens produz um gradiente fino e ruidoso, e seu passo encolhe junto. O **Muon** primeiro ortogonaliza a atualização, nivelando seus valores singulares não nulos (os fatores de alongamento direcional da matriz) em um, e depois aplica um fator que depende só das dimensões da matriz. O tamanho do passo não segue mais a magnitude do gradiente, e o momentum (uma média móvel das direções de atualização anteriores) carrega o expert por um passo em que não recebeu token algum.
 
-O Moonlight — 3B ativos, 16B totais — superou seu gêmeo AdamW por margem clara nos mesmos ajustes, a cerca de 1,2T tokens.
+O Moonlight — 3B ativos, 16B totais — superou seu gêmeo AdamW por margem clara nos mesmos ajustes, a cerca de 1,2T tokens. Dois cuidados vêm junto. Sob Muon, experts podem colapsar, e uma escala de atualização alta demais pode fazer a execução divergir; o handbook relata que a escala padrão 1,0 do Megatron divergiu em um modelo denso de 7B nos testes de uma equipe, e que começar em 0,2 foi mais seguro.
 
 O router é uma questão separada, e a prática se divide: o handbook relata o DeepSeek-V4 deixando o router em Muon, enquanto o Qwen3.8-Next o mudou para AdamW quando atualizações iniciais de Muon tornaram o roteamento instável. Uma comparação pequena achou AdamW no router um pouco pior que atualizações normalizadas por linha ou espectrais à esquerda. Não há resposta assentada; se você adotar Muon, decida o otimizador do router de propósito, não por herança.
 
@@ -109,10 +109,10 @@ As falhas silenciosas são as que custam dias, porque a loss pode ficar plana na
 | Expert morto | A saída de um expert encolhe para zero | Norma média de saída muito abaixo da mediana da camada |
 | Expert fora de escala | A saída de um expert cresce sem limite | Norma média de saída muito acima da mediana |
 
-O caso fora de escala não é hipotético: o handbook relata um expert na camada 45 do Step 3.5 Flash chegando a cerca de 5.700 vezes a norma mediana de saída enquanto a loss mal se movia. É por isso que a razão de normas, e não a loss, é o sinal, e por isso alguns modelos limitam a ativação antes que ela cresça.
+O caso fora de escala não é hipotético: o handbook relata um expert na camada 45 do Step 3.5 Flash chegando a cerca de 5.700 vezes a norma mediana de saída (a magnitude de saída central entre os experts da camada) enquanto a loss mal se movia. É por isso que a razão de normas, e não a loss, é o sinal, e por isso alguns modelos limitam a ativação antes que ela cresça.
 
 :::caveat
-Nenhuma dessas medições vem ligada por padrão em todo framework, e cada uma exige sua própria captura: contagens de tokens por expert para o MaxVio, um dump de ativações ou um hook de forward para as normas. Uma execução sem elas pode parecer saudável o tempo inteiro. Orce o monitoramento antes da execução, não depois do primeiro platô suspeito.
+Nenhuma dessas medições vem ligada por padrão em todo framework, e cada uma exige sua própria captura: contagens de tokens por expert para o MaxVio, um dump de ativações ou um hook de forward (um callback que inspeciona a saída de uma camada durante o forward) para as normas. Uma execução sem elas pode parecer saudável o tempo inteiro. Orce o monitoramento antes da execução, não depois do primeiro platô suspeito.
 :::
 
 ## O que isto não estabelece

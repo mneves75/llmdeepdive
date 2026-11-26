@@ -38,24 +38,26 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Here is a purchasing question that a spec sheet cannot answer. You have a desktop with a discrete 24 GB GPU (a separate graphics card with its own memory) and a Mac with 32 GB of unified memory, and you want to run quantized Qwen3.8-27B with long documents. The discrete GPU may offer much higher bandwidth; the Mac exposes a different memory topology. Which deployment works better depends on the realized working set (the memory the model actually uses at once) and on measured throughput. Understanding why is the whole point of MLX.
 
-MLX is an array framework built for Apple silicon. Its API is deliberately close to NumPy, and its neural-network layer is close to PyTorch, so most model code reads as you expect. Two design decisions make it different, and both follow from the hardware.
+MLX is an **array framework** (a library for math on multi-dimensional lists of numbers) built for **Apple silicon** (Apple's M-series chips where CPU and GPU sit on one silicon package). Its API is deliberately close to NumPy and PyTorch ([lesson 0.7](/lessons/0-orientation-and-foundations/0.7-python-numpy-pytorch/)), so most model code reads as you expect. Two design decisions make it different, and both follow from the hardware.
 
 ## Lazy evaluation: nothing runs until a value is needed
 
-The first is **lazy evaluation**. Writing an expression in MLX does not compute it. It records a node in a computation graph, and the graph is executed only when some value is genuinely required: when you print it, convert it, or force evaluation explicitly. This is not a performance trick bolted on afterwards; it is the default execution model.
+The first is **lazy evaluation** (frame 1 below). Writing an expression in MLX does not compute it. It records a node in a **computation graph** (a recorded plan of operations built before running them), and the graph executes only when a value is genuinely needed: when you print it, convert it, or force evaluation explicitly. This is not a performance trick bolted on afterwards; it is the default execution model.
 
-The payoff is that chains of operations can be fused into fewer kernels, and intermediate arrays that nothing ever reads are never materialised at all. The cost is that timing a line of code measures nothing. The work you think you just did has probably not happened yet, which trips up nearly every newcomer benchmarking a forward pass.
+<Figure id="t8-mlx-lazy-and-unified" />
+
+The payoff is that chains of operations can be fused into fewer kernels, and intermediate arrays that nothing ever reads are never **materialised** (actually computed and stored in memory). The cost is that timing a line of code like `y = model(x)` measures only graph recording; the real work lands when you force evaluation or print `y`.
 
 ## Unified memory: one pool for the CPU and the GPU
 
 The second is **unified memory**, and this is the one that answers the purchasing question.
 
-On a conventional accelerator, host memory and device memory are separate pools connected by a bus. A tensor exists in one place, and using it elsewhere means an explicit copy. MLX arrays live in memory that both the CPU and the GPU address directly. An operation is scheduled onto a device; the array does not move. So there is no `.to(device)` in the mental model and no pinned-memory staging (the special host buffers used to speed up copies to a GPU). Most importantly, there is no ceiling defined by a separate VRAM budget. The model's working set is bounded by system RAM and by how much of it the GPU is permitted to hold, not by a soldered 24 GB.
+On a conventional accelerator, host memory and device memory are separate pools connected by a **bus** (the physical data pathway connecting components inside a computer). A tensor exists in one place, and using it elsewhere means an explicit copy. MLX arrays live in memory that both the CPU and the GPU address directly. An operation is scheduled onto a device; the array does not move. So there is no `.to(device)` in the mental model and no pinned-memory staging (the special host buffers used to speed up copies to a GPU). Most importantly, there is no ceiling defined by a separate **VRAM** (video RAM on a graphics card) budget. The model's working set is bounded by system **RAM** (main computer memory) and by how much of it the GPU is permitted to hold, not by a soldered 24 GB.
 
 ## Measure the fit instead of computing it on paper
 
@@ -66,6 +68,8 @@ Do not turn unified-memory capacity into a paper fit calculation. [Lesson 7.2](/
 
 So load the exact converted artifact, force evaluation, and measure the peak working set at the intended context and concurrency. Only then decide whether a 32 GB or 64 GB machine has usable headroom.
 
+The two terminal commands below convert and quantize the Hugging Face checkpoint into a 4-bit MLX folder, then generate a reply with thinking disabled and the instruct sampling flags that the pinned command-line interface (CLI) exposes.
+
 ```
 mlx_lm.convert --hf-path Qwen/Qwen3.8-27B -q --q-bits 4 --mlx-path qwen3.8-27b-4bit
 mlx_lm.generate --model qwen3.8-27b-4bit --temp 0.7 --top-p 0.80 \
@@ -73,9 +77,7 @@ mlx_lm.generate --model qwen3.8-27b-4bit --temp 0.7 --top-p 0.80 \
   --prompt "..."
 ```
 
-The mlx-lm package supplies the model implementations, the conversion and quantization path from a Hugging Face checkpoint, generation, and a local server. The second command explicitly disables thinking through the template. It also passes every part of the card's instruct sampling preset that this pinned CLI exposes: temperature 0.7, top_p 0.80, top_k 20, and min_p 0.
-
-Omitting `--top-k 20` would not preserve the preset, because mlx-lm defaults top-k to 0, which disables that filter. This CLI revision has no presence-penalty or repetition-penalty flags, so the command is a disclosed partial implementation of the card's full preset, not an exact reproduction. The same discipline from [lesson 8.8](/lessons/8-building-and-serving-stacks/8.8-ollama-and-local-runners/) applies here: state the effective configuration and its unsupported fields rather than inherit defaults without noticing.
+The `mlx-lm` package supplies the model implementations, the conversion and quantization path from a Hugging Face checkpoint, generation, and a local server. Notice that omitting `--top-k 20` would not preserve the preset, because `mlx-lm` defaults top-k to 0, which disables that filter. This CLI revision has no presence-penalty or repetition-penalty flags, so the command is a disclosed partial implementation of the card's full preset, not an exact reproduction. The same discipline from [lesson 8.8](/lessons/8-building-and-serving-stacks/8.8-ollama-and-local-runners/) applies here: state the effective configuration and its unsupported fields rather than inherit defaults without noticing.
 
 ## Ready-made conversions and mixed-bit recipes
 
@@ -83,16 +85,11 @@ Two things follow from that conversion command being one line long.
 
 First, you rarely need to run it. Most people download somebody else's output instead, and for MLX that somebody is usually the **`mlx-community`** organisation on the Hub, which hosts conversions of a very large number of models. Membership of that org means a conversion was uploaded, not that it was evaluated. [Lesson 7.13](/lessons/7-inference-and-efficiency/7.13-choosing-and-judging-a-community-quant/) is about telling those apart.
 
-Second, `--q-bits 4` is the blunt version of the tool. mlx-lm also ships **mixed recipes** that assign different widths to different layers (`mixed_2_6`, `mixed_3_4`, `mixed_3_6`, `mixed_4_6`). It also has a learned-quantization path whose `--target-bpw` takes an average bits-per-weight as the goal and works out the per-layer assignment itself. That is where a checkpoint advertising a fractional bits-per-weight comes from, and why a number like 3.8 is a setting rather than a mistake.
+Second, `--q-bits 4` is the blunt version of the tool. mlx-lm also ships **mixed recipes** that assign different widths to different layers (`mixed_2_6`, `mixed_3_4`, `mixed_3_6`, `mixed_4_6`). It also has a learned-quantization path whose `--target-bpw` takes an average bits-per-weight (bpw) as the goal and works out the per-layer assignment itself. That is where a checkpoint advertising a fractional bits-per-weight comes from, and why a number like 3.8 is a setting rather than a mistake.
 
 ## Choosing between the Mac and the discrete GPU
 
-The tempting shortcut is to choose from brochure capacity alone. Artifact size is not the full working set on either machine. Weights, cache, recurrent state, runtime buffers and concurrency share the available pool, and their realized dtypes and layouts belong to the exact runtime.
-
-- A discrete GPU generally offers higher decode bandwidth while its measured working set fits. If it requires CPU spill (moving part of the model to system memory), PCIe, the link between CPU and GPU, can become the bottleneck.
-- Unified memory removes the explicit host-to-device copy boundary and can expose a larger shared pool. But the OS and Metal compete for it, and swap (the OS moving memory pages out to disk) is not usable serving capacity.
-
-Benchmark the exact artifact and workload on both paths; do not infer a winner from 24 GB versus 32 GB.
+The tempting shortcut is to choose from brochure capacity alone. Artifact size is not the full working set on either machine: weights, cache, recurrent state, runtime buffers and concurrency share the available pool, and their realized dtypes and layouts belong to the exact runtime. Frame 2 compares the two failure modes side by side — PCIe (the CPU-to-GPU link) spill on a discrete card versus disk **swap** (the OS moving memory pages out to disk) on unified memory — so benchmark the exact artifact and workload on both paths instead of inferring a winner from 24 GB versus 32 GB.
 
 :::warning
 Unified memory is not free memory. The GPU's addressable working set is a configurable fraction of system RAM, and the operating system, your browser, and the framework's own buffers are inside the same pool. Pushing a model to the edge of physical RAM does not fail cleanly: it swaps, and a swapping decode loop is slower than the CPU-only path you were trying to avoid. Leave headroom deliberately. And remember that MLX's laziness means peak memory arrives when the graph evaluates, not when you wrote the line.

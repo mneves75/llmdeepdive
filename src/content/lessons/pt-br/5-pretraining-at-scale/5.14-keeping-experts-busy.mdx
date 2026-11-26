@@ -58,14 +58,14 @@ citations:
     authors: "Hugging Face"
     year: 2026
     url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
-updated: "2026-11-06"
+updated: "2026-11-26"
 ---
 
 ## O passo espera pela GPU mais ocupada
 
-A [aula 4.18](/pt-br/lessons/4-transformer/4.18-mixture-of-experts/) montou um router que manda cada token a oito de sessenta e quatro experts, espalhados por GPUs. Cada GPU recebe os tokens roteados para os experts que guarda, executa-os e devolve os resultados. O all-to-all que os move é um ponto de sincronização: o próximo passo não começa até o participante mais lento chegar. Então, se os experts de uma GPU recebem o dobro da carga média, as outras esperam, e o passo custa o que custa a GPU mais ocupada, não o que custa a média.
+A [aula 4.18](/pt-br/lessons/4-transformer/4.18-mixture-of-experts/) montou um router que manda cada token a oito de sessenta e quatro experts, espalhados por GPUs. Cada GPU recebe os tokens roteados para os experts que guarda, executa-os e devolve os resultados. O all-to-all (troca coletiva em que cada GPU envia dados distintos para cada outra GPU) que os move é um ponto de sincronização (uma barreira em que GPUs mais rápidas esperam pela mais lenta): o próximo passo não começa até o participante mais lento chegar. Então, se os experts de uma GPU recebem o dobro da carga média, as outras esperam, e o passo custa o que custa a GPU mais ocupada, não o que custa a média.
 
-O handbook mediu o tamanho desse efeito no seu modelo 7B-A1B: com o roteamento forçado a ser uniforme, a mesma iteração rodou 1,5 vez mais rápido na inicialização do que com um router aprendido recém-inicializado. Forçar a uniformidade joga fora o que o router aprendeu, então é uma execução de controle e nunca um ajuste de treino — mas é o controle certo, porque mostra a vazão que um balanceamento melhor tenta alcançar.
+O handbook mediu o tamanho desse efeito no seu modelo 7B-A1B: com o roteamento forçado a ser uniforme, a mesma iteração rodou 1,5 vez mais rápido na inicialização do que com um router aprendido recém-inicializado. Forçar a uniformidade joga fora o que o router aprendeu, então é uma execução de controle (uma linha de base para comparação) e nunca um ajuste de treino — mas é o controle certo, porque mostra a vazão que um balanceamento melhor tenta alcançar.
 
 Para falar de desequilíbrio você precisa de um número. O que a literatura usa é o **MaxVio**, abreviação de maximal violation: o quanto a carga do expert mais ocupado fica acima da média, como fração da média.
 
@@ -87,7 +87,7 @@ Agora calcule a mesma loss para uma carga perfeitamente uniforme: cada fatia é 
 Nunca leia balanceamento pela loss auxiliar. Leia pelas contagens de tokens, por camada. A loss também pode cair com a carga torta: o handbook relata um modelo pequeno cujas camadas baixas achatavam as probabilidades e baixavam a loss sem espalhar os tokens. Uma métrica que melhora quando o router para de se importar não é métrica de balanceamento.
 :::
 
-O handbook relata uma ablação em um modelo de 10B: em 1e-4 o expert menos usado ainda recebia cerca de um quatorze avos do que o mais ocupado levava, e só em 1e-2 a carga se uniformizou — com a loss de teste subindo junto.
+O coeficiente é a outra metade. Em 1e-3 a loss puxa pouco; em 1e-2 ela equilibra, mas custa qualidade do modelo de linguagem. O handbook relata uma ablação (experimento controlado variando um ajuste por vez) em um modelo de 10B: em 1e-4 o expert menos usado ainda recebia cerca de um quatorze avos do que o mais ocupado levava, e só em 1e-2 a carga se uniformizou — com a loss de teste subindo junto. Essa troca é a propriedade central da loss auxiliar: ela compra equilíbrio com interferência de gradiente (atualizações que puxam contra a modelagem de linguagem).
 
 ## Escopo: quais tokens contam como equilibrados
 
@@ -119,11 +119,11 @@ O laboratório desta página roda esse laço com o router congelado, então a ú
 
 ## Quantile balancing
 
-O viés caminha em direção ao valor certo. O **quantile balancing** resolve o valor. Para cada expert, ordene os tokens do micro-lote pelo score deles para aquele expert e leia o quantil que apenas a fatia alvo de tokens supera. Esse quantil define o viés diretamente, para o próximo lote. O que o Kimi K3 ordena, precisamente, é a margem de cada token sobre o próprio (k+1)-ésimo melhor score, não o score bruto, porque a margem é o que decide se o expert ganha uma vaga.
+O viés caminha em direção ao valor certo. O **quantile balancing** resolve o valor. Para cada expert, ordene os tokens do micro-lote pelo score deles para aquele expert e leia o quantil (o valor de corte que separa a fração superior do restante) que apenas a fatia alvo de tokens supera. Esse quantil define o viés diretamente, para o próximo lote. O que o Kimi K3 ordena, precisamente, é a margem de cada token sobre o próprio (k+1)-ésimo melhor score, não o score bruto, porque a margem é o que decide se o expert ganha uma vaga.
 
-Ele equilibra mais cedo do que um passo fixo, com loss parecida, na comparação feita em um modelo de 19B com 768 experts, cortando pela metade o MaxVio médio. O Kimi K3 o usa sobre o lote global inteiro, lendo o quantil de cada expert de um histograma somado entre GPUs, depois que equilibrar ficou mais difícil quando seu pool roteado chegou a 896 experts por camada. O preço é real: todo micro-lote agora precisa de um ranking extra por expert, sobreposto ao top-k por token, e o Megatron recusa o método ao lado de qualquer loss auxiliar, fusão de router ou roteamento limitado por grupo.
+Ele equilibra mais cedo do que um passo fixo, com loss parecida, na comparação feita em um modelo de 19B com 768 experts, cortando pela metade o MaxVio médio. O Kimi K3 o usa sobre o lote global inteiro, lendo o quantil de cada expert de um histograma (contagem de scores agrupados em faixas) somado entre GPUs, depois que equilibrar ficou mais difícil quando seu pool roteado chegou a 896 experts por camada. O preço é real: todo micro-lote agora precisa de um ranking extra por expert, sobreposto ao top-k por token, e o Megatron recusa o método ao lado de qualquer loss auxiliar, fusão de router ou roteamento limitado por grupo.
 
-A sutileza é a distância entre as duas contagens. Um viés ajustado sobre todos os tokens do lote pode achatar o total enquanto a fatia de uma GPU continua torta. Na execução de 7,5B citada pelo handbook, o quantil com média por rank levou o MaxVio global a 0,92, mas o expert mais ocupado no pior micro-lote de expert-parallel ainda carregava cerca de sete vezes uma fatia uniforme — um MaxVio local de 5,96. Calcular o quantil global exato baixou os dois números.
+A sutileza é a distância entre as duas contagens. Um viés ajustado sobre todos os tokens do lote pode achatar o total enquanto a fatia de uma GPU continua torta. Na execução de 7,5B citada pelo handbook, o quantil com média por rank levou o MaxVio global a 0,92, mas o expert mais ocupado no pior micro-lote de expert-parallel ainda carregava cerca de sete vezes uma fatia uniforme — um MaxVio local de 5,96. Calcular o quantil global exato baixou os dois números. Reporte ambos os números, ou o global esconderá o que dita o ritmo do passo.
 
 ## Escolhendo
 
@@ -133,7 +133,7 @@ A sutileza é a distância entre as duas contagens. Um viés ajustado sobre todo
 | Viés sem loss | Só as seleções | Passo fixo atrasa, e fica grosso acima de ~128 experts | Quando nenhum gradiente pode ser puxado; com uma loss por sequência pequena |
 | Quantile | Seleções, resolvidas por lote | Um top-k por expert; o desequilíbrio local pode se esconder | Quando o passo fixo é lento demais; viés global, confira o MaxVio local |
 
-Uma comparação a tratar com cuidado: nas cinco configurações de router do handbook, o quantile balancing teve a melhor vazão mediana nas últimas 20 de 120 iterações — 139 TFLOP/s, contra 125 da loss auxiliar e 99 de uma configuração só de viés — e terminou também com a maior loss de treino. É uma semente e 120 iterações. Um ranking de vazão que não chega à mesma loss não é um treino mais rápido.
+Uma comparação a tratar com cuidado: nas cinco configurações de router do handbook, o quantile balancing teve a melhor vazão mediana nas últimas 20 de 120 iterações — 139 TFLOP/s (trilhões de operações de ponto flutuante por segundo), contra 125 da loss auxiliar e 99 de uma configuração só de viés — e terminou também com a maior loss de treino. É uma semente aleatória e 120 iterações. Um ranking de vazão que não chega à mesma loss não é um treino mais rápido.
 
 :::insight
 O único ajuste que deve ficar fora de uma execução real é o que parece melhor no benchmark: o roteamento forçado a uniforme troca os logits do router por aleatórios. É um controle que diz quanto o desequilíbrio custa, e o handbook é explícito que nunca é forma de treinar.

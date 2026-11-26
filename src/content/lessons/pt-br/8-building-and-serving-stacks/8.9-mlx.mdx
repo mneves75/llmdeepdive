@@ -38,24 +38,26 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Aqui vai uma questão de compra que uma ficha técnica não responde. Você tem um desktop com uma GPU discreta de 24 GB (uma placa gráfica separada, com memória própria) e um Mac com 32 GB de memória unificada, e quer rodar o Qwen3.8-27B quantizado com documentos longos. A GPU discreta pode oferecer banda muito maior; o Mac expõe outra topologia de memória. Qual deployment funciona melhor depende do working set realizado (a memória que o modelo de fato usa ao mesmo tempo) e do throughput medido. Entender por quê é a razão de existir do MLX.
 
-O MLX é um framework de arrays feito para o Apple silicon. A API é deliberadamente próxima do NumPy, e a camada de redes neurais é próxima do PyTorch, então a maior parte do código de modelo se lê como você espera. Duas decisões de design o tornam diferente, e ambas decorrem do hardware.
+O MLX é um **framework de arrays** (uma biblioteca para contas em listas multidimensionais de números) feito para o **Apple silicon** (os chips da série M da Apple, onde CPU e GPU dividem o mesmo pacote de silício). A API é deliberadamente próxima do NumPy e do PyTorch ([aula 0.7](/pt-br/lessons/0-orientation-and-foundations/0.7-python-numpy-pytorch/)), então a maior parte do código de modelo se lê como você espera. Duas decisões de design o tornam diferente, e ambas decorrem do hardware.
 
 ## Lazy evaluation: nada roda até um valor ser necessário
 
-A primeira é a **lazy evaluation** (avaliação preguiçosa). Escrever uma expressão no MLX não a computa. Ela registra um nó num grafo de computação, e o grafo só é executado quando algum valor é genuinamente requerido: quando você o imprime, converte ou força a avaliação explicitamente. Isso não é um truque de performance aparafusado depois; é o modelo de execução padrão.
+A primeira é a **lazy evaluation** (avaliação preguiçosa, quadro 1 abaixo). Escrever uma expressão no MLX não a computa. Ela registra um nó num **grafo de computação** (um plano gravado das operações montado antes de executá-las), e o grafo só executa quando algum valor é genuinamente requerido: quando você o imprime, converte ou força a avaliação explicitamente. Isso não é um truque de performance aparafusado depois; é o modelo de execução padrão.
 
-O retorno é que cadeias de operações podem ser fundidas em menos kernels, e arrays intermediários que ninguém lê nunca são materializados. O custo é que cronometrar uma linha de código não mede nada. O trabalho que você acha que acabou de fazer provavelmente ainda não aconteceu, o que derruba quase todo recém-chegado que faz benchmark de um forward pass.
+<Figure id="t8-mlx-lazy-and-unified" />
+
+O retorno é que cadeias de operações podem ser fundidas em menos kernels, e arrays intermediários que ninguém lê nunca são **materializados** (de fato calculados e guardados na memória). O custo é que cronometrar uma linha como `y = model(x)` mede apenas a gravação do grafo; o trabalho real acontece quando você força a avaliação ou imprime `y`.
 
 ## Memória unificada: um só pool para a CPU e a GPU
 
 A segunda é a **memória unificada**, e é ela que responde à questão de compra.
 
-Num acelerador convencional, memória de host e memória de device são pools separados conectados por um barramento. Um tensor existe num lugar, e usá-lo em outro significa uma cópia explícita. Arrays do MLX vivem em memória que tanto a CPU quanto a GPU endereçam diretamente. Uma operação é escalonada num device; o array não se move. Então não existe `.to(device)` no modelo mental nem estágio de pinned memory (os buffers especiais do host usados para acelerar cópias para uma GPU). Mais importante, não existe teto definido por um orçamento separado de VRAM. O working set do modelo é limitado pela RAM do sistema e por quanto dela a GPU tem permissão de segurar, não por 24 GB soldados.
+Num acelerador convencional, memória de host e memória de device são pools separados conectados por um **barramento** (a via física de dados que liga os componentes dentro do computador). Um tensor existe num lugar, e usá-lo em outro significa uma cópia explícita. Arrays do MLX vivem em memória que tanto a CPU quanto a GPU endereçam diretamente. Uma operação é escalonada num device; o array não se move. Então não existe `.to(device)` no modelo mental nem estágio de pinned memory (os buffers especiais do host usados para acelerar cópias para uma GPU). Mais importante, não existe teto definido por um orçamento separado de **VRAM** (RAM de vídeo de uma placa gráfica). O working set do modelo é limitado pela **RAM** (memória principal do computador) e por quanto dela a GPU tem permissão de segurar, não por 24 GB soldados.
 
 ## Meça o fit em vez de calculá-lo no papel
 
@@ -66,6 +68,8 @@ Não transforme a capacidade de memória unificada numa conta teórica de fit. A
 
 Então carregue o artefato convertido exato, force a avaliação e meça o pico do working set no contexto e na concorrência pretendidos. Só então decida se uma máquina de 32 GB ou 64 GB tem folga utilizável.
 
+Os dois comandos de terminal abaixo convertem e quantizam o checkpoint do Hugging Face numa pasta MLX de 4 bits, e depois geram uma resposta com o thinking desligado e com as flags de sampling instruct que a interface de linha de comando (CLI) fixada expõe.
+
 ```
 mlx_lm.convert --hf-path Qwen/Qwen3.8-27B -q --q-bits 4 --mlx-path qwen3.8-27b-4bit
 mlx_lm.generate --model qwen3.8-27b-4bit --temp 0.7 --top-p 0.80 \
@@ -73,9 +77,7 @@ mlx_lm.generate --model qwen3.8-27b-4bit --temp 0.7 --top-p 0.80 \
   --prompt "..."
 ```
 
-O pacote mlx-lm fornece as implementações dos modelos, o caminho de conversão e quantization a partir de um checkpoint do Hugging Face, a geração e um servidor local. O segundo comando desliga explicitamente o thinking pelo template. Ele também passa todas as partes do preset instruct do card que essa CLI fixada expõe: temperature 0.7, top_p 0.80, top_k 20 e min_p 0.
-
-Omitir `--top-k 20` não preservaria o preset, porque o mlx-lm usa top-k 0 por padrão, o que desliga esse filtro. Essa revisão da CLI não tem flags de presence penalty nem repetition penalty; portanto, o comando é uma implementação parcial e declarada do preset completo do card, não uma reprodução exata. A mesma disciplina da [aula 8.8](/pt-br/lessons/8-building-and-serving-stacks/8.8-ollama-and-local-runners/) vale aqui: declare a configuração efetiva e os campos sem suporte em vez de herdar padrões sem perceber.
+O pacote `mlx-lm` fornece as implementações dos modelos, o caminho de conversão e quantization a partir de um checkpoint do Hugging Face, a geração e um servidor local. Note que omitir `--top-k 20` não preservaria o preset, porque o `mlx-lm` usa top-k 0 por padrão, o que desliga esse filtro. Essa revisão da CLI não tem flags de presence penalty nem repetition penalty; portanto, o comando é uma implementação parcial e declarada do preset completo do card, não uma reprodução exata. A mesma disciplina da [aula 8.8](/pt-br/lessons/8-building-and-serving-stacks/8.8-ollama-and-local-runners/) vale aqui: declare a configuração efetiva e os campos sem suporte em vez de herdar padrões sem perceber.
 
 ## Conversões prontas e receitas de bits mistos
 
@@ -83,16 +85,11 @@ Duas coisas decorrem de esse comando de conversão ter uma linha só.
 
 Primeiro, você raramente precisa rodá-lo. A maioria das pessoas baixa a saída de outra pessoa, e no caso do MLX essa outra pessoa costuma ser a organização **`mlx-community`** no Hub, que hospeda conversões de um número muito grande de modelos. Pertencer a essa organização significa que uma conversão foi subida, não que ela foi avaliada. A [aula 7.13](/pt-br/lessons/7-inference-and-efficiency/7.13-choosing-and-judging-a-community-quant/) trata de distinguir essas duas coisas.
 
-Segundo, `--q-bits 4` é a versão grosseira da ferramenta. O mlx-lm também traz **receitas mistas**, que atribuem larguras diferentes a camadas diferentes (`mixed_2_6`, `mixed_3_4`, `mixed_3_6`, `mixed_4_6`). Ele também tem um caminho de learned quantization cujo `--target-bpw` recebe uma média de bits por peso como objetivo e descobre sozinho a atribuição por camada. É daí que vem um checkpoint anunciando bits por peso fracionário, e é por isso que um número como 3,8 é um ajuste, não um engano.
+Segundo, `--q-bits 4` é a versão grosseira da ferramenta. O mlx-lm também traz **receitas mistas**, que atribuem larguras diferentes a camadas diferentes (`mixed_2_6`, `mixed_3_4`, `mixed_3_6`, `mixed_4_6`). Ele também tem um caminho de learned quantization cujo `--target-bpw` recebe uma média de bits por peso (bpw) como objetivo e descobre sozinho a atribuição por camada. É daí que vem um checkpoint anunciando bits por peso fracionário, e é por isso que um número como 3,8 é um ajuste, não um engano.
 
 ## Escolhendo entre o Mac e a GPU discreta
 
-O atalho tentador é escolher apenas pela capacidade de catálogo. O tamanho do artefato não é o working set completo em nenhuma das máquinas. Pesos, cache, estado recorrente, buffers de runtime e concorrência dividem o pool disponível, e seus dtypes e layouts realizados pertencem ao runtime exato.
-
-- Uma GPU discreta em geral oferece banda de decode maior enquanto o working set medido cabe. Se ela exige spill para CPU (mover parte do modelo para a memória do sistema), o PCIe, a ligação entre CPU e GPU, pode virar o gargalo.
-- A memória unificada remove a fronteira explícita de cópia entre host e device e pode expor um pool compartilhado maior. Mas o sistema operacional e o Metal competem por ele, e swap (o sistema operacional jogando páginas de memória para o disco) não é capacidade utilizável de serving.
-
-Faça benchmark do artefato e da carga exatos nos dois caminhos; não deduza o vencedor de 24 GB contra 32 GB.
+O atalho tentador é escolher apenas pela capacidade de catálogo. O tamanho do artefato não é o working set completo em nenhuma das máquinas: pesos, cache, estado recorrente, buffers de runtime e concorrência dividem o pool disponível, e seus dtypes e layouts realizados pertencem ao runtime exato. O quadro 2 compara lado a lado os dois modos de falha — spill pelo PCIe (a ligação entre CPU e GPU) numa placa discreta contra **swap** em disco (o sistema operacional jogando páginas de memória para o disco) na memória unificada — portanto, faça benchmark do artefato e da carga exatos nos dois caminhos em vez de deduzir o vencedor de 24 GB contra 32 GB.
 
 :::warning
 Memória unificada não é memória de graça. O working set endereçável pela GPU é uma fração configurável da RAM do sistema, e o sistema operacional, o seu navegador e os buffers do próprio framework estão dentro do mesmo pool. Empurrar um modelo até a beira da RAM física não falha de forma limpa: ele começa a fazer swap, e um loop de decode em swap é mais lento que o caminho só de CPU que você tentava evitar. Deixe folga deliberadamente. E lembre que a laziness do MLX faz o pico de memória chegar quando o grafo avalia, não quando você escreveu a linha.

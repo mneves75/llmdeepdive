@@ -38,7 +38,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 ## Por que o modelo precisa buscar respostas melhores
@@ -63,10 +63,10 @@ A geração de linguagem torna a atribuição de crédito difícil, ou seja, é 
 
 A **Proximal Policy Optimization** (PPO) permite reutilizar dados amostrados de uma cópia ligeiramente mais antiga da policy. Para cada token, ela compara duas probabilidades: a que a policy nova dá àquele token e a que a antiga deu. O quociente entre elas é a **razão**. O PPO então limita quanto crédito uma amostra pode ganhar ao afastar essa razão de 1, usando uma faixa de clip escrita $\epsilon$.
 
-Passe o clip pelos números, porque sua assimetria surpreende as pessoas. Tome uma faixa de clip de $\epsilon=0.2$, de modo que a cópia cortada da razão fique entre 0,8 e 1,2.
+Passe o clip pelos números em $\epsilon=0.2$ (faixa de 0,8 a 1,2) e alterne entre as duas curvas abaixo para ver seu formato assimétrico:
 
-- **Vantagem positiva.** Suponha que um token tivesse probabilidade 0,20 sob a policy antiga e 0,30 sob a nova, dando $\rho_t = 1.5$, e que sua vantagem fosse $+2.0$. O termo sem clip é 3,0, o termo com clip é 1,2 vezes 2,0, ou 2,4, e o mínimo dos dois é 2,4. O objetivo substituto (o objetivo provisório que o PPO maximiza) não ganha mais nada ao empurrar a probabilidade deste token para cima, então o incentivo desta amostra a continuar subindo desaparece. A razão ainda é 1,5: o PPO não a prendeu em 1,2.
-- **Vantagem negativa.** Mantenha a mesma razão e faça a vantagem $-2.0$. O termo sem clip é $-3.0$, o termo com clip é $-2.4$, e o mínimo é $-3.0$. O clip não achata o objetivo nessa direção: uma ação ruim cuja probabilidade já subiu continua sendo empurrada para baixo com força.
+- **Vantagem positiva ($+2.0$).** Subir a probabilidade de um token de 0,20 para 0,30 dá $\rho_t = 1.5$: o produto sem clip é 3,0, a cópia cortada é 2,4, e tomar o mínimo achata o **objetivo substituto** (o objetivo provisório que o PPO maximiza) em 2,4. Essa amostra deixa de premiar novos aumentos, enquanto a razão em si continua em 1,5.
+- **Vantagem negativa ($-2.0$).** Na mesma razão, o produto sem clip é $-3.0$ e a cópia cortada é $-2.4$, então o mínimo fica em $-3.0$: uma ação ruim cuja probabilidade subiu continua sendo empurrada para baixo com inclinação total.
 
 Outras amostras compartilham os mesmos parâmetros, então seus gradientes podem mover essa razão ainda mais para fora da faixa nominal. O PPO aplica clipping a uma contribuição do objetivo, não ao passo do otimizador nem à policy resultante. Em símbolos, com $\pi_\theta(a_t\mid s_t)$ a probabilidade que a policy de pesos $\theta$ dá à ação $a_t$ no estado $s_t$, e $A_t$ a vantagem:
 
@@ -74,6 +74,8 @@ $$
 \rho_t(\theta)=\frac{\pi_\theta(a_t\mid s_t)}{\pi_{\text{old}}(a_t\mid s_t)},\qquad
 J_t=\min\!\big(\rho_t A_t,\ \operatorname{clip}(\rho_t,1-\epsilon,1+\epsilon)A_t\big).
 $$
+
+<Figure id="t6-ppo-clip-asymmetry" />
 
 ## O que fazem a policy de referência e a penalidade de KL
 
@@ -99,20 +101,20 @@ O PPO estabiliza as atualizações da policy. Ele não valida a recompensa. Um o
 
 ## Quanto o laço custa, e como ele quebra
 
-O laço também é caro de um jeito que exclui a maioria dos times antes mesmo de começar. Uma montagem completa de PPO pode segurar quatro modelos ao mesmo tempo (policy, referência congelada, reward e value) mais estado de otimizador e os rollouts gerados, as respostas amostradas. Dimensionar isso para um modelo de classe 27B é sóbrio. A policy sozinha são 54 GB em bf16, a referência são outros 54 GB, e o estado do AdamW para 27B de parâmetros fica em cerca de 324 GB (12 bytes de estado de otimizador e master por parâmetro), ou cerca de 432 GB para todo o estado de treino da policy, incluindo seus pesos e gradientes bf16 (a [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) é dona dessa decomposição de 16 bytes). O sampling faz parte do treino, então o throughput depende da sua stack de inferência tanto quanto do backpropagation.
+O laço também é caro de um jeito que exclui a maioria dos times antes mesmo de começar. Uma montagem completa de PPO pode segurar quatro modelos ao mesmo tempo (policy, referência congelada, reward e value) mais estado de otimizador e os rollouts gerados, as respostas amostradas. Dimensionar isso para um modelo de classe 27B é sóbrio. A policy sozinha são 54 GB em bf16, a referência são outros 54 GB, e o estado do AdamW para 27B de parâmetros fica em cerca de 324 GB (12 bytes de estado de otimizador e master por parâmetro), ou cerca de 432 GB para todo o estado de treino da policy, incluindo seus pesos e gradientes bf16 (a [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) é dona dessa decomposição de 16 bytes). O sampling faz parte do treino, então o **throughput** (quantos tokens o sistema processa por segundo) depende da sua **stack de inferência** (o software que gera texto) tanto quanto do **backpropagation** (a passagem para trás que calcula os gradientes).
 
 Como muitos componentes se movem juntos, bugs se escondem bem:
 
 - máscaras de padding descasadas (os marcadores que dizem ao modelo quais posições são enchimento);
 - recompensas terminais grudadas na posição errada;
-- log-probabilidades antigas desatualizadas;
+- log-probabilidades antigas desatualizadas (logaritmos de probabilidades salvos de uma policy anterior);
 - um chat template aplicado no sampling mas não na pontuação.
 
 Qualquer um desses faz o treino otimizar um objetivo diferente do que você escreveu, sem nenhum erro para avisar.
 
 Os sintomas visíveis são consistentes entre times. A recompensa sobe enquanto a qualidade independente cai. O comprimento das respostas infla. O fraseado fica repetitivo. As recusas se multiplicam. A KL colapsa para zero, sinal de que nada está sendo aprendido, ou explode, sinal de que a policy saiu da distribuição de linguagem. Avalie com julgamentos e checagens que nunca fizeram parte do sinal otimizado, ou você está corrigindo a prova com o gabarito que o aluno aprendeu a falsificar.
 
-O PPO segue importante porque consegue otimizar sinais arbitrários pontuados sobre a sequência inteira e explorar online (amostrando respostas novas enquanto treina), o que nenhum método offline faz. Ele também é sensível a muitos hiperparâmetros espalhados por muitas peças móveis. Duas famílias posteriores mudam esse trade-off:
+O PPO segue importante porque consegue otimizar sinais arbitrários pontuados sobre a sequência inteira e explorar online (amostrando respostas novas enquanto treina), o que nenhum método **offline** (treinado só num dataset fixo já salvo) faz. Ele também é sensível a muitos **hiperparâmetros** (configurações escolhidas antes do treino, como learning rate ou faixa de clip) espalhados por muitas peças móveis. Duas famílias posteriores mudam esse trade-off:
 
 - Métodos diretos de preferência ([aula 6.6](/pt-br/lessons/6-post-training-and-alignment/6.6-dpo-skipping-the-reward-model/)) eliminam o reward model e o laço de RL para uma classe de problemas, trocando flexibilidade por simplicidade.
 - Métodos de recompensa verificável ([aula 6.8](/pt-br/lessons/6-post-training-and-alignment/6.8-grpo-and-rl-on-verifiable-rewards/)) mantêm o aprendizado por reforço mas substituem o jurado aprendido por um verificador programático, o que muda inteiramente o perfil de risco.

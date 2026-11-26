@@ -42,10 +42,10 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Seu cluster tem oito aceleradores por nó, então você põe o grau de tensor parallel em oito. É a escolha óbvia: oito é o nó, oito divide tudo que você conferiu, e o job sobe sem reclamar. Seis horas depois o perfil de memória parece errado. As projeções de key e value ocupam um quarto do tamanho total em cada rank em vez de um oitavo, e o tempo de comunicação por passo está mais alto do que a sua estimativa. Nada falhou. O framework fez a única coisa que podia, sem avisar. Esta aula explica o que ele fez, e como escolher um layout que os formatos do modelo de fato permitem.
+Seu cluster tem oito aceleradores por nó (um servidor físico), então você põe o grau de tensor parallel em oito. É a escolha óbvia: oito é o nó, oito divide tudo que você conferiu, e o job sobe sem reclamar. Seis horas depois o perfil de memória parece errado. As projeções de key e value ocupam um quarto do tamanho total em cada rank em vez de um oitavo, e o tempo de comunicação por passo está mais alto do que a sua estimativa. Nada falhou. O framework fez a única coisa que podia, sem avisar. Esta aula explica o que ele fez, e como escolher um layout que os formatos do modelo de fato permitem.
 
 ## Por que shardear o estado não basta?
 
@@ -65,21 +65,21 @@ As projeções do transformer são arranjadas em pares complementares, uma camad
 
 ## Qual dimensão limita o grau de tensor parallel do Qwen3.8-27B?
 
-Então audite este modelo dimensão por dimensão:
+Audite este modelo dimensão por dimensão e avance para o segundo quadro para comparar o grau 4 com o grau 8:
+
+<Figure id="t5-tp-divisor-audit" />
 
 - O vocabulário com padding é $248{,}320 = 512\times 485$, dividindo limpo em qualquer grau potência de dois até 512. A [aula 5.3](/pt-br/lessons/5-pretraining-at-scale/5.3-training-tokenizer/) examinou essa divisibilidade; a Qwen não publica por que escolheu esse tamanho.
 - O intermediário de FFN é $17{,}408 = 1024\times 17$, dividindo até 1024. No grau 8, cada rank possui uma fatia $5120\times 2176$ da up-projection.
 - As 24 query heads dividem por 1, 2, 3, 4, 6, 8, 12 e 24.
 
-Tudo até aqui suporta confortavelmente o grau 8. Aí você chega às KV heads, e são quatro. A grouped-query attention, a decisão de serving da [aula 5.6](/pt-br/lessons/5-pretraining-at-scale/5.6-inference-aware-scaling/), significa que 24 query heads compartilham apenas 4 heads de key/value, com dimensão de head 256. Então as projeções de K e V são $5120\to 1024$ em vez de $5120\to 6144$. Quatro divide por 1, 2 e 4, e para.
+Aí você chega às KV heads, e são quatro. A grouped-query attention, a decisão de serving da [aula 5.6](/pt-br/lessons/5-pretraining-at-scale/5.6-inference-aware-scaling/), significa que 24 query heads compartilham apenas 4 heads de key/value, com dimensão de head 256, então as projeções de K e V são $5120\to 1024$ em vez de $5120\to 6144$. No grau 4 a divisão é exata — cada rank possui 6 query heads e 1 KV head:
 
-No grau 4 a divisão é exata. Cada rank possui 6 query heads e 1 KV head:
-
-- uma fatia $5120\to 3072$ do peso q_proj. São 6 heads carregando 256 valores de query e 256 valores de gate cada (os valores de gate escalam a saída da attention), porque o peso completo tem 12288 de largura, não 6144;
+- uma fatia $5120\to 3072$ do peso q_proj (6 heads carregando 256 valores de query e 256 valores de gate cada, porque o peso completo tem 12288 de largura, não 6144);
 - uma fatia $5120\to 256$ de cada um de K e V;
 - uma fatia row-parallel $1536\to 5120$ da projeção de saída.
 
-No grau 8 não existe divisão exata, e os frameworks recorrem a replicar KV heads entre pares de ranks. O job roda e a matemática está correta. Você paga por armazenamento duplicado de K/V e comunicação adicional, enquanto as projeções de query, gate, FFN e saída continuam divididas por oito. Se essa troca supera o grau 4 é algo a medir, não a supor.
+No grau 8 o job ainda roda e a matemática continua exata, porque os frameworks replicam cada KV head entre pares de ranks enquanto seguem dividindo Q, gate, FFN e saída por oito. Se essa troca supera o grau 4 é algo a medir, não a supor.
 
 :::insight
 A restrição que amarra o grau de tensor parallel raramente é a que as pessoas conferem. Aqui o vocabulário e a largura da FFN dividem com folga, enquanto a contagem de heads, pequena o bastante para manter baixa a memória de serving, é a primeira a deixar de dividir exatamente. Além do grau 4, as heads K e V precisam ser replicadas entre ranks, o que custa memória e comunicação, mas as projeções de query, gate, FFN e saída continuam sendo shardadas. Um grau maior é, portanto, uma troca entre estado KV replicado e compute shardado, não uma impossibilidade, e o grau certo é um resultado medido de memória e latência, não um teto de contagem de heads.
@@ -117,6 +117,6 @@ Esse eixo importa mais para um modelo que anuncia 262.144 tokens de contexto nat
 
 Esses eixos se compõem em layouts 3D ou de dimensão ainda maior: grupos data-parallel entre réplicas, estágios de pipeline entre faixas de camadas, ranks de tensor parallel dentro de um estágio e sharding de sequência para contextos longos. O produto dos tamanhos de grupo precisa igualar o tamanho do mundo, e cada rank precisa de coordenadas fixas nessa grade. A composição também complica o checkpointing. O manifesto precisa registrar qual eixo particionou cada tensor, e mudar a topologia na retomada exige resharding em vez de reatribuir arquivos de rank.
 
-Meça a **model FLOPs utilization** (MFU, a fração do pico aritmético do hardware que vai para a computação do próprio modelo). Meça também o tempo de coletivos, a comunicação que não fica escondida atrás do compute, o tempo ocioso de estágio, os picos de memória e os stragglers (ranks mais lentos que os demais). Uma contagem teórica alta de FLOPs por trás de bolhas longas não é eficiência. Faça profiling nos comprimentos reais de sequência e de microbatch, porque um layout afinado para sequências de 4.096 tokens pode se comportar de forma muito diferente em 262.144.
+Meça a **model FLOPs utilization** (MFU, a fração do pico aritmético do hardware que vai para a computação do próprio modelo). Meça também o tempo de coletivos, a comunicação que não fica escondida atrás do compute, o tempo ocioso de estágio, os picos de memória e os stragglers (ranks mais lentos que os demais). Uma contagem teórica alta de FLOPs por trás de bolhas longas não é eficiência. Faça profiling (meça o tempo e a memória reais no hardware) nos comprimentos reais de sequência e de microbatch, porque um layout afinado para sequências de 4.096 tokens pode se comportar de forma muito diferente em 262.144.
 
 O mapa a guardar é por eixo: data parallelism divide exemplos, tensor parallelism divide a computação de features, pipeline parallelism divide a profundidade e sequence parallelism divide posições. Cada um faz um problema maior caber acrescentando coordenação. A melhor topologia põe a comunicação mais pesada nos links mais rápidos, mantém todo estágio fazendo trabalho útil e, como as 4 KV heads mostram, respeita o divisor que a arquitetura de fato lhe dá, e não o que o hardware sugere.

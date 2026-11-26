@@ -34,10 +34,10 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Sob a sua receita ilustrativa de optimizer, a [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) reduziu o estado persistente a cerca de 6,75 GB por rank num job ZeRO-3 com 64 ranks. A [aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) particionou as camadas. No papel, um modelo de 27 bilhões de parâmetros agora cabe num acelerador de 80 GB com enorme folga. Então você lança com uma sequência de 8.192 tokens e batch size um, e o job morre no primeiro backward pass. Nada no seu sharding estava errado. Você orçou a categoria errada.
+Sob a sua receita ilustrativa de optimizer, a [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) reduziu o estado persistente a cerca de 6,75 GB por rank num job ZeRO-3 com 64 ranks. A [aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) particionou as camadas. No papel, um modelo de 27 bilhões de parâmetros agora cabe num acelerador de 80 GB com enorme folga (memória livre de sobra). Então você lança com uma sequência de 8.192 tokens e batch size um, e o job morre no primeiro backward pass (a etapa de cálculo dos gradientes). Nada no seu sharding estava errado. Você orçou a categoria errada.
 
 ## Por que o treino guarda tantas ativações?
 
@@ -53,7 +53,7 @@ $$
 1\times 8192\times 5120\times 64\times 2\ \text{B}=5.37\times 10^{9}\ \text{B}\approx 5\ \text{GiB}.
 $$
 
-Cinco gibibytes. Confortável. Agora conte o que o autograd de fato guarda numa camada. Tome um modelo *uniformemente* de full attention com as dimensões deste. A conta real do híbrido exige custear as camadas DeltaNet à parte, o que é um exercício próprio; o que vem a seguir é o método e a ordem de grandeza. Por token, uma camada de full attention guarda aproximadamente:
+Cinco gibibytes (GiB, potências de 1.024 bytes em vez de 1.000). Confortável. Agora conte o que o autograd de fato guarda numa camada. Tome um modelo *uniformemente* de full attention com as dimensões deste. A conta real do híbrido exige custear as camadas DeltaNet à parte, o que é um exercício próprio; o que vem a seguir é o método e a ordem de grandeza. Por token, uma camada de full attention guarda aproximadamente:
 
 - a entrada residual e sua cópia normalizada, com 5120 de largura cada;
 - a saída da projeção de query, com 12288 de largura, porque ela carrega a porta de saída junto com os 24 heads de dimensão 256 ([aula 4.2](/pt-br/lessons/4-transformer/4.2-self-attention/));
@@ -104,10 +104,14 @@ $$
 4\times 8192\times 192\ \text{KiB}\approx 6.0\ \text{GiB}.
 $$
 
-Dentro daquele modelo didático de full attention, a memória de pico de ativações salvas vira aproximadamente $1.25+6.0\approx 7.3$ GiB em vez de 96 GiB. A razão de cerca de treze vezes pertence apenas a essa contagem por formatos. Ela **não** se transfere ao híbrido real até que se meçam seu grafo de autograd de DeltaNet, os kernels fundidos, o allocator e a política de recomputação.
+Dentro daquele modelo didático de full attention, a memória de pico de ativações salvas vira aproximadamente $1.25+6.0\approx 7.3$ GiB em vez de 96 GiB. Avance pelas três configurações abaixo para ver como guardar fronteiras se troca por rematerialização:
+
+<Figure id="t5-activation-checkpoint-memory" />
+
+A razão de cerca de treze vezes pertence apenas a essa contagem por formatos. Ela **não** se transfere ao híbrido real até que se meçam seu grafo de autograd de DeltaNet, os kernels fundidos (operações de GPU combinadas que evitam gravar tensores intermediários na memória), o allocator (o gerenciador de memória) e a política de recomputação.
 
 :::insight
-A granularidade dos segmentos é um botão, não um interruptor, e seus dois custos se movem em direções opostas. Dezesseis segmentos grossos guardam poucas fronteiras e rematerializam muito. Sessenta e quatro segmentos finos guardam 64 fronteiras (5 GiB) e rematerializam só uma camada por vez (cerca de 1,5 GiB). Ambos caem perto de 6 a 7 GiB aqui, mas com overhead de framework diferente e comportamento de sobreposição diferente. Meça os dois em vez de adotar uma regra de bolso.
+A granularidade dos segmentos é um botão, não um interruptor, e seus dois custos se movem em direções opostas. Como mostram os quadros 2 e 3, 16 segmentos de super-bloco e 64 segmentos de camada única caem perto de 6 a 7 GiB aqui, com overhead de framework e sobreposição de comunicação diferentes. Meça os dois em vez de adotar uma regra de bolso.
 :::
 
 O tradeoff é direto: menor pico de memória de ativações em troca de computação extra. Não é só dobrar o tempo de treino, porque o backward, a comunicação e o trabalho fora dos segmentos checkpointados continuam de qualquer forma, e a recomputação pode se sobrepor a eles de modo diferente. Meça o tempo de passo e o throughput realizado, não o aumento teórico de FLOPs.
@@ -133,8 +137,8 @@ Todo número desta aula é uma estimativa baseada em formatos e deve ser tratado
 Duas armadilhas de correção merecem ser nomeadas:
 
 - **A aleatoriedade precisa ser reproduzida.** O dropout zera valores aleatoriamente durante o treino. Se ele sorteou uma máscara no forward original e outra durante a recomputação, o backward derivaria uma função diferente. Por isso os utilitários de checkpoint dos frameworks guardam e restauram o estado do gerador de números aleatórios (RNG), a um custo pequeno.
-- **Efeitos colaterais quebram a recomputação.** Módulos com estado, efeitos colaterais, caches mutáveis e chamadas externas dependentes de dados podem fazer a recomputação produzir resultados errados sem levantar erro algum.
+- **Efeitos colaterais quebram a recomputação.** Módulos com estado, efeitos colaterais (mudanças ocultas feitas fora da saída retornada por uma função), caches mutáveis e chamadas externas dependentes de dados podem fazer a recomputação produzir resultados errados sem levantar erro algum.
 
-A composição acrescenta o resto da complexidade. O pipeline parallelism faz a recomputação competir com outros microbatches pelos mesmos dispositivos. O FSDP pode precisar de um novo all-gather dos pesos durante a recomputação, a menos que os parâmetros tenham permanecido materializados, trocando comunicação por memória. Compiladores fundem e reordenam regiões de formas que mudam o que um segmento sequer é. A unidade efetiva é o escalonamento distribuído inteiro, nunca uma função isolada.
+A composição acrescenta o resto da complexidade. O pipeline parallelism faz a recomputação competir com outros microbatches pelos mesmos dispositivos. O FSDP pode precisar de um novo all-gather dos pesos durante a recomputação, a menos que os parâmetros tenham permanecido materializados, trocando comunicação por memória. Compiladores (ferramentas que reescrevem o código do modelo em instruções de máquina mais rápidas) fundem e reordenam regiões de formas que mudam o que um segmento sequer é. A unidade efetiva é o escalonamento distribuído inteiro, nunca uma função isolada.
 
 O modelo mental a guardar é uma troca tempo–espaço: guarde estado de fronteira suficiente para reconstruir o grafo do forward, descarte o miolo volumoso e pague compute para recriá-lo pouco antes de seus gradientes serem necessários. A decisão decorre de uma decomposição medida de para onde a memória de fato foi, que, num modelo com um bloco feed-forward de 17.408 de largura, quase nunca é onde uma primeira estimativa a coloca.

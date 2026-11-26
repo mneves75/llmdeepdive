@@ -54,7 +54,7 @@ citations:
     authors: "Hugging Face"
     year: 2026
     url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
-updated: "2026-11-06"
+updated: "2026-11-26"
 ---
 
 ## Where the weights start
@@ -65,25 +65,25 @@ An MoE can start from random weights, like any model, or from a dense checkpoint
 
 <Figure id="moe-upcycle-slices" />
 
-Two details keep the copy honest. The optimizer state does not carry over — Megatron saves the freshly upcycled MoE at iteration 1 with no optimizer state — so the MoE begins a new schedule. And Megatron rescales the copied weights, because a token's eight experts now *sum* into what one wider block used to compute; the scaling factor depends on the activation (a cube root for a gated FFN, a square root for a plain ReLU one). Read the rescaling as a correction for summing copies, not as a hyperparameter to tune.
+Two details keep the copy honest. The optimizer state does not carry over — Megatron saves the freshly upcycled MoE at iteration 1 with no optimizer state — so the MoE begins a new schedule. And Megatron rescales the copied weights, because a token's eight experts now *sum* into what one wider block used to compute; the scaling factor depends on the activation (a cube root for a gated FFN, a square root for a plain ReLU one). Read the rescaling as a correction for summing copies, not as a hyperparameter (training setting chosen by hand) to tune.
 
 :::note
-An MoE with one expert and top-1 computes exactly the dense function, which makes a parity run possible: upcycle the dense checkpoint, train the one-expert MoE beside the dense model, and the two losses should track. The handbook reports a gap of 0.00087 over 15 aligned steps in its run. That is a test of the plumbing, not a result about MoE quality.
+An MoE with one expert and top-1 computes exactly the dense function, which makes a parity run (an equivalence check verifying two implementations match) possible: upcycle the dense checkpoint, train the one-expert MoE beside the dense model, and the two losses should track. The handbook reports a gap of 0.00087 over 15 aligned steps in its run. That is a test of the plumbing, not a result about MoE quality.
 :::
 
 ## What the head start is worth
 
 The head start is the compute already spent on the dense run. A run from scratch eventually catches up, and how soon decides whether upcycling was worth it.
 
-In OLMoE, a from-scratch MoE caught up with the upcycled one after 500B tokens, a quarter of the 2T tokens the dense model had trained on. In Komatsuzaki et al.'s sparse-upcycling runs, catching up took 120% of the dense checkpoint's compute — more than simply training the dense model had cost. So the trade is: upcycle when the MoE run is short relative to the dense run, and expect a long run to pay the whole bill anyway.
+In OLMoE, a from-scratch MoE caught up with the upcycled one after 500B tokens, a quarter of the 2T tokens the dense model had trained on. In Komatsuzaki et al.'s sparse-upcycling runs, catching up took 120% of the dense checkpoint's compute — more than training the dense model had cost on its own. So the trade is: upcycle when the MoE run is short relative to the dense run, and expect a long run to pay the whole bill anyway.
 
-The same idea applies to growing an existing MoE: copy experts and their router rows to go from 32 to 64. An unperturbed copy ties with its original, so a token splits its weight between two identical functions and gains nothing. Perturbing the copy breaks the tie and leaves the router something to learn; fresh random experts avoid the tie but start untrained. Both have been used, and the handbook names which model used which.
+The same idea applies to growing an existing MoE: copy experts and their router rows to go from 32 to 64. An unperturbed copy ties with its original, so a token splits its weight between two identical functions and gains nothing. Perturbing (adding small random noise to) the copy breaks the tie and leaves the router something to learn; fresh random experts avoid the tie but start untrained. Both have been used, and the handbook names which model used which.
 
 ## The optimizer sees a different problem
 
 Each expert sees only the tokens routed to it. In a batch of millions of tokens, a rare expert might see a handful. That asymmetry is where AdamW and Muon behave differently.
 
-**AdamW** divides each weight's update by that weight's own gradient history. An expert with few tokens produces a thin, noisy gradient, and its step shrinks accordingly. **Muon** first orthogonalizes the update, levelling its nonzero singular values to one, then applies a factor determined only by the matrix's dimensions. The step size no longer follows the gradient's magnitude, and momentum carries the expert through a step in which it received no tokens at all.
+**AdamW** divides each weight's update by that weight's own gradient history. An expert with few tokens produces a thin, noisy gradient, and its step shrinks accordingly. **Muon** first orthogonalizes the update, levelling its nonzero singular values (the matrix's directional stretching factors) to one, then applies a factor determined only by the matrix's dimensions. The step size no longer follows the gradient's magnitude, and momentum (a running average of past update directions) carries the expert through a step in which it received no tokens at all.
 
 Moonlight — 3B active, 16B total — beat its AdamW twin by a clear margin under identical settings at about 1.2T tokens. Two cautions come with it. Under Muon, experts can collapse, and too large an update scale can make a run diverge; the handbook reports that Megatron's default scale of 1.0 diverged on a dense 7B in one team's tests, and that starting at 0.2 was safer.
 
@@ -107,10 +107,10 @@ The quiet failures are the ones that cost days, because the loss can stay flat t
 | Dead expert | One expert's output shrinks toward zero | Its mean output norm far below the layer's median |
 | Rogue expert | One expert's output grows without bound | Its mean output norm far above the median |
 
-The rogue case is not hypothetical: the handbook reports one expert in Step 3.5 Flash's layer 45 reaching about 5,700 times the median output norm while the loss barely moved. That is why the norm ratio, not the loss, is the signal, and why some models clamp the activation before it can grow.
+The rogue case is not hypothetical: the handbook reports one expert in Step 3.5 Flash's layer 45 reaching about 5,700 times the median output norm (the middle-ranked output magnitude across the layer's experts) while the loss barely moved. That is why the norm ratio, not the loss, is the signal, and why some models clamp the activation before it can grow.
 
 :::caveat
-None of these measurements is on by default in every framework, and each requires its own capture: token counts per expert for MaxVio, an activation dump or a forward hook for the norms. A run without them can look healthy for its whole duration. Budget the monitoring before the run, not after the first suspicious plateau.
+None of these measurements is on by default in every framework, and each requires its own capture: token counts per expert for MaxVio, an activation dump or a forward hook (a callback inspecting a layer's output during forward) for the norms. A run without them can look healthy for its whole duration. Budget the monitoring before the run, not after the first suspicious plateau.
 :::
 
 ## What this does not establish

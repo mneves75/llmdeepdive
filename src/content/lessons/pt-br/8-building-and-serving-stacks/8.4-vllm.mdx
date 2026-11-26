@@ -38,12 +38,12 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Você tem uma GPU de 80 GB, uma cópia do Qwen3.8-27B e um pedido para levantar uma API de chat interna para talvez quarenta engenheiros. Dois números decidem se isso funciona: quanto da placa o engine pode reivindicar e quão longa uma única conversa pode ficar. Erre numa direção e o servidor se recusa a iniciar. Erre na outra e ele morre na primeira rajada real de tráfego.
+Você tem uma GPU de 80 GB, uma cópia do Qwen3.8-27B e um pedido para levantar uma interface de programação (API — o endereço web que outros aplicativos chamam) de chat interna para talvez quarenta engenheiros. Dois números decidem se isso funciona: quanto da placa o engine pode reivindicar e quão longa uma única conversa pode ficar. Erre numa direção e o servidor se recusa a iniciar. Erre na outra e ele morre na primeira rajada real de tráfego.
 
-Esta aula mostra o ciclo operacional de dimensionamento. Todo o resto sobre o vLLM (a API no formato OpenAI, o scheduler, as métricas) é documentação que você pode ler. A parte que as pessoas erram é confundir um teto configurado com capacidade realizada, ou seja, a memória que o engine de fato conseguiu reservar.
+Esta aula mostra o ciclo operacional de dimensionamento. Todo o resto sobre o vLLM — a API no formato OpenAI, o **scheduler** (o componente que decide quais requisições rodam em cada passo) e as **métricas** (medições ao vivo como latência e uso de memória) — é documentação que você pode ler. A parte que as pessoas erram é confundir um teto configurado com capacidade realizada, ou seja, a memória que o engine de fato conseguiu reservar.
 
 ## O que o vLLM faz com a memória que você dá a ele
 
@@ -56,23 +56,21 @@ Na inicialização, o engine precisa decidir de que tamanho esse pool de blocos 
 
 ## A flag de utilização é um teto, não o pool de KV
 
-Trate `--gpu-memory-utilization` como um teto para tudo que o engine aloca. Antes de aparecer qualquer capacidade de cache, o engine paga:
+Trate `--gpu-memory-utilization` como um teto para tudo que o engine aloca na GPU. O quadro 1 abaixo mostra o que sai desse teto antes de aparecer qualquer capacidade de cache: pesos residentes, **picos de ativação** (os maiores tensors temporários de que um forward pass precisa), pools de CUDA graph (memória reservada para os graphs capturados da [aula 8.3](/pt-br/lessons/8-building-and-serving-stacks/8.3-torch-compile-and-cuda-graphs/)), **fragmentação do alocador** (memória livre partida em pedaços pequenos demais para usar) e estado específico da arquitetura.
 
-- pesos residentes,
-- picos de ativação (os maiores tensors temporários de que um forward pass precisa),
-- pools de CUDA graph (memória reservada para os graphs capturados da [aula 8.3](/pt-br/lessons/8-building-and-serving-stacks/8.3-torch-compile-and-cuda-graphs/)),
-- fragmentação do alocador (memória livre partida em pedaços pequenos demais para usar),
-- e estado específico da arquitetura.
+<Figure id="t8-vllm-memory-sizing" />
 
-A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) é dona desse orçamento completo do acelerador, enquanto a [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) é dona da derivação de cache e estado recorrente deste modelo. Na implementação de referência, as 48 camadas Gated DeltaNet mantêm cerca de 144 MiB de estado recorrente por sequência quando esse estado está em fp32 (floats de 32 bits). Outro runtime pode escolher dtype ou layout diferentes. Portanto, copiar essa contagem de bytes para uma afirmação de capacidade do vLLM sem conferir a implementação seria tão errado quanto ignorar o estado.
+A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) é dona desse orçamento completo do acelerador, enquanto a [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) é dona da derivação de cache e estado recorrente deste modelo. Na implementação de referência, as 48 camadas Gated DeltaNet mantêm cerca de 144 MiB de estado recorrente por sequência quando esse estado está em fp32 (números de ponto flutuante de 32 bits). Outro runtime pode escolher dtype ou layout diferentes. Portanto, copiar essa contagem de bytes para uma afirmação de capacidade do vLLM sem conferir a implementação seria tão errado quanto ignorar o estado.
 
 ## Lendo o pool que o engine realmente alocou
 
-A fonte de verdade é, portanto, o launch que você vai servir. Fixe o checkpoint e o release do vLLM e deixe folga deliberada. Depois leia as linhas de startup que informam duas coisas: o pool de KV efetivamente alocado e a concorrência máxima que esse pool implica no comprimento de contexto escolhido.
+A fonte de verdade é, portanto, o launch que você vai servir (quadro 2). Fixe o checkpoint e o release do vLLM e deixe folga deliberada. Depois leia as linhas de startup que informam duas coisas: o pool de KV efetivamente alocado e a **concorrência** máxima (quantas requisições podem rodar ao mesmo tempo) que esse pool implica no comprimento de contexto escolhido.
 
 `--max-model-len` precisa acomodar ao menos uma requisição dentro desse pool realizado. Se não acomodar, o engine deve rejeitar a configuração no startup. Suas escolhas são reduzir o limite, mudar para um formato de memória validado ou acrescentar capacidade, e então medir de novo.
 
 Satisfeita essa condição de segurança, a paginação muda quantas requisições você consegue admitir. Blocos são alocados para tokens realmente presentes, não para cada token que uma requisição tem permissão de alcançar. Então conversas comuns mais curtas podem coexistir com concorrência muito maior do que sugere dividir o pool pelo comprimento máximo de pior caso. Dimensione o limite rígido pela alocação realizada; depois dimensione o tráfego pela distribuição medida dos comprimentos de prompt e completion.
+
+O comando abaixo sobe o vLLM para o Qwen3.8-27B, limitando qualquer conversa individual a 32.768 tokens e restringindo todas as alocações de GPU do vLLM a 90 por cento da memória da placa, deixando 10 por cento de folga.
 
 ```
 vllm serve Qwen/Qwen3.8-27B \
@@ -80,12 +78,12 @@ vllm serve Qwen/Qwen3.8-27B \
   --gpu-memory-utilization 0.90
 ```
 
-Não confie em nenhuma estimativa de papel mais do que no engine. O vLLM imprime o tamanho do pool de KV que efetivamente alocou e a concorrência máxima que isso implica no comprimento de contexto escolhido. Leia essa linha, compare com a sua aritmética e reconcilie qualquer diferença grande antes de fazer benchmark de qualquer coisa. Uma discrepância normalmente significa que a reserva de workspace ou a contabilidade do estado recorrente é diferente do que você supôs.
+Não confie em nenhuma estimativa de papel mais do que no engine. Compare o pool de KV realizado e a concorrência implícita do log de startup com a sua aritmética e reconcilie qualquer diferença grande antes de fazer benchmark de qualquer coisa. Uma discrepância normalmente significa que a reserva de **workspace** (memória temporária de rascunho) ou a contabilidade do estado recorrente difere do que você supôs.
 
 ## Por que não subir a fração para 0.98?
 
 :::warning
-Quando o pool parece pequeno, é tentador subir `--gpu-memory-utilization` rumo a 0.98. Parece funcionar: o pool cresce, o log de inicialização fica mais bonito e os testes curtos passam. Então chega uma rajada. O prefill atinge sua largura de ativação de pico num prompt longo enquanto os pools de graph capture estão fixados, e o processo é morto por falta de memória, levando junto todas as sessões em voo. Aqueles últimos poucos por cento não são desperdício; são a folga que absorve a diferença entre média e pico. Note também que o runtime reporta menos que o número da caixa depois de descontadas ECC (memória com correção de erros) e regiões reservadas. A aula 9.3 faz essa subtração. Então vários por cento da folga aparente nunca estiveram lá.
+Quando o pool parece pequeno, é tentador subir `--gpu-memory-utilization` rumo a 0,98. Parece funcionar: o pool cresce, o log de inicialização fica mais bonito e os testes curtos passam. Então chega uma rajada. O prefill atinge sua largura de ativação de pico num prompt longo enquanto os pools de graph capture estão fixados, e o processo é morto por falta de memória, levando junto todas as sessões em voo. Aqueles últimos poucos por cento não são desperdício; são a folga que absorve a diferença entre média e pico. Note também que o runtime reporta menos que o número da caixa depois de descontadas ECC (memória com correção de erros) e regiões reservadas. A aula 9.3 faz essa subtração. Então vários por cento da folga aparente nunca estiveram lá.
 :::
 
 ## Quando o pool não comporta o contexto de que você precisa
@@ -93,13 +91,13 @@ Quando o pool parece pequeno, é tentador subir `--gpu-memory-utilization` rumo 
 Se o pool realizado não consegue admitir o contexto nativo completo, nenhuma flag transforma essa alocação falha em capacidade utilizável. As opções honestas são:
 
 - mais memória;
-- sharding entre GPUs com tensor parallelism, que divide cada matriz de pesos entre as placas ([aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) para a mecânica, [aula 9.9](/pt-br/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) para o custo da interconexão);
+- **sharding** (dividir dados entre vários dispositivos) entre GPUs com tensor parallelism, que corta cada matriz de pesos entre as placas ([aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) para a mecânica, [aula 9.9](/pt-br/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) para o custo da **interconexão** — a ligação de alta velocidade entre GPUs);
 - um formato de memória de menor precisão suportado pelo runtime e aprovado pelo canário de corretude da [aula 8.1](/pt-br/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) (a comparação token a token contra o PyTorch eager).
 
 Meça o novo pool realizado em vez de projetar um multiplicador a partir da largura em bits.
 
 :::caveat
-Tudo aqui pressupõe que o seu release do vLLM realmente suporta esta arquitetura, e o suporte é específico de versão de um jeito que não acontece com modelos comuns. Um modelo híbrido precisa de um block manager que lide com dois tipos de memória ao mesmo tempo: blocos paginados por token para 16 camadas e estado recorrente fixo por sequência para 48. Os engines ganharam essa capacidade em momentos diferentes para tipos diferentes de camada. Verifique na sua versão exata antes de ler qualquer benchmark: confirme que o modelo carrega e então rode o teste diferencial da aula 8.1 contra o PyTorch eager num prompt curto e determinístico. Um engine que trata mal o estado recorrente sem levantar erro produz texto fluente e errado com excelente throughput.
+Tudo aqui pressupõe que o seu release do vLLM realmente suporta esta arquitetura, e o suporte é específico de versão de um jeito que não acontece com modelos comuns. Um modelo híbrido precisa de um **block manager** (o componente que controla quais blocos de memória pertencem a cada requisição) que lide com dois tipos de memória ao mesmo tempo: blocos paginados por token para 16 camadas e estado recorrente fixo por sequência para 48. Os engines ganharam essa capacidade em momentos diferentes para tipos diferentes de camada. Verifique na sua versão exata antes de ler qualquer benchmark: confirme que o modelo carrega e então rode o teste diferencial da aula 8.1 contra o PyTorch eager num prompt curto e determinístico. Um engine que trata mal o estado recorrente sem levantar erro produz texto fluente e errado com excelente **throughput** (tokens concluídos por segundo).
 :::
 
-Leve a cadeia de medição com você, não um conjunto decorado de flags. A fração de utilização limita o engine. O log de startup informa o pool que ele efetivamente realizou. E `--max-model-len` limita a maior reivindicação individual contra esse pool. As aulas 7.2 e 9.3 são donas da aritmética por trás dessas quantidades; esta aula é dona de como o vLLM as expõe e impõe.
+Leve a cadeia de medição com você, não um conjunto decorado de flags. A fração de utilização limita o engine, o log de startup informa o pool que ele efetivamente realizou, e `--max-model-len` limita a maior reivindicação individual contra esse pool. As aulas 7.2 e 9.3 são donas da aritmética por trás dessas quantidades; esta aula é dona de como o vLLM as expõe e impõe.

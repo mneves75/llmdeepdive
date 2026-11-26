@@ -34,16 +34,16 @@ citations:
     authors: "Cloudflare"
     year: 2026
     url: "https://developers.cloudflare.com/workers-ai/"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Digite uma pergunta para o Qwen3.8-27B, aperte enviar, e cerca de um segundo depois as palavras começam a voltar em streaming. Esta aula acompanha essa única requisição pelo servidor, passo a passo, para que as aulas seguintes sobre velocidade e memória tenham um mapa onde se apoiar. Como este curso fixa um único modelo-espécime, dá para traçar o caminho concretamente.
+Digite uma pergunta para o Qwen3.8-27B, aperte enviar, e cerca de um segundo depois as palavras começam a voltar em streaming (chegando aos poucos na tela, sem esperar a resposta inteira ficar pronta). Esta aula acompanha essa única requisição pelo servidor, passo a passo, para que as aulas seguintes sobre velocidade e memória tenham um mapa onde se apoiar. Como este curso fixa um único modelo-espécime, dá para traçar o caminho concretamente.
 
-Os mesmos pesos rodam em duas casas típicas: um processo vLLM local (o vLLM é um programa de serving open source muito usado) servindo Qwen/Qwen3.8-27B na sua própria GPU, ou o Cloudflare Workers AI hospedando-o como @cf/qwen/qwen3.8-27b. O operador muda; o ciclo de vida, não.
+Os mesmos pesos rodam em duas casas típicas: um processo vLLM local (o vLLM é um programa de serving open source muito usado, ou seja, com código-fonte público) servindo Qwen/Qwen3.8-27B na sua própria GPU (unidade de processamento gráfico, o chip especializado em matemática que roda o modelo), ou o Cloudflare Workers AI hospedando-o como @cf/qwen/qwen3.8-27b. O operador muda; o ciclo de vida, não.
 
 ## Do seu texto a uma lista de ids de tokens
 
-A requisição chega primeiro ao edge, a porta de entrada do serviço. Um **gateway** autentica quem chama, confere a cota, valida se a requisição tem o formato esperado (o schema) e atribui um request ID. Limites de bytes, imagens, ferramentas e comprimento máximo de geração são aplicados aqui, antes de qualquer trabalho caro começar. Rate limiting pertence a essa porta, não ao prompt. Desde o primeiro byte, texto do usuário é dado não confiável.
+A requisição chega primeiro ao edge, a porta de entrada do serviço. Um **gateway** autentica quem chama, confere a cota, valida se a requisição tem o formato esperado (o schema) e atribui um request ID. Limites de bytes, imagens, ferramentas e comprimento máximo de geração são aplicados aqui, antes de qualquer trabalho caro começar. Rate limiting (limitar quantas requisições um mesmo usuário pode mandar num intervalo de tempo) pertence a essa porta, não ao prompt. Desde o primeiro byte, texto do usuário é dado não confiável.
 
 Em seguida vem a construção do prompt. O modelo foi treinado com conversas escritas num formato exato, o seu **chat template**: marcadores especiais que dizem onde começam e terminam as instruções de sistema, os turnos do usuário e os turnos do assistente. A aplicação preenche esse template com as instruções de sistema, o histórico da conversa e sua nova mensagem, usando o template que acompanha o checkpoint (o conjunto de pesos publicado). O template do Qwen3.8-27B também inclui as fronteiras de papéis e a marcação de thinking mode aprendidas no pós-treinamento, as tags que envolvem o raciocínio passo a passo. Uma requisição pode desligar o raciocínio passando enable_thinking como false.
 
@@ -67,13 +67,11 @@ No Qwen3.8-27B essas camadas não são uniformes. As 16 camadas de full attentio
 
 Aqui muita gente se engana. Supõe que essa única passagem grande produz a resposta inteira, de modo que o tempo de resposta seria de aproximadamente um forward pass. Não é. Os logits do prefill pontuam apenas o *próximo* token.
 
-O decoding autorregressivo comum, em que o modelo emite um token por vez e devolve cada um como entrada, roda um loop:
+O decoding autorregressivo comum, em que o modelo emite um token por vez e devolve cada um como entrada, roda o loop mostrado no passo 3 abaixo, depois das etapas únicas de admissão e prefill:
 
-1. O **sampler** escolhe um token a partir dos logits.
-2. O servidor anexa esse token à sequência.
-3. O modelo roda de novo para a nova posição, reutilizando o estado em cache de todas as posições anteriores, e produz logits novos.
+<Figure id="t7-request-lifecycle" />
 
-O sampler é guiado por parâmetros como temperature (quanta aleatoriedade permitir) e top-p e top-k (quais candidatos podem ser escolhidos); a [aula 7.4](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/) explica cada um. Temperature `1.0`, top-p `0.95` e top-k `20` são três dos valores recomendados pelo model card para thinking mode.
+O **sampler** é guiado por parâmetros como temperature (quanta aleatoriedade permitir) e top-p e top-k (quais candidatos podem ser escolhidos); a [aula 7.4](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/) explica cada um. Temperature `1.0`, top-p `0.95` e top-k `20` são três dos valores recomendados pelo model card para thinking mode.
 
 Uma resposta de 500 tokens, portanto, exige cerca de 500 passagens de decode do target model nessa linha de base, em que o *target model* é o modelo cuja saída você de fato quer. Duas técnicas mudam essa conta. O speculative decoding deixa um ajudante mais barato propor vários tokens; o módulo MTP (multi-token prediction, previsão de múltiplos tokens) do checkpoint os propõe de dentro do próprio modelo. Nos dois casos, o target pode verificar várias propostas numa passagem, como explica a [aula 7.5](/pt-br/lessons/7-inference-and-efficiency/7.5-beam-search-speculative-decoding-and-medusa/), então uma passagem por token emitido não é uma invariante universal do runtime.
 
@@ -89,16 +87,16 @@ cerca de um quinto de centavo. Os tokens de saída contribuem mais de dez vezes 
 
 ## O streaming da resposta, e a parada antecipada
 
-O streaming acontece em paralelo com o loop. O servidor **detokeniza** incrementalmente, transformando ids de volta em texto à medida que são produzidos. Fronteiras de tokens não se alinham com caracteres, nem mesmo com sequências completas de bytes UTF-8, então um token pode terminar no meio de um caractere. Por isso o servidor precisa guardar os bytes em buffer do jeito que o decoder do tokenizer manda antes de enviá-los. Stop sequences, parsers de tool calls e restrições de structured output também podem atrasar ou suprimir bytes. E um cliente lento não pode prender memória ilimitada do servidor.
+O streaming acontece em paralelo com o loop. O servidor **detokeniza** incrementalmente, transformando ids de volta em texto à medida que são produzidos. Fronteiras de tokens não se alinham com caracteres, nem mesmo com sequências completas de bytes UTF-8 (o padrão de codificação que transforma caracteres de texto em bytes), então um token pode terminar no meio de um caractere. Por isso o servidor precisa guardar os bytes em buffer (uma memória temporária) do jeito que o decoder do tokenizer manda antes de enviá-los. Stop sequences, parsers de tool calls e restrições de structured output (regras que forçam a resposta num formato rígido como JSON) também podem atrasar ou suprimir bytes. E um cliente lento não pode prender memória ilimitada do servidor.
 
 :::insight
 "Latência do modelo" são várias métricas. O queue time, a espera antes de a requisição ser admitida, revela pressão de capacidade. O time to first token mede o caminho por admissão, tokenização e prefill. A inter-token latency, o intervalo entre os tokens seguintes, descreve a cadência do decode. O tempo ponta a ponta soma o comprimento da saída e a rede.
 :::
 
-O cancelamento viaja na direção oposta. Se você interrompe a geração ou a conexão cai, o decode deve parar prontamente, o trabalho enfileirado deve desaparecer e os blocos de cache devem voltar ao allocator, com as contagens reais de tokens registradas para cobrança. Sob carga, a memória que a limpeza deixa de devolver vira capacidade perdida, e depois um incidente.
+O cancelamento viaja na direção oposta. Se você interrompe a geração ou a conexão cai, o decode deve parar prontamente, o trabalho enfileirado deve desaparecer e os blocos de cache devem voltar ao allocator (o gerenciador de memória que entrega e recolhe espaço), com as contagens reais de tokens registradas para cobrança. Sob carga, a memória que a limpeza deixa de devolver vira capacidade perdida, e depois um incidente.
 
 :::warning
-Texto do usuário é entrada não confiável em todo este pipeline. Ele jamais pode adquirir autoridade sobre credenciais, tenants ou ferramentas apenas por passar pelo template. Um prompt é dado sendo processado, não instruções para a infraestrutura de serving.
+Texto do usuário é entrada não confiável em todo este pipeline. Ele jamais pode adquirir autoridade sobre credenciais, tenants (contas separadas de clientes que dividem o servidor) ou ferramentas apenas por passar pelo template. Um prompt é dado sendo processado, não instruções para a infraestrutura de serving.
 :::
 
-Imagine o todo como um pipeline com um loop dentro. Tokenize uma vez, faça prefill uma vez, então decodifique um token por passagem até terminar, detokenizando ao longo do caminho. As duas próximas aulas dão zoom nas duas metades desse loop: a aula 7.2 trata da memória que o decode reutiliza, e a [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) mostra por que prefill e decode se comportam como duas máquinas diferentes.
+Guarde esse diagrama como um pipeline com um loop dentro. As duas próximas aulas dão zoom nas duas metades desse loop: a aula 7.2 trata da memória que o decode reutiliza, e a [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) mostra por que prefill e decode se comportam como duas máquinas diferentes.

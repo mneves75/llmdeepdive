@@ -34,7 +34,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 ## Why a 27B model will not fit on a phone
@@ -42,10 +42,10 @@ updated: "2026-10-18"
 You have built something good on Qwen3.8-27B, and now someone asks for it on a phone, offline. Do the arithmetic before answering:
 
 - The weights are 54 GB in bf16.
-- [Lesson 7.10](/lessons/7-inference-and-efficiency/7.10-quantization-ii-gptq-awq-gguf-qat/) pins the community Q4_K_M text-model artifact at 17.1 GB (15.93 GiB). That is before its separate multimodal projector, cache, and runtime memory.
-- A flagship handset's entire memory budget is below that practical requirement.
+- [Lesson 7.10](/lessons/7-inference-and-efficiency/7.10-quantization-ii-gptq-awq-gguf-qat/) pins the community Q4_K_M text-model artifact at 17.1 GB (15.93 GiB). That is before its separate **multimodal projector** (the small bridge layer feeding images into the text model), cache, and **runtime** (the software loading and executing the model) memory.
+- A **flagship handset**'s (top-end smartphone's) entire memory budget is below that practical requirement.
 
-More aggressive quantization can shrink storage further, but it never reduces the number of parameters or changes the architecture. Once quality or runtime support makes the target infeasible, you need a smaller model. [Lesson 9.7](/lessons/9-hardware-and-infrastructure/9.7-qualcomm-hexagon-and-the-edge/) works through edge hardware; this lesson is about how to train that smaller model.
+More aggressive quantization can shrink storage further, but it never reduces the number of parameters or changes the architecture. Once quality or runtime support makes the target infeasible, you need a smaller model. [Lesson 9.7](/lessons/9-hardware-and-infrastructure/9.7-qualcomm-hexagon-and-the-edge/) works through **edge hardware** (phones, laptops, and local devices rather than datacenter servers); this lesson is about how to train that smaller model.
 
 **Knowledge distillation** is learned model compression. It trains a smaller **student** to imitate signals from a larger **teacher**, aiming to preserve useful behaviour at lower memory, latency, and serving cost. It is not lossless file compression or a re-encoding of the same weights. The student has a different parameterization and learns an approximation over a chosen input distribution.
 
@@ -55,21 +55,23 @@ The classic form uses the teacher's **logits**, its raw score for every token in
 
 Take a made-up case. After "the small grey ___", the training text continues with "cat". The usual one-hot label (1 for the correct token, 0 for every other) says only "cat". A teacher might instead give cat 0.7, kitten 0.25, and car 0.05. From that the student also learns that "kitten" was nearly as good and "car" was not. These non-target probabilities carry relational information that a one-hot label never encodes, often called dark knowledge.
 
-In the general form, a temperature $T$ softens the teacher's distribution so that small probabilities become visible, and the student minimizes a divergence from it. That divergence is the KL divergence (a measure of how different two distributions are), usually mixed through a weight $\lambda$ with the ordinary loss on ground-truth labels:
+In the general form, a temperature $T$ softens the teacher's distribution so that small probabilities become visible, and the student minimizes a divergence from it. That divergence is the KL divergence (a measure of how different two distributions are), usually mixed through a weight $\lambda$ with the ordinary loss on **ground-truth labels** (the actual next tokens from the training text):
 
 $$
 \mathcal{L}=\lambda T^2\,\mathrm{KL}\left(p_T^{teacher}\,\|\,p_T^{student}\right)
 +(1-\lambda)\mathcal{L}_{hard}.
 $$
 
-This route is normally closed for frontier teachers served behind an API, which is why most practical distillation is sequence-level. Qwen3.8-27B is the exception that makes the choice real. It ships open weights under Apache 2.0, so its logits over all 248,320 vocabulary rows are yours to read. That is a genuine advantage of an open-weights teacher, though it comes with a storage problem of its own. Cached soft targets over a quarter-million-row vocabulary are enormous, so implementations usually keep only the top few hundred entries per position.
+This route is normally closed for frontier teachers served behind an **API** (a network interface that returns text without exposing model weights or internal scores), which is why most practical distillation is sequence-level. Qwen3.8-27B is the exception that makes the choice real. It ships open weights under Apache 2.0, so its logits over all 248,320 vocabulary rows are yours to read. Cached soft targets over a quarter-million-row vocabulary are enormous, so implementations usually keep only the top few hundred entries per position. Step through the two distillation routes below to compare what each needs and delivers.
+
+<Figure id="t6-distillation-two-routes" />
 
 ## Learning from the teacher's answers
 
-**Sequence distillation** is the other route. The teacher answers a curated prompt set, the outputs are filtered, verified, or ranked, and the student runs supervised fine-tuning (SFT, [lesson 6.2](/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/)) on the survivors. Walk one build through, step by step, because the interesting decisions are all in the data generation.
+**Sequence distillation** (step 2 above) runs supervised fine-tuning (SFT, [lesson 6.2](/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/)) on verified teacher outputs. Walk one build through, step by step, because the interesting decisions are all in the data generation:
 
 1. **Pick the mode and its preset.** If you want the student to produce direct answers, generate with instruct mode: enable_thinking set to False, temperature 0.7, top_p 0.80, top_k 20, min_p 0.0, presence_penalty 1.5, repetition_penalty 1.0. If you want reasoning traces in the curriculum, generate under the thinking preset of temperature 1.0, top_p 0.95, top_k 20, min_p 0.0, presence_penalty 0.0, repetition_penalty 1.0. The presets are the reproducible baseline, the configuration the model card documents and anyone can repeat. Another setting is a legitimate choice, but it produces a different teacher distribution, so record the full configuration and evaluate the resulting curriculum yourself rather than borrowing the card's results for it.
-2. **Verify before accepting.** Wherever a checker exists (tests, an exact-answer comparison, a schema validator), run it and discard failures, exactly as [lesson 6.8](/lessons/6-post-training-and-alignment/6.8-grpo-and-rl-on-verifiable-rewards/) argued for training signals. Filtering teacher output with the same teacher is circular approval, and it teaches the teacher's errors with extra confidence.
+2. **Verify before accepting.** Wherever a checker exists (tests, an exact-answer comparison, a **schema validator** checking that output matches required fields), run it and discard failures, exactly as [lesson 6.8](/lessons/6-post-training-and-alignment/6.8-grpo-and-rl-on-verifiable-rewards/) argued for training signals. Filtering teacher output with the same teacher is circular approval, and it teaches the teacher's errors with extra confidence.
 3. **Price it.** Suppose 200,000 prompts averaging 800 output tokens: that is 160 million output tokens. Served through Cloudflare Workers AI at USD 3.20 per million output tokens, generation costs about USD 512, plus input tokens at USD 0.45 per million. The figures are illustrative and specific to August 2026 pricing, but the shape is the point. Synthetic curricula are cheap enough to iterate on, and expensive enough that generating ten times more data than you filtered for is a real waste.
 
 Now the classic wrong turn, and it is tempting precisely because thinking mode makes it easy. The teacher produces long, articulate reasoning traces, so a team distils the traces into a small student, expecting the student to reason too. What arrives is a student that has learned the *form* of a long trace without the capacity to run the search underneath it. It produces fluent multi-step deliberation, confidently wrong conclusions, and a token bill several times higher than the direct-answer student it replaced. You paid for reasoning twice, once to generate the traces and once on every inference, and bought a worse model.
@@ -81,7 +83,7 @@ The correction has two parts. Filter traces by outcome rather than by appearance
 Prompt coverage defines what transfers. A curriculum full of arithmetic improves arithmetic and leaves multilingual instruction-following exactly where it was. Easy prompts saturate without touching the student's decision boundary, and prompts far beyond the student's capacity become noise. Adaptive generation targets the cases where student and teacher disagree, or where external verification can separate the strategies that worked.
 
 :::warning
-Teacher outputs are not ground truth, and a distilled student inherits its teacher's mistakes with none of its teacher's ability to catch them. Hallucinations, unsafe completions, cultural bias, verbosity, and formatting tics all copy across cleanly. Worse, they arrive *without* the caveats: the teacher's hedged, uncertain answer becomes the student's flat assertion, because the student learned the words and not the uncertainty behind them. Use external tools, trusted datasets, independent judges, and human audits. Record teacher version, decoding settings, prompt source, filtering decisions, and date with every synthetic dataset.
+Teacher outputs are not ground truth, and a distilled student inherits its teacher's mistakes with none of its teacher's ability to catch them. **Hallucinations** (confident statements invented by the model that are factually false), unsafe completions, cultural bias, verbosity, and formatting tics all copy across cleanly. Worse, they arrive *without* the caveats: the teacher's hedged, uncertain answer becomes the student's flat assertion, because the student learned the words and not the uncertainty behind them. Use external tools, trusted datasets, independent judges, and human audits. Record teacher version, decoding settings, prompt source, filtering decisions, and date with every synthetic dataset.
 :::
 
 Capacity imposes a real ceiling, and it does not show up in an average benchmark score. A smaller student typically retains frequent surface behaviour while losing rare knowledge, long-context competence, multilingual nuance, and robust composition of several instructions. Evaluate by slice (capability, difficulty, language, safety boundary, prompt distribution). Compare against a student trained on original data, so improvements can be attributed to the teacher signal rather than to extra tokens.
@@ -96,6 +98,6 @@ Terms of service, model licences, privacy promises, and data rights govern wheth
 
 ## How distillation and quantization fit together
 
-The techniques compose. Distil first, then quantize the student ([lessons 7.9](/lessons/7-inference-and-efficiency/7.9-quantization-i-int8-int4-the-basics/) and 7.10). Or use teacher signals during quantization-aware training to recover what quantization cost. They solve different problems: distillation changes what a smaller model learns, quantization changes how its weights are represented, and the edge deployments in lesson 9.7 usually need both.
+The techniques compose. Distil first, then quantize the student ([lessons 7.9](/lessons/7-inference-and-efficiency/7.9-quantization-i-int8-int4-the-basics/) and 7.10). Or use teacher signals during **quantization-aware training** (training while simulating low-bit weights so the model adapts to rounding error) to recover what quantization cost. They solve different problems: distillation changes what a smaller model learns, quantization changes how its weights are represented, and the edge deployments in lesson 9.7 usually need both.
 
 The durable model is curriculum-driven behavioural transfer. The teacher supplies richer targets, the student compresses what fits inside its capacity, and evaluation reveals what survived. A small model punches up not because it secretly contains the teacher, but because carefully chosen supervision spent its limited capacity on the behaviours that mattered.

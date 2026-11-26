@@ -38,24 +38,24 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 A [aula 6.2](/pt-br/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/) descreveu o supervised fine-tuning como se desse para atualizar todos os pesos. Num modelo de 27B você normalmente não consegue, e esta aula trata dos métodos que contornam isso e da aritmética por trás deles.
 
 ## Por que o fine-tuning completo não cabe na sua GPU
 
-Comece pelo número que encerra a conversa sobre fine-tuning completo: atualizar todos os pesos. O treino precisa de três coisas na memória do acelerador (GPU) ao mesmo tempo:
+Comece pelo número que encerra a conversa sobre fine-tuning completo: atualizar todos os pesos. O treino precisa de três coisas na memória do acelerador (a **GPU**, sigla para unidade de processamento gráfico, o chip que executa as multiplicações de matrizes) ao mesmo tempo:
 
-- **Os pesos.** O Qwen3.8-27B são 54 GB de pesos em bf16, um formato numérico de 16 bits que ocupa 2 bytes por peso ([aula 5.9](/pt-br/lessons/5-pretraining-at-scale/5.9-mixed-precision/)).
+- **Os pesos.** O Qwen3.8-27B são 54 GB de pesos em bf16, um formato numérico de 16 bits que ocupa 2 **bytes** (a unidade básica de memória de computador) por peso ([aula 5.9](/pt-br/lessons/5-pretraining-at-scale/5.9-mixed-precision/)).
 - **Os gradientes**, um número por peso dizendo para que lado ele deve se mover. São outra cópia do mesmo tamanho.
-- **O estado do otimizador.** O AdamW, o otimizador de costume ([aula 2.7](/pt-br/lessons/2-neural-network-fundamentals/2.7-optimizers/)), guarda duas estimativas de momento em fp32 (8 bytes) mais um master weight em fp32 (4 bytes): 12 bytes de estado de otimizador e master por parâmetro. Somando o peso e o gradiente em bf16 (2 + 2 bytes), são 16 bytes por parâmetro no total. Para 27B de parâmetros isso dá 324 GB de estado de otimizador e master, e cerca de 432 GB incluindo pesos e gradientes, o orçamento ilustrativo que a [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) calcula.
+- **O estado do otimizador.** O AdamW, o otimizador de costume ([aula 2.7](/pt-br/lessons/2-neural-network-fundamentals/2.7-optimizers/)), guarda duas estimativas de momento em **fp32** (ponto flutuante de 32 bits, 4 bytes por número, totalizando 8 bytes) mais um **master weight** em fp32 (uma cópia de maior precisão mantida para que atualizações pequenas não sejam arredondadas para zero, 4 bytes): 12 bytes de estado de otimizador e master por parâmetro. Somando o peso e o gradiente em bf16 (2 + 2 bytes), são 16 bytes por parâmetro no total. Para 27B de parâmetros isso dá 324 GB de estado de otimizador e master, e cerca de 432 GB incluindo pesos e gradientes, o orçamento ilustrativo que a [aula 5.7](/pt-br/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) calcula.
 
 Some tudo, e o fine-tuning completo quer cerca de 432 GB antes de armazenar uma única ativação (um resultado intermediário de que o backward pass precisa). Isso é um job espalhado por várias máquinas. Enquanto isso, a máquina que você realmente tem é uma única placa de 24 GB ou 48 GB. O **fine-tuning parameter-efficient** (PEFT, ajuste fino eficiente em parâmetros) existe para fechar esse vão, e a aritmética de como ele fecha é a substância desta aula.
 
 ## Como o LoRA representa uma atualização
 
-A **Low-Rank Adaptation**, ou LoRA (adaptação de posto baixo), muda como uma camada linear é representada durante o fine-tuning. A ideia é deixar a matriz grande em paz e aprender uma pequena correção feita de duas matrizes finas.
+A **Low-Rank Adaptation**, ou LoRA (adaptação de posto baixo), muda como uma **camada linear** (uma etapa de multiplicação de matriz dentro da rede) é representada durante o fine-tuning. A ideia é deixar a matriz grande em paz e aprender uma pequena correção feita de duas matrizes finas.
 
 Tome uma camada inventada cuja matriz de pesos é 1000 × 1000: um milhão de números. O fine-tuning completo aprenderia uma mudança em cada um deles. O LoRA, em vez disso, aprende uma matriz $B$ de 1000 × 8 e uma matriz $A$ de 8 × 1000. O produto $BA$ volta a ser 1000 × 1000, então pode ser somado à matriz original, mas é feito de apenas 8 × (1000 + 1000) = 16.000 números treináveis, 1,6% do original. O tamanho interno, 8 aqui, é o **posto** $r$: o número máximo de direções independentes em que a atualização pode mudar a saída da camada.
 
@@ -67,18 +67,18 @@ $$
 
 com $A\in\mathbb{R}^{r\times d_{in}}$ e $B\in\mathbb{R}^{d_{out}\times r}$, e posto $r$ muito abaixo de qualquer uma das dimensões. O forward pass soma a contribuição do adapter à projeção original, escalada por uma configuração chamada alpha dividida pelo posto.
 
-A restrição de posto baixo é um viés indutivo (uma suposição embutida no método), não um teorema. A adaptação útil *pode* viver num subespaço pequeno, e posto, posicionamento e dados decidem se ela vive.
+A restrição de posto baixo é um viés indutivo (uma suposição embutida no método), não um teorema. A adaptação útil *pode* viver num **subespaço** pequeno (uma fatia menor de todas as direções possíveis), e posto, posicionamento e dados decidem se ela vive.
 
 ## Quais módulos adaptar no Qwen3.8-27B
 
 Posicionamento é onde este modelo diverge fortemente da receita que a maioria dos tutoriais entrega. O artigo de LoRA de 2021 adaptou as projeções de query e value de um transformer uniforme, em que toda camada é de attention, e esse padrão foi copiado desde então.
 
-Aplique isso ao Qwen3.8-27B e eis o que acontece. O modelo tem 64 camadas arranjadas como dezesseis repetições de três blocos Gated DeltaNet seguidos de um bloco Gated Attention ([aula 4.16](/pt-br/lessons/4-transformer/4.16-hybrid-layouts/)). Apenas 16 das 64 camadas contêm as projeções de query e value que seu arquivo de configuração nomeia. As outras 48, três quartos da profundidade, não recebem adapter nenhum. Você vai treinar, a loss vai cair, e você vai concluir que o LoRA tem desempenho fraco neste modelo. Não tem; sua lista de alvos deixou a maior parte do modelo de fora.
+Aplique isso ao Qwen3.8-27B e eis o que acontece. O modelo tem 64 camadas arranjadas como dezesseis repetições de três blocos Gated DeltaNet seguidos de um bloco Gated Attention ([aula 4.16](/pt-br/lessons/4-transformer/4.16-hybrid-layouts/)). Apenas 16 das 64 camadas contêm as projeções de query e value que seu **arquivo de configuração** (o arquivo estruturado que lista os tamanhos e ajustes do modelo) nomeia. As outras 48, três quartos da profundidade, não recebem adapter nenhum. Você vai treinar, a loss vai cair, e você vai concluir que o LoRA tem desempenho fraco neste modelo. Não tem; sua lista de alvos deixou a maior parte do modelo de fora.
 
 A lista de alvos correta segue a arquitetura:
 
 - **Nas 16 camadas de attention:** as projeções que alimentam 24 query heads e 4 key/value heads com dimensão de head 256, mais a projeção de saída.
-- **Nas 48 camadas Gated DeltaNet** ([aula 4.15](/pt-br/lessons/4-transformer/4.15-gated-deltanet/)): as projeções que produzem seus 16 query/key heads e 48 value heads com dimensão de head 128, mais sua projeção de saída. A convolução curta de kernel 4 e os parâmetros de gating normalmente ficam congelados, já que são minúsculos e numericamente delicados.
+- **Nas 48 camadas Gated DeltaNet** ([aula 4.15](/pt-br/lessons/4-transformer/4.15-gated-deltanet/)): as projeções que produzem seus 16 query/key heads e 48 value heads com dimensão de head 128, mais sua projeção de saída. A **convolução** curta (um pequeno filtro deslizante sobre tokens vizinhos) de kernel 4 e os parâmetros de gating normalmente ficam congelados, já que são minúsculos e numericamente delicados.
 - **Em todas as 64 camadas:** as matrizes feed-forward com gate que levam o residual stream de largura 5120 até 17.408 e de volta. Cerca de 17B de parâmetros vivem ali, mais da metade do modelo.
 
 Leia os nomes dos tensores do índice do safetensors (o arquivo que lista todo tensor de pesos do checkpoint) em vez de adivinhá-los. Confira os shapes de passagem. As projeções de attention neste modelo são deliberadamente não quadradas, então um palpite derivado da config de que "tudo tem largura 5120" não sobrevive ao contato com o checkpoint.
@@ -87,13 +87,15 @@ Leia os nomes dos tensores do índice do safetensors (o arquivo que lista todo t
 
 Agora a aritmética de memória, passo a passo. Tome um posto de 16 e considere uma matriz que lê e escreve o residual stream de largura 5120. Seu adapter custa $r(d_{in}+d_{out}) = 16 \times (5120 + 5120) \approx 164{,}000$ parâmetros; chame de 0,16M. Adapte quatro projeções em cada uma das 64 camadas e você tem 256 matrizes adaptadas, ou seja, cerca de 42M de parâmetros treináveis. (As larguras reais variam por módulo, então trate isso como dimensionamento ilustrativo, não como especificação.)
 
-Em bf16 esses pesos são cerca de 84 MB. O estado do AdamW a 12 bytes por parâmetro acrescenta aproximadamente 0,5 GB. Coloque isso ao lado dos 324 GB de estado de otimizador e master que a mesma receita exigiria para o fine-tuning completo. A diferença é de três ordens de grandeza, com o mesmo otimizador, porque agora ele tem três ordens de grandeza menos parâmetros para rastrear.
+Em bf16 esses pesos de adapter são cerca de 84 MB, e o estado do AdamW a 12 bytes por parâmetro acrescenta aproximadamente 0,5 GB — uma queda de três ordens de grandeza frente ao fine-tuning completo, porque o otimizador agora rastreia três ordens de grandeza menos parâmetros.
 
 ## Como o QLoRA encolhe o modelo congelado
 
-Isso resolve a memória do otimizador, mas não o backbone congelado (os pesos do modelo base), que ainda precisa ficar na memória para o forward e o backward. O **QLoRA** guarda esse backbone numa representação de poucos bits. Conforme cada operação roda, ele desquantiza os blocos de que precisa, convertendo-os de volta para um tipo de dado (dtype) de maior precisão para a computação.
+Isso resolve a memória do otimizador, mas não o **backbone** congelado (os pesos do modelo base), que ainda precisa ficar na memória para o forward e o backward. O **QLoRA** guarda esse backbone numa representação **quantizada** (de poucos bits por número). Conforme cada operação roda, ele desquantiza os blocos de que precisa, convertendo-os de volta para um tipo de dado (dtype) de maior precisão para a computação. Avance pelos três regimes abaixo para comparar como cada camada do orçamento encolhe.
 
-Códigos puros de 4 bits definem um piso de 13,5 GB para 27B parâmetros arredondados. O uso real de memória do QLoRA é maior, e depende dos metadados de quantization, buffers, ativações, adapters e estado do otimizador do backend. O tamanho de um arquivo GGUF (o formato que ferramentas de inferência local carregam) não mede memória de treino. O formato normal-float, a dupla quantization e os otimizadores paginados do artigo do QLoRA reduzem esse orçamento. Meça a stack exata de treino no comprimento de sequência e no micro-batch pretendidos (micro-batch é o número de sequências processadas num forward pass).
+<Figure id="t6-lora-qlora-memory" />
+
+Códigos puros de 4 bits definem um piso de 13,5 GB para 27B parâmetros arredondados. O uso real de memória do QLoRA é maior, e depende dos metadados de quantization, **buffers** (espaços temporários de memória), ativações, adapters e estado do otimizador do **backend** (a biblioteca matemática que roda na GPU). O tamanho de um arquivo GGUF (o formato que ferramentas de inferência local carregam) não mede memória de treino. O formato normal-float, a dupla quantization e os otimizadores paginados do artigo do QLoRA reduzem esse orçamento. Meça a stack exata de treino no comprimento de sequência e no micro-batch pretendidos (micro-batch é o número de sequências processadas num forward pass).
 
 :::warning
 A falha mais comum de QLoRA é orçar apenas os pesos. O backbone de 4 bits é custo fixo. Memória de ativação não é: ela escala com comprimento de sequência e micro-batch. Um treino que carrega tranquilamente com 2.048 tokens vai morrer em 8.192 na mesma placa. Dimensione o treino no comprimento de sequência em que você realmente pretende treinar. Lembre também que o contexto nativo de 262.144 tokens do Qwen3.8-27B é uma capacidade de inferência, não um convite para fazer fine-tuning ali.
@@ -112,7 +114,7 @@ PEFT é uma família mais ampla que o LoRA:
 Cada um muda o modelo num lugar diferente. Suporte em runtime, latência, troca entre muitos clientes num mesmo servidor e o comportamento sendo aprendido decidem qual serve.
 
 :::caveat
-Um adapter é estado executável de modelo. Carregar um não confiável pode mudar o comportamento radicalmente, e alguns formatos de serialização carregam objetos inseguros. Procedência, formatos de tensor seguros, hashes, licenças, compatibilidade com o modelo base e avaliação são questões de cadeia de suprimentos, não conveniências. O Qwen3.8-27B é distribuído sob Apache 2.0; adapters treinados sobre ele não herdam essa licença automaticamente.
+Um adapter é estado executável de modelo. Carregar um não confiável pode mudar o comportamento radicalmente, e alguns **formatos de serialização** (formatos de arquivo que gravam pesos em disco) carregam objetos inseguros. Procedência, formatos de tensor seguros, **hashes** (impressões digitais curtas que confirmam que um arquivo não foi alterado), licenças, compatibilidade com o modelo base e avaliação são questões de cadeia de suprimentos, não conveniências. O Qwen3.8-27B é distribuído sob Apache 2.0; adapters treinados sobre ele não herdam essa licença automaticamente.
 :::
 
 Nada disso conserta dados de instrução ruins, evita esquecimento nem garante paridade com fine-tuning completo. Um adapter pequeno pode memorizar um dataset estreito ou degradar comportamento geral tanto quanto um treino completo. O modelo mental prático é uma fundação congelada mais uma superfície aprendida de direcionamento. O LoRA expressa a superfície como uma atualização de posto baixo. O QLoRA torna a fundação barata o bastante para segurar enquanto você a aprende. O ganho de engenharia é separar capacidade pré-treinada compartilhada de mudança compacta, versionada e específica de tarefa.

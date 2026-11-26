@@ -42,10 +42,10 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Your traffic is not what [lesson 8.4](/lessons/8-building-and-serving-stacks/8.4-vllm/) assumed. Instead of independent users asking independent questions, you are running an agent. One task fans out into forty model calls. Each call begins with the same system prompt, the same tool schemas, and the same few-shot examples (sample question-and-answer pairs that show the model the expected format): about three thousand tokens of identical preamble. The calls differ only in the last paragraph, and every one must return a JSON object your code will parse. On a general-purpose engine this workload wastes memory and compute without any error to warn you, and understanding why is the whole reason SGLang exists.
+Your traffic is not what [lesson 8.4](/lessons/8-building-and-serving-stacks/8.4-vllm/) assumed. Instead of independent users asking independent questions, you are running an **agent** (a program that calls a language model in a loop to finish a multi-step task). One task fans out into forty model calls. Each call begins with the same system prompt, the same **tool schemas** (machine-readable descriptions of the functions the model may call), and the same few-shot examples (sample question-and-answer pairs that show the model the expected format): about three thousand tokens of identical preamble. The calls differ only in the last paragraph, and every one must return a **JSON object** (a structured text format of key-value fields) your code will **parse** (read back into program data). On a general-purpose engine this workload wastes memory and **compute** (processor work) without any error to warn you, and understanding why is the whole reason SGLang exists.
 
 ## What does a repeated preamble cost?
 
@@ -63,38 +63,32 @@ The compute is just as bad. Prefill, the phase that processes the prompt before 
 
 RadixAttention is the fix, and its design follows from what the cache actually is. KV blocks are a function of the token ids that produced them and of their positions. So two sequences that begin with the identical run of tokens have identical blocks for that run.
 
-SGLang therefore organizes the block pool as a **radix tree** keyed on token ids. A radix tree is a tree in which each path from the root spells out a sequence, so sequences with a common beginning share the same path. (If you have met a trie for autocompleting words, it is the same idea with token ids in place of letters.) Three rules make it work:
+SGLang organizes the block pool as a **radix tree** keyed on token ids — a tree in which each path from the root spells out a sequence, so sequences with a common beginning share the same path (like a trie for autocompleting words, using token ids instead of letters). Step through the three frames below to see prefix reuse, how a volatile opening breaks it, and how constrained decoding masks illegal tokens.
 
-1. An arriving request walks the tree from the root and reuses every block along the longest matching path.
-2. It allocates new blocks only for the suffix where it diverges.
-3. Eviction is least-recently-used (LRU) over the tree: when memory runs short, the blocks touched longest ago go first. Hot prefixes, such as your system prompt, stay resident while one-off conversations age out.
+<Figure id="t8-sglang-radix-and-grammar" />
 
-In our example the preamble is stored once, at about 188 MiB, and prefilled once. That recovers roughly seven gibibytes of pool and thirty-nine fortieths of the preamble's prefill cost.
+In frame 1, an arriving request walks the tree from the root, reuses every block along the longest matching path, and allocates new blocks only where it diverges; when memory runs short, least-recently-used (LRU) **eviction** (removing the oldest untouched entries) drops one-off conversations first while hot prefixes stay resident. In our 40-call example, storing and prefilling the preamble once recovers roughly seven gibibytes of pool and thirty-nine fortieths of the preamble's prefill work.
 
 :::warning
-Teams often enable prefix sharing, measure no improvement, and conclude the feature does not work. Almost always the prompt begins with something volatile: a timestamp, a request or trace id, a per-user greeting, a tool list serialized in a different order each time, or a retrieved-document block whose ordering is not stable. Matching is exact and anchored at position one, so a single differing token at the top collapses the shared prefix to zero. Restructure the prompt so everything stable comes first and everything variable comes last. Then measure the cache hit rate the engine reports, rather than inferring it from latency.
+Teams often enable prefix sharing, measure no improvement, and conclude the feature does not work. Almost always the prompt begins with something volatile (frame 2): a timestamp, a request or trace id, a per-user greeting, a tool list serialized in a different order each time, or a retrieved-document block whose ordering is not stable. Matching is exact and anchored at position one, so a single differing token at the top collapses the shared prefix to zero. Restructure the prompt so everything stable comes first and everything variable comes last. Then measure the cache hit rate the engine reports, rather than inferring it from latency.
 :::
 
 ## Scheduling a program, not a pile of requests
 
-The second thing SGLang treats as first-class is that your forty calls are a *program*, not forty unrelated requests. They have dependencies. They fork and join. Some of them are speculative branches you will discard.
+The second thing SGLang treats as first-class is that your forty calls are a *program*, not forty unrelated requests. They have dependencies. They **fork and join** (split into parallel branches and combine their results). Some of them are speculative branches you will discard.
 
-When the runtime knows the program structure, it can schedule with that knowledge. It can keep a branch's prefix pinned in memory while its children run, batch the siblings together, and order the work so that a shared parent is computed once before the fork rather than forty times after it. An engine that only sees independent HTTP requests can recover some of this after the fact, through prefix matching, but it cannot plan for it in advance.
+When the runtime knows the program structure, it can schedule with that knowledge. It can keep a branch's prefix pinned in memory while its children run, batch the siblings together, and order the work so that a shared parent is computed once before the fork rather than forty times after it. An engine that only sees independent **HTTP requests** (standard web requests sent one at a time) can recover some of this after the fact, through prefix matching, but it cannot plan for it in advance.
 
 ## How constrained decoding guarantees the JSON shape
 
-Structured output is the third piece, and it enforces the JSON shape at the sampler rather than hoping the prompt is obeyed. [Lesson 7.4](/lessons/7-inference-and-efficiency/7.4-sampling/) described sampling as drawing the next token from the model's probability distribution over the vocabulary. Constrained decoding adds one step before that draw:
-
-1. Your JSON schema or grammar is compiled into a state machine, which tracks what may legally come next.
-2. At every step, the engine masks the logits (the raw scores) of every token that cannot legally follow the text so far, setting their probability to zero.
-3. Sampling then happens over the tokens that remain.
+Structured output is the third piece (frame 3), and it enforces the JSON shape at the sampler rather than hoping the prompt is obeyed. [Lesson 7.4](/lessons/7-inference-and-efficiency/7.4-sampling/) described sampling as drawing the next token from the model's probability distribution over the vocabulary. Constrained decoding compiles your JSON schema or **grammar** (formal rules defining valid text structure) into a **state machine** (a rule table tracking what may legally come next) and masks disallowed logits to zero probability before each draw.
 
 So the model cannot emit a stray prose apology in front of the opening brace, cannot close an array it did not open, and cannot invent a field name outside the schema. That holds because those tokens had their probability set to zero, not because the prompt asked nicely. The guarantee covers only the tokens actually emitted, and only the schema features the engine's grammar compiler supports.
 
 Two practical notes. Compiling a grammar costs real time, so reuse and cache schemas rather than building one per request. And the constraint applies only to shape.
 
 :::caveat
-Schema-valid is not correct. A constrained decode will happily produce a perfectly formed object whose fields are wrong, invented, or contradictory. It will even look more confident than free-form text, because the usual sign of a confused model, rambling, has been masked away. Keep semantic validation downstream. Constrained decoding also does not promise a finished object. A request that hits its token limit, is cancelled or times out stops mid-object, and a schema keyword the grammar compiler does not support may be dropped rather than enforced. So before any tool runs, check that generation ended normally (a stop, not a length limit), parse the whole output, validate it against the schema again, and then check its meaning and permissions, as [lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) does. Constrained decoding makes parse errors rarer; it removes neither them nor hallucination.
+Schema-valid is not correct. A constrained decode will happily produce a perfectly formed object whose fields are wrong, invented, or contradictory. It will even look more confident than free-form text, because the usual sign of a confused model, rambling, has been masked away. Keep **semantic validation** (checking whether values make real-world sense, not just syntax) **downstream** (later in your program pipeline). Constrained decoding also does not promise a finished object. A request that hits its token limit, is cancelled or times out stops mid-object, and a schema keyword the grammar compiler does not support may be dropped rather than enforced. So before any tool runs, check that generation ended normally (a stop, not a length limit), parse the whole output, validate it against the schema again, and then check its meaning and permissions, as [lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) does. Constrained decoding makes parse errors rarer; it removes neither them nor hallucination.
 :::
 
 ## Sharing a prefix in a hybrid model
@@ -107,7 +101,7 @@ The hybrid architecture complicates prefix sharing, and this is the deepest poin
 
 That checkpoint is not small. The reference implementation stores about 144 MiB per sequence when that state is fp32, the same order as the 188 MiB of shared KV in this example, not a negligible add-on. A serving runtime may use another state dtype or layout, so inspect its realized allocation.
 
-Checkpointing state is a different mechanism from sharing blocks. Whether a given release implements it is a per-version question to verify, not to assume. The alternatives are a fallback to full recomputation that gives no warning, or, worse, blocks reused against a stale state. SGLang publishes an official cookbook page for this exact model. That page is the right starting point because it pins the versions and settings the maintainers have exercised.
+Checkpointing state is a different mechanism from sharing blocks. Whether a given release implements it is a per-version question to verify, not to assume. The alternatives are a fallback to full recomputation that gives no warning, or, worse, blocks reused against a stale state. SGLang publishes an official **cookbook** (a maintained recipe guide) page for this exact model. That page is the right starting point because it pins the versions and settings the maintainers have exercised.
 
 ## Who is allowed to share a prefix?
 

@@ -34,10 +34,10 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Under its illustrative optimizer recipe, [lesson 5.7](/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) got persistent state down to about 6.75 GB per rank on a 64-way ZeRO-3 job. [Lesson 5.8](/lessons/5-pretraining-at-scale/5.8-model-parallelism/) partitioned the layers. On paper, a 27-billion-parameter model now fits an 80 GB accelerator with enormous headroom. Then you launch with an 8,192-token sequence and batch size one, and the job dies at the first backward pass. Nothing about your sharding was wrong. You budgeted the wrong category.
+Under its illustrative optimizer recipe, [lesson 5.7](/lessons/5-pretraining-at-scale/5.7-data-parallelism-zero-fsdp/) got persistent state down to about 6.75 GB per rank on a 64-way ZeRO-3 job. [Lesson 5.8](/lessons/5-pretraining-at-scale/5.8-model-parallelism/) partitioned the layers. On paper, a 27-billion-parameter model now fits an 80 GB accelerator with enormous headroom (free memory to spare). Then you launch with an 8,192-token sequence and batch size one, and the job dies at the first backward pass (the gradient-computation step). Nothing about your sharding was wrong. You budgeted the wrong category.
 
 ## Why does training keep so many activations?
 
@@ -53,7 +53,7 @@ $$
 1\times 8192\times 5120\times 64\times 2\ \text{B}=5.37\times 10^{9}\ \text{B}\approx 5\ \text{GiB}.
 $$
 
-Five gibibytes. Comfortable. Now count what autograd actually keeps in one layer. Take a *uniform* full-attention model with this model's dimensions. The hybrid's real bill needs the DeltaNet layers costed separately, which is its own exercise; what follows is the method and the order of magnitude. Per token, one full-attention layer keeps roughly:
+Five gibibytes (GiB, powers of 1,024 bytes rather than 1,000). Comfortable. Now count what autograd actually keeps in one layer. Take a *uniform* full-attention model with this model's dimensions. The hybrid's real bill needs the DeltaNet layers costed separately, which is its own exercise; what follows is the method and the order of magnitude. Per token, one full-attention layer keeps roughly:
 
 - the residual input and its normalized copy, 5120 wide each;
 - the query projection output, 12288 wide, because it carries the output gate alongside the 24 heads at dimension 256 ([lesson 4.2](/lessons/4-transformer/4.2-self-attention/));
@@ -104,10 +104,14 @@ $$
 4\times 8192\times 192\ \text{KiB}\approx 6.0\ \text{GiB}.
 $$
 
-Within that full-attention teaching model, peak saved-activation memory becomes roughly $1.25+6.0\approx 7.3$ GiB instead of 96 GiB. The roughly thirteenfold ratio belongs only to that shape-based count. It does **not** transfer to the real hybrid until its DeltaNet autograd graph, fused kernels, allocator, and recomputation policy are measured.
+Within that full-attention teaching model, peak saved-activation memory becomes roughly $1.25+6.0\approx 7.3$ GiB instead of 96 GiB. Step through the three configurations below to see how boundary storage trades off against rematerialization:
+
+<Figure id="t5-activation-checkpoint-memory" />
+
+The roughly thirteenfold ratio belongs only to that shape-based count. It does **not** transfer to the real hybrid until its DeltaNet autograd graph, fused kernels (combined GPU operations that avoid writing intermediate tensors to memory), allocator (the memory manager), and recomputation policy are measured.
 
 :::insight
-Segment granularity is a dial, not a switch, and its two costs move in opposite directions. Sixteen coarse segments store few boundaries and rematerialize a lot. Sixty-four fine segments store 64 boundaries (5 GiB) and rematerialize only one layer at a time (about 1.5 GiB). Both land near 6 to 7 GiB here, but with different framework overhead and different overlap behaviour. Measure both rather than adopting a rule of thumb.
+Segment granularity is a dial, not a switch, and its two costs move in opposite directions. As frames 2 and 3 show, 16 super-block segments and 64 single-layer segments both land near 6 to 7 GiB here, with different framework overhead and communication overlap. Measure both rather than adopting a rule of thumb.
 :::
 
 The tradeoff is direct: lower peak activation memory in exchange for extra computation. It does not just double training time, because backward, communication, and the work outside checkpointed segments continue regardless, and recomputation may overlap with them differently. Measure step time and realized throughput, not the theoretical FLOP increase.
@@ -133,8 +137,8 @@ Every number in this lesson is a shape-based estimate and should be treated as o
 Two correctness traps deserve naming:
 
 - **Randomness must be reproduced.** Dropout randomly zeroes values during training. If it drew one mask in the original forward and a different one during recomputation, backward would differentiate a different function. So framework checkpoint utilities save and restore the random-number generator (RNG) state, at a small cost.
-- **Side effects break recomputation.** Stateful modules, side effects, mutable caches, and data-dependent external calls can make recomputation produce wrong results without raising any error.
+- **Side effects break recomputation.** Stateful modules, side effects (hidden changes made outside a function's returned output), mutable caches, and data-dependent external calls can make recomputation produce wrong results without raising any error.
 
-Composition adds the rest of the complexity. Pipeline parallelism makes recomputation compete with other microbatches for the same devices. FSDP may need to all-gather the weights again during recompute unless the parameters stayed materialized, trading communication against memory. Compilers fuse and reorder regions in ways that change what a segment even is. The effective unit is the whole distributed schedule, never an isolated function.
+Composition adds the rest of the complexity. Pipeline parallelism makes recomputation compete with other microbatches for the same devices. FSDP may need to all-gather the weights again during recompute unless the parameters stayed materialized, trading communication against memory. Compilers (tools that rewrite model code into faster machine instructions) fuse and reorder regions in ways that change what a segment even is. The effective unit is the whole distributed schedule, never an isolated function.
 
 The mental model to keep is a time–space exchange: save enough boundary state to rebuild the forward graph, discard the bulky middle, and pay compute to recreate it just before its gradients are needed. The decision follows from a measured breakdown of where memory actually went, which, for a model with a 17,408-wide feed-forward block, is almost never where a first estimate puts it.

@@ -34,7 +34,7 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 ## Por que um modelo de 27B não cabe num celular
@@ -42,10 +42,10 @@ updated: "2026-10-18"
 Você construiu algo bom sobre o Qwen3.8-27B, e agora alguém pede isso num celular, offline. Faça a aritmética antes de responder:
 
 - Os pesos são 54 GB em bf16.
-- A [aula 7.10](/pt-br/lessons/7-inference-and-efficiency/7.10-quantization-ii-gptq-awq-gguf-qat/) fixa o artefato comunitário Q4_K_M do modelo de texto em 17,1 GB (15,93 GiB). Isso é antes do projector multimodal separado, do cache e da memória do runtime.
+- A [aula 7.10](/pt-br/lessons/7-inference-and-efficiency/7.10-quantization-ii-gptq-awq-gguf-qat/) fixa o artefato comunitário Q4_K_M do modelo de texto em 17,1 GB (15,93 GiB). Isso é antes do **projector multimodal** separado (a pequena camada-ponte que leva imagens ao modelo de texto), do cache e da memória do **runtime** (o software que carrega e executa o modelo).
 - O orçamento inteiro de memória de um celular topo de linha fica abaixo dessa exigência prática.
 
-Quantization mais agressiva pode reduzir mais o armazenamento, mas nunca diminui a quantidade de parâmetros nem muda a arquitetura. Quando qualidade ou suporte do runtime tornam o alvo inviável, você precisa de um modelo menor. A [aula 9.7](/pt-br/lessons/9-hardware-and-infrastructure/9.7-qualcomm-hexagon-and-the-edge/) detalha o hardware de borda; esta aula trata de como treinar esse modelo menor.
+Quantization mais agressiva pode reduzir mais o armazenamento, mas nunca diminui a quantidade de parâmetros nem muda a arquitetura. Quando qualidade ou suporte do runtime tornam o alvo inviável, você precisa de um modelo menor. A [aula 9.7](/pt-br/lessons/9-hardware-and-infrastructure/9.7-qualcomm-hexagon-and-the-edge/) detalha o **hardware de borda** (celulares, notebooks e dispositivos locais, em vez de servidores em datacenter); esta aula trata de como treinar esse modelo menor.
 
 **Knowledge distillation** (destilação de conhecimento) é compressão aprendida de modelo. Ela treina um **student** (aluno) menor para imitar sinais de um **teacher** (professor) maior, buscando preservar comportamento útil com menos memória, latência e custo de serving. Não é compressão de arquivo sem perdas nem recodificação dos mesmos pesos. O student tem outra parametrização e aprende uma aproximação sobre uma distribuição escolhida de entradas.
 
@@ -55,21 +55,23 @@ A forma clássica usa os **logits** do teacher, seu escore bruto para cada token
 
 Tome um caso inventado. Depois de "lá fora miava um pequeno", o texto de treino continua com "gato". O rótulo one-hot de costume (1 para o token correto, 0 para todos os outros) diz apenas "gato". Um teacher poderia em vez disso dar 0,7 a "gato", 0,25 a "gatinho" e 0,05 a "carro". Daí o student também aprende que "gatinho" era quase tão bom e que "carro" não era. Essas probabilidades fora do alvo carregam informação relacional que um rótulo one-hot nunca codifica, o que costuma ser chamado de dark knowledge.
 
-Na forma geral, uma temperatura $T$ suaviza a distribuição do teacher para que probabilidades pequenas fiquem visíveis, e o student minimiza uma divergência em relação a ela. Essa divergência é a divergência KL (uma medida de quão diferentes são duas distribuições), normalmente misturada por um peso $\lambda$ com a loss comum sobre rótulos verdadeiros:
+Na forma geral, uma temperatura $T$ suaviza a distribuição do teacher para que probabilidades pequenas fiquem visíveis, e o student minimiza uma divergência em relação a ela. Essa divergência é a divergência KL (uma medida de quão diferentes são duas distribuições), normalmente misturada por um peso $\lambda$ com a loss comum sobre **rótulos verdadeiros** (os próximos tokens reais do texto de treino):
 
 $$
 \mathcal{L}=\lambda T^2\,\mathrm{KL}\left(p_T^{teacher}\,\|\,p_T^{student}\right)
 +(1-\lambda)\mathcal{L}_{hard}.
 $$
 
-Essa rota normalmente está fechada para teachers de fronteira servidos atrás de uma API, e é por isso que a maior parte da distillation prática é no nível da sequência. O Qwen3.8-27B é a exceção que torna a escolha real. Ele vem com pesos abertos sob Apache 2.0, então seus logits sobre todas as 248.320 linhas do vocabulário são seus para ler. Isso é uma vantagem genuína de um teacher de pesos abertos, embora venha com um problema de armazenamento próprio. Alvos suaves em cache sobre um vocabulário de um quarto de milhão de linhas são enormes, então as implementações costumam guardar apenas as poucas centenas de entradas do topo por posição.
+Essa rota normalmente está fechada para teachers de fronteira servidos atrás de uma **API** (uma interface de rede que devolve texto sem expor os pesos ou escores internos do modelo), e é por isso que a maior parte da distillation prática é no nível da sequência. O Qwen3.8-27B é a exceção que torna a escolha real. Ele vem com pesos abertos sob Apache 2.0, então seus logits sobre todas as 248.320 linhas do vocabulário são seus para ler. Alvos suaves em cache sobre um vocabulário de um quarto de milhão de linhas são enormes, então as implementações costumam guardar apenas as poucas centenas de entradas do topo por posição. Avance pelas duas rotas de distillation abaixo para comparar o que cada uma exige e entrega.
+
+<Figure id="t6-distillation-two-routes" />
 
 ## Aprender com as respostas do teacher
 
-A **sequence distillation** (destilação de sequência) é a outra rota. O teacher responde a um conjunto curado de prompts, as saídas são filtradas, verificadas ou ordenadas, e o student roda supervised fine-tuning (SFT, [aula 6.2](/pt-br/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/)) sobre as sobreviventes. Percorra uma montagem passo a passo, porque as decisões interessantes estão todas na geração de dados.
+A **sequence distillation** (destilação de sequência, etapa 2 acima) roda supervised fine-tuning (SFT, [aula 6.2](/pt-br/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/)) sobre saídas verificadas do teacher. Percorra uma montagem passo a passo, porque as decisões interessantes estão todas na geração de dados:
 
 1. **Escolha o modo e seu preset.** Se você quer que o student produza respostas diretas, gere com instruct mode: enable_thinking em False, temperature 0,7, top_p 0,80, top_k 20, min_p 0,0, presence_penalty 1,5, repetition_penalty 1,0. Se você quer traços de raciocínio no currículo, gere sob o preset de thinking de temperature 1,0, top_p 0,95, top_k 20, min_p 0,0, presence_penalty 0,0, repetition_penalty 1,0. Os presets são a linha de base reproduzível, a configuração que o model card documenta e que qualquer um pode repetir. Outra configuração é uma escolha legítima, mas produz outra distribuição de teacher, então registre a configuração completa e avalie você mesmo o currículo resultante em vez de emprestar para ele os resultados do card.
-2. **Verifique antes de aceitar.** Onde quer que exista um verificador (testes, uma comparação de resposta exata, um validador de schema), rode-o e descarte as falhas, exatamente como a [aula 6.8](/pt-br/lessons/6-post-training-and-alignment/6.8-grpo-and-rl-on-verifiable-rewards/) defendeu para sinais de treino. Filtrar a saída do teacher com o próprio teacher é aprovação circular, e ensina os erros dele com confiança extra.
+2. **Verifique antes de aceitar.** Onde quer que exista um verificador (testes, uma comparação de resposta exata, um **validador de schema** que confere se a saída segue os campos obrigatórios), rode-o e descarte as falhas, exatamente como a [aula 6.8](/pt-br/lessons/6-post-training-and-alignment/6.8-grpo-and-rl-on-verifiable-rewards/) defendeu para sinais de treino. Filtrar a saída do teacher com o próprio teacher é aprovação circular, e ensina os erros dele com confiança extra.
 3. **Precifique.** Suponha 200.000 prompts com média de 800 tokens de saída: isso dá 160 milhões de tokens de saída. Servido pelo Cloudflare Workers AI a USD 3,20 por milhão de tokens de saída, a geração custa cerca de USD 512, mais os tokens de entrada a USD 0,45 por milhão. Os números são ilustrativos e específicos dos preços de agosto de 2026, mas o formato é o ponto. Currículos sintéticos são baratos o bastante para iterar, e caros o bastante para que gerar dez vezes mais dados do que você filtrou seja desperdício real.
 
 Agora o desvio clássico, e ele é tentador precisamente porque thinking mode o torna fácil. O teacher produz traços de raciocínio longos e articulados, então um time destila os traços num student pequeno, esperando que o student também raciocine. O que chega é um student que aprendeu a *forma* de um traço longo sem a capacidade de rodar a busca por baixo dele. Ele produz deliberação fluente em vários passos, conclusões confiantemente erradas e uma conta de tokens várias vezes maior que a do student de resposta direta que ele substituiu. Você pagou por raciocínio duas vezes, uma para gerar os traços e outra em toda inferência, e comprou um modelo pior.
@@ -81,7 +83,7 @@ A correção tem duas partes. Filtre traços por desfecho em vez de por aparênc
 A cobertura de prompts define o que se transfere. Um currículo cheio de aritmética melhora aritmética e deixa seguimento de instruções multilíngue exatamente onde estava. Prompts fáceis saturam sem tocar a fronteira de decisão do student, e prompts muito além da capacidade do student viram ruído. Geração adaptativa mira os casos em que student e teacher discordam, ou em que verificação externa consegue separar as estratégias que funcionaram.
 
 :::warning
-Saídas de teacher não são verdade de referência, e um student destilado herda os erros do teacher sem nenhuma da capacidade do teacher de percebê-los. Alucinações, completions inseguras, viés cultural, verbosidade e tiques de formatação copiam limpo. Pior, chegam *sem* as ressalvas: a resposta atenuada e incerta do teacher vira a afirmação categórica do student, porque o student aprendeu as palavras e não a incerteza por trás delas. Use ferramentas externas, datasets confiáveis, jurados independentes e auditorias humanas. Registre versão do teacher, configurações de decoding, fonte dos prompts, decisões de filtragem e data com todo dataset sintético.
+Saídas de teacher não são verdade de referência, e um student destilado herda os erros do teacher sem nenhuma da capacidade do teacher de percebê-los. **Alucinações** (afirmações confiantes inventadas pelo modelo que são factualmente falsas), completions inseguras, viés cultural, verbosidade e tiques de formatação copiam limpo. Pior, chegam *sem* as ressalvas: a resposta atenuada e incerta do teacher vira a afirmação categórica do student, porque o student aprendeu as palavras e não a incerteza por trás delas. Use ferramentas externas, datasets confiáveis, jurados independentes e auditorias humanas. Registre versão do teacher, configurações de decoding, fonte dos prompts, decisões de filtragem e data com todo dataset sintético.
 :::
 
 A capacidade impõe um teto real, e ele não aparece num escore médio de benchmark. Um student menor tipicamente retém comportamento frequente de superfície enquanto perde conhecimento raro, competência em contexto longo, nuance multilíngue e composição robusta de várias instruções. Avalie por fatia (capacidade, dificuldade, idioma, fronteira de segurança, distribuição de prompts). Compare contra um student treinado em dados originais, para que as melhorias possam ser atribuídas ao sinal do teacher e não a tokens extras.
@@ -96,6 +98,6 @@ Termos de serviço, licenças de modelo, promessas de privacidade e direitos sob
 
 ## Como distillation e quantization se encaixam
 
-As técnicas se compõem. Destile primeiro, depois quantize o student ([aulas 7.9](/pt-br/lessons/7-inference-and-efficiency/7.9-quantization-i-int8-int4-the-basics/) e 7.10). Ou use sinais do teacher durante o treino consciente de quantização para recuperar o que a quantização custou. Elas resolvem problemas diferentes: distillation muda o que um modelo menor aprende, quantização muda como seus pesos são representados, e os deploys de borda da aula 9.7 normalmente precisam das duas.
+As técnicas se compõem. Destile primeiro, depois quantize o student ([aulas 7.9](/pt-br/lessons/7-inference-and-efficiency/7.9-quantization-i-int8-int4-the-basics/) e 7.10). Ou use sinais do teacher durante o **treino consciente de quantização** (treinar simulando pesos de poucos bits para que o modelo se adapte ao erro de arredondamento) para recuperar o que a quantização custou. Elas resolvem problemas diferentes: distillation muda o que um modelo menor aprende, quantização muda como seus pesos são representados, e os deploys de borda da aula 9.7 normalmente precisam das duas.
 
 O modelo durável é transferência comportamental guiada por currículo. O teacher fornece alvos mais ricos, o student comprime o que cabe dentro da sua capacidade, e a avaliação revela o que sobreviveu. Um modelo pequeno briga acima do peso não porque contenha secretamente o teacher, mas porque supervisão cuidadosamente escolhida gastou sua capacidade limitada nos comportamentos que importavam.

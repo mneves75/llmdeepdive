@@ -30,26 +30,28 @@ citations:
     authors: "Modular"
     year: 2026
     url: "https://docs.modular.com/mojo/"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-You have Qwen3.8-27B running under vLLM on NVIDIA hardware, and your infrastructure team announces that half the next cluster will be AMD. Nothing about the model changes. What changes is that every hand-written CUDA kernel in your serving path now has a counterpart that someone else maintains at a different pace, and your performance profile becomes two profiles. This is the problem Modular's stack is aimed at, and it is worth understanding on its merits before deciding whether the trade is one you want.
+You have Qwen3.8-27B running under vLLM on NVIDIA hardware, and your infrastructure team announces that half the next **cluster** (a group of networked servers working together) will use **AMD** (a rival GPU manufacturer) accelerators. Nothing about the model changes. What changes is that every hand-written CUDA kernel in your serving path now has a counterpart that someone else maintains at a different pace, and your performance profile becomes two profiles. This is the problem Modular's stack is aimed at, and it is worth understanding on its merits before deciding whether the trade is one you want.
 
 ## What hand-written kernels buy, and what they cost
 
-Recall the shape of what you already know from [lesson 8.4](/lessons/8-building-and-serving-stacks/8.4-vllm/). vLLM is a Python engine: a scheduler, a paged KV allocator, and a continuous-batching loop. That engine orchestrates PyTorch operations plus a set of hand-written CUDA and Triton kernels (Triton is a Python-like language for writing GPU kernels) for the parts that matter.
+Recall the shape of what you already know from [lesson 8.4](/lessons/8-building-and-serving-stacks/8.4-vllm/). vLLM is a Python engine — a scheduler, a paged KV allocator, and a continuous-batching loop — orchestrating PyTorch operations plus hand-written CUDA and Triton kernels (Triton is a Python-like language for writing GPU kernels).
 
 That design has a specific strength and a specific weakness. The strength is that a specialist can write an attention kernel that extracts nearly everything a particular GPU generation offers. The weakness is that the strength does not travel. A new vendor, a new architecture, or a new layer type means new kernels, written again, by someone who knows that target.
 
 ## What MAX and Mojo propose instead
 
-MAX proposes the opposite arrangement. A model is expressed as a **computation graph**. An ahead-of-time compiler (one that compiles before the server starts taking traffic) takes ownership of what was previously kernel-author territory: operator fusion, memory layout, and scheduling of the graph onto the device. It then emits code for whichever supported accelerator you point it at. On top sits a serving layer that speaks an OpenAI-compatible API, so from a client's perspective it slots into the same hole vLLM occupies.
+MAX inverts that arrangement by expressing the model as a **computation graph** compiled ahead of time (before the server starts taking traffic). Compare the two stacks across the frames below.
 
-The pitch has two parts. The same graph runs on NVIDIA and AMD without a vendor-specific rewrite. And the compiler's fusion decisions are systematic, rather than dependent on which kernels a human found time to hand-tune.
+<Figure id="t8-vllm-vs-max-stack" />
 
-**Mojo** is the layer beneath that, and it exists because a compiler needs structure to reason about inside the innermost loop. Mojo is a systems language in the Python family. The syntax is familiar, but it adds static types, ownership semantics (rules about which part of the code owns a value and may free it), and explicit access to SIMD widths (how many numbers one instruction processes at once), tiling, and the memory hierarchy. It is compiled through MLIR, a framework for building compilers.
+The pitch has two parts (frame 2). An ahead-of-time compiler owns operator fusion, memory layout, and device scheduling, so the same graph targets NVIDIA and AMD without a vendor-specific rewrite, while an OpenAI-compatible serving layer on top still manages batching and KV blocks. And the compiler's fusion decisions are systematic, rather than dependent on which kernels a human found time to hand-tune.
 
-The intent is that a kernel author writes a fused attention or a quantized matmul once, in a language a compiler can specialise and retarget, instead of writing it three times in three vendor dialects. Whether that intent is realised for any given operator is an empirical question, not a design guarantee. But the design is coherent. It puts kernel authoring and graph compilation in one toolchain, a lineage that runs back through Halide, TVM, XLA and Triton.
+**Mojo** sits beneath MAX so the compiler has structure to reason about inside the innermost loop. Mojo is a systems language in the Python family that adds **static types** (declaring each value's data type ahead of time so the compiler can optimize it), ownership semantics (rules about which part of the code owns a value and may free it), and explicit control over SIMD widths (how many numbers one instruction processes at once), **tiling** (breaking matrices into small blocks that fit in fast chip memory), and the **memory hierarchy** (the layers from tiny on-chip registers down to slower main GPU memory). It compiles through **MLIR** (Multi-Level Intermediate Representation, a framework for building compilers).
+
+The intent is that a kernel author writes a fused attention or a quantized **matmul** (matrix multiplication) once, in a language a compiler can specialise and retarget, instead of writing it three times in three vendor dialects. Whether that intent is realised for any given operator is an empirical question, not a design guarantee. Still, the design puts kernel authoring and graph compilation in one **toolchain** (combined set of compiler and developer tools), a lineage running back through Halide, TVM, XLA and Triton.
 
 ## Three gaps a younger stack must close
 
@@ -59,12 +61,12 @@ The first is **model coverage**, and it decides whether the rest of the conversa
 
 The second is **quantization coverage**. The formats you have on disk, such as the GGUF from [lesson 8.7](/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/) or an AWQ or GPTQ checkpoint from [lesson 7.10](/lessons/7-inference-and-efficiency/7.10-quantization-ii-gptq-awq-gguf-qat/), are not universally consumable. A stack that supports a model in bf16 may not support it in the precision you can actually afford, and bf16 for this model means 54 GB of weights before any cache.
 
-The third is **maturity of the surface**. APIs, CLI flags, and configuration formats in a fast-moving stack move. That is a real operational cost, and the correct response is to price it rather than to pretend it away.
+The third is **maturity of the surface**. APIs, **CLI flags** (command-line options), and configuration formats in a fast-moving stack move. That is a real operational cost, and the correct response is to price it rather than to pretend it away.
 
 ## Where a compiler can win, and where it cannot
 
 :::warning
-"Compiler-based" does not mean "faster". A compiler wins where per-operation overhead and unfused work dominate: many small kernels, low batch sizes, launch-bound decode. That is exactly the situation [lesson 8.3](/lessons/8-building-and-serving-stacks/8.3-torch-compile-and-cuda-graphs/) attacked with graph capture. It has much less to reclaim where a hand-tuned vendor kernel already runs near the hardware's limit for that work. Which limit applies depends on the workload's measured arithmetic intensity: memory bandwidth for low-intensity steps such as small-batch decode, tensor-core compute for large-batch prefill, which [lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) shows is usually compute-bound, and either for well-optimised attention depending on its shape. Any claim of a uniform speedup across both situations deserves suspicion, whichever direction it points.
+"Compiler-based" does not mean "faster". A compiler wins where per-operation overhead and unfused work dominate: many small kernels, low batch sizes, launch-bound decode. That is exactly the situation [lesson 8.3](/lessons/8-building-and-serving-stacks/8.3-torch-compile-and-cuda-graphs/) attacked with graph capture. It has much less to reclaim where a hand-tuned vendor kernel already runs near the hardware's limit for that work. Which limit applies depends on the workload's measured **arithmetic intensity** (math operations performed per byte moved): memory bandwidth for low-intensity steps such as small-batch decode, **tensor-core compute** (the GPU's specialized matrix-math units) for large-batch prefill, which [lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) shows is usually compute-bound, and either for well-optimised attention depending on its shape. Any claim of a uniform speedup across both situations deserves suspicion, whichever direction it points.
 :::
 
 ## How to evaluate MAX for this model
@@ -76,7 +78,7 @@ So evaluate it the way you would evaluate any candidate, with the reasoning visi
 3. Build a like-for-like benchmark (same model revision, same precision, same decoding preset from the model card, same input and output lengths, same concurrency, same measurement window) and run it against your vLLM baseline.
 4. Weigh the result against the portability you are actually buying.
 
-The last step depends on your fleet. If your fleet is, and will remain, a single NVIDIA generation, vendor portability is worth close to nothing to you, and the mature stack wins on operations cost alone. If you are genuinely heterogeneous, or expect to be, a single graph and a single toolchain across vendors is a structural advantage that a per-kernel speed comparison does not capture.
+The last step depends on your fleet. If your fleet is, and will remain, a single NVIDIA generation, vendor portability is worth close to nothing to you, and the mature stack wins on operations cost alone. If your fleet is **heterogeneous** (mixing GPUs from different vendors or generations), or expects to be, a single graph and a single toolchain across vendors is a structural advantage that a per-kernel speed comparison does not capture.
 
 :::caveat
 No independent third-party benchmark of Qwen3.8-27B on this stack is cited here, because none is established in the sources this course relies on. Vendor-published throughput figures are marketing artifacts until someone reproduces them on your workload. Treat them as a hypothesis worth testing, never as a number to plan capacity from.

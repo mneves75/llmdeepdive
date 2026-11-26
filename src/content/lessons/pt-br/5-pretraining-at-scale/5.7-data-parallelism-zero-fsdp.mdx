@@ -38,14 +38,14 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Treinar um modelo de 27 bilhões de parâmetros precisa de muito mais memória do que rodá-lo. Na receita ilustrativa que esta aula usa, só o estado persistente de treino já é várias vezes o que uma GPU de 80 GB comporta. Esta aula mostra como um job de treino espalha essa memória entre muitas GPUs, e quanto esse espalhamento custa.
+Treinar um modelo de 27 bilhões de parâmetros precisa de muito mais memória do que rodá-lo. Na receita ilustrativa que esta aula usa, só o estado persistente de treino já é várias vezes o que uma GPU (processador gráfico) de 80 GB comporta. Esta aula mostra como um job de treino espalha essa memória entre muitas GPUs, e quanto esse espalhamento custa.
 
 ## Quanta memória o treino precisa?
 
-O Qwen3.8-27B é distribuído como arquivos safetensors (o formato de arquivo de pesos na página do modelo) armazenados em bf16, que totalizam cerca de 54 GB. Isso é um fato de armazenamento do checkpoint. Não é uma receita de memória de treino, nem prova de que o stack completo de serving cabe num dispositivo nominal de 80 GB: o KV cache, as ativações (os valores intermediários que cada camada produz), os workspaces do runtime e a fragmentação também consomem memória. O treino acrescenta outras categorias persistentes e temporárias, e seus dtypes (formatos numéricos) precisam ser declarados, não inferidos do checkpoint lançado.
+O Qwen3.8-27B é distribuído como arquivos safetensors (o formato de arquivo de pesos na página do modelo) armazenados em bf16, que totalizam cerca de 54 GB. Isso é um fato de armazenamento do checkpoint. Não é uma receita de memória de treino, nem prova de que o stack completo de serving cabe num dispositivo nominal de 80 GB: o KV cache, as ativações (os valores intermediários que cada camada produz), os workspaces do runtime (memória temporária reservada pelo software) e a fragmentação (lacunas inutilizáveis entre alocações de memória) também consomem memória. O treino acrescenta outras categorias persistentes e temporárias, e seus dtypes (formatos numéricos) precisam ser declarados, não inferidos do checkpoint lançado.
 
 A [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) é dona do orçamento de serving deste modelo num acelerador: pesos, KV cache, estado recorrente e reserva do runtime. O estado de treino é outro orçamento, e esta aula é dona da decomposição ilustrativa dele no curso. Ela usa um cenário explícito:
 
@@ -63,13 +63,11 @@ O batch que o optimizer vê cresce com o número de ranks. Pegue uma configuraç
 
 ## Como os três estágios do ZeRO cortam a memória?
 
-O **ZeRO** remove essa redundância em três estágios. Cada estágio faz sharding (divide em fatias iguais, uma por rank) de mais uma categoria de estado. Calcule o efeito num cluster concreto: 64 ranks e o orçamento ilustrativo de 432 GB acima.
+O **ZeRO** remove essa redundância em três estágios. Cada estágio faz sharding (divide em fatias iguais, uma por rank) de mais uma categoria de estado. Avance por um cluster concreto de 64 ranks sobre o orçamento ilustrativo de 432 GB abaixo:
 
-O estágio 1 faz sharding só do estado do optimizer. Cada rank mantém parâmetros e gradientes bf16 completos, mas $1/64$ do optimizer: $324/64 = 5.06$ GB. O estado persistente por rank vira $54+54+5.06 \approx 113$ GB. Isso ainda não cabe em placas de 80 GB.
+<Figure id="t5-zero-sharding-stages" />
 
-O estágio 2 também faz sharding dos gradientes: $54/64 = 0.84$ GB. Agora $54+0.84+5.06 \approx 59.9$ GB. Isso cabe, por pouco. Restam cerca de 20 GB para ativações, temporários, fragmentação e buffers de comunicação, num modelo com hidden size 5120 e sequências longas. A [aula 5.10](/pt-br/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/) vai mostrar que isso não é muito.
-
-O estágio 3 faz sharding dos parâmetros também, então o estado persistente é o orçamento inteiro dividido pelo tamanho do mundo (o número total de ranks): $432/64 = 6.75$ GB por rank. Os parâmetros completos de um módulo só existem temporariamente, materializados pouco antes de serem necessários.
+A aritmética em cada passo para 64 ranks (o tamanho do mundo, ou número total de ranks) é direta: o estágio 1 divide os 324 GB do optimizer ($324/64 = 5.06$ GB), deixando $54+54+5.06 \approx 113$ GB por rank — ainda grande demais para placas de 80 GB. O estágio 2 divide também os gradientes ($54/64 = 0.84$ GB), deixando $54+0.84+5.06 \approx 59.9$ GB e só cerca de 20 GB para ativações e buffers (a [aula 5.10](/pt-br/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/) mostra quão rápido as ativações estouram isso). O estágio 3 divide os parâmetros também, cortando o estado persistente para $432/64 = 6.75$ GB por rank, com os parâmetros completos de cada módulo existindo apenas temporariamente quando necessários.
 
 :::warning
 A concepção equivocada que esta aula existe para matar é que a memória de serving prevê a memória de treino. Ela não prevê: sob a receita ilustrativa declarada, a razão de estado persistente é de cerca de oito para um. Pior, a intuição falha na direção tranquilizadora. O modelo carrega bem, um forward pass curto roda bem, e a falha de falta de memória chega no primeiro passo do optimizer, depois que o job já consumiu tempo de cluster. Calcule o orçamento completo (parâmetros, gradientes, master weights, os dois momentos, ativações, temporários) antes de pedir nós.
@@ -89,10 +87,10 @@ O sharding reduz a memória persistente, mas não faz nada pelas ativações. Se
 
 ## O que muda nos checkpoints e nas falhas?
 
-O checkpointing vira distribuído. Reunir o state dict completo (todo tensor nomeado do modelo e do optimizer) numa única máquina pode exceder a memória do host, então cada rank escreve os tensores que possui, junto com metadados que reconstroem nomes e formatos globais. Retomar com um tamanho de mundo diferente exige um formato e um loader que suportem resharding. Salvar só os pesos não basta para uma continuação exata: momentos do optimizer, posição do scheduler, loss scaler, estado do gerador de números aleatórios e cursor do data loader importam todos. Sob a receita ilustrativa, o estado do optimizer é a maior categoria do checkpoint.
+O checkpointing vira distribuído. Reunir o state dict completo (todo tensor nomeado do modelo e do optimizer) numa única máquina pode exceder a memória do host (a memória RAM principal da CPU de um servidor), então cada rank escreve os tensores que possui, junto com metadados que reconstroem nomes e formatos globais. Retomar com um tamanho de mundo diferente exige um formato e um loader que suportem resharding (refatiar shards salvos para outra quantidade de GPUs). Salvar só os pesos não basta para uma continuação exata: momentos do optimizer, posição do scheduler (em que ponto está o learning rate, [aula 5.11](/pt-br/lessons/5-pretraining-at-scale/5.11-learning-rate-schedules/)), loss scaler (o fator de escala numérico da [aula 5.9](/pt-br/lessons/5-pretraining-at-scale/5.9-mixed-precision/)), estado do gerador de números aleatórios e cursor do data loader (qual batch de treino vem a seguir) importam todos. Sob a receita ilustrativa, o estado do optimizer é a maior categoria do checkpoint.
 
-As falhas também precisam ser tratadas coletivamente. Se um rank tromba com dados ruins enquanto os outros entram num all-reduce, o job trava em vez de levantar uma exceção limpa. Timeouts, propagação coordenada de erro, logs cientes de rank e identificadores reprodutíveis de batch são necessidades, não luxos.
+As falhas também precisam ser tratadas coletivamente. Se um rank tromba com dados ruins enquanto os outros entram num all-reduce, o job trava em vez de levantar uma exceção limpa. Timeouts (limites de quanto tempo um rank espera antes de falhar), propagação coordenada de erro, logs cientes de rank e identificadores reprodutíveis de batch são necessidades, não luxos.
 
-A topologia de rede também molda o projeto. Links rápidos dentro de um nó e links mais lentos entre nós favorecem coletivos hierárquicos, e um job de estágio 3 cujos all-gathers atravessam uma rede lenta pode gastar mais tempo movendo parâmetros do que usando-os.
+A topologia de rede (quão rápido as GPUs se conectam dentro de um servidor contra entre servidores) também molda o projeto. Links rápidos dentro de um nó e links mais lentos entre nós favorecem coletivos hierárquicos, e um job de estágio 3 cujos all-gathers atravessam uma rede lenta pode gastar mais tempo movendo parâmetros do que usando-os.
 
 O quadro estável é computação replicada sobre dados diferentes, com estado cada vez mais shardeado por trás. Data parallelism compra throughput. ZeRO e FSDP removem memória redundante. Nenhum dos dois cria capacidade sem custo: o preço é volume de comunicação, complexidade de escalonamento e um tratamento de checkpoint e de falha muito mais exigente.

@@ -38,10 +38,10 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Just before a long pretraining run starts, the cluster allocation grows. Twice as many nodes join, the global batch doubles from four million tokens per step to eight million, throughput improves beautifully, and everyone is pleased. The run finishes on schedule in token terms, and the loss curve looks reasonable. But the final checkpoint is worse than it should be: noticeably worse on downstream evaluation than a smaller pilot predicted. The cause is not the data, the architecture, or the extra nodes. It is that the learning-rate schedule was written in steps.
+Just before a long pretraining run starts, the cluster allocation grows. Twice as many nodes join, the global batch doubles from four million tokens per step to eight million, throughput (tokens processed per second) improves beautifully, and everyone is pleased. The run finishes on schedule in token terms, and the loss curve looks reasonable. But the final checkpoint is worse than it should be: noticeably worse on downstream evaluation (real task benchmarks like coding or QA) than a smaller pilot predicted. The cause is not the data, the architecture, or the extra nodes. It is that the learning-rate schedule was written in steps.
 
 ## What does a learning-rate schedule do?
 
@@ -87,10 +87,14 @@ The curve is gentle near both ends and steepest in the middle. That is why it sp
 
 ## Why must a schedule be measured in tokens?
 
-Now return to the opening scenario with those numbers in hand. Suppose the plan was a two-trillion-token budget at four million tokens per step, giving 500,000 steps, and the scheduler's horizon was configured as 500,000 steps. Doubling the global batch to eight million tokens means the same two trillion tokens are consumed in 250,000 steps. The run ends when the data ends, at $p=0.5$, with the learning rate still at 1.65e-4. It completed only the first half of the cosine decay and never reached the low final rates. Every refinement that the second half of a cosine provides did not happen, and nothing in the logs looked abnormal, because the rate followed its configured curve faithfully.
+Now return to the opening scenario with those numbers in hand. Suppose the plan was a two-trillion-token budget at four million tokens per step, giving 500,000 steps, and the scheduler's horizon was configured as 500,000 steps. Step between the two curves below to see what happens when doubling the global batch to eight million tokens consumes all two trillion tokens in 250,000 steps:
+
+<Figure id="t5-cosine-step-vs-token" />
+
+The run ends when the data ends, at $p=0.5$, with the learning rate still at 1.65e-4. Every refinement that the second half of a cosine provides never happened, and nothing in the logs looked abnormal because the rate followed its configured step curve faithfully.
 
 :::warning
-This is the most common misconception about schedules: that a step is a unit of training progress. It is not. A step is one *call of the optimizer*, and how many tokens it contains depends on world size, microbatch, gradient accumulation, and padding. Define warmup and horizon in tokens, ideally the effective tokens that carry loss, excluding padding. Then the schedule survives topology changes, restarts at a different scale, and the memory and throughput decisions of [lesson 5.10](/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/), which change step time without changing data exposure at all.
+This is the most common misconception about schedules: that a step is a unit of training progress. It is not. A step is one *call of the optimizer*, and how many tokens it contains depends on world size, microbatch, gradient accumulation, and padding (filler tokens added to equalize sequence lengths). Define warmup and horizon in tokens, ideally the effective tokens that carry loss, excluding padding. Then the schedule survives topology changes, restarts at a different scale, and the memory and throughput decisions of [lesson 5.10](/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/), which change step time without changing data exposure at all.
 :::
 
 ## What are the alternatives to cosine?
@@ -113,8 +117,8 @@ Three neighbours of the schedule deserve a sentence each:
 
 - **Weight decay.** AdamW separates gradient-based optimization from weight decay (a steady pull of weights toward zero), but the scheduler and the decay still interact. Parameters such as normalization scales and biases are usually excluded from decay entirely.
 - **Gradient clipping** caps the size of an update driven by an outsized gradient, before the optimizer step. It is a guardrail, not a substitute for a sane schedule.
-- **Batch size.** Scaling the global batch can justify adjusting the peak rate, but linear and square-root scaling rules are heuristics that hold only within limits. Larger batches reduce gradient noise and may want longer warmup or different optimizer tuning, so run pilot sweeps rather than extrapolating a rule across orders of magnitude.
+- **Batch size.** Scaling the global batch can justify adjusting the peak rate, but linear and square-root scaling rules are heuristics (rules of thumb) that hold only within limits. Larger batches reduce gradient noise and may want longer warmup or different optimizer tuning, so run pilot sweeps (small test runs across candidate values) rather than extrapolating a rule across orders of magnitude.
 
-Log the realized rate at every step alongside token count, loss, gradient norm, optimizer statistics, and skipped mixed-precision updates. On resume, restore the scheduler's position. Accidentally restarting warmup after a checkpoint changes the optimization path, and jumping to a wrong late-run rate manufactures exactly the kind of loss spike that lesson 5.12 has to diagnose. Overlaying the rate on the loss curve helps correlate instability with update scale, though correlation alone never proves the schedule caused a spike.
+Log the realized rate at every step alongside token count, loss, gradient norm (the overall magnitude of the gradient vector), optimizer statistics, and skipped mixed-precision updates. On resume, restore the scheduler's position. Accidentally restarting warmup after a checkpoint changes the optimization path, and jumping to a wrong late-run rate manufactures exactly the kind of loss spike that lesson 5.12 has to diagnose. Overlaying the rate on the loss curve helps correlate instability with update scale, though correlation alone never proves the schedule caused a spike.
 
 Think of the schedule as controlled momentum for learning. Warmup avoids wrenching an uncalibrated network, the central phase moves quickly through useful parameter space, and decay narrows the step as the run approaches its planned end. The schedule is part of the experiment specification and part of the checkpoint state. It is not cosmetic optimizer configuration, and it should never be expressed in a unit that changes when your cluster does.

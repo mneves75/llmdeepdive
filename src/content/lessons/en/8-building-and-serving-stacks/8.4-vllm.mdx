@@ -38,12 +38,12 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-You have one 80 GB GPU, a copy of Qwen3.8-27B, and a request to stand up an internal chat API for perhaps forty engineers. Two numbers decide whether that works: how much of the card the engine is allowed to claim, and how long a single conversation may become. Get them wrong in one direction and the server refuses to start. Get them wrong in the other and it dies under the first real burst of traffic.
+You have one 80 GB GPU, a copy of Qwen3.8-27B, and a request to stand up an internal chat application programming interface (API — the web interface other apps call) for perhaps forty engineers. Two numbers decide whether that works: how much of the card the engine is allowed to claim, and how long a single conversation may become. Get them wrong in one direction and the server refuses to start. Get them wrong in the other and it dies under the first real burst of traffic.
 
-This lesson shows the operational sizing loop. Everything else about vLLM (the OpenAI-shaped API, the scheduler, the metrics) is documentation you can read. The part people get wrong is mistaking a configured ceiling for realized capacity, meaning the memory the engine actually managed to set aside.
+This lesson shows the operational sizing loop. Everything else about vLLM — the OpenAI-shaped API, the **scheduler** (the component deciding which requests run in each step), and the **metrics** (live measurements such as latency and memory use) — is documentation you can read. The part people get wrong is mistaking a configured ceiling for realized capacity, meaning the memory the engine actually managed to set aside.
 
 ## What vLLM does with the memory you give it
 
@@ -56,23 +56,21 @@ At startup, the engine has to decide how large that block pool should be. It doe
 
 ## The utilization flag is a ceiling, not the KV pool
 
-Treat `--gpu-memory-utilization` as a ceiling on everything the engine allocates. Before any cache capacity appears, the engine pays for:
+Treat `--gpu-memory-utilization` as a ceiling on everything the engine allocates on the GPU. Frame 1 below shows what comes out of that ceiling before any cache capacity appears: resident weights, **activation peaks** (the largest temporary tensors a forward pass needs), CUDA graph pools (memory reserved for the captured graphs of [lesson 8.3](/lessons/8-building-and-serving-stacks/8.3-torch-compile-and-cuda-graphs/)), **allocator fragmentation** (free memory split into pieces too small to use), and architecture-specific state.
 
-- resident weights,
-- activation peaks (the largest temporary tensors a forward pass needs),
-- CUDA graph pools (memory reserved for the captured graphs of [lesson 8.3](/lessons/8-building-and-serving-stacks/8.3-torch-compile-and-cuda-graphs/)),
-- allocator fragmentation (free memory split into pieces too small to use),
-- and architecture-specific state.
+<Figure id="t8-vllm-memory-sizing" />
 
-[Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns that full accelerator budget, while [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) owns this model's cache and recurrent-state derivation. In the reference implementation, the 48 Gated DeltaNet layers keep about 144 MiB of recurrent state per sequence when that state is fp32 (32-bit floats). Another runtime can choose a different dtype or layout. So copying that byte count into a vLLM capacity claim without checking the implementation would be just as wrong as ignoring the state.
+[Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns that full accelerator budget, while [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) owns this model's cache and recurrent-state derivation. In the reference implementation, the 48 Gated DeltaNet layers keep about 144 MiB of recurrent state per sequence when that state is fp32 (32-bit floating-point numbers). Another runtime can choose a different dtype or layout. So copying that byte count into a vLLM capacity claim without checking the implementation would be just as wrong as ignoring the state.
 
 ## Reading the pool the engine actually allocated
 
-The source of truth is therefore the launch you will serve. Pin the checkpoint and the vLLM release, and leave deliberate headroom. Then read the startup lines that report two things: the KV pool actually allocated, and the maximum concurrency that pool implies at your chosen context length.
+The source of truth is therefore the launch you will serve (frame 2). Pin the checkpoint and the vLLM release, and leave deliberate headroom. Then read the startup lines that report two things: the KV pool actually allocated, and the maximum **concurrency** (how many requests can run at the same time) that pool implies at your chosen context length.
 
 `--max-model-len` must fit at least one request inside that realized pool. If it does not, the engine should reject the configuration at startup. Your choices are to lower the limit, change to a validated memory format, or add capacity, and then measure again.
 
 Once that safety condition is met, paging changes how many requests you can admit. Blocks are allocated for tokens actually present, not for every token a request is allowed to reach. So ordinary shorter conversations can coexist at much higher concurrency than dividing the pool by the worst-case maximum length suggests. Size the hard limit from realized allocation; then size traffic from the measured distribution of prompt and completion lengths.
+
+The command below launches vLLM for Qwen3.8-27B, capping any single conversation at 32,768 tokens and bounding all vLLM GPU allocations at 90 percent of card memory so 10 percent remains as headroom.
 
 ```
 vllm serve Qwen/Qwen3.8-27B \
@@ -80,7 +78,7 @@ vllm serve Qwen/Qwen3.8-27B \
   --gpu-memory-utilization 0.90
 ```
 
-Do not trust any paper estimate over the engine. vLLM prints the size of the KV pool it actually allocated and the maximum concurrency that implies at your chosen context length. Read that line, compare it with your arithmetic, and reconcile any large gap before you benchmark anything. A mismatch usually means the workspace reserve or the recurrent-state accounting differs from what you assumed.
+Do not trust any paper estimate over the engine. Compare the startup log's realized KV pool and implied concurrency with your arithmetic, and reconcile any large gap before you benchmark anything. A mismatch usually means the **workspace** (temporary scratch memory) reserve or the recurrent-state accounting differs from what you assumed.
 
 ## Why not raise the fraction to 0.98?
 
@@ -93,13 +91,13 @@ When the pool looks small, it is tempting to raise `--gpu-memory-utilization` to
 If the realized pool cannot admit the full native context, no flag can turn that failed allocation into usable capacity. The honest options are:
 
 - more memory;
-- sharding across GPUs with tensor parallelism, which splits each weight matrix across cards ([lesson 5.8](/lessons/5-pretraining-at-scale/5.8-model-parallelism/) for the mechanics, [lesson 9.9](/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) for the interconnect cost);
+- **sharding** (splitting data across multiple devices) across GPUs with tensor parallelism, which splits each weight matrix across cards ([lesson 5.8](/lessons/5-pretraining-at-scale/5.8-model-parallelism/) for the mechanics, [lesson 9.9](/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) for the **interconnect** — the high-speed link between GPUs — cost);
 - a runtime-supported lower-precision memory format that has passed the correctness canary from [lesson 8.1](/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) (the token-by-token comparison against eager PyTorch).
 
 Measure the new realized pool rather than projecting a multiplier from bit width.
 
 :::caveat
-Everything here assumes your vLLM release actually supports this architecture, and support is version-specific in a way it is not for ordinary models. A hybrid model needs a block manager that handles two kinds of memory at once: paged per-token blocks for 16 layers and fixed per-sequence recurrent state for 48. Engines gained that capability at different times for different layer types. Verify on your exact version before reading any benchmark: confirm the model loads, then run the differential test from lesson 8.1 against eager PyTorch on a short deterministic prompt. An engine that mishandles the recurrent state without raising an error produces fluent, wrong text at excellent throughput.
+Everything here assumes your vLLM release actually supports this architecture, and support is version-specific in a way it is not for ordinary models. A hybrid model needs a **block manager** (the component tracking which memory blocks belong to which request) that handles two kinds of memory at once: paged per-token blocks for 16 layers and fixed per-sequence recurrent state for 48. Engines gained that capability at different times for different layer types. Verify on your exact version before reading any benchmark: confirm the model loads, then run the differential test from lesson 8.1 against eager PyTorch on a short deterministic prompt. An engine that mishandles the recurrent state without raising an error produces fluent, wrong text at excellent **throughput** (tokens finished per second).
 :::
 
-Carry the measurement chain, not a memorized set of flags. The utilization fraction bounds the engine. The startup log reports the pool it actually realized. And `--max-model-len` bounds the largest single claim against that pool. Lessons 7.2 and 9.3 own the arithmetic behind those quantities; this lesson owns how vLLM exposes and enforces them.
+Carry the measurement chain, not a memorized set of flags. The utilization fraction bounds the engine, the startup log reports the pool it actually realized, and `--max-model-len` bounds the largest single claim against that pool. Lessons 7.2 and 9.3 own the arithmetic behind those quantities; this lesson owns how vLLM exposes and enforces them.
