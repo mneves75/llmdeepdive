@@ -38,19 +38,19 @@ citations:
     authors: "OWASP Foundation"
     year: 2025
     url: "https://genai.owasp.org/llm-top-10/"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Um engenheiro de suporte do Cliente B pergunta ao assistente de *Retrieval-Augmented Generation* (RAG, geração aumentada por recuperação) pela "política de desconto corporativo do terceiro trimestre". Cinco segundos depois, o assistente cita literalmente a tabela confidencial de preços do Cliente A. Ninguém invadiu o banco vetorial nem roubou uma senha de administrador. O pipeline indexou os PDFs de todos os clientes na mesma coleção, buscou os 8 trechos mais próximos por similaridade de cosseno e confiou em uma frase no prompt de sistema pedindo ao modelo para não revelar arquivos de outros clientes. Evitar esse vazamento exige tratar a recuperação como uma fronteira rígida de segurança, nunca como uma sugestão de estilo para o modelo.
+Um engenheiro de suporte do Cliente B pergunta ao assistente de *Retrieval-Augmented Generation* (RAG, geração aumentada por recuperação, um padrão que busca passagens em uma base e as cola no prompt) pela "política de desconto corporativo do terceiro trimestre". Cinco segundos depois, o assistente cita literalmente a tabela confidencial de preços do Cliente A. Ninguém invadiu o **banco vetorial** (um banco feito para guardar e buscar listas de números que representam o significado de textos) nem roubou uma senha de administrador. O pipeline indexou os PDFs de todos os **tenants** (organizações clientes separadas que compartilham a mesma plataforma) na mesma **coleção** (tabela única de armazenamento), buscou os 8 **trechos** (passagens curtas de documento) mais próximos por similaridade de cosseno (uma nota que mede quão próximos dois vetores de significado apontam) e confiou em uma frase no prompt de sistema pedindo ao modelo para não revelar arquivos de outros clientes. Evitar esse vazamento exige tratar a recuperação como uma fronteira rígida de segurança, nunca como uma sugestão de estilo para o modelo.
 
 ## Por que regras no prompt e pós-filtragem falham
 
-Na [aula 16.4](/pt-br/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/), aplicamos o princípio de mediação completa de Saltzer e Schroeder: todo acesso a todo objeto precisa ter sua autoridade verificada antes de o chamador ver os dados. Em um pipeline de RAG, os objetos são os trechos indexados e o chamador é um **principal** autenticado (o `tenant_id`, o `user_id` e os grupos verificados a partir do token de sessão da aplicação, nunca vindos do texto do prompt).
+Na [aula 16.4](/pt-br/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/), aplicamos o princípio de mediação completa de Saltzer e Schroeder: todo acesso a todo objeto precisa ter sua autoridade verificada antes de o chamador ver os dados. Em um pipeline de RAG, os objetos são os trechos indexados e o chamador é um **principal** autenticado — o `tenant_id` (identificador do cliente), o `user_id` (identificador da conta) e os grupos verificados a partir do **token de sessão** da aplicação (uma credencial de login assinada digitalmente pelo servidor), nunca vindos do texto do prompt.
 
 Equipes costumam testar dois atalhos antes de implementar controle de acesso real na busca, e ambos quebram em produção:
 
-- **Filtragem no prompt** recupera trechos sem restrição e instrui o *Large Language Model* (LLM) a ignorar qualquer documento fora do tenant do usuário. Como o texto sigiloso já está dentro do contexto, o modelo pode parafraseá-lo, vazá-lo diante de perguntas criativas ou reproduzi-lo sob injeção indireta.
-- **Pós-filtragem** executa uma busca *Approximate Nearest Neighbor* (ANN, vizinhos mais próximos aproximados) irrestrita por $k$ trechos e depois descarta linhas cuja *Access Control List* (ACL, lista de usuários ou grupos com permissão de leitura) não inclui o chamador.
+- **Filtragem no prompt** recupera trechos sem restrição e instrui o *Large Language Model* (LLM) a ignorar qualquer documento fora do tenant do usuário. Como o texto sigiloso já está dentro do contexto, o modelo pode parafraseá-lo, vazá-lo diante de perguntas criativas ou reproduzi-lo sob injeção indireta de prompt (ordens maliciosas escondidas dentro do texto recuperado, vista na [aula 16.2](/pt-br/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/)).
+- **Pós-filtragem** executa uma busca *Approximate Nearest Neighbor* (ANN, vizinhos mais próximos aproximados, uma busca rápida por vetores parecidos sem varrer todos os registros) irrestrita por $k$ trechos e depois descarta linhas cuja *Access Control List* (ACL, lista de usuários ou grupos com permissão de leitura) não inclui o chamador.
 
 Faça uma conta pequena para enxergar por que a pós-filtragem desmorona. Suponha um índice compartilhado com $N = 100{,}000$ trechos distribuídos entre 20 tenants, no qual um cliente pequeno possui $1{,}000$ trechos (uma seletividade de $s = 0.01$, ou seja, 1% do índice autorizado). Se a busca irrestrita retorna $k = 10$ vizinhos globais e o vocabulário do domínio se sobrepõe entre clientes, o número esperado de trechos autorizados que sobrevivem quando a relevância se espalha uniformemente é:
 
@@ -58,49 +58,49 @@ $$
 E[\text{mantidos}] = k \cdot s = 10 \times 0.01 = 0.1\ \text{trechos}.
 $$
 
-Mesmo que os trechos do cliente pequeno ranqueiem dez vezes melhor que o acaso, quase todas as 10 vagas ainda vão para tenants maiores. A pós-filtragem descarta as linhas não autorizadas, devolve zero ou um trecho e derruba o recall das respostas. Superbuscar $k = 500$ para compensar multiplica tráfego de rede e continua falhando quando uma ACL restrita cobre apenas $0.1\%$ do corpus.
+Mesmo que os trechos do cliente pequeno ranqueiem dez vezes melhor que o acaso, quase todas as 10 vagas ainda vão para tenants maiores. A pós-filtragem descarta as linhas não autorizadas, devolve zero ou um trecho e derruba o **recall** (a fração dos documentos relevantes que a busca realmente encontra). Superbuscar $k = 500$ para compensar multiplica tráfego de rede e continua falhando quando uma ACL restrita cobre apenas $0.1\%$ do **corpus** (o conjunto inteiro de documentos armazenados).
 
 ## Pré-filtragem, partições e seletividade em HNSW
 
-A **pré-filtragem** avalia o predicado de autorização do principal antes ou durante a pontuação vetorial, impedindo que trechos não autorizados concorram ao top-$k$. Cada trecho carrega metadados imutáveis como `tenant_id` e `allowed_principals` (IDs de grupo e usuário). O runtime monta o filtro a partir do token de sessão verificado — nunca a partir de argumentos gerados pelo LLM — e envia esse predicado ao motor de busca.
+A **pré-filtragem** avalia o **predicado** de autorização do principal (uma regra de sim ou não testada em cada registro) antes ou durante a pontuação vetorial, impedindo que trechos não autorizados concorram ao top-$k$. Cada trecho carrega **metadados** imutáveis (etiquetas ligadas ao registro, como dono ou grupo) incluindo `tenant_id` e `allowed_principals` (os IDs de grupo e usuário permitidos). O **runtime** (o código da aplicação que coordena a requisição fora do modelo de linguagem) monta o filtro a partir do token de sessão verificado — nunca a partir de argumentos gerados pelo LLM — e envia esse predicado ao motor de busca.
 
 <Figure id="30-1-acl-prefilter-flow" />
 
 A pré-filtragem garante exposição zero entre tenants, mas sua interação com grafos *Hierarchical Navigable Small World* (HNSW) da [aula 27.4](/pt-br/lessons/27-retrieval-and-hybrid-search/27.4-ann-vector-indexes-and-hnsw/) depende fortemente da **seletividade do filtro** $s$, a fração de vetores indexados que passam pela verificação da ACL.
 
-Seja $M$ o número médio de conexões de saída por nó em um grafo HNSW. Quando a busca percorre o grafo ignorando nós não autorizados, o número esperado de vizinhos válidos a cada salto cai proporcionalmente à seletividade:
+Seja $M$ o número médio de conexões de saída por nó em um grafo HNSW. Quando a busca percorre o grafo pulando nós não autorizados, o número esperado de vizinhos válidos a cada salto cai proporcionalmente à seletividade:
 
 $$
 E[\text{vizinhos válidos}] \approx M \cdot s.
 $$
 
-Coloque números reais. Com $M = 16$ conexões por nó e uma ACL departamental ampla cobrindo $s = 0.25$ do índice, cada nó ainda alcança cerca de $16 \times 0.25 = 4$ vizinhos autorizados, mantendo a travessia rápida e precisa. Reduza agora a seletividade para um único tenant ou pasta privada cobrindo $s = 0.01$ do corpus. Cada nó passa a ter em média $16 \times 0.01 = 0.16$ vizinho autorizado. Quase toda aresta bate em um nó proibido, prendendo a busca gulosa em becos sem saída até que o motor caia em uma varredura de força bruta sobre o bitset autorizado.
+Coloque números reais. Com $M = 16$ conexões por nó e uma ACL departamental ampla cobrindo $s = 0.25$ do índice, cada nó ainda alcança cerca de $16 \times 0.25 = 4$ vizinhos autorizados, mantendo a travessia rápida e precisa. Reduza agora a seletividade para um único tenant ou pasta privada cobrindo $s = 0.01$ do corpus. Cada nó passa a ter em média $16 \times 0.01 = 0.16$ vizinho autorizado. Quase toda aresta bate em um nó proibido, prendendo a **busca gulosa** (que sempre salta para o vizinho aparentemente mais próximo) em becos sem saída até que o motor caia em uma **varredura de força bruta** (checar cada registro permitido um a um) sobre o **bitset** autorizado (uma lista compacta de zeros e uns que marca quais registros são permitidos).
 
 Arquiteturas de produção resolvem essa tensão separando isolamento grosso de tenant de ACLs finas por documento:
 
-- **Particionamento físico ou lógico por tenant** coloca cada cliente em sua própria coleção, shard de índice ou subgrafo HNSW dedicado (por exemplo, um namespace por tenant em bancos vetoriais gerenciados ou tabelas particionadas no PostgreSQL com `pgvector`). Dentro da partição do cliente, a seletividade de tenant é $1.0$, eliminando ruído de outros clientes e preservando a conectividade do grafo.
-- **Pré-filtragem por bitset dentro do tenant** cuida das ACLs de grupo e pasta dentro do corpus menor daquele cliente. Quando o bitset autorizado de um usuário cai abaixo de um limiar (em geral entre 5.000 e 20.000 trechos), trocar a travessia HNSW por uma varredura SIMD exata apenas nos vetores autorizados entrega 100% de recall em poucos milissegundos.
-- **Paridade na busca híbrida** aplica exatamente o mesmo predicado de `tenant_id` e ACL tanto na consulta vetorial densa quanto na consulta lexical BM25 antes da fusão, impedindo que uma correspondência de palavra-chave burle o filtro vetorial.
+- **Particionamento físico ou lógico por tenant** coloca cada cliente em sua própria coleção, **shard** (fatia independente do banco de dados) ou subgrafo HNSW dedicado — por exemplo, um namespace por tenant em bancos vetoriais gerenciados ou tabelas particionadas no PostgreSQL (um banco relacional) com a extensão `pgvector`. Dentro da partição do cliente, a seletividade de tenant é $1.0$, eliminando ruído de outros clientes e preservando a conectividade do grafo.
+- **Pré-filtragem por bitset dentro do tenant** cuida das ACLs de grupo e pasta dentro do corpus menor daquele cliente. Quando o bitset autorizado de um usuário cai abaixo de um limiar (em geral entre 5.000 e 20.000 trechos), trocar a travessia HNSW por uma varredura **SIMD** (*Single Instruction, Multiple Data*, instruções do processador que comparam muitos números de uma vez) exata apenas nos vetores autorizados entrega 100% de recall em poucos milissegundos.
+- **Paridade na busca híbrida** aplica exatamente o mesmo predicado de `tenant_id` e ACL tanto na consulta vetorial densa (busca por significado) quanto na consulta lexical **BM25** (busca por palavras exatas, vista na [aula 27.5](/pt-br/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/)) antes da **fusão** (combinação das duas listas ranqueadas), impedindo que uma correspondência de palavra-chave burle o filtro vetorial.
 
 ## Deriva de permissões e revogação em tempo real
 
-O controle de acesso não termina na ingestão. Imagine que um funcionário deixa o time financeiro às 10h00, mas seus antigos grupos ficaram gravados em um cache vencido ou o vetor `allowed_principals` no índice só é atualizado em um job noturno. Pelas próximas 14 horas, o ex-integrante ainda consegue recuperar memorandos financeiros sigilosos.
+O controle de acesso não termina na **ingestão** (carregamento e indexação dos documentos na base de busca). Imagine que um funcionário deixa o time financeiro às 10h00, mas seus antigos grupos ficaram gravados em um **cache** vencido (memória temporária rápida para consultas recentes) ou a lista `allowed_principals` no índice só é atualizada em um **job em lote** noturno (uma atualização em massa agendada). Pelas próximas 14 horas, o ex-integrante ainda consegue recuperar memorandos financeiros sigilosos.
 
 Dois padrões arquiteturais controlam a **deriva de permissões** (o atraso entre uma mudança de acesso na origem, como Google Drive, SharePoint ou provedor de identidade, e sua aplicação na busca):
 
-- **Sincronização orientada a eventos via *change data capture* (CDC):** Escute webhooks de alteração de permissão e atualize apenas o payload de metadados (`allowed_principals`) sem regerar o *embedding* do trecho. Separar atualização de metadados da geração de vetores reduz o atraso de revogação de horas para segundos.
-- **Verificação tardia nos IDs de origem:** Quando normas exigem revogação imediata (atraso zero), aplique pré-filtragem por `tenant_id` e grupos em cache na busca e depois valide os IDs finais do top-$k$ contra o serviço de autorização em tempo real (como um motor no estilo Zanzibar/OpenFGA) antes de entregar o texto ao LLM.
+- **Sincronização orientada a eventos via *change data capture* (CDC):** Escute **webhooks** (avisos automáticos pela web disparados quando um registro muda) de alteração de permissão e atualize apenas o **payload** de metadados (`allowed_principals`) sem regerar o *embedding* do trecho. Separar atualização de metadados da geração de vetores reduz o atraso de revogação de horas para segundos.
+- **Verificação tardia nos IDs de origem:** Quando normas exigem revogação imediata (atraso zero), aplique pré-filtragem por `tenant_id` e grupos em cache na busca e depois valide os IDs finais do top-$k$ contra um serviço de autorização em tempo real (um banco dedicado de permissões no estilo Zanzibar ou OpenFGA) antes de entregar o texto ao LLM.
 
 :::caveat
-Verificações tardias protegem contra atraso de revogação apenas quando combinadas com pré-filtragem, nunca como substitutas dela. Confiar só em checagens tardias sobre um índice sem partição recria o colapso de recall da pós-filtragem e ainda adiciona uma viagem extra de rede a cada consulta.
+Verificações tardias protegem contra atraso de revogação apenas quando combinadas com pré-filtragem, nunca como substitutas dela. Confiar só em checagens tardias sobre um índice sem partição recria o colapso de recall da pós-filtragem e ainda adiciona uma viagem extra de rede (ida e volta de requisição) a cada consulta.
 :::
 
 ## Vazamento de metadados e isolamento de cache
 
-Mesmo com pré-filtragem rigorosa no banco vetorial, subsistemas secundários vazam fronteiras entre clientes com frequência se omitirem o principal em suas chaves:
+Mesmo com pré-filtragem rigorosa no banco vetorial, subsistemas secundários vazam fronteiras entre clientes com frequência se omitirem o principal em suas chaves de consulta:
 
-- **Caches exatos e semânticos de resposta** precisam incluir `tenant_id` e um hash do conjunto de ACLs em toda chave de cache. Sem isso, o Cliente B fazendo a mesma pergunta do Cliente A recebe a resposta em cache do Cliente A sem sequer tocar o banco vetorial.
-- **Contagens de documentos e mensagens de erro** funcionam como oráculos de existência. Responder "Acesso negado ao Plano de Aquisição Q3" revela a um chamador não autorizado que esse plano existe; devolva sempre um estado uniforme de "nenhum documento correspondente encontrado".
-- **Exclusão e encerramento de contrato** exigem remoção definitiva da partição do tenant, dos termos no índice invertido e dos resumos em cache quando um cliente encerra o serviço. Descartar uma partição dedicada leva milissegundos e evita deixar vetores residuais ou estatísticas globais de frequência inversa de documentos (IDF) do BM25.
+- **Caches exatos e semânticos de resposta** precisam incluir `tenant_id` e um **hash** (uma impressão digital de tamanho fixo) do conjunto de ACLs em toda chave de cache. Sem isso, o Cliente B fazendo a mesma pergunta do Cliente A recebe a resposta em cache do Cliente A sem sequer tocar o banco vetorial.
+- **Contagens de documentos e mensagens de erro** funcionam como **oráculos de existência** (respostas que revelam se um arquivo secreto existe mesmo sem mostrar seu conteúdo). Responder "Acesso negado ao Plano de Aquisição Q3" revela a um chamador não autorizado que esse plano existe; devolva sempre um estado uniforme de "nenhum documento correspondente encontrado".
+- **Exclusão e encerramento de contrato** exigem remoção definitiva da partição do tenant, dos termos no **índice invertido** (a tabela palavra-para-documento usada na busca por texto) e dos resumos em cache quando um cliente encerra o serviço. Descartar uma partição dedicada leva milissegundos e evita deixar vetores residuais ou estatísticas globais de frequência inversa de documentos (IDF, uma medida de quão rara é uma palavra na base inteira) do BM25.
 
 Construa toda fronteira de recuperação em torno de um único invariante: o principal autenticado nasce no runtime fora do modelo, particiona fisicamente o índice por tenant, pré-filtra candidatos densos e lexicais com ACLs atualizadas e delimita cada cache posterior com a mesma chave de identidade.

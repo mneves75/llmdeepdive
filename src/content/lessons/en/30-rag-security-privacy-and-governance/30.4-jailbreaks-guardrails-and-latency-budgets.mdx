@@ -38,14 +38,14 @@ citations:
     authors: "National Institute of Standards and Technology (NIST)"
     year: 2024
     url: "https://csrc.nist.gov/pubs/nist/ai/600-1/final"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Even after you lock down tenant ACLs, sanitize your corpus, and redact PII, users—and attackers—still talk directly to the model. A **jailbreak** is an adversarial user prompt designed to bypass the developer's policy or the model's safety alignment: role-play framing ("pretend you are an unrestricted debugger"), encoding tricks (Base64, rot13, leetspeak), multi-turn escalation (gradually steering a benign conversation toward a prohibited request), or automated adversarial suffixes. A **guardrail** is an independent runtime check that inspects inputs, tool calls, or outputs outside the main LLM to enforce policy before harm happens.
+Even after you lock down tenant access controls, sanitize your corpus, and redact personal data, users—and attackers—still talk directly to the model. A **jailbreak** is a crafted prompt designed to bypass the developer's policy or the model's safety rules: role-play framing ("pretend you are an unrestricted debugger"), **encoding tricks** (disguising forbidden words using letter codes such as Base64, rot13, or number-for-letter substitutions called leetspeak), multi-turn escalation (gradually steering a harmless conversation toward a prohibited request), or automated adversarial suffixes. A **guardrail** is an independent **runtime** (application-code) check that inspects inputs, tool calls, or outputs outside the main Large Language Model (LLM) to enforce policy before harm happens.
 
 ## The base-rate trap: why false positives kill guardrails
 
-Most teams evaluate a guardrail solely on its attack catch rate (recall) against a red-team suite from [lesson 16.5](/lessons/16-agent-security-and-guardrails/16.5-red-team-the-boundary/). That metric misses the half of the equation that actually decides whether the product stays usable: the **false-positive rate (FPR)**, the fraction of benign user requests wrongly refused.
+Most teams grade a guardrail solely on its attack catch rate (**recall**) against a **red-team suite** (a test set of simulated attacks, from [lesson 16.5](/lessons/16-agent-security-and-guardrails/16.5-red-team-the-boundary/)). That metric hides the half of the equation that decides whether people keep using the product: the **false-positive rate (FPR)**, the fraction of harmless user requests wrongly refused.
 
 Run the arithmetic on a realistic production workload. Suppose your product serves $N = 100{,}000$ requests per day, and real attacks make up $0.2\%$ of traffic ($200$ attacks and $99{,}800$ benign requests). You deploy a guardrail classifier with $95\%$ recall on attacks and a $3\%$ false-positive rate on benign prompts:
 
@@ -59,35 +59,32 @@ $$
 \text{Precision} = \frac{190}{190 + 2{,}994} \approx 0.0597 = 5.97\%.
 $$
 
-Nearly 94 out of every 100 refusals hit an innocent customer—someone asking how to "kill a stuck background process" or "terminate a lease contract." Users quickly learn to distrust the assistant or abandon it altogether. That is why every guardrail deployment needs an explicit **false-positive budget** (for example, $\text{FPR} \le 0.5\%$ on a golden dataset of benign edge-case queries) tracked alongside attack recall in CI.
+<Figure id="t30-base-rate-refusals" />
+
+At 3% FPR, benign customers asking how to "kill a stuck background process" or "terminate a lease contract" swamp the refusal count and quickly lose trust in the assistant. Step to the second panel above to see why every guardrail needs an explicit **false-positive budget**—such as $\text{FPR} \le 0.5\%$ on a golden set of tricky benign prompts—checked alongside attack recall in **Continuous Integration (CI)** (the automated test suite that runs before every release).
 
 ## Staging guardrails inside a strict latency budget
 
-Every millisecond spent inside a synchronous guardrail delays the user's first visible token. Calling a frontier LLM as a synchronous safety judge before and after every turn routinely adds 600–1,200 ms of latency and doubles inference bills. Production systems instead organize guardrails into three tiers ordered by cost and speed:
+Every millisecond spent inside a **synchronous** guardrail (one that pauses the user's request until it finishes) increases **latency** (waiting time before words appear on screen). Calling a frontier LLM as a synchronous safety judge before and after every turn routinely adds 600–1,200 ms of delay and doubles inference bills. Production systems instead split checks into three tiers ordered by cost and speed:
 
-- **Tier 0 — Deterministic rules (< 2 ms):** Input length caps, Unicode normalization (stripping zero-width homoglyphs and invisible tag characters), regex/checksum secret scanners, and explicit allowlists for tool names and schemas. These cost almost nothing and have near-zero false positives when written narrowly.
-- **Tier 1 — Specialized small classifiers (15–45 ms):** Distilled encoder models or compact safety classifiers (100M–1B parameters) running on dedicated CPU or GPU inference nodes check for prompt injection, toxicity, off-topic abuse, or policy violations.
-- **Tier 2 — Asynchronous audit and escalation (0 ms on critical path):** Heavyweight frontier LLM judges or human review run out of band on sampled traffic and borderline Tier 1 scores to discover new jailbreak patterns and retrain Tier 1 thresholds.
+- **Tier 0 — Deterministic rules (< 2 ms):** Input length caps, **Unicode normalization** (stripping invisible spacing characters and look-alike letters from other alphabets called homoglyphs), regex and checksum secret scanners, and explicit allowlists for tool names and input formats. Narrow deterministic rules cost almost nothing and cause near-zero false positives.
+- **Tier 1 — Specialized small classifiers (15–45 ms):** **Distilled encoder models** (compact neural classifiers with 100M–1B parameters trained to imitate larger safety reviewers) running on dedicated CPU or GPU servers screen for prompt injection, toxicity, off-topic abuse, or policy violations.
+- **Tier 2 — Asynchronous audit and escalation (0 ms on the user's wait):** Heavyweight frontier LLM judges or human reviewers run **out of band** (in the background after the reply is sent) on sampled traffic and borderline Tier 1 scores to spot new jailbreak patterns and tune Tier 1 thresholds.
 
-How you schedule Tier 1 matters just as much as how fast the model runs. Compare **serial** versus **parallel** execution on a RAG turn where retrieval takes $85\text{ ms}$ and Tier 1 input screening takes $45\text{ ms}$:
+Step through the three frames below to see how scheduling Tier 1 in parallel with retrieval hides its delay and how output streaming stays smooth.
 
-- **Serial:** Wait $45\text{ ms}$ for the guardrail, then $85\text{ ms}$ for retrieval $\rightarrow 130\text{ ms}$ before prefill even begins.
-- **Parallel (speculative):** Start retrieval and the Tier 1 input guardrail at the same instant $\rightarrow \max(85, 45) = 85\text{ ms}$. If the guardrail flags the input, discard the retrieved chunks and return a safe refusal before calling the main LLM.
+<Figure id="t30-guardrail-pipeline" />
 
-Parallel execution hides the input guardrail behind retrieval latency, cutting $45\text{ ms}$ straight off time to first token while preserving the exact same security gate before generation.
+On a RAG turn where retrieval takes $85\text{ ms}$ and Tier 1 input screening takes $45\text{ ms}$, running them **serially** waits $45\text{ ms}$ then $85\text{ ms}$ $\rightarrow 130\text{ ms}$ before model **prefill** (reading the prompt and retrieved text) even starts. Running them **in parallel (speculatively)** launches both at once $\rightarrow \max(85, 45) = 85\text{ ms}$, cutting $45\text{ ms}$ off **time to first token** (the wait until the first word renders) while enforcing the exact same gate before generation.
 
 ## Guarding streaming outputs without breaking UX
 
-Input guardrails alone cannot stop every failure: a benign prompt combined with a poisoned chunk from [lesson 30.2](/lessons/30-rag-security-privacy-and-governance/30.2-corpus-poisoning-and-indirect-injection/) or a subtle multi-turn jailbreak can still steer the model into emitting a disallowed claim, leaked metadata, or toxic phrasing.
+Input guardrails alone cannot stop every failure: a harmless prompt paired with a poisoned chunk from [lesson 30.2](/lessons/30-rag-security-privacy-and-governance/30.2-corpus-poisoning-and-indirect-injection/) or a gradual multi-turn jailbreak can still steer the model into emitting a prohibited claim, leaked metadata, or toxic phrasing.
 
-If you wait until the full 250-token answer finishes generating before running an output guardrail, you destroy streaming and force users to stare at a blank screen for four seconds. Instead, production gateways use a **buffered sliding window**:
-
-1. Hold a small trailing buffer (typically 20–40 tokens or one clause) before flushing tokens to the client socket.
-2. Run deterministic PII/secret checks on every chunk and run the fast Tier 1 output classifier on overlapping windows (for example, every 48 tokens).
-3. If a window trips a high-confidence violation, abort the upstream LLM stream immediately, clear the client display or replace it with a policy notice, and log the trace for review.
+Waiting for a full 250-token reply to finish before checking it destroys **streaming** (displaying words as they arrive) and leaves users staring at a blank screen for four seconds. Instead, as shown in the third step of the figure above, production gateways hold a short **buffered sliding window**—a small temporary holding area of 20–40 tokens before flushing text down the **client socket** (the live network connection to the user's screen). Deterministic secret rules inspect every chunk while the Tier 1 output classifier checks overlapping 48-token windows; on a high-confidence violation, the gateway cuts the upstream LLM stream immediately, replaces the partial reply with a policy notice, and logs the trace for review.
 
 :::caveat
-Do not leak classifier internals inside refusal messages. Telling an attacker "Blocked: injection score 0.87 triggered on token 'base64'" hands them a free gradient oracle to iterate until their score drops to 0.49. Return a brief, uniform refusal and record detailed scores only in internal telemetry.
+Do not leak classifier internals inside refusal messages. Telling an attacker "Blocked: injection score 0.87 triggered on token 'base64'" hands them a **gradient oracle** (step-by-step feedback showing whether each tweak moved them closer to slipping past the filter). Return a brief, uniform refusal and record detailed scores only in internal **telemetry** (monitoring logs).
 :::
 
 ## Designing for graceful degradation, not binary walls
@@ -95,7 +92,7 @@ Do not leak classifier internals inside refusal messages. Telling an attacker "B
 Binary hard blocks ("I cannot help with that") are the right response for clear abuse or unauthorized tool attempts, yet many borderline triggers work better with **graded actions**:
 
 - **Low risk:** Pass through and log asynchronously.
-- **Medium risk (borderline injection or unverified topic):** Strip external tools, force strict grounding against high-trust documents only, or route to a model with stronger instruction-hierarchy alignment (Wallace et al., 2024).
+- **Medium risk (borderline injection or unverified topic):** Strip external tools, require strict grounding against high-trust documents only, or route to a model with stronger instruction-hierarchy alignment (Wallace et al., 2024).
 - **High risk (confirmed policy breach or secret leak):** Hard-block, emit a uniform refusal, and alert security monitoring if repeated from the same account.
 
-Measure three numbers on every release: attack recall on a refreshed red-team set, false-positive rate on hard benign prompts, and p95 added latency. In [lesson 31.1](/lessons/31-ai-system-design-and-caching/31.1-end-to-end-latency-budgets/), we will place that 45 ms guardrail stage inside the full end-to-end latency and cost budget of a production AI system.
+Measure three numbers on every release: attack recall on a refreshed red-team set, false-positive rate on hard benign prompts, and **p95** added latency (the delay exceeded by only the slowest 5% of requests). In [lesson 31.1](/lessons/31-ai-system-design-and-caching/31.1-end-to-end-latency-budgets/), we will place that 45 ms guardrail stage inside the full end-to-end latency and cost budget of a production AI system.

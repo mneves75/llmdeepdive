@@ -38,17 +38,17 @@ citations:
     authors: "Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, Sebastian Riedel, and Douwe Kiela"
     year: 2020
     url: "https://arxiv.org/abs/2005.11401"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Knowing individual components—HNSW pre-filtering, guardrails, KV prefix caches, RouteLLM routers, and unit-cost spreadsheets—is only half of AI systems engineering. The real test is assembling them under conflicting product constraints without over-engineering or violating an invariant. Every production AI design starts with four numbers: **peak QPS (queries per second)**, **p95 latency SLO**, **permissible error/leak rate**, and **target unit cost per task**. Below we walk through three contrasting production blueprints to see how those four numbers dictate completely different architectures.
+Knowing individual components—vector index pre-filtering, guardrails, key–value (KV) prefix caches, RouteLLM routers, and unit-cost spreadsheets—is only half of AI systems engineering. The real test is assembling them under conflicting product constraints without over-engineering or violating an invariant. Every production AI design starts with four numbers: **peak QPS (queries per second)**, **p95 latency SLO** (Service Level Objective — a concrete speed target a team commits to meeting), **permissible error/leak rate**, and **target unit cost per task**. Below we walk through three contrasting production blueprints to see how those four numbers dictate completely different architectures.
 
 ## Case study 1: multi-tenant enterprise RAG search
 
 **Requirements:** 150 enterprise tenants (300,000 total employees), 800,000 queries/month, 15 peak QPS, p95 TTFT $\le 600\text{ ms}$, zero cross-tenant leakage, immediate revocation when HR updates permissions, target cost $\le \text{USD } 0.015$ per query.
 
-- **Security & retrieval boundary:** Physical or namespace-per-tenant vector partitions combined with bitset ACL pre-filtering on both dense HNSW and lexical BM25 indexes (Lewis et al., 2020), followed by a live OpenFGA/Zanzibar verification on the final top-8 document IDs so revocation lag stays at zero seconds.
-- **Guardrails & provenance:** Tag ingested sources by trust tier (signed SharePoint/Confluence docs vs external tickets). Run a 35 ms Tier 1 indirect-injection classifier in parallel with hybrid retrieval (85 ms), adding 0 ms to the critical path while blocking poisoned chunks before context assembly.
+- **Security & retrieval boundary:** Physical or **namespace-per-tenant** (one isolated logical slice per company) vector partitions combined with **bitset ACL pre-filtering** (masking out unauthorized documents before scoring matches) on both dense **HNSW** (Hierarchical Navigable Small World, a fast graph index for vector search) and lexical **BM25** (a classic keyword-relevance formula) indexes (Lewis et al., 2020), followed by a live **OpenFGA/Zanzibar** authorization check on the final top-8 document IDs so permission revocation lag stays at zero seconds.
+- **Guardrails & provenance:** Tag ingested sources by trust tier (signed internal SharePoint/Confluence docs vs external tickets). Run a 35 ms Tier 1 **indirect-injection classifier** (a detector for hidden hijacking instructions planted inside retrieved documents) in parallel with hybrid retrieval (85 ms), adding 0 ms to the **critical path** (the sequence of steps that sets user wait time) while blocking poisoned chunks before context assembly.
 - **Caching & routing:** Enable KV prefix caching on the static system prompt + citation schema (cutting prefill cost by ~65%). Use exact response caching strictly keyed by `(tenant_id, acl_hash, prompt_version, corpus_epoch)`—skip cross-user semantic caching because ACL nuances make false hits unacceptable. Route straightforward factual lookups (~70% of queries) to a fast mid-tier model and complex synthesis queries (~30%) to a frontier model via [lesson 31.3](/lessons/31-ai-system-design-and-caching/31.3-model-routing-cascades-and-gateways/).
 - **Back-of-the-envelope check:** At 70% small-tier (USD 0.002) and 30% frontier-tier (USD 0.018) with 15% exact cache hits, blended cost lands near:
 
@@ -60,23 +60,25 @@ That leaves nearly $3\times$ margin below the USD 0.015 budget while meeting eve
 
 ## Case study 2: high-volume B2C customer-support copilot
 
-**Requirements:** 5,000,000 turns/month, 120 peak QPS, p95 TTFT $\le 450\text{ ms}$, strict PII protection (payment cards and addresses), budget ceiling USD 12,000/month (USD 0.0024/turn).
+**Requirements:** 5,000,000 turns/month for a **B2C** (business-to-consumer) product, 120 peak QPS, p95 TTFT $\le 450\text{ ms}$, strict **PII** (personally identifiable information, such as payment cards and addresses) protection, budget ceiling USD 12,000/month (USD 0.0024/turn).
 
 - **Multi-layer caching:** Public FAQ policies make up 45% of all support tickets. Place an exact cache plus an intent-gated semantic cache (entity + negation verified, NLI paraphrase check, false-hit rate $< 0.2\%$) at the AI gateway, capturing 40% of total traffic in ~20 ms at near-zero marginal cost.
 - **Routing & cascade:** Of the remaining 60% uncached turns (3,000,000/month), run a calibrated RouteLLM router (Ong et al., 2024) sending 80% of routine account questions to a fast small model (~USD 0.0012/turn) and 20% of multi-policy refund disputes to a frontier model (~USD 0.012/turn).
-- **Privacy & capacity:** Run a sub-2 ms deterministic regex/Luhn redactor + 15 ms NER pseudonymization vault inside the VPC before any call leaves for an external ZDR endpoint. Reserve provisioned throughput for the steady daytime baseline (~70% of peak QPS) and spill evening bursts onto PAYG—keeping p99 TTFT stable without paying for idle overnight capacity (Dean and Barroso, 2013).
+- **Privacy & capacity:** Run a sub-2 ms deterministic **regex/Luhn redactor** (text-pattern matching plus the checksum rule that identifies card numbers) and a 15 ms **NER pseudonymization vault** (a named-entity recognizer replacing names and addresses with reversible tokens) inside your private **VPC** (Virtual Private Cloud) before any call leaves for an external **ZDR** (Zero Data Retention, meaning the vendor stores nothing) endpoint. Reserve provisioned throughput for the steady daytime baseline (~70% of peak QPS) and spill evening bursts onto pay-as-you-go (PAYG)—keeping p99 TTFT stable without paying for idle overnight capacity (Dean and Barroso, 2013).
 - **Back-of-the-envelope check:** Blended uncached cost is $0.80 \times 0.0012 + 0.20 \times 0.012 = \text{USD } 0.00336/\text{turn}$. After the 40% cache hit rate, effective spend drops to $0.60 \times 0.00336 = \text{USD } 0.00202/\text{turn}$, totaling USD 10,100/month—safely under the USD 12,000 ceiling.
 
 ## Case study 3: overnight batch document-extraction pipeline
 
-**Requirements:** 50,000 multi-page financial/legal PDFs ingested nightly (deadline: 6 hours), zero user waiting on a screen, structured JSON schema with strict citation spans, recall $\ge 99\%$ on high-risk liability clauses.
+**Requirements:** 50,000 multi-page financial/legal PDFs ingested nightly (deadline: 6 hours), zero user waiting on a screen, structured JSON schema with strict citation spans, **recall** (the share of true liability clauses caught) $\ge 99\%$ on high-risk liability clauses.
 
 - **Flip the latency tradeoff:** Interactive TTFT does not exist here. Drop real-time streaming, disable semantic caching completely (every contract is unique and a false hit creates legal exposure), and submit jobs through asynchronous **Batch APIs** that typically discount token pricing by ~50% in exchange for multi-hour turnaround.
-- **Cascade with deterministic verification:** Run a mid-tier structured-output model first with constrained JSON decoding. Apply automated checks (mandatory field presence, arithmetic reconciliation of totals, exact substring match for every cited clause). Escalate only the ~15% of documents that fail a check or score low confidence to a frontier reasoning model, and flag unresolved contradictions for a morning human-review queue.
-- **Cost & throughput stability:** Prefix-cache the shared 3,500-token legal rubric and JSON schema across all 50,000 jobs. Queue workers at steady concurrency so you never trip TPM limits or trigger retry storms ([lesson 31.4](/lessons/31-ai-system-design-and-caching/31.4-unit-economics-at-scale/)).
+- **Cascade with deterministic verification:** Run a mid-tier structured-output model first with **constrained JSON decoding** (restricting token sampling so output always matches the JSON schema). Apply automated checks (mandatory field presence, arithmetic reconciliation of totals, exact **substring match** confirming each quoted clause appears character-for-character in the PDF). Escalate only the ~15% of documents that fail a check or score low confidence to a frontier reasoning model, and flag unresolved contradictions for a morning human-review queue.
+- **Cost & throughput stability:** Prefix-cache the shared 3,500-token legal rubric and JSON schema across all 50,000 jobs. Queue workers at steady concurrency so you never trip tokens-per-minute (TPM) limits or trigger retry storms ([lesson 31.4](/lessons/31-ai-system-design-and-caching/31.4-unit-economics-at-scale/)).
+
+<Figure id="31-5-three-production-blueprints" />
 
 :::note
-Notice how the same checklist produces three sharply different topologies. Enterprise RAG rejects cross-user semantic caching; B2C support depends on it (with strict entity/negation gates); overnight extraction drops real-time serving altogether in favor of asynchronous batch queues and deterministic cascade verifiers.
+Step through the figure above to compare how the same four architecture slots flip across workloads: each choice follows directly from the four starting numbers rather than habit.
 :::
 
 ## A repeatable review template for any new AI design
