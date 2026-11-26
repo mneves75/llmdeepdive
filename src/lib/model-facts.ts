@@ -17,7 +17,8 @@
  * ## Provenance
  *
  * `config` values are verified against the model's own config.json (fetched
- * 2026-08-18); `card` values come from the model card only. Sources:
+ * 2026-08-18); `card` values come from the model card only; `tokenizer` values
+ * come from the published tokenizer files in the same repository. Sources:
  *   - https://huggingface.co/Qwen/Qwen3.8-27B
  *   - https://huggingface.co/Qwen/Qwen3.8-27B/resolve/main/config.json
  *
@@ -29,7 +30,7 @@
 /** Where a number came from, so a reviewer can check it without leaving the file. */
 import { dispatchBytes, moeParameterBudget } from './moe-math'
 
-export type FactSource = 'config' | 'card' | 'derived' | 'measured'
+export type FactSource = 'config' | 'card' | 'tokenizer' | 'derived' | 'measured'
 export interface ModelFact {
   readonly value: number
   /** Unit as it should be spoken, e.g. 'layers', 'KiB per token'. Not localised. */
@@ -59,6 +60,7 @@ export const QWEN = {
   hiddenSize: fact(5120, 'dimensions', 'config', 'hidden_size'),
   ffnIntermediate: fact(17408, 'dimensions', 'config', 'intermediate_size'),
   vocabSize: fact(248320, 'rows', 'config', 'vocab_size, padded'),
+  tokenizerMappedIds: fact(248077, 'ids', 'tokenizer', 'token ids the published tokenizer maps; the other vocabSize rows have no id'),
   queryHeads: fact(24, 'query heads', 'config', 'num_attention_heads'),
   kvHeads: fact(4, 'KV heads', 'config', 'num_key_value_heads — GQA'),
   headDim: fact(256, 'dimensions', 'config', 'head_dim'),
