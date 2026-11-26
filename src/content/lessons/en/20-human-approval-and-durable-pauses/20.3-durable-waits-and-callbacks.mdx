@@ -50,22 +50,22 @@ citations:
     authors: "SQLite"
     year: 2026
     url: "https://www.sqlite.org/lang_transaction.html"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-The approval request from [lesson 20.2](/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/) goes out on Monday at 09:00, with a three-day expiry. The approver is travelling and may answer on Wednesday, or not at all. Meanwhile the company deploys twice, and one worker crashes. How does the run wait three days?
+The approval request from [lesson 20.2](/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/) goes out on Monday at 09:00, with a three-day expiry. The approver is travelling and may answer on Wednesday, or not at all. Meanwhile the company deploys twice (publishing new software versions that restart running programs), and one worker crashes. How does the run wait three days?
 
-The obvious version is a loop in a worker process: sleep, check for an answer, sleep again. That process holds memory and a thread for three days. A deploy restarts it and forgets the wait. A crash loses it. Two copies of the process might both wake up. The fix is the idea behind [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): keep the wait as stored data, not as a running program.
+The first idea that comes to mind is a loop in a worker process (a running background program): sleep, check for an answer, sleep again. That process holds memory and a thread (an active line of execution) for three days. A deploy restarts it and forgets the wait. A crash loses it. Two copies of the process might both wake up. The fix is the idea behind [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): keep the wait as stored data, not as a running program.
 
 ## What has to survive a three-day wait?
 
-A *durable wait* is a wait recorded where it survives restarts: what we are waiting for, until when, and what happens when the answer comes. Three things must persist. The request itself, with its hash and expiry. The deadline, so something can end the wait if nobody answers. And the decision, once it arrives. A process does not need to persist. Any process that starts later can read the stored wait and continue.
+A *durable wait* is a wait recorded where it survives restarts: what we are waiting for, until when, and what happens when the answer comes. Three things must persist: the request itself (with its hash and expiry), the deadline (so something can end the wait if nobody answers), and the decision once it arrives. No running process has to stay alive; any process that starts later can read the stored wait and continue.
 
-Something must also wake the wait. A *callback* is a call into our system from outside when something happens. Here, the approver's click arrives as an HTTP request from Slack or Teams. The *transaction boundary*, the set of changes that commit together or not at all, decides what a crash can leave behind. This lesson builds the same wait twice, once with the standard library and once with Temporal.
+Something must also wake the wait. A *callback* is a call into our system from outside when something happens. Here, the approver's click arrives as an HTTP (Hypertext Transfer Protocol, the web's standard request-and-response format) request from Slack or Teams. The *transaction boundary*, the set of changes that commit together or not at all, decides what a crash can leave behind. This lesson builds the same wait twice, once with Python's standard library (the tools built into Python itself) and once with Temporal.
 
 ## A wait as a row
 
-The core version keeps each request as a row in the same SQLite file as track 14's checkpoints and outbox. `open` inserts it with status `pending`, and the run's worker can stop. Nothing sleeps. The row changes only when a caller arrives with a decision and a time:
+The core version keeps each request as a row in the same SQLite file (a lightweight database stored in a single file on disk) as track 14's checkpoints and outbox (the table of outgoing actions waiting to be delivered). `open` inserts the row with status `pending`, and the run's worker can exit. Nothing sleeps. Inside one locked database transaction, `decide` reads the row, stops if the request is missing, already decided, past its deadline, or from an unauthorized person, and otherwise records the decision.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/store.py
@@ -89,15 +89,15 @@ The core version keeps each request as a row in the same SQLite file as track 14
             return Outcome(True, to, who.reason)
 ```
 
-`_transaction` opens SQLite's `BEGIN IMMEDIATE`. The SQLite documentation says it makes the connection "start a new write immediately", and only one write transaction can be active at a time. So the read and the status change cannot interleave with another worker's. `_move` is a compare-and-swap, an update that only succeeds if the row still has the status the caller read, as in lesson 14.3's checkpoints.
+`_transaction` opens SQLite's `BEGIN IMMEDIATE`. The SQLite documentation says it makes the connection "start a new write immediately", and only one write transaction can be active at a time. So the read and the status change cannot overlap step by step with another worker's. `_move` is a compare-and-swap, an update that only succeeds if the row still has the status the caller read, as in lesson 14.3's checkpoints.
 
-Three paths end a wait: a decision, the deadline passing (noticed by `decide` or by a *sweeper*, `expire_due`, which a scheduler can call every few minutes), or a cancellation in [lesson 20.5](/lessons/20-human-approval-and-durable-pauses/20.5-deny-expire-revoke-and-resume/). Every method takes `now` from its caller. That is the *clock control* the tests depend on: a test passes `T0 + timedelta(days=2, hours=23)` and gets the answer a real Thursday at 08:00, an hour before the deadline, would get, with no waiting.
+Three paths end a wait: a decision, the deadline passing (noticed by `decide` or by a *sweeper*, `expire_due`, which a scheduler — a timer service that runs jobs on a schedule — can call every few minutes), or a cancellation in [lesson 20.5](/lessons/20-human-approval-and-durable-pauses/20.5-deny-expire-revoke-and-resume/). Every method takes `now` from its caller. That is the *clock control* the tests depend on: a test passes `T0 + timedelta(days=2, hours=23)` and gets the answer a real Thursday at 08:00, an hour before the deadline, would get, with no waiting.
 
 ## The same wait in Temporal
 
-[Lesson 14.5](/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/) showed Temporal's event history and durable timers. Temporal also has three kinds of message into a running workflow. The documentation defines Queries as read requests, Signals as "asynchronous write requests" for which "you cannot await any response or error", and Updates as "synchronous, tracked write requests" whose sender "can wait for a response on completion or an error on failure". An Update can also have a *validator*: a function that raises to reject the Update "before it is written to History".
+[Lesson 14.5](/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/) showed Temporal's event history and durable timers. Temporal also has three kinds of message into a running workflow. The documentation defines Queries as read requests, Signals as "asynchronous write requests" (fire-and-forget messages where "you cannot await any response or error"), and Updates as "synchronous, tracked write requests" (where the sender "can wait for a response on completion or an error on failure"). An Update can also have a *validator*: a function that raises an error to reject the Update "before it is written to History".
 
-The exercise uses an Update, because the adapter that delivers a click should learn immediately whether it counted. Here is the workflow's waiting part:
+The exercise uses an Update, because the adapter that delivers a click should learn immediately whether it counted. The workflow's waiting step below computes how much time remains until `expires_at`, returns `expired` right away if none is left, and otherwise pauses until a decision arrives or the timeout fires.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/temporal.py
@@ -113,7 +113,7 @@ The exercise uses an Update, because the adapter that delivers a click should le
             return "expired"
 ```
 
-`wait_condition` returns when its function becomes true. In SDK 1.34.0, a timeout makes it raise `asyncio.TimeoutError`, and the docstring notes that a timeout creates a Temporal timer. That timer lives on the server, so no worker has to stay alive during the wait. The validator runs the same `check_approver` as the core store and compares the hash the approver saw:
+`wait_condition` returns when its function becomes true. In version 1.34.0 of the Temporal SDK (Software Development Kit), a timeout makes it raise `asyncio.TimeoutError`, and its docstring (documentation comment in the code) notes that a timeout creates a Temporal timer. That timer lives on the server, so no worker has to stay alive during the wait. Before Temporal writes an Update to history, the validator below checks four conditions in order — no decision yet, decision is `approve` or `deny`, matching draft hash, and `check_approver` permits the person — raising an error to reject any bad call immediately.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/temporal.py
@@ -133,16 +133,18 @@ The exercise uses an Update, because the adapter that delivers a click should le
 
 The `approver_json` argument is runtime data: the adapter builds it from an authenticated callback. It is never text a model wrote. Temporal's job is the wait and its history; deciding who may approve stays in our code.
 
+<Figure id="t20-durable-wait-lifecycle" />
+
 ## What the tests prove, and what they do not
 
-The Temporal test starts a worker, waits until the history shows the timer, and shuts the worker down. Then it calls `env.sleep(timedelta(days=1))` on the time-skipping test environment, which the documentation says "will manually advance time by the duration you specify". For that simulated day, no worker exists at all. A second worker starts, with `max_cached_workflows=0` so it rebuilds the workflow from history, and the test sends three Updates: the requester approving, an approver with the wrong hash, and a valid approval. The first two raise `WorkflowUpdateFailedError`. The result starts with `AP-0001 approved by u-approver after 1 day`, the history holds exactly one `WORKFLOW_EXECUTION_UPDATE_ACCEPTED` event, and the timer was cancelled because the decision came first. A second test lets three simulated days pass with no decision: the timer fires, the result is `expired`, and nothing was submitted.
+The Temporal test exercises the crash-and-replay path above with `env.sleep(timedelta(days=1))` on the time-skipping test environment, which the documentation says "will manually advance time by the duration you specify". After shutting down the first worker and skipping a simulated day with no worker running, a second worker starts with `max_cached_workflows=0` (forcing a full rebuild from history) and receives three Updates: the requester approving, an approver with the wrong hash, and a valid approval. The first two raise `WorkflowUpdateFailedError`. The result starts with `AP-0001 approved by u-approver after 1 day`, the history holds exactly one `WORKFLOW_EXECUTION_UPDATE_ACCEPTED` event, and the timer is cancelled. A second test advances three simulated days with no decision and verifies that the workflow returns `expired` and submits nothing.
 
-These are fixture tests with a simulated clock. They show the wait survives a worker restart and ends correctly at the deadline. They do not show behaviour under a real three-day wait with real deploys. The SDK also offers `WorkflowEnvironment.start_local()`, where, in the documentation's words, "any Timers will wait the actual amount of time". A run there with a short real expiry, say ten minutes, is an optional exercise. The course's CI does not run it, because it would hold a test runner for the whole wait.
+These are fixture tests (self-contained tests with fake inputs and a simulated clock). They show the wait survives a worker restart and ends correctly at the deadline. They do not show behaviour under a real three-day wait with real deploys. The SDK also offers `WorkflowEnvironment.start_local()`, where, in the documentation's words, "any Timers will wait the actual amount of time". A run there with a short real expiry, say ten minutes, is an optional exercise. The course's CI (Continuous Integration, the automated test runner) does not run it, because it would hold a test runner for the whole wait.
 
 ## Run the exercise
 
 The core code is in `src/agentlab/approval/store.py`, its tests in `tests/test_approval_wait.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_approval_wait.py"`. Expected output ends with `Ran 7 tests` and `OK`. The restart test closes the store, opens a new one over the same file, finds the request in `waiting()` and approves it two days and 23 hours after it opened, an hour before the deadline.
 
-The Temporal walkthrough is in `src/agentlab/approval/temporal.py` and `tests_frameworks/test_approval_temporal.py`, in the optional `frameworks` group. Run `uv run --frozen python -m unittest discover -s tests_frameworks -p "test_approval_temporal.py"`. Expected output ends with `Ran 3 tests` and `OK`. Log lines above it are expected: Java stack traces when a slow server start is retried, and heartbeat warnings from the worker. The first run downloads that server, so it needs network once.
+The Temporal walkthrough is in `src/agentlab/approval/temporal.py` and `tests_frameworks/test_approval_temporal.py`, in the optional `frameworks` group. Run `uv run --frozen python -m unittest discover -s tests_frameworks -p "test_approval_temporal.py"`. Expected output ends with `Ran 3 tests` and `OK`. Log lines above it are expected: Java error logs (stack traces) while a slow test server starts up, and worker heartbeat warnings. The first run downloads that server, so it needs network once.
 
 Break both versions. In `store.py`, change `if now >= request.expires_at:` inside `decide` to `if False:`: `test_a_late_decision_is_refused_and_the_wait_expires` goes red, because a click after the deadline would approve. In `temporal.py`, change `if content_sha256 != self.request.content_sha256:` to `if False:`: the first Temporal test fails with `WorkflowUpdateFailedError not raised`, because an approval of a different draft would be accepted. Restore both lines.

@@ -38,7 +38,7 @@ citations:
     authors: "Temporal Technologies"
     year: 2026
     url: "https://docs.temporal.io/encyclopedia/workflow-message-passing"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
 O aprovador aprova a INV-0042 às 10:00 de quarta-feira. Às 10:00 e alguns milissegundos, o comprador cancela a compra, porque o fornecedor retirou a oferta. Quase no mesmo instante, um worker que leu a aprovação como `approved` começa a enviar a fatura. Quem vence? A resposta de que o negócio precisa é simples de enunciar: qualquer que seja a ordem, no máximo uma fatura, e nenhuma se o cancelamento veio primeiro.
@@ -47,7 +47,7 @@ Esta aula termina a espera da [aula 20.3](/pt-br/lessons/20-human-approval-and-d
 
 ## Como uma espera pode terminar?
 
-Um pedido começa `pending`. Dali, uma pessoa pode *negá-lo*, o prazo pode *expirá-lo*, o negócio pode *revogá-lo* (cancelar o pedido ou retirar uma aprovação), ou o aprovador pode aprová-lo. Um pedido aprovado tem três futuros possíveis: é *consumido* pelo seu único uso, expira sem uso ou é revogado antes de ser usado. A docstring do store lista as transições:
+Um pedido começa `pending`. Dali, uma pessoa pode *negá-lo*, o prazo pode *expirá-lo*, o negócio pode *revogá-lo* (cancelar o pedido ou retirar uma aprovação), ou o aprovador pode aprová-lo. Um pedido aprovado tem três futuros possíveis: é *consumido* pelo seu único uso, expira sem uso ou é revogado antes de ser usado. A docstring (o comentário no topo do arquivo do store) lista essas transições válidas:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/store.py
@@ -61,7 +61,7 @@ Um pedido começa `pending`. Dali, uma pessoa pode *negá-lo*, o prazo pode *exp
 
 O momento perigoso é o intervalo entre olhar e agir. O catálogo de fraquezas de software da MITRE o registra como CWE-367, a corrida *time-of-check time-of-use* (TOCTOU), momento da checagem e momento do uso: "The product checks the state of a resource before using that resource", o produto checa o estado de um recurso antes de usá-lo, e o recurso pode mudar no meio. No nosso caso, um worker lê `approved`, o comprador revoga, e o worker envia mesmo assim.
 
-O store fecha esse intervalo fazendo da checagem e do uso uma única transação. `execute` é o único caminho de uma aprovação até um efeito:
+O store fecha esse intervalo fazendo da checagem e do uso uma única transação de escrita `BEGIN IMMEDIATE`. `execute` é o único caminho de uma aprovação até um efeito: dentro da transação, ela relê a linha, confirma que o status ainda é `approved`, roda o `covers` da [aula 20.2](/pt-br/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/) para conferir prazo e hash do rascunho, marca a aprovação como `consumed` e insere a fatura no outbox da trilha 14.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/store.py
@@ -88,13 +88,13 @@ O store fecha esse intervalo fazendo da checagem e do uso uma única transação
             return Outcome(True, "consumed", "effect queued in the outbox")
 ```
 
-Dentro de uma transação `BEGIN IMMEDIATE`, `execute` relê a linha, checa o status, roda o `covers` da [aula 20.2](/pt-br/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/) (prazo e hash), marca a aprovação como consumida e insere a fatura no outbox da trilha 14. Ou tudo isso é gravado, ou nada é. A linha do outbox usa o id de operação como chave de idempotência, então o `deliver_pending` da [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) a envia, e `reconcile` resolve uma resposta perdida perguntando ao sistema de contas o que ele registrou sob essa chave.
+Ou todas essas mudanças são gravadas juntas, ou nenhuma é. A linha do outbox usa o id de operação como chave de idempotência, então o `deliver_pending` da [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) a envia, e `reconcile` resolve uma resposta perdida perguntando ao sistema de contas o que ele registrou sob essa chave.
 
 <Figure id="approval-race" />
 
 ## Aprovação contra cancelamento
 
-O teste de corrida pega quatro operações sobre um pedido: `approve`, `revoke` e `execute` de dois workers, A e B, cada um com sua própria conexão ao mesmo arquivo. Ele roda as 24 ordens possíveis, cada uma contra um banco novo:
+O teste de corrida pega quatro operações sobre um pedido: `approve`, `revoke` e `execute` de dois workers, A e B, cada um com sua própria conexão ao mesmo arquivo. Ele roda todas as 24 ordens possíveis em bancos novos, calcula se uma fatura deveria ser enviada — sim apenas quando algum `execute` cai depois de `approve` e antes de `revoke` — e verifica se o banco produziu exatamente essa contagem e nunca deixou ambos os workers executarem.
 
 ```python
 # file: examples/agent-engineering/tests/test_approval_lifecycle.py
@@ -109,10 +109,10 @@ O teste de corrida pega quatro operações sobre um pedido: `approve`, `revoke` 
                 self.assertLessEqual(sum(step.startswith("execute") for step in won), 1)
 ```
 
-A *invariante*, a propriedade que precisa valer em toda ordem, é enunciada antes de o código rodar, não tirada dos resultados. Exatamente uma fatura quando algum execute cai entre a aprovação e a revogação, nenhuma caso contrário, e nunca dois executes que tenham sucesso. Um teste separado encena passo a passo o caso do começo da aula: o worker A lê `approved`, um segundo worker revoga, o worker A executa e é recusado, e o outbox continua vazio.
+A *invariante*, a propriedade que precisa valer em toda ordem, é enunciada antes de o código rodar, não tirada dos resultados. Um teste separado encena passo a passo o caso do começo da aula: o worker A lê `approved`, um segundo worker revoga, o worker A executa e é recusado, e o outbox continua vazio.
 
 :::caveat
-Este teste é determinístico: ele enumera ordens de operações *inteiras*, sem threads e sem sleeps, então dá a mesma resposta em toda execução. Ele não roda duas transações literalmente no mesmo instante. Esse caso é trabalho do SQLite: só uma transação de escrita pode estar ativa, então um segundo `BEGIN IMMEDIATE` espera o primeiro ou falha com `SQLITE_BUSY`, e nunca se intercala. A guarda `WHERE status = ?` em `_move` é uma segunda linha de defesa. Tire-a e todos os testes continuam passando, porque a trava de escrita já serializa operações inteiras. Ela fica porque não custa nada e mantém o store correto se alguém enfraquecer a transação no futuro.
+Este teste é determinístico: ele enumera ordens de operações *inteiras*, sem threads e sem sleeps, então dá a mesma resposta em toda execução. Ele não roda duas transações literalmente no mesmo instante. Esse caso é trabalho do SQLite: só uma transação de escrita pode estar ativa, então um segundo `BEGIN IMMEDIATE` espera o primeiro ou falha com `SQLITE_BUSY` (um erro informando que o banco está ocupado), e nunca se intercala. A guarda `WHERE status = ?` em `_move` é uma segunda linha de defesa. Tire-a e todos os testes continuam passando, porque a trava de escrita já serializa (obriga a rodar uma depois da outra) operações inteiras. Ela fica porque não custa nada e mantém o store correto se alguém enfraquecer a transação no futuro.
 :::
 
 ## Revogar depois do efeito, e retomar depois de uma recusa
@@ -121,10 +121,10 @@ Revogar uma aprovação consumida falha. `revoke` retorna `ok=False` com status 
 
 Uma execução continua depois de uma negação ou de uma expiração pedindo de novo, nunca reaproveitando a resposta antiga. Em `test_a_denied_run_resumes_with_a_new_request`, o aprovador nega a versão 1. O rascunho corrigido é a versão 2, de USD 9.500,00. A aprovação antiga não o cobre, porque a hash é outra, e o store o recusa. A execução abre um pedido novo, `ap-2`, o aprovador o aprova, e `execute` enfileira exatamente uma fatura. Retomar depois de uma queda não exige código especial: um processo novo chama `waiting()` e encontra todo pedido ainda pendente, como na aula 20.3.
 
-A versão do Temporal desses desfechos usa as mesmas ideias. O cancelamento seria mais uma mensagem para o workflow, um Signal ou um Update, como descreve a documentação de troca de mensagens do Temporal. A checagem do workflow antes de enviar ficaria no mesmo código determinístico que roda a activity. Esta aula testa só a versão em SQLite.
+A versão do Temporal desses desfechos usa as mesmas ideias. O cancelamento seria mais uma mensagem para o workflow, um Signal ou um Update, como descreve a documentação de troca de mensagens do Temporal. A checagem do workflow antes de enviar ficaria no mesmo código determinístico que roda a activity (a etapa do Temporal que executa o efeito colateral externo, da [aula 14.5](/pt-br/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/)). Esta aula testa só a versão em SQLite.
 
 ## Rode o exercício
 
-O código está em `src/agentlab/approval/store.py` e os testes em `tests/test_approval_lifecycle.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_approval_lifecycle.py"`. A saída esperada termina com `Ran 9 tests` e `OK`. O teste de corrida conta como um teste com 24 subtestes.
+O código está em `src/agentlab/approval/store.py` e os testes em `tests/test_approval_lifecycle.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_approval_lifecycle.py"`. A saída esperada termina com `Ran 9 tests` e `OK`. O teste de corrida conta como um teste com 24 subtestes (subchecagens dentro de uma única função de teste).
 
-Os outros testes cobrem o uso único (um segundo execute é recusado), um pedido pendente que não pode rodar, um rascunho editado, uma aprovação que vence sem uso, um pedido revogado que não pode ser aprovado, uma revogação depois da execução, a revogação entre checagem e uso e a retomada depois da negação. O primeiro teste é também o controle positivo: um rascunho aprovado e inalterado produz exatamente uma chamada ao sistema de contas falso, então um store que recusasse tudo falharia. Agora quebre a checagem do momento do uso. Em `execute`, troque `if status != "approved":` por `if status not in ("approved", "consumed"):` e rode de novo. A execução mostra cinco erros: `test_an_approved_draft_is_executed_once_through_the_outbox` e quatro ordens do teste de corrida. Em cada uma, um segundo execute passa pela checagem de status, e só o compare-and-swap em `_move`, levantando `StaleWrite`, impede uma segunda fatura. Restaure a linha.
+Os outros testes cobrem o uso único (um segundo execute é recusado), um pedido pendente que não pode rodar, um rascunho editado, uma aprovação que vence sem uso, um pedido revogado que não pode ser aprovado, uma revogação depois da execução, a revogação entre checagem e uso e a retomada depois da negação. O primeiro teste é também o controle positivo: um rascunho aprovado e inalterado produz exatamente uma chamada ao sistema de contas falso, então um store que recusasse tudo falharia. Agora quebre a checagem do momento do uso. Em `execute`, troque `if status != "approved":` por `if status not in ("approved", "consumed"):` e rode de novo. A execução mostra cinco erros: `test_an_approved_draft_is_executed_once_through_the_outbox` e quatro ordens do teste de corrida. Em cada uma, um segundo execute passa pela checagem de status, e só o compare-and-swap em `_move`, levantando `StaleWrite` (um erro sinalizando que o status da linha já mudou), impede uma segunda fatura. Restaure a linha.
