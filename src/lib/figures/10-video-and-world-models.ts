@@ -358,17 +358,18 @@ export const TRACK_10_FIGURES = {
 
   /**
    * VL-JEPA as instantiated in arXiv 2512.10942, section 3. Split into
-   * training (no tokens, no decoder) and inference (Y-encoder dropped, decoder
-   * called only when meaning shifts).
+   * training (no tokens, no decoder) and text-generation inference (Y-encoder
+   * omitted on the generation path; offline clustering decodes at segment
+   * midpoints in the EgoExo4D evaluation).
    */
   'vl-jepa-pipeline': {
     lesson: '10.4-vl-jepa-predicting-meaning',
     title: { en: 'VL-JEPA predicts an answer embedding', 'pt-br': 'A VL-JEPA prevê um embedding de resposta' },
     caption: {
       en:
-        'Training compares embeddings with bidirectional InfoNCE and generates no tokens. At inference, the Y-encoder is dropped and a lightweight text decoder runs only when the predicted meaning shifts.',
+        'Training compares embeddings with bidirectional InfoNCE and generates no tokens. On the text-generation inference path, the Y-encoder is omitted (tasks like retrieval and discriminative QA still use it) and the text decoder runs selectively instead of on every frame.',
       'pt-br':
-        'O treino compara embeddings com InfoNCE bidirecional e não gera nenhum token. Na inferência, o Y-encoder sai de cena e um decoder de texto leve só roda quando o significado previsto muda.',
+        'O treino compara embeddings com InfoNCE bidirecional e não gera nenhum token. No caminho de geração de texto na inferência, o Y-encoder fica de fora (tarefas como busca e QA discriminativo ainda o usam) e o decoder de texto roda de forma seletiva em vez de em cada frame.',
     },
     steps: [
       {
@@ -414,9 +415,9 @@ export const TRACK_10_FIGURES = {
         label: { en: 'Inference: selective decoding', 'pt-br': 'Inferência: decodificação seletiva' },
         caption: {
           en:
-            'One forward pass emits an answer embedding at each step of a video stream. Grouping segments of similar meaning lets the Y-decoder write words only at shifts — about 2.85 times fewer decodes at matched quality on EgoExo4D.',
+            'One forward pass emits an answer embedding at each step. On EgoExo4D, the paper evaluates selective decoding offline by clustering each video’s embedding sequence into segments and running the Y-decoder once at each segment’s midpoint — averaging ~0.35 Hz (~2.85 s between decodes, ~2.85× fewer decodes than 1 Hz uniform at matched quality).',
           'pt-br':
-            'Uma passagem direta emite um embedding de resposta a cada passo de um stream de vídeo. Agrupar segmentos de significado parecido permite ao Y-decoder escrever palavras só nas mudanças — cerca de 2,85 vezes menos decodificações com qualidade igual no EgoExo4D.',
+            'Uma passagem direta emite um embedding de resposta a cada passo. No EgoExo4D, o artigo avalia a decodificação seletiva offline agrupando (clustering) a sequência de embeddings de cada vídeo em segmentos e rodando o Y-decoder uma vez no ponto médio de cada segmento — em média ~0,35 Hz (~2,85 s entre decodificações, ~2,85× menos decodificações que 1 Hz uniforme com qualidade igual).',
         },
         body: {
           kind: 'flow',
@@ -432,13 +433,13 @@ export const TRACK_10_FIGURES = {
               pigment: 'caution',
             },
             {
-              label: { en: 'Track shifts in meaning', 'pt-br': 'Acompanha mudanças de significado' },
-              detail: { en: 'smooth and cluster the stream', 'pt-br': 'suaviza e agrupa o fluxo' },
+              label: { en: 'Offline segment clustering', 'pt-br': 'Clustering offline em segmentos' },
+              detail: { en: 'group similar embeddings; pick midpoint', 'pt-br': 'agrupa embeddings parecidos; pega ponto médio' },
               pigment: 'accent',
             },
             {
-              label: { en: 'Y-decoder writes words on shifts', 'pt-br': 'Y-decoder escreve palavras nas mudanças' },
-              detail: { en: '~0.35 Hz vs 1 Hz uniform on EgoExo4D', 'pt-br': '~0,35 Hz contra 1 Hz uniforme no EgoExo4D' },
+              label: { en: 'Y-decoder decodes segment midpoints', 'pt-br': 'Y-decoder decodifica nos pontos médios' },
+              detail: { en: '~0.35 Hz avg (~2.85 s mean) vs 1 Hz on EgoExo4D', 'pt-br': 'média de ~0,35 Hz (~2,85 s) contra 1 Hz no EgoExo4D' },
               pigment: 'success',
             },
           ],

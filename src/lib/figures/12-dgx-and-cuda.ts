@@ -313,7 +313,7 @@ export const TRACK_12_FIGURES = {
           steps: [
             {
               label: { en: 'Global DRAM', 'pt-br': 'DRAM global' },
-              detail: { en: 'read one 16×16 tile of A and B (0.0f outside bounds)', 'pt-br': 'lê um tile 16×16 de A e B (0,0f fora dos limites)' },
+              detail: { en: 'read one 16×16 tile of A and B (0.0f outside bounds)', 'pt-br': 'lê um tile 16×16 de A e B (0.0f fora dos limites)' },
               pigment: 'accent',
             },
             {
@@ -464,7 +464,7 @@ export const TRACK_12_FIGURES = {
           steps: [
             {
               label: { en: 'Verify driver and capability', 'pt-br': 'Conferir driver e capability' },
-              detail: { en: 'nvidia-smi --query-gpu=name,driver_version,compute_cap → 580+ and 12.1', 'pt-br': 'nvidia-smi --query-gpu=name,driver_version,compute_cap → 580+ e 12.1' },
+              detail: { en: 'nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv → 580+ and 12.1', 'pt-br': 'nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv → 580+ e 12.1' },
               pigment: 'accent',
             },
             {

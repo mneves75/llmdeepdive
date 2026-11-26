@@ -31,8 +31,8 @@ export const TRACK_13_FIGURES = {
       'pt-br': 'Como a colocação dos pesos corta um grafo ggml em splits',
     },
     caption: {
-      en: 'Each operation runs where its weights live. Every time consecutive nodes switch hardware, the scheduler inserts a seam that copies the tensor across.',
-      'pt-br': 'Cada operação roda onde os seus pesos moram. Toda vez que nós consecutivos trocam de hardware, o scheduler insere uma costura que copia o tensor entre eles.',
+      en: 'When supported, the scheduler prefers to run each operation on the backend holding its weights (unless a backend’s offload_op policy routes it elsewhere). Every time consecutive nodes switch hardware, the scheduler inserts a seam that copies the tensor across.',
+      'pt-br': 'Quando há suporte, o scheduler prefere rodar cada operação no backend onde moram seus pesos (salvo exceções da política offload_op do backend). Toda vez que nós consecutivos trocam de hardware, o scheduler insere uma costura que copia o tensor entre eles.',
     },
     steps: [
       {
@@ -222,8 +222,8 @@ export const TRACK_13_FIGURES = {
       {
         label: { en: '3. Quantize', 'pt-br': '3. Quantizar' },
         caption: {
-          en: 'llama-quantize reads model-bf16.gguf and imatrix.gguf (plus any --tensor-type overrides) to write model-Q4_K_M.gguf (456.11 MiB). It refuses to requantize an already quantized file or make IQ2_XXS without a matrix.',
-          'pt-br': 'O llama-quantize lê model-bf16.gguf e imatrix.gguf (mais eventuais sobrescritas --tensor-type) para gerar model-Q4_K_M.gguf (456,11 MiB). Ele recusa requantizar um arquivo já quantizado ou gerar IQ2_XXS sem matriz.',
+          en: 'llama-quantize reads model-bf16.gguf and imatrix.gguf (plus any --tensor-type overrides) to write model-Q4_K_M.gguf (456.11 MiB of quantized tensor data; 461.8 MiB GGUF file on disk with header, metadata, and alignment). It refuses to requantize an already quantized file or make IQ2_XXS without a matrix.',
+          'pt-br': 'O llama-quantize lê model-bf16.gguf e imatrix.gguf (mais eventuais sobrescritas --tensor-type) para gerar model-Q4_K_M.gguf (456,11 MiB de tensores quantizados; arquivo GGUF de 461,8 MiB em disco com cabeçalho, metadados e alinhamento). Ele recusa requantizar um arquivo já quantizado ou gerar IQ2_XXS sem matriz.',
         },
         body: {
           kind: 'flow',
@@ -240,7 +240,7 @@ export const TRACK_13_FIGURES = {
             },
             {
               label: { en: 'Quantize', 'pt-br': 'Quantizar' },
-              detail: { en: 'model-Q4_K_M.gguf (456.11 MiB)', 'pt-br': 'model-Q4_K_M.gguf (456,11 MiB)' },
+              detail: { en: '456.11 MiB tensors (461.8 MiB file)', 'pt-br': '456,11 MiB tensores (461,8 MiB arquivo)' },
               pigment: 'accent',
             },
             {
@@ -254,8 +254,8 @@ export const TRACK_13_FIGURES = {
       {
         label: { en: '4. Measure', 'pt-br': '4. Medir' },
         caption: {
-          en: 'llama-perplexity records bf16 reference logits once (base.kld) on held-out Wikitext-2 test, then scores each quant by mean KL divergence: 0.1036 without imatrix fell to 0.0689 with imatrix at the same 456.11 MiB.',
-          'pt-br': 'O llama-perplexity grava uma vez os logits de referência do bf16 (base.kld) no teste separado do Wikitext-2 e pontua cada quantização pela divergência KL média: de 0,1036 sem matriz para 0,0689 com imatrix nos mesmos 456,11 MiB.',
+          en: 'llama-perplexity records bf16 reference logits once (base.kld) on held-out Wikitext-2 test, then scores each quant by mean KL divergence: 0.1036 without imatrix fell to 0.0689 with imatrix at the same 456.11 MiB of quantized tensors (461.8 MiB file).',
+          'pt-br': 'O llama-perplexity grava uma vez os logits de referência do bf16 (base.kld) no teste separado do Wikitext-2 e pontua cada quantização pela divergência KL média: de 0,1036 sem matriz para 0,0689 com imatrix nos mesmos 456,11 MiB de tensores quantizados (arquivo de 461,8 MiB).',
         },
         body: {
           kind: 'flow',
@@ -272,7 +272,7 @@ export const TRACK_13_FIGURES = {
             },
             {
               label: { en: 'Quantize', 'pt-br': 'Quantizar' },
-              detail: { en: 'same 456.11 MiB size', 'pt-br': 'mesmo tamanho de 456,11 MiB' },
+              detail: { en: 'same 456.11 MiB tensors (461.8 MiB file)', 'pt-br': 'mesmos 456,11 MiB tensores (461,8 MiB)' },
               pigment: 'success',
             },
             {
@@ -378,15 +378,15 @@ export const TRACK_13_FIGURES = {
       'pt-br': 'Por que o vencedor se inverte entre pp e tg',
     },
     caption: {
-      en: 'Maintainers’ llama-bench runs on gpt-oss-120b MXFP4 (59.02 GiB, n_ubatch 2048, flash attention on) at builds 7948 (Mac Studio M2 Ultra) and 7941 (DGX Spark). These are gpt-oss figures, not Qwen figures.',
-      'pt-br': 'Execuções de llama-bench dos mantenedores no gpt-oss-120b MXFP4 (59,02 GiB, n_ubatch 2048, flash attention ligada) nos builds 7948 (Mac Studio M2 Ultra) e 7941 (DGX Spark). São números do gpt-oss, não do Qwen.',
+      en: 'Maintainers’ llama-bench runs on gpt-oss-120b MXFP4 (a 59.02 GiB Mixture-of-Experts checkpoint, n_ubatch 2048, flash attention on) at builds 7948 (Mac Studio M2 Ultra) and 7941 (DGX Spark). These are gpt-oss figures, not Qwen figures.',
+      'pt-br': 'Execuções de llama-bench dos mantenedores no gpt-oss-120b MXFP4 (um checkpoint Mixture-of-Experts de 59,02 GiB, n_ubatch 2048, flash attention ligada) nos builds 7948 (Mac Studio M2 Ultra) e 7941 (DGX Spark). São números do gpt-oss, não do Qwen.',
     },
     steps: [
       {
         label: { en: 'Prefill (pp2048)', 'pt-br': 'Prefill (pp2048 — prompt)' },
         caption: {
-          en: 'Prompt tokens enter in a batch and share each read of the weights, so raw arithmetic capacity dominates. DGX Spark leads by about 1.48×.',
-          'pt-br': 'Os tokens do prompt entram em batch e dividem cada leitura dos pesos, então a capacidade bruta de cálculo domina. O DGX Spark lidera por cerca de 1,48×.',
+          en: 'Prompt tokens enter in a 2,048-token batch, amortizing active expert and shared weight reads across many routed tokens, so raw arithmetic capacity dominates. DGX Spark leads by about 1.48×.',
+          'pt-br': 'Os tokens do prompt entram num batch de 2.048 tokens, diluindo as leituras dos pesos compartilhados e dos experts ativos entre muitos tokens roteados, então a capacidade bruta de cálculo domina. O DGX Spark lidera por cerca de 1,48×.',
         },
         body: {
           kind: 'flow',
@@ -397,8 +397,8 @@ export const TRACK_13_FIGURES = {
               pigment: 'muted',
             },
             {
-              label: { en: 'Shared weight read', 'pt-br': 'Leitura compartilhada' },
-              detail: { en: '59.02 GiB amortized across batch', 'pt-br': '59,02 GiB diluídos pelo batch' },
+              label: { en: 'Amortized MoE weight reads', 'pt-br': 'Leituras diluídas no MoE' },
+              detail: { en: '59.02 GiB total MoE; active experts shared across batch', 'pt-br': 'MoE de 59,02 GiB; experts ativos divididos no batch' },
               pigment: 'accent',
             },
             {
@@ -417,8 +417,8 @@ export const TRACK_13_FIGURES = {
       {
         label: { en: 'Decode (tg32)', 'pt-br': 'Decode (tg32 — geração)' },
         caption: {
-          en: 'Each generated token reads the weights again, so memory bandwidth dominates — though the measured 1.46× gap is smaller than the 2.9× ratio of peak bandwidths (800 vs 273 GB/s).',
-          'pt-br': 'Cada token gerado lê os pesos de novo, então a bandwidth de memória domina — embora a vantagem medida de 1,46× seja menor que a razão de 2,9× das bandwidths de pico (800 vs 273 GB/s).',
+          en: 'Each generated token routes only to its active experts plus shared layers (not all 59.02 GiB, since gpt-oss-120b is MoE), reading those active weights at batch 1. Memory bandwidth dominates, though the measured 1.46× gap is smaller than the 2.9× peak-bandwidth ratio (800 vs 273 GB/s).',
+          'pt-br': 'Cada token gerado aciona apenas seus experts ativos e camadas compartilhadas (não todos os 59,02 GiB, pois o gpt-oss-120b é MoE), lendo esses pesos ativos em batch 1. A bandwidth de memória domina, embora a vantagem medida de 1,46× seja menor que a razão de 2,9× das bandwidths de pico (800 vs 273 GB/s).',
         },
         body: {
           kind: 'flow',
@@ -429,8 +429,8 @@ export const TRACK_13_FIGURES = {
               pigment: 'muted',
             },
             {
-              label: { en: 'Repeated weight read', 'pt-br': 'Leitura repetida dos pesos' },
-              detail: { en: 'same bytes fetched every token', 'pt-br': 'mesmos bytes lidos a cada token' },
+              label: { en: 'Active-expert weight read', 'pt-br': 'Leitura dos experts ativos' },
+              detail: { en: 'MoE routes each token to active experts only (not all 59.02 GiB)', 'pt-br': 'MoE roteia cada token só aos experts ativos (não os 59,02 GiB)' },
               pigment: 'accent',
             },
             {

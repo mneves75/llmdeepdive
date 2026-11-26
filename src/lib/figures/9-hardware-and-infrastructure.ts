@@ -86,8 +86,8 @@ export const TRACK_9_FIGURES = {
       {
         label: { en: 'Batch-1 decode', 'pt-br': 'Decode em batch 1' },
         caption: {
-          en: 'Each weight read serves one token (~1 op/byte). Streaming the ~54 GB checkpoint heuristic at 3.35 TB/s takes ~16.1 ms (~62 tok/s), leaving the tensor cores idle more than 99% of the step.',
-          'pt-br': 'Cada leitura de pesos serve um token (~1 op/byte). Transmitir o checkpoint de ~54 GB na heurística a 3,35 TB/s leva ~16,1 ms (~62 tok/s), deixando os tensor cores ociosos por mais de 99% do passo.',
+          en: 'Each weight read serves one token (~1 op/byte). Streaming the ~54 GB checkpoint heuristic at 3.35 TB/s takes ~16.1 ms (~62 tok/s), reaching roughly 0.3% of peak compute throughput, heavily memory-bound.',
+          'pt-br': 'Cada leitura de pesos serve um token (~1 op/byte). Transmitir o checkpoint de ~54 GB na heurística a 3,35 TB/s leva ~16,1 ms (~62 tok/s), atingindo cerca de 0,3% do pico de throughput aritmético, fortemente limitado por memória.',
         },
         body: {
           kind: 'flow',
@@ -109,7 +109,7 @@ export const TRACK_9_FIGURES = {
             },
             {
               label: { en: 'Tensor cores', 'pt-br': 'Núcleos tensor (tensor cores)' },
-              detail: { en: '~0.3% of peak FLOPs · idle >99%', 'pt-br': '~0,3% do pico de FLOPs · ociosos >99%' },
+              detail: { en: '~0.3% of peak compute · memory-bound', 'pt-br': '~0,3% do pico de compute · limitado por memória' },
               pigment: 'muted',
             },
           ],
@@ -300,16 +300,16 @@ export const TRACK_9_FIGURES = {
   },
 
   /**
-   * 9.4 shows why 2.4x total memory yields roughly 5x concurrency: the 50.3 GiB
-   * bf16 weight charge is fixed, so almost every added gibibyte goes to the
-   * user state pool.
+   * 9.4 shows why ~2.25x usable memory (178.8 vs 79.6 GiB) yields roughly 5x
+   * concurrency: the 50.3 GiB bf16 weight charge is fixed, so almost every
+   * added gibibyte goes to the user state pool.
    */
   't9-hopper-vs-blackwell': {
     lesson: '9.4-nvidia-cuda-hopper-blackwell',
     title: { en: 'Fixed weights, non-linear user pool', 'pt-br': 'Pesos fixos, pool de usuários não linear' },
     caption: {
-      en: 'Weights take the same 50.3 GiB on both cards. Growing usable memory by about 2.4× expands the state pool by more than 5× (from 23.3 GiB to 120.5 GiB).',
-      'pt-br': 'Os pesos ocupam os mesmos 50,3 GiB nas duas placas. Aumentar a memória utilizável em cerca de 2,4× expande o pool de estado em mais de 5× (de 23,3 GiB para 120,5 GiB).',
+      en: 'Weights take the same 50.3 GiB on both cards. Growing usable memory by about 2.25× (79.6 to 178.8 GiB) expands the state pool by more than 5× (from 23.3 GiB to 120.5 GiB).',
+      'pt-br': 'Os pesos ocupam os mesmos 50,3 GiB nas duas placas. Aumentar a memória utilizável em cerca de 2,25× (de 79,6 para 178,8 GiB) expande o pool de estado em mais de 5× (de 23,3 GiB para 120,5 GiB).',
     },
     derivedFrom: '9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets',
     steps: [
@@ -467,8 +467,8 @@ export const TRACK_9_FIGURES = {
     lesson: '9.6-apple-silicon-unified-memory',
     title: { en: 'Where the weights live: discrete GPU vs unified memory', 'pt-br': 'Onde os pesos ficam: GPU discreta vs unified memory' },
     caption: {
-      en: 'Unified memory deletes the PCIe copy and private VRAM ceiling, so a 17.1 GB artifact fits directly in a 64 GB pool. Decode speed still follows memory bandwidth divided by active bytes.',
-      'pt-br': 'A unified memory elimina a cópia pelo PCIe e o teto privado de VRAM, então um artefato de 17,1 GB cabe direto num pool de 64 GB. A velocidade de decode continua seguindo a bandwidth dividida pelos bytes ativos.',
+      en: 'Unified memory deletes the PCIe copy and private VRAM ceiling, so a 17.1 GB artifact fits directly in an M3 Ultra’s 96 GB+ pool. Decode speed still follows memory bandwidth divided by active bytes.',
+      'pt-br': 'A unified memory elimina a cópia pelo PCIe e o teto privado de VRAM, então um artefato de 17,1 GB cabe direto no pool de 96 GB+ de um M3 Ultra. A velocidade de decode continua seguindo a bandwidth dividida pelos bytes ativos.',
     },
     steps: [
       {
@@ -504,10 +504,10 @@ export const TRACK_9_FIGURES = {
         },
       },
       {
-        label: { en: 'Unified memory (64 GB Apple silicon)', 'pt-br': 'Memória unificada (64 GB Apple silicon)' },
+        label: { en: 'Unified memory (M3 Ultra, 96 GB+ pool)', 'pt-br': 'Memória unificada (M3 Ultra, pool de 96 GB+)' },
         caption: {
-          en: 'CPU, GPU, and Neural Engine share one physical pool, so the 17.1 GB artifact and its KV cache stay resident without copying. On an M3 Ultra (800 GB/s), 800 / 17.1 gives a ~46.8 tok/s planning heuristic (vs ~14.8 tok/s for 54 GB bf16).',
-          'pt-br': 'CPU, GPU e Neural Engine compartilham um único pool físico, então o artefato de 17,1 GB e seu KV cache ficam residentes sem cópia. Num M3 Ultra (800 GB/s), 800 / 17,1 dá heurística de ~46,8 tok/s (contra ~14,8 tok/s em bf16 de 54 GB).',
+          en: 'CPU, GPU, and Neural Engine share one physical pool (starting at 96 GB on M3 Ultra), so the 17.1 GB artifact and its KV cache stay resident without copying. At M3 Ultra’s 800 GB/s, 800 / 17.1 gives a ~46.8 tok/s planning heuristic (vs ~14.8 tok/s for 54 GB bf16).',
+          'pt-br': 'CPU, GPU e Neural Engine compartilham um único pool físico (a partir de 96 GB no M3 Ultra), então o artefato de 17,1 GB e seu KV cache ficam residentes sem cópia. Nos 800 GB/s do M3 Ultra, 800 / 17,1 dá heurística de ~46,8 tok/s (contra ~14,8 tok/s em bf16 de 54 GB).',
         },
         body: {
           kind: 'flow',
@@ -519,7 +519,7 @@ export const TRACK_9_FIGURES = {
             },
             {
               label: { en: 'Shared memory pool', 'pt-br': 'Pool de memória compartilhado' },
-              detail: { en: '64 GB · loaded once, no copy', 'pt-br': '64 GB · carregado uma vez, sem cópia' },
+              detail: { en: '96 GB+ (M3 Ultra) · loaded once, no copy', 'pt-br': '96 GB+ (M3 Ultra) · carregado uma vez, sem cópia' },
               pigment: 'success',
             },
             {
@@ -729,25 +729,25 @@ export const TRACK_9_FIGURES = {
       {
         label: { en: 'Off-wafer spill (wall returns)', 'pt-br': 'Extravasamento fora do wafer' },
         caption: {
-          en: 'Wafer scale moves the memory wall rather than repealing it. If weights exceed on-wafer SRAM and stream from external memory, an interface re-enters the path and lesson 9.1’s limit governs again; the 16 GiB full-context KV cache does not shrink either.',
-          'pt-br': 'O wafer scale desloca a barreira de memória, não a revoga. Se os pesos excedem a SRAM no wafer e vêm de memória externa, uma interface volta ao caminho e o limite da aula 9.1 governa de novo; os 16 GiB de KV no contexto completo também não encolhem.',
+          en: 'Wafer scale moves the memory wall rather than repealing it. Streaming weights from an external store puts off-wafer read bandwidth back into the weight path, while sharding weights across multiple wafers keeps weight reads in local SRAM and instead adds inter-wafer activation or gradient traffic; the 16 GiB full-context KV cache does not shrink either.',
+          'pt-br': 'O wafer scale desloca a barreira de memória, não a revoga. Transmitir pesos de um armazenamento externo recoloca a bandwidth fora do wafer no caminho de leitura dos pesos, enquanto dividir os pesos entre vários wafers mantém as leituras de peso na SRAM local e acrescenta tráfego de ativações ou gradientes entre wafers; os 16 GiB de KV no contexto completo também não encolhem.',
         },
         body: {
           kind: 'flow',
           steps: [
             {
               label: { en: 'Weight location', 'pt-br': 'Local dos pesos' },
-              detail: { en: 'external store or multiple wafers', 'pt-br': 'armazenamento externo ou vários wafers' },
+              detail: { en: 'external weight store vs sharded across wafers', 'pt-br': 'armazenamento externo vs dividido entre wafers' },
               pigment: 'muted',
             },
             {
-              label: { en: 'Interface', 'pt-br': 'Interface' },
-              detail: { en: 'off-wafer link returns to read path', 'pt-br': 'link fora do wafer volta à leitura' },
+              label: { en: 'Off-wafer traffic', 'pt-br': 'Tráfego fora do wafer' },
+              detail: { en: 'external weight reads vs inter-wafer activations/gradients', 'pt-br': 'leituras externas de pesos vs ativações/gradientes entre wafers' },
               pigment: 'danger',
             },
             {
               label: { en: 'Effect on B/W', 'pt-br': 'Efeito em B/W' },
-              detail: { en: 'interface bandwidth governs again', 'pt-br': 'bandwidth da interface governa de novo' },
+              detail: { en: 'external link bounds weights; inter-wafer fabric adds comms', 'pt-br': 'link externo limita pesos; malha entre wafers soma comunicação' },
               pigment: 'danger',
             },
             {

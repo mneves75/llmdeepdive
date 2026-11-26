@@ -310,9 +310,11 @@ export const TRACK_11_FIGURES = {
   },
 
   /**
-   * 11.5 contrasts 1,200 GB/s local memory against 10–15 GB/s Thunderbolt 5
-   * and shows why tensor-parallel decode is latency-bound (128 waits per token)
-   * whereas long prefill is bandwidth-bound (~5 GiB for 4,096 tokens).
+   * 11.5 contrasts 1,200 GB/s local memory against Thunderbolt 5's 80 Gb/s
+   * (~10 GB/s) symmetric bidirectional ceiling (noting 120 Gb/s Bandwidth Boost
+   * is asymmetric 120/40 Gb/s for displays), and shows why tensor-parallel
+   * decode is latency-bound (128 waits per token) whereas long prefill is
+   * bandwidth-bound (~5 GiB for 4,096 tokens).
    */
   't11-cluster-wire-bottleneck': {
     lesson: '11.5-clustering-macs-mlx-distributed',
@@ -322,21 +324,21 @@ export const TRACK_11_FIGURES = {
       'pt-br': 'Memória local contra o cabo Thunderbolt 5',
     },
     caption: {
-      en: 'M5 Ultra local memory (1,200 GB/s) is 80× to 120× faster than Thunderbolt 5 (10–15 GB/s). Weights stay inside each Mac and only activations cross, creating opposite bottlenecks in decode and prefill.',
-      'pt-br': 'A memória local do M5 Ultra (1.200 GB/s) é de 80× a 120× mais rápida que o Thunderbolt 5 (10–15 GB/s). Os pesos ficam dentro de cada Mac e só as ativações atravessam, criando gargalos opostos no decode e no prefill.',
+      en: 'M5 Ultra local memory (1,200 GB/s) is ~120× faster than Thunderbolt 5’s symmetric 80 Gb/s (~10 GB/s) bidirectional ceiling. Weights stay inside each Mac and only activations cross, creating opposite bottlenecks in decode and prefill.',
+      'pt-br': 'A memória local do M5 Ultra (1.200 GB/s) é ~120× mais rápida que o teto bidirecional simétrico de 80 Gb/s (~10 GB/s) do Thunderbolt 5. Os pesos ficam dentro de cada Mac e só as ativações atravessam, criando gargalos opostos no decode e no prefill.',
     },
     steps: [
       {
-        label: { en: '80×–120× gap', 'pt-br': 'Diferença de 80× a 120×' },
+        label: { en: '~120× symmetric gap', 'pt-br': 'Diferença simétrica de ~120×' },
         caption: {
-          en: 'Thunderbolt 5 moves 80 Gb/s symmetrically (10 GB/s) or 120 Gb/s in Bandwidth Boost (15 GB/s). Because local memory runs at 1,200 GB/s, weights stay sharded on each Mac and only activations cross.',
-          'pt-br': 'O Thunderbolt 5 move 80 Gb/s simétricos (10 GB/s) ou 120 Gb/s em Bandwidth Boost (15 GB/s). Como a memória local roda a 1.200 GB/s, os pesos ficam divididos em cada Mac e só ativações atravessam.',
+          en: 'Thunderbolt 5’s 120 Gb/s Bandwidth Boost is asymmetric (120 Gb/s one way, 40 Gb/s reverse — designed for displays), so the symmetric planning ceiling for bidirectional collectives is 80 Gb/s (~10 GB/s). Against 1,200 GB/s local memory, weights stay sharded on each Mac and only activations cross.',
+          'pt-br': 'O Bandwidth Boost de 120 Gb/s do Thunderbolt 5 é assimétrico (120 Gb/s num sentido e 40 Gb/s no reverso — pensado para monitores), então o teto simétrico de planejamento para coletivos bidirecionais é de 80 Gb/s (~10 GB/s). Frente a 1.200 GB/s locais, os pesos ficam divididos em cada Mac e só ativações atravessam.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Mac A memory', 'pt-br': 'Memória do Mac A' }, detail: { en: '1,200 GB/s · weights stay local', 'pt-br': '1.200 GB/s · pesos ficam locais' }, pigment: 'success' },
-            { label: { en: 'Thunderbolt 5 link', 'pt-br': 'Link Thunderbolt 5' }, detail: { en: '10–15 GB/s · activations only', 'pt-br': '10–15 GB/s · só ativações' }, pigment: 'danger' },
+            { label: { en: 'Thunderbolt 5 link', 'pt-br': 'Link Thunderbolt 5' }, detail: { en: '80 Gb/s (~10 GB/s) symmetric · activations only', 'pt-br': '80 Gb/s (~10 GB/s) simétricos · só ativações' }, pigment: 'danger' },
             { label: { en: 'Mac B memory', 'pt-br': 'Memória do Mac B' }, detail: { en: '1,200 GB/s · weights stay local', 'pt-br': '1.200 GB/s · pesos ficam locais' }, pigment: 'success' },
           ],
         },
@@ -344,8 +346,8 @@ export const TRACK_11_FIGURES = {
       {
         label: { en: 'Decode: latency-bound', 'pt-br': 'Decode: limitado por latência' },
         caption: {
-          en: 'Lesson 9.9’s tensor-parallel model sends 128 all-reduces per token totaling 1.25 MiB—only ~0.13 ms of wire time at 10 GB/s (~0.09 ms at 15). Waiting on 128 sequential messages dominates, which is why JACCL RDMA is needed over TCP ring.',
-          'pt-br': 'O modelo de tensor parallelism da aula 9.9 envia 128 all-reduces por token somando 1,25 MiB — só ~0,13 ms de transmissão a 10 GB/s (~0,09 ms a 15). Esperar 128 mensagens em sequência domina, por isso o JACCL com RDMA é necessário sobre o ring em TCP.',
+          en: 'Lesson 9.9’s tensor-parallel model sends 128 all-reduces per token totaling 1.25 MiB — only ~0.13 ms of wire time at the 10 GB/s symmetric ceiling. Waiting on 128 sequential messages dominates, which is why JACCL RDMA is needed over TCP ring.',
+          'pt-br': 'O modelo de tensor parallelism da aula 9.9 envia 128 all-reduces por token somando 1,25 MiB — só ~0,13 ms de transmissão no teto simétrico de 10 GB/s. Esperar 128 mensagens em sequência domina, por isso o JACCL com RDMA é necessário sobre o ring em TCP.',
         },
         body: {
           kind: 'flow',
@@ -360,15 +362,15 @@ export const TRACK_11_FIGURES = {
       {
         label: { en: 'Long prefill: bandwidth-bound', 'pt-br': 'Prefill longo: limitado por bandwidth' },
         caption: {
-          en: 'A 4,096-token prefill moves ~5 GiB of activations—roughly 0.54 s at 10 GB/s (0.36 s at 15), ignoring overhead and overlap. Clustering pays off when a model outgrows one Mac’s GPU-usable pool or on long-prefill jobs.',
-          'pt-br': 'Um prefill de 4.096 tokens move ~5 GiB de ativações — cerca de 0,54 s a 10 GB/s (0,36 s a 15), sem overhead nem sobreposição. O cluster compensa quando o modelo não cabe no pool utilizável pela GPU de um Mac ou em prefills longos.',
+          en: 'A 4,096-token prefill moves ~5 GiB of activations — roughly 0.54 s at the 10 GB/s symmetric ceiling, ignoring overhead and overlap. Clustering pays off when a model outgrows one Mac’s GPU-usable pool or on long-prefill jobs.',
+          'pt-br': 'Um prefill de 4.096 tokens move ~5 GiB de ativações — cerca de 0,54 s no teto simétrico de 10 GB/s, sem overhead nem sobreposição. O cluster compensa quando o modelo não cabe no pool utilizável pela GPU de um Mac ou em prefills longos.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: '4,096-token prompt', 'pt-br': 'Prompt de 4.096 tokens' }, detail: { en: 'bulk prefill pass', 'pt-br': 'passada em bloco do prefill' }, pigment: 'muted' },
             { label: { en: '~5 GiB activations', 'pt-br': '~5 GiB de ativações' }, detail: { en: 'transferred over the link', 'pt-br': 'transferidos pelo link' }, pigment: 'accent' },
-            { label: { en: '~0.54 s at 10 GB/s', 'pt-br': '~0,54 s a 10 GB/s' }, detail: { en: '~0.36 s at 15 GB/s heuristic', 'pt-br': 'heurística de ~0,36 s a 15 GB/s' }, pigment: 'caution' },
+            { label: { en: '~0.54 s at 10 GB/s', 'pt-br': '~0,54 s a 10 GB/s' }, detail: { en: 'symmetric planning heuristic (no overlap)', 'pt-br': 'heurística simétrica (sem sobreposição)' }, pigment: 'caution' },
             { label: { en: 'Bandwidth-bound', 'pt-br': 'Limitado por bandwidth' }, detail: { en: 'pays off on fit or long prefill', 'pt-br': 'compensa em capacidade ou prefill' }, pigment: 'success' },
           ],
         },
