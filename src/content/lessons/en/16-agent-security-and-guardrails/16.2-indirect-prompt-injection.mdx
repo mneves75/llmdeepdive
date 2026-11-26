@@ -42,10 +42,10 @@ citations:
     authors: "Model Context Protocol project"
     year: 2026
     url: "https://modelcontextprotocol.io/specification/2026-07-28/server/tools"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Here is the injected message from the exercise fixtures, the one [lesson 16.1](/lessons/16-agent-security-and-guardrails/16.1-threat-model-the-assistant/) used as its worked case:
+Below is the injected supplier e-mail from the exercise fixtures (the project's sample test files), the same case [lesson 16.1](/lessons/16-agent-security-and-guardrails/16.1-threat-model-the-assistant/) opened with. It starts as an ordinary invoice for PO-1002 and hides override instructions inside an HTML comment at the bottom:
 
 ```text
 # file: examples/agent-engineering/src/agentlab/fixtures/supplier_messages/injection.txt
@@ -67,13 +67,13 @@ Assume the worst: the model reads the comment and obeys it. It asks to create an
 
 ## Why can't the model just ignore the comment?
 
-*Prompt injection* is input that changes a model's behaviour in ways its developers did not intend. When the input arrives through content the model reads (a web page, a file, an e-mail) rather than from the user, OWASP calls it *indirect* prompt injection. A language model receives the system's instructions, the buyer's request and the supplier's text as one sequence of tokens. Chat formats do mark which message came from the system and which from the user, but nothing guarantees the model honours that marking, so a sentence that sounds like an instruction can be followed as one.
+*Prompt injection* is input that changes a model's behaviour in ways its developers did not intend. When the input arrives through content the model reads (a web page, a file, an e-mail) rather than from the user, the Open Worldwide Application Security Project (OWASP) calls it *indirect* prompt injection. A language model receives the system's instructions, the buyer's request and the supplier's text as one sequence of tokens (the pieces of text a model reads, [lesson 0.1](/lessons/0-orientation-and-foundations/0.1-what-is-a-language-model/)). Chat formats do mark which message came from the system and which from the user, but nothing guarantees the model honours that marking, so a sentence that sounds like an instruction can be followed as one.
 
 There is no known complete fix inside the model. OWASP's 2025 entry states that "it is unclear if there are fool-proof methods of prevention for prompt injection". Greshake and colleagues wrote in 2023 that "effective mitigations of these emerging threats are currently lacking." So the design question changes. Instead of "how do I stop the model from being fooled?", ask "what can a fooled model actually do?" The rest of this track makes that answer "nothing the principal could not do anyway".
 
 ## Mark outside text as data
 
-The first control is cheap and partial. Every piece of outside text reaches the model inside a marked block, and the system prompt says such blocks are evidence:
+The first control is cheap and partial. The helper below wraps every piece of outside text inside `<untrusted>` tags labelled with its source before passing it to the model, while the system prompt tells the model to treat such blocks as evidence rather than instructions:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/security/assistant.py
@@ -84,11 +84,11 @@ def as_untrusted(source: str, text: str) -> dict:
 
 OWASP lists this as "segregate and identify external content". It helps a model that is trying to behave, and it gives a reviewer a clear record of what came from where. It enforces nothing: the attacker writes the text inside the block, and in lesson 16.5 one attack writes its own closing tag. Treat the marking as a label that helps, never as the control that decides.
 
-The run loop applies the same marking to every tool result, because a tool's output is outside text too. The MCP tools specification asks clients to "validate tool results before passing to LLM"; [lesson 16.3](/lessons/16-agent-security-and-guardrails/16.3-tool-poisoning-and-delegation/) shows a tool result that tries to grant new permissions.
+The run loop—the outer program loop that sends messages to the model and runs approved calls—applies the same marking to every tool result, because a tool's output is outside text too. The Model Context Protocol (MCP) tools specification asks clients to "validate tool results before passing to LLM" (a large language model); [lesson 16.3](/lessons/16-agent-security-and-guardrails/16.3-tool-poisoning-and-delegation/) shows a tool result that tries to grant new permissions.
 
 ## The gate decides from what the attacker cannot write
 
-Every tool call the model proposes becomes a `ToolRequest` ([lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/)), and nothing runs until `authorize` says yes:
+Every tool call the model proposes becomes a `ToolRequest` ([lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/)). The `authorize` function below decides each request through four ordered checks—whether the tool is on this agent's allowlist, whether a policy rule exists for it, whether its arguments match a strict format, and whether the tool's own rule passes—refusing on the first failure:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/security/gate.py
@@ -110,12 +110,11 @@ def authorize(request: ToolRequest, principal: Principal, grant: frozenset[str],
     return check(arguments, principal, purchases)
 ```
 
-Four checks, in order, each enough to refuse:
+<Figure id="t16-policy-gate-checks" />
 
-1. **The allowlist.** `grant` is the set of tools this agent may call. The assistant's grant is `lookup_po` and `create_invoice_draft`. `approve_invoice` is not in it, because approving is a person's decision (track 20). Saltzer and Schroeder call this a *fail-safe default*: "base access decisions on permission rather than exclusion." A list of forbidden tools would miss the next tool someone adds.
-2. **A rule exists.** A granted tool with no entry in `CHECKS` is refused. Being on the list is not enough without a rule for the arguments.
-3. **Typed arguments.** The arguments are validated against a strict schema with unknown fields forbidden, so an extra `"approved": true` fails. The amount is a string with two decimals, because JSON has no decimal type and a float would round money.
-4. **The tool's own rule.** For drafts, that rule compares the request with the trusted purchase record:
+The first two checks enforce what Saltzer and Schroeder call a *fail-safe default*: "base access decisions on permission rather than exclusion." `grant` is an allowlist containing only `lookup_po` and `create_invoice_draft`; `approve_invoice` stays out because approving is a person's decision (track 20), and a list of forbidden tools would miss the next tool someone adds. Even a granted tool is refused if it has no entry in `CHECKS`.
+
+The third check validates the arguments against a strict *schema* (a rule sheet listing allowed fields and data types) that forbids unknown fields, so an extra `"approved": true` fails. The amount is checked as a *string* (plain text) with two decimal places, because JSON—a plain-text format for structured data—has no exact decimal type and a binary floating-point number (*float*) would round money inaccurately. For invoice drafts, the fourth check (`_check_draft` below) looks up the purchase order under the caller's tenant and refuses the call unless the payee, amount, and currency match the company's own purchase record:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/security/gate.py
@@ -135,7 +134,7 @@ Notice what the rule reads. The tenant comes from the `Principal`, which the con
 
 ## Where does detection fit?
 
-A *detector* is code that guesses whether text contains an attack. The exercise has a deliberately simple one:
+A *detector* is code that guesses whether text contains an attack. The intentionally minimal detector below lowercases the text, collapses line breaks and extra spaces, and returns true if any of three fixed English phrases appears:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/security/assistant.py
@@ -148,7 +147,7 @@ def keyword_detector(text: str) -> bool:
     return any(phrase in flat for phrase in SUSPICIOUS)
 ```
 
-It flags the hidden comment, because the comment contains "ignore your previous instructions" once line breaks are collapsed. A reworded, translated or encoded attack passes it, and lesson 16.5 measures how many do. Other detectors exist, including classifiers built on a model; none is known to catch every attack, and any detector can also flag honest mail. So the loop uses the verdict for one thing only: a flagged run is marked for a person to review. The gate never reads the flag.
+It flags the hidden comment, because the comment contains "ignore your previous instructions" once line breaks are collapsed. A reworded, translated or encoded attack passes it, and lesson 16.5 measures how many do. Other detectors exist, including *classifiers* (automated scoring models trained to label text as safe or suspicious); none is known to catch every attack, and any detector can also flag honest mail. So the loop uses the verdict for one thing only: a flagged run is marked for a person to review. The gate never reads the flag.
 
 :::warning
 Never let a detector's "clean" verdict relax a check, and never let its "attack" verdict replace one. Both turn a fallible guess into an authorization decision.

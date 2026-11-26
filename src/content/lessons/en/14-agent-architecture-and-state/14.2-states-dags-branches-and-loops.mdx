@@ -38,24 +38,24 @@ citations:
     authors: "Erik Schluntz and Barry Zhang, Anthropic"
     year: 2024
     url: "https://www.anthropic.com/engineering/building-effective-agents"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Purchase order PO-1003 is for 25 packs of safety gloves. The supplier's invoice arrives without a quantity, so the assistant asks for it, the supplier replies, the invoice is checked again and this time it passes. That run went `received → checked → needs_info → checked → ready → completed`. The question for this lesson is how to write those moves down so that code can refuse a move that makes no sense and stop a loop that never settles. The word you will hear for this is "graph", and it hides three different ideas.
 
 ## Which kind of graph is a run?
 
-A *directed graph* is a set of nodes joined by arrows. It allows any arrows, including ones that lead back to where you started.
+A *directed graph* is a set of *nodes* (points representing items or states) joined by one-way arrows. It allows any arrows, including ones that lead back to where you started.
 
-A *DAG* (directed acyclic graph) is a directed graph "with no path that starts and ends at the same vertex", in the words of NIST's Dictionary of Algorithms and Data Structures. This course's lessons form one: each lesson lists its prerequisites, and the repository's `content:graph` check, which runs in CI, fails if those links ever form a cycle. A cycle there would mean some lesson could never be reached.
+A *DAG* (directed acyclic graph) is a directed graph "with no path that starts and ends at the same vertex" (where *vertex* is another word for node), in the words of NIST's Dictionary of Algorithms and Data Structures. This course's lessons form one: each lesson lists its prerequisites, and the repository's `content:graph` check, which runs in CI (continuous integration, the automated test suite), fails if those links ever form a cycle. A cycle there would mean some lesson could never be reached.
 
 The run above is not a DAG. The path `checked → needs_info → checked` returns to its start. That is a *cycle*, and it is fine: an execution graph may loop, while the prerequisite graph must not. Keep the two apart: calling a looping workflow a "DAG" hides the one property you most need to control.
 
-The third idea is the one the run uses. A *finite-state machine* is, in NIST's definition, a model with "a set of states, a start state, an input alphabet, and a transition function". Here the states are the run's statuses, the start state is `received`, and the transition function is a table that says which status may follow which. A DAG's nodes are usually separate pieces of work, each done once. A state machine's nodes are the conditions of one run, and a run may visit the same one many times.
+The third idea is the one the run uses. A *finite-state machine* is, in NIST's definition, a model with "a set of states, a start state, an input alphabet, and a transition function". Here the states are the run's statuses, the start state is `received`, the input alphabet is the set of proposed next statuses, and the transition function is a table that says which status may follow which. A DAG's nodes are usually separate pieces of work, each done once. A state machine's nodes are the conditions of one run, and a run may visit the same one many times.
 
 ## The run's transition table
 
-The project writes the table as a dictionary from each status to the set of statuses allowed next:
+The project writes the table as a Python dictionary (a lookup table pairing each key with a value) where each status maps to a `frozenset` (a fixed set that code cannot edit while running) of statuses allowed next. `TERMINAL` lists the three end statuses, and `TRANSITIONS` holds the full table:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/transitions.py
@@ -75,11 +75,11 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 
 Four features are visible in it. The *branch* is the `checked` row: the run goes to `needs_info` or to `ready`. The *loop* is `needs_info`, whose row leads back to `checked`. The *pause* is `needs_info` too, because the run waits there for the supplier. The *terminal states* have empty rows, so nothing ever leaves `completed`, `failed` or `cancelled`. Every live status can also move to `cancelled`, for a person who stops the run, or to `failed`, for an error.
 
-Why a table and not a chain of `if` statements spread through the code? Because the table is data you can read in one screen. A reviewer can see every legal move at once, and a change to the rules shows up as a one-line difference in review. A test can also walk every row, which is much harder when the rules hide inside the functions that do the work. Later tracks build on the same idea. Track 23, for example, judges a run by whether its path was a permitted one, rather than by whether it matched one fixed "golden" sequence of steps.
+Why a table and not a chain of `if` statements (conditional branches) spread through the code? Because the table is data you can read in one screen. A reviewer can see every legal move at once, and a change to the rules shows up as a one-line difference in review. A test can also walk every row, which is much harder when the rules hide inside the functions that do the work. Later tracks build on the same idea. Track 23, for example, judges a run by whether its path was a permitted one, rather than by whether it matched one fixed "golden" sequence of steps.
 
 ## Why does a loop need a budget?
 
-A loop with an exit is sound code. The risk is a loop whose exit depends on something outside your control, such as a supplier who never answers or a model that keeps proposing `needs_info`. Anthropic's guidance notes that agents commonly include "stopping conditions (such as a maximum number of iterations) to maintain control". The project's `RunState` record carries a `step` counter and a `max_steps` limit, and `advance` enforces both:
+A loop with an exit is sound code. The risk is a loop whose exit depends on something outside your control, such as a supplier who never answers or a model that keeps proposing `needs_info`. Anthropic's guidance notes that agents commonly include "stopping conditions (such as a maximum number of iterations) to maintain control". The project's `RunState` record carries a `step` counter and a `max_steps` limit. The `advance` function below checks whether the proposed status appears in the current status's row (raising `IllegalTransition` if not), adds 1 to `step`, switches the target to `failed` if the budget runs out before a terminal state, and returns a validated new record:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/transitions.py
@@ -97,17 +97,17 @@ def advance(state: RunState, to: str) -> RunState:
     return RunState.model_validate({**state.model_dump(), "status": to, "step": step})
 ```
 
-Read the budget rule as: the move that would use the last step without finishing the run ends it in `failed` instead. With `max_steps=5` and a supplier who never answers, moves 1 to 4 go `checked`, `needs_info`, `checked`, `needs_info`. Move 5 proposes `checked`, but the run cannot finish on that move, so it fails at step 5.
+Read the budget rule as: the move that would use the last step without finishing the run ends it in `failed` instead. Step through the three paths below to compare a straight run, one revision loop, and a loop stopped at `max_steps=5`.
 
 <Figure id="agent-run-paths" />
 
 :::warning
-Writing a run as a state machine does not by itself make it reliable. A bounded loop is as correct as a state machine; what decides whether a run survives a crash is whether its state is persisted, how a replay treats side effects, and whether two workers can overwrite each other. Those are the next two lessons.
+Writing a run as a state machine does not by itself make it reliable. A bounded loop is as correct as a state machine; what decides whether a run survives a crash is whether its state is persisted (saved to durable storage), how a replay (re-running after a restart) treats side effects (changes in external systems), and whether two workers (separate running copies of the program) can overwrite each other. Those are the next two lessons.
 :::
 
 ## The model proposes and the table decides
 
-In an agent, the model chooses the next status. In this project it never sets the status directly. The driver loop asks for a proposal and passes it through `advance`:
+In an agent, the model chooses the next status. In this project it never sets the status directly. The driver loop below keeps asking the `decide` function for a proposed next status and passing it through `advance`, stopping as soon as the run reaches `completed`, `failed` or `cancelled`:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/transitions.py
@@ -128,4 +128,4 @@ In the tests, `decide` reads the reply of a `ScriptedModel`, the project's offli
 
 The module is `src/agentlab/state/transitions.py`; the tests are in `tests/test_state_transitions.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_state_transitions.py"`.
 
-Expected output ends with `Ran 6 tests` and `OK`. The failure case to try: in `advance`, replace `to = "failed"` with `pass`. The test `test_a_loop_that_never_settles_stops_at_the_budget` now errors with `ScriptExhausted`. The loop ran past its budget until the scripted model had no replies left. With a live model nothing would run out, and the run would keep going. Restore the line, then continue to [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/), where this state has to survive a restart.
+Expected output ends with `Ran 6 tests` and `OK`. The failure case to try: in `advance`, replace `to = "failed"` with `pass` (a Python statement that does nothing). The test `test_a_loop_that_never_settles_stops_at_the_budget` now errors with `ScriptExhausted`. The loop ran past its budget until the scripted model had no replies left. With a live model nothing would run out, and the run would keep going. Restore the line, then continue to [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/), where this state has to survive a restart.
