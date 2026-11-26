@@ -86,8 +86,8 @@ export const TRACK_15_FIGURES = {
     lesson: '15.2-json-rpc-and-protocol-lifecycle',
     title: { en: 'A stateless MCP lifecycle over stdio', 'pt-br': 'Um ciclo de vida MCP sem estado via stdio' },
     caption: {
-      en: 'In MCP revision 2026-07-28 there is no initialize handshake. Every request declares its own version and capabilities in params._meta, responses match by id, and nothing lives in the connection.',
-      'pt-br': 'Na revisão 2026-07-28 do MCP não há handshake initialize. Cada requisição declara a própria versão e as capacidades em params._meta, as respostas casam pelo id e nada fica guardado na conexão.',
+      en: 'In MCP revision 2026-07-28 there is no initialize handshake. Every request declares its own version and capabilities in params._meta, responses match by id, and no session state is negotiated (though open subscriptions end on disconnect and must be recreated).',
+      'pt-br': 'Na revisão 2026-07-28 do MCP não há handshake initialize. Cada requisição declara a própria versão e as capacidades em params._meta, as respostas casam pelo id e não há sessão negociada (embora assinaturas abertas terminem ao desconectar e precisem ser recriadas).',
     },
     steps: [
       {
@@ -151,8 +151,8 @@ export const TRACK_15_FIGURES = {
     lesson: '15.3-tools-resources-prompts-and-discovery',
     title: { en: 'What the server offers vs. what the model may call', 'pt-br': 'O que o servidor oferece vs. o que o modelo pode chamar' },
     caption: {
-      en: 'ToolCatalog keeps offered definitions separate from user approvals, pinned by a SHA-256 hash of the whole definition. A new tool or a rewritten description cannot run until a person approves it.',
-      'pt-br': 'ToolCatalog mantém as definições oferecidas separadas das aprovações do usuário, presas a um hash SHA-256 da definição inteira. Uma ferramenta nova ou reescrita não roda até uma pessoa aprová-la.',
+      en: 'ToolCatalog keeps offered definitions separate from user approvals, pinned by a SHA-256 hash of the whole definition. Once refreshed, a new tool or a rewritten description cannot run until a person approves it.',
+      'pt-br': 'ToolCatalog mantém as definições oferecidas separadas das aprovações do usuário, presas a um hash SHA-256 da definição inteira. Após atualizar o catálogo, uma ferramenta nova ou reescrita não roda até uma pessoa aprová-la.',
     },
     steps: [
       {

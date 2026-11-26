@@ -77,7 +77,7 @@ export const TRACK_14_FIGURES = {
             { label: { en: 'Disputed delivery', 'pt-br': 'Entrega contestada' }, detail: { en: '40 billed vs 36 received', 'pt-br': '40 cobradas vs 36 recebidas' }, pigment: 'muted' },
             { label: { en: 'Model picks next tool', 'pt-br': 'Modelo escolhe a ferramenta' }, detail: { en: 'look up order, ask supplier, split', 'pt-br': 'consultar pedido, perguntar, dividir' }, pigment: 'caution' },
             { label: { en: 'Code enforces bounds', 'pt-br': 'Código impõe os limites' }, detail: { en: 'transition table & step budget', 'pt-br': 'tabela de transições e orçamento' }, pigment: 'accent' },
-            { label: { en: 'Record agreed invoice', 'pt-br': 'Registrar fatura acordada' }, detail: { en: 'loop ends when resolved or capped', 'pt-br': 'laço encerra ao resolver ou atingir limite' }, pigment: 'accent' },
+            { label: { en: 'Resolve or fail cleanly', 'pt-br': 'Resolver ou falhar com limite' }, detail: { en: 'records invoice if agreed, or ends in failed at budget cap', 'pt-br': 'registra fatura se acordada, ou termina em failed no limite' }, pigment: 'accent' },
             outcomeAssertion,
           ],
         },
@@ -175,8 +175,8 @@ export const TRACK_14_FIGURES = {
     lesson: '14.3-checkpoints-and-serialization',
     title: { en: 'How save handles commits, crashes and two writers', 'pt-br': 'Como save trata commits, quedas e dois escritores' },
     caption: {
-      en: 'Every write runs inside one SQLite transaction guarded by WHERE version = ?. A crash leaves nothing half-written, and a second writer on a stale version is rejected.',
-      'pt-br': 'Cada escrita roda numa única transação SQLite protegida por WHERE version = ?. Uma queda não deixa nada pela metade, e um segundo escritor numa versão antiga é rejeitado.',
+      en: 'Each write runs inside one SQLite transaction: initial creation uses INSERT … ON CONFLICT and subsequent updates guard against races with WHERE version = ?. A crash leaves nothing half-written, and a stale writer is rejected.',
+      'pt-br': 'Cada escrita roda numa única transação SQLite: a criação inicial usa INSERT … ON CONFLICT e atualizações seguintes protegem contra corridas com WHERE version = ?. Uma queda não deixa nada pela metade, e um escritor antigo é rejeitado.',
     },
     steps: [
       {
@@ -256,7 +256,7 @@ export const TRACK_14_FIGURES = {
           steps: [
             { label: { en: 'receive finishes', 'pt-br': 'receive termina' }, detail: { en: 'checkpoint saved to SQLite', 'pt-br': 'checkpoint gravado no SQLite' }, pigment: 'accent' },
             { label: { en: 'check crashes', 'pt-br': 'check cai no meio' }, detail: { en: 'attempt 1 raises RuntimeError', 'pt-br': 'tentativa 1 levanta RuntimeError' }, pigment: 'danger' },
-            { label: { en: 'Process restarts', 'pt-br': 'Processo reinicia' }, detail: { en: 'resumes via invoke(None, config)', 'pt-br': 'retoma via invoke(None, config)' }, pigment: 'muted' },
+            { label: { en: 'Graph reopened from SQLite', 'pt-br': 'Grafo reaberto do SQLite' }, detail: { en: 'resumes via invoke(None, config)', 'pt-br': 'retoma via invoke(None, config)' }, pigment: 'muted' },
             { label: { en: 'check runs again', 'pt-br': 'check roda de novo' }, detail: { en: 'receive: 1 call · check: 2 calls', 'pt-br': 'receive: 1 chamada · check: 2 chamadas' }, pigment: 'caution' },
             { label: { en: 'complete finishes', 'pt-br': 'complete termina' }, detail: { en: 'final status: completed', 'pt-br': 'status final: completed' }, pigment: 'success' },
           ],

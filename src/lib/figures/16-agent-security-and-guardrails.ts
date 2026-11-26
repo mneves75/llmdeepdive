@@ -125,8 +125,8 @@ export const TRACK_16_FIGURES = {
       {
         label: { en: 'Tuesday: server drifts', 'pt-br': 'Terça: o servidor muda' },
         caption: {
-          en: 'review_catalog hashes Tuesday’s catalog and pulls every mismatch out of usable. Nothing new, edited, relabelled, or removed can run until a person approves it again.',
-          'pt-br': 'review_catalog calcula o hash do catálogo de terça e tira toda divergência de usable. Nada novo, editado, rerrotulado ou removido roda até uma pessoa aprovar de novo.',
+          en: 'review_catalog hashes Tuesday’s catalog and classifies every discrepancy into changed, new, or missing (if a pinned tool disappeared; returning with its original fingerprint can reuse its pin). None of Tuesday’s altered or new tools can run without fresh human approval.',
+          'pt-br': 'review_catalog calcula o hash do catálogo de terça e classifica cada divergência em changed, new ou missing (se uma ferramenta fixada sumir; voltando com a impressão original ela pode reutilizar a aprovação). Nenhuma ferramenta nova ou alterada de terça roda sem nova aprovação humana.',
         },
         body: {
           kind: 'flow',
@@ -134,7 +134,7 @@ export const TRACK_16_FIGURES = {
             { label: { en: 'lookup_po reworded', 'pt-br': 'lookup_po reescrita' }, detail: { en: 'bucket: changed · suspended', 'pt-br': 'lista: changed · suspensa' }, pigment: 'danger' },
             { label: { en: 'create_invoice_draft relabelled', 'pt-br': 'create_invoice_draft rerrotulada' }, detail: { en: 'bucket: changed · suspended', 'pt-br': 'lista: changed · suspensa' }, pigment: 'danger' },
             { label: { en: 'approve_invoice added', 'pt-br': 'approve_invoice incluída' }, detail: { en: 'bucket: new · blocked', 'pt-br': 'lista: new · bloqueada' }, pigment: 'caution' },
-            { label: { en: 'Removed tool', 'pt-br': 'Ferramenta removida' }, detail: { en: 'bucket: missing · unusable', 'pt-br': 'lista: missing · inutilizável' }, pigment: 'muted' },
+            { label: { en: 'If a pinned tool disappears', 'pt-br': 'Se uma ferramenta fixada sumir' }, detail: { en: 'bucket: missing · absent from usable', 'pt-br': 'lista: missing · fora de usable' }, pigment: 'muted' },
           ],
         },
       },
@@ -238,8 +238,8 @@ export const TRACK_16_FIGURES = {
       {
         label: { en: '1. Run corpus + control', 'pt-br': '1. Rodar corpus + controle' },
         caption: {
-          en: 'Every attack pairs a synthetic message with a scripted obedient model. _harm ignores model prose and inspects the back office and rendered screen; the benign control ensures honest work still succeeds.',
-          'pt-br': 'Cada ataque junta uma mensagem sintética a um modelo roteirizado obediente. _harm ignora o texto do modelo e inspeciona o back office e a tela renderizada; o controle benigno garante que trabalho honesto ainda passe.',
+          en: 'Every attack pairs a synthetic message with a scripted obedient model. _harm ignores model prose and inspects the back office and renderer output string; the benign control ensures honest work still succeeds.',
+          'pt-br': 'Cada ataque junta uma mensagem sintética a um modelo roteirizado obediente. _harm ignora o texto do modelo e inspeciona o back office e a string produzida pelo renderizador; o controle benigno garante que trabalho honesto ainda passe.',
         },
         body: {
           kind: 'flow',
