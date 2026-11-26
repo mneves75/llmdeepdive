@@ -49,16 +49,31 @@ const rnnUnitLine = {
 const rnnVanishingPoints = RNN_STEPS.map((k) => [k, log10Pow(0.5, k)] as const)
 const rnnExplodingPoints = RNN_STEPS.map((k) => [k, log10Pow(1.5, k)] as const)
 
-/** 3.3: Forget-gate retention f^k across 100 steps for four gate values. */
-const GATE_STEPS = [0, 1, 2, 3, 5, 10, 20, 30, 40, 50, 70, 100] as const
-const retained = (gate: number): readonly (readonly [number, number])[] =>
-  GATE_STEPS.map((k) => [k, Number((gate ** k).toFixed(4))] as const)
-const gateAxes = {
+/** 3.3: Forget-gate retention f^k on step ranges where every curve stays >= 0.0002 (never rounds to 0). */
+const GATE_LONG_STEPS = [0, 5, 10, 20, 30, 40, 50, 60, 70, 80] as const
+const GATE_SHORT_STEPS = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12] as const
+const retained = (gate: number, steps: readonly number[]): readonly (readonly [number, number])[] =>
+  steps.map((k) => [k, Number((gate ** k).toFixed(4))] as const)
+const gateAxesLong = {
   xAxis: {
     label: { en: 'Steps elapsed', 'pt-br': 'Passos decorridos' },
     scale: 'linear',
     min: 0,
-    max: 100,
+    max: 80,
+  },
+  yAxis: {
+    label: { en: 'Retained signal fraction', 'pt-br': 'Fração de sinal retida' },
+    scale: 'linear',
+    min: 0,
+    max: 1,
+  },
+} as const
+const gateAxesShort = {
+  xAxis: {
+    label: { en: 'Steps elapsed', 'pt-br': 'Passos decorridos' },
+    scale: 'linear',
+    min: 0,
+    max: 12,
   },
   yAxis: {
     label: { en: 'Retained signal fraction', 'pt-br': 'Fração de sinal retida' },
@@ -107,7 +122,7 @@ export const TRACK_3_FIGURES = {
    */
   't3-state-memory-curve': {
     lesson: '3.1-modelling-sequences',
-    derivedFrom: '7.2-the-kv-cache',
+    derivedFrom: '7-inference-and-efficiency/7.2-the-kv-cache',
     title: {
       en: 'Flat state versus growing cache inside Qwen3.8-27B',
       'pt-br': 'Estado plano contra cache crescente no Qwen3.8-27B',
@@ -200,8 +215,8 @@ export const TRACK_3_FIGURES = {
       {
         label: { en: 'Exploding (w = 1.5)', 'pt-br': 'Exploding (w = 1,5)' },
         caption: {
-          en: 'Raise w to 1.5 and 50 steps reach 1.5⁵⁰ ≈ 6.4 × 10⁸ (power +8.80). Gradient clipping caps this spike after the fact, but cannot lift the muted 0.5⁵⁰ curve back up.',
-          'pt-br': 'Suba w para 1,5 e 50 passos chegam a 1,5⁵⁰ ≈ 6,4 × 10⁸ (potência +8,80). O gradient clipping corta esse pico depois do cálculo, mas não ergue de volta a curva apagada de 0,5⁵⁰.',
+          en: 'Raise |w| to 1.5 and the 50-step upper bound on norm growth reaches 1.5⁵⁰ ≈ 6.4 × 10⁸ (power +8.80). The actual gradient can still shrink depending on activations and directions, rather than always spiking; when spikes do occur, gradient clipping caps them after the fact, but cannot lift the muted 0.5⁵⁰ curve back up.',
+          'pt-br': 'Suba |w| para 1,5 e o limite superior de crescimento da norma em 50 passos chega a 1,5⁵⁰ ≈ 6,4 × 10⁸ (potência +8,80). O gradiente real ainda pode encolher dependendo das ativações e direções, sem garantia de pico; quando picos ocorrem, o gradient clipping os corta depois do cálculo, mas não ergue de volta a curva apagada de 0,5⁵⁰.',
         },
         body: {
           kind: 'plot',
@@ -214,13 +229,13 @@ export const TRACK_3_FIGURES = {
               points: rnnVanishingPoints,
             },
             {
-              label: { en: 'w = 1.5 (exploding)', 'pt-br': 'w = 1,5 (exploding)' },
+              label: { en: 'w = 1.5 (upper bound)', 'pt-br': 'w = 1,5 (limite superior)' },
               pigment: 'danger',
               points: rnnExplodingPoints,
               marks: [
                 {
                   at: [50, log10Pow(1.5, 50)],
-                  label: { en: '≈ 6.4 × 10⁸', 'pt-br': '≈ 6,4 × 10⁸' },
+                  label: { en: 'bound ≈ 6.4 × 10⁸', 'pt-br': 'limite ≈ 6,4 × 10⁸' },
                 },
               ],
             },
@@ -232,7 +247,7 @@ export const TRACK_3_FIGURES = {
 
   /**
    * 3.3 shows how small shifts in the LSTM forget gate f^k change reach over
-   * 100 steps, and why initializing the forget-gate bias at 0 vs. 3 changes
+   * time, and why initializing the forget-gate bias at 0 vs. 3 changes
    * whether long-range gradients exist at all.
    */
   't3-forget-gate-halflife': {
@@ -242,35 +257,35 @@ export const TRACK_3_FIGURES = {
       'pt-br': 'Uma pequena mudança no forget gate altera o alcance da memória',
     },
     caption: {
-      en: 'Fraction fᵏ of a cell value surviving along the direct forget-gate path over 100 steps. Gates set an exponential half-life rather than permanent storage.',
-      'pt-br': 'Fração fᵏ de um valor da célula que sobrevive pelo caminho direto do forget gate ao longo de 100 passos. Gates definem uma meia-vida exponencial, não armazenamento permanente.',
+      en: 'Fraction fᵏ of a cell value surviving along the direct forget-gate path (plotted over step ranges where every curve stays above 0.0001; exponential retention remains strictly positive for all k). Gates set an exponential half-life rather than permanent storage.',
+      'pt-br': 'Fração fᵏ de um valor da célula que sobrevive pelo caminho direto do forget gate (traçada em faixas de passos onde toda curva permanece acima de 0,0001; a retenção exponencial continua estritamente positiva para todo k). Gates definem uma meia-vida exponencial, não armazenamento permanente.',
     },
     steps: [
       {
         label: { en: '0.99 versus 0.90', 'pt-br': '0,99 contra 0,90' },
         caption: {
-          en: 'At f = 0.99, about 36.6 percent survives 100 steps. Lowering the gate to 0.90 leaves 2.7 × 10⁻⁵ at step 100 — virtually zero.',
-          'pt-br': 'Em f = 0,99, cerca de 36,6 por cento sobrevive a 100 passos. Baixar o gate para 0,90 deixa 2,7 × 10⁻⁵ no passo 100 — praticamente zero.',
+          en: 'At f = 0.99, 0.448 survives 80 steps (and 0.366 survives 100). Lowering the gate to 0.90 drops retention to 0.0002 at step 80 and 2.7 × 10⁻⁵ at step 100 — tiny, though never identically zero.',
+          'pt-br': 'Em f = 0,99, 0,448 sobrevive a 80 passos (e 0,366 a 100). Baixar o gate para 0,90 reduz a retenção para 0,0002 no passo 80 e 2,7 × 10⁻⁵ no passo 100 — minúscula, embora nunca identicamente zero.',
         },
         body: {
           kind: 'plot',
-          ...gateAxes,
+          ...gateAxesLong,
           series: [
             {
-              label: { en: 'f = 0.99 (0.366 at step 100)', 'pt-br': 'f = 0,99 (0,366 no passo 100)' },
+              label: { en: 'f = 0.99 (0.448 at 80; 0.366 at 100)', 'pt-br': 'f = 0,99 (0,448 em 80; 0,366 em 100)' },
               pigment: 'success',
-              points: retained(0.99),
+              points: retained(0.99, GATE_LONG_STEPS),
               marks: [
                 {
-                  at: [100, Number((0.99 ** 100).toFixed(4))],
-                  label: { en: '0.366 at 100', 'pt-br': '0,366 em 100' },
+                  at: [80, Number((0.99 ** 80).toFixed(4))],
+                  label: { en: '0.448 at 80', 'pt-br': '0,448 em 80' },
                 },
               ],
             },
             {
-              label: { en: 'f = 0.90 (≈ 0 at step 100)', 'pt-br': 'f = 0,90 (≈ 0 no passo 100)' },
+              label: { en: 'f = 0.90 (0.0002 at 80; 2.7×10⁻⁵ at 100)', 'pt-br': 'f = 0,90 (0,0002 em 80; 2,7×10⁻⁵ em 100)' },
               pigment: 'caution',
-              points: retained(0.9),
+              points: retained(0.9, GATE_LONG_STEPS),
               marks: [
                 {
                   at: [10, Number((0.9 ** 10).toFixed(4))],
@@ -284,33 +299,33 @@ export const TRACK_3_FIGURES = {
       {
         label: { en: 'Bias 0 versus bias 3', 'pt-br': 'Bias 0 contra bias 3' },
         caption: {
-          en: 'With bias 0, the gate starts at 0.5 and loses half its signal every single step (≈ 8 × 10⁻³¹ at step 100). Bias 3 starts near 0.953 and keeps ≈ 0.008 at step 100, so training has a gradient to work with.',
-          'pt-br': 'Com bias 0, o gate começa em 0,5 e perde metade do sinal a cada passo (≈ 8 × 10⁻³¹ no passo 100). O bias 3 parte perto de 0,953 e preserva ≈ 0,008 no passo 100, dando ao treino um gradiente utilizável.',
+          en: 'Zoomed to the first 12 steps: with bias 0, the gate starts at 0.5 and halves every step to 0.001 at step 10 and 0.0002 at step 12 (≈ 8 × 10⁻³¹ by step 100). Bias 3 starts near 0.953 and keeps 0.618 at step 10 (≈ 0.008 at step 100), so training has a gradient to work with.',
+          'pt-br': 'Nos primeiros 12 passos: com bias 0, o gate começa em 0,5 e cai pela metade a cada passo até 0,001 no passo 10 e 0,0002 no passo 12 (≈ 8 × 10⁻³¹ no passo 100). O bias 3 parte perto de 0,953 e preserva 0,618 no passo 10 (≈ 0,008 no passo 100), dando ao treino um gradiente utilizável.',
         },
         body: {
           kind: 'plot',
-          ...gateAxes,
+          ...gateAxesShort,
           series: [
             {
               label: { en: 'f = 0.99 (reference)', 'pt-br': 'f = 0,99 (referência)' },
               pigment: 'muted',
-              points: retained(0.99),
+              points: retained(0.99, GATE_SHORT_STEPS),
             },
             {
               label: { en: 'Bias 3 → f ≈ 0.953', 'pt-br': 'Bias 3 → f ≈ 0,953' },
               pigment: 'accent',
-              points: retained(0.953),
+              points: retained(0.953, GATE_SHORT_STEPS),
               marks: [
                 {
-                  at: [30, Number((0.953 ** 30).toFixed(4))],
-                  label: { en: 'bias 3 (0.236 at 30)', 'pt-br': 'bias 3 (0,236 em 30)' },
+                  at: [10, Number((0.953 ** 10).toFixed(4))],
+                  label: { en: 'bias 3: 0.618 at 10', 'pt-br': 'bias 3: 0,618 em 10' },
                 },
               ],
             },
             {
               label: { en: 'Bias 0 → f = 0.50', 'pt-br': 'Bias 0 → f = 0,50' },
               pigment: 'danger',
-              points: retained(0.5),
+              points: retained(0.5, GATE_SHORT_STEPS),
               marks: [
                 {
                   at: [1, 0.5],

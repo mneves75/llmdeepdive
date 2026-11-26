@@ -17,8 +17,7 @@ const BPE_MODEL_IDS = 248044
 const ADDED_TOKEN_IDS = MAPPED_IDS - BPE_MODEL_IDS
 const EMBED_PARAMS = VOCAB_ROWS * HIDDEN_SIZE
 const TOTAL_PARAMS = QWEN.paramsTotal.value
-const REST_TIED = TOTAL_PARAMS - EMBED_PARAMS
-const REST_UNTIED = TOTAL_PARAMS - EMBED_PARAMS * 2
+const REST_OF_MODEL = TOTAL_PARAMS - EMBED_PARAMS * 2
 
 export const TRACK_1_FIGURES = {
   /**
@@ -159,15 +158,15 @@ export const TRACK_1_FIGURES = {
       {
         label: { en: 'Characters', 'pt-br': 'Caracteres' },
         caption: {
-          en: 'One character per token keeps the vocabulary tiny and spells anything, but stretches every sentence across five or six times as many positions—and transformer work grows with positions.',
-          'pt-br': 'Um caractere por token mantém o vocabulário minúsculo e soletra qualquer coisa, mas estica cada frase por cinco ou seis vezes mais posições — e o trabalho do transformer cresce com as posições.',
+          en: 'One character per token keeps the vocabulary small for ASCII or common scripts (full Unicode exceeds 150,000 code points), but makes English prose typically ~4–5× longer (15 vs 4 units in this example)—and transformer work grows with positions.',
+          'pt-br': 'Um caractere por token mantém o vocabulário pequeno para ASCII ou escritas comuns (o Unicode completo passa de 150.000 code points), mas deixa a prosa em inglês tipicamente ~4–5× mais longa (15 contra 4 unidades neste exemplo) — e o trabalho do transformer cresce com as posições.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'u · n · b · … · y', 'pt-br': 'u · n · b · … · y' }, detail: { en: '15 units for one word', 'pt-br': '15 unidades para uma palavra' }, pigment: 'caution' },
-            { label: { en: 'Tiny vocabulary', 'pt-br': 'Vocabulário minúsculo' }, detail: { en: 'a few hundred entries; spells anything', 'pt-br': 'algumas centenas de entradas; soletra tudo' }, pigment: 'success' },
-            { label: { en: 'Expensive to run', 'pt-br': 'Caro de rodar' }, detail: { en: '5–6× more positions through every layer', 'pt-br': '5–6× mais posições em cada camada' }, pigment: 'danger' },
+            { label: { en: 'Small alphabet', 'pt-br': 'Alfabeto pequeno' }, detail: { en: 'small for ASCII/common chars; full Unicode >150k', 'pt-br': 'pequeno para ASCII/comuns; Unicode total >150 mil' }, pigment: 'success' },
+            { label: { en: 'Expensive to run', 'pt-br': 'Caro de rodar' }, detail: { en: 'typically ~4–5× longer on English prose (15 vs 4 here)', 'pt-br': 'tipicamente ~4–5× mais longa em prosa inglesa (15 vs 4 aqui)' }, pigment: 'danger' },
           ],
         },
       },
@@ -334,14 +333,14 @@ export const TRACK_1_FIGURES = {
       {
         label: { en: 'SentencePiece (Unigram)', 'pt-br': 'SentencePiece com Unigram' },
         caption: {
-          en: 'SentencePiece treats whitespace as an explicit symbol so encoding and decoding reverse cleanly. Unigram starts with a large vocabulary and removes pieces that hurt corpus likelihood least; it can also sample among valid splits.',
-          'pt-br': 'O SentencePiece trata o espaço em branco como um símbolo explícito, tornando codificação e decodificação reversíveis. O Unigram parte de um vocabulário grande e remove os pedaços que menos prejudicam a verossimilhança do corpus; ele também pode amostrar entre divisões válidas.',
+          en: 'SentencePiece treats whitespace as an explicit symbol so encoding and decoding reverse cleanly on normalized text (default NFKC normalization can fold characters before splitting). Unigram starts with a large vocabulary and removes pieces that hurt corpus likelihood least; it can also sample among valid splits.',
+          'pt-br': 'O SentencePiece trata o espaço em branco como um símbolo explícito, tornando codificação e decodificação reversíveis no texto normalizado (a normalização NFKC padrão pode fundir caracteres antes da divisão). O Unigram parte de um vocabulário grande e remove os pedaços que menos prejudicam a verossimilhança do corpus; ele também pode amostrar entre divisões válidas.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Raw sentence', 'pt-br': 'Frase bruta' }, detail: { en: 'no prior whitespace split', 'pt-br': 'sem divisão prévia por espaço' }, pigment: 'accent' },
-            { label: { en: 'Explicit space mark', 'pt-br': 'Símbolo de espaço' }, detail: { en: 'closed, reversible detokenization', 'pt-br': 'detokenização fechada e reversível' }, pigment: 'success' },
+            { label: { en: 'Explicit space mark', 'pt-br': 'Símbolo de espaço' }, detail: { en: 'reversible on whitespace & normalized text (NFKC folds first)', 'pt-br': 'reversível em espaços e texto normalizado (NFKC funde antes)' }, pigment: 'success' },
             { label: { en: 'Prune vocabulary', 'pt-br': 'Podar vocabulário' }, detail: { en: 'drop lowest-impact pieces to target size', 'pt-br': 'remove pedaços de menor impacto até o alvo' }, pigment: 'accent' },
             { label: { en: 'Multiple splits', 'pt-br': 'Várias divisões' }, detail: { en: 'can sample among valid segmentations', 'pt-br': 'pode amostrar entre segmentações válidas' }, pigment: 'caution' },
           ],
@@ -382,15 +381,15 @@ export const TRACK_1_FIGURES = {
       {
         label: { en: 'Assumed tied (wrong shortcut)', 'pt-br': 'Suposto compartilhado (atalho errado)' },
         caption: {
-          en: 'Assuming tie_word_embeddings is true counts only one 1.271B-parameter matrix—short by more than a billion parameters (~2.5 GB of weights at two bytes each).',
-          'pt-br': 'Supor que tie_word_embeddings é true conta só uma matriz de 1,271 bilhão de parâmetros — ficando curto em mais de um bilhão de parâmetros (~2,5 GB de pesos a dois bytes cada).',
+          en: 'Assuming tie_word_embeddings is true counts only one 1.271B-parameter matrix alongside the ~24.46B rest of the model (~25.73B total vs ~27.00B actual), omitting the 1.271B output table (~2.5 GB of weights at two bytes each).',
+          'pt-br': 'Supor que tie_word_embeddings é true conta só uma matriz de 1,271B parâmetros junto aos ~24,46B do restante do modelo (~25,73B no total contra ~27,00B reais), omitindo a tabela de saída de 1,271B (~2,5 GB de pesos a dois bytes cada).',
         },
         body: {
           kind: 'stack',
           direction: 'down',
           steps: [
             {
-              label: { en: 'One shared matrix', 'pt-br': 'Uma matriz compartilhada' },
+              label: { en: 'One shared matrix (counted)', 'pt-br': 'Uma matriz compartilhada (contada)' },
               detail: {
                 en: `${both(VOCAB_ROWS).en} × ${HIDDEN_SIZE} = 1.271B params (~2.5 GB at 2 B/weight)`,
                 'pt-br': `${both(VOCAB_ROWS)['pt-br']} × ${HIDDEN_SIZE} = 1,271B parâmetros (~2,5 GB a 2 B/peso)`,
@@ -399,13 +398,22 @@ export const TRACK_1_FIGURES = {
               weight: EMBED_PARAMS,
             },
             {
+              label: { en: 'Omitted output table (1.271B)', 'pt-br': 'Tabela de saída omitida (1,271B)' },
+              detail: {
+                en: 'missed by tied shortcut → ~25.73B counted vs ~27.00B actual',
+                'pt-br': 'omitida pelo atalho → ~25,73B contados contra ~27,00B reais',
+              },
+              pigment: 'danger',
+              weight: EMBED_PARAMS,
+            },
+            {
               label: { en: 'Rest of the ~27B model', 'pt-br': 'Restante do modelo de ~27B' },
               detail: {
-                en: `${LAYERS} layers + vision tower (~25.73B params)`,
-                'pt-br': `${LAYERS} camadas + torre de visão (~25,73B parâmetros)`,
+                en: `${LAYERS} layers + vision tower (~24.46B params, unchanged)`,
+                'pt-br': `${LAYERS} camadas + torre de visão (~24,46B parâmetros, inalterado)`,
               },
               pigment: 'muted',
-              weight: REST_TIED,
+              weight: REST_OF_MODEL,
             },
           ],
         },
@@ -445,7 +453,7 @@ export const TRACK_1_FIGURES = {
                 'pt-br': `${LAYERS} camadas + torre de visão (~24,46B parâmetros)`,
               },
               pigment: 'muted',
-              weight: REST_UNTIED,
+              weight: REST_OF_MODEL,
             },
           ],
         },
@@ -469,8 +477,8 @@ export const TRACK_1_FIGURES = {
       {
         label: { en: 'Standard rule: exclude query', 'pt-br': 'Regra padrão: exclui consulta' },
         caption: {
-          en: 'The standard protocol removes king, man, and woman before finding the nearest cosine neighbour, so queen frequently wins for select relation types.',
-          'pt-br': 'O protocolo padrão remove king, man e woman antes de buscar o vizinho mais próximo por cosseno, então queen frequentemente vence para certos tipos de relação.',
+          en: 'The standard protocol removes the three query words (here king, man, woman) before finding the nearest cosine neighbour; across relation benchmarks (Linzen, 2016), this exclusion yields high accuracy on select relation types (such as recovering queen here).',
+          'pt-br': 'O protocolo padrão remove as três palavras da consulta (aqui king, man e woman) antes de buscar o vizinho mais próximo por cosseno; em benchmarks de relações (Linzen, 2016), essa exclusão produz alta acurácia em certos tipos de relação (como recuperar queen aqui).',
         },
         body: {
           kind: 'flow',
@@ -478,15 +486,15 @@ export const TRACK_1_FIGURES = {
             { label: { en: 'Vector offset', 'pt-br': 'Deslocamento vetorial' }, detail: { en: 'v_king − v_man + v_woman', 'pt-br': 'v_king − v_man + v_woman' }, pigment: 'accent' },
             { label: { en: 'Filter candidates', 'pt-br': 'Filtrar candidatos' }, detail: { en: 'drop king, man, woman from search', 'pt-br': 'remove king, man e woman da busca' }, pigment: 'caution' },
             { label: { en: 'Cosine search', 'pt-br': 'Busca por cosseno' }, detail: { en: 'nearest direction in remaining vocab', 'pt-br': 'direção mais próxima no restante do vocabulário' }, pigment: 'accent' },
-            { label: { en: 'Top result', 'pt-br': 'Primeiro lugar' }, detail: { en: 'often queen under this protocol', 'pt-br': 'frequentemente queen sob este protocolo' }, pigment: 'success' },
+            { label: { en: 'Benchmark result', 'pt-br': 'Resultado no benchmark' }, detail: { en: 'high accuracy on select relation types (e.g., queen)', 'pt-br': 'alta acurácia em certos tipos de relação (ex.: queen)' }, pigment: 'success' },
           ],
         },
       },
       {
         label: { en: 'No exclusion (Linzen, 2016)', 'pt-br': 'Sem exclusão (Linzen, 2016)' },
         caption: {
-          en: 'Keep all words in the candidate list and a modest offset can leave an input word closest. Linzen (2016) reported drastic accuracy drops, including zero in several categories.',
-          'pt-br': 'Mantenha todas as palavras na lista de candidatos e um deslocamento modesto pode deixar uma palavra de entrada mais próxima. Linzen (2016) reportou quedas drásticas de acurácia, incluindo zero em várias categorias.',
+          en: 'Keep all words in the candidate list and a modest offset often leaves an input word closest. Across relation benchmarks, Linzen (2016) reported drastic accuracy drops, including zero in several categories.',
+          'pt-br': 'Mantenha todas as palavras na lista de candidatos e um deslocamento modesto costuma deixar uma palavra de entrada mais próxima. Em benchmarks de relações, Linzen (2016) reportou quedas drásticas de acurácia, incluindo zero em várias categorias.',
         },
         body: {
           kind: 'flow',
@@ -494,7 +502,7 @@ export const TRACK_1_FIGURES = {
             { label: { en: 'Vector offset', 'pt-br': 'Deslocamento vetorial' }, detail: { en: 'same point: v_king − v_man + v_woman', 'pt-br': 'mesmo ponto: v_king − v_man + v_woman' }, pigment: 'muted' },
             { label: { en: 'Full vocabulary', 'pt-br': 'Vocabulário inteiro' }, detail: { en: 'king, man, woman stay candidates', 'pt-br': 'king, man e woman continuam candidatas' }, pigment: 'danger' },
             { label: { en: 'Cosine search', 'pt-br': 'Busca por cosseno' }, detail: { en: 'nearest direction across every word', 'pt-br': 'direção mais próxima entre todas as palavras' }, pigment: 'accent' },
-            { label: { en: 'Top result', 'pt-br': 'Primeiro lugar' }, detail: { en: 'input word often stays closest; accuracy plunges', 'pt-br': 'palavra da consulta costuma vencer; acurácia despenca' }, pigment: 'danger' },
+            { label: { en: 'Benchmark result', 'pt-br': 'Resultado no benchmark' }, detail: { en: 'query word often stays closest; benchmark accuracy plunges', 'pt-br': 'palavra da consulta costuma vencer; acurácia no benchmark despenca' }, pigment: 'danger' },
           ],
         },
       },
@@ -510,8 +518,8 @@ export const TRACK_1_FIGURES = {
     lesson: '1.7-entropy-perplexity',
     title: { en: 'Why a different tokenizer breaks perplexity', 'pt-br': 'Por que outro tokenizer quebra a perplexity' },
     caption: {
-      en: 'Perplexity averages surprise per token. Switching tokenizers changes both the prediction events and the denominator, so cross-tokenizer comparisons need a common unit such as bits per byte.',
-      'pt-br': 'A perplexity faz a média da surpresa por token. Trocar de tokenizer muda tanto os eventos de predição quanto o denominador, então comparações entre tokenizers precisam de uma unidade comum, como bits por byte.',
+      en: 'Perplexity is the exponentiated mean negative log-likelihood (surprise) per token: 2^(mean bits/token), or e^(mean nats/token). Switching tokenizers changes both the prediction events and the denominator, so cross-tokenizer comparisons need a common unit such as bits per byte.',
+      'pt-br': 'A perplexity é a exponencial da média da log-verossimilhança negativa (surpresa) por token: 2^(média de bits/token), ou e^(média de nats/token). Trocar de tokenizer muda tanto os eventos de predição quanto o denominador, então comparações entre tokenizers precisam de uma unidade comum, como bits por byte.',
     },
     steps: [
       {

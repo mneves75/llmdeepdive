@@ -391,37 +391,38 @@ export const TRACK_4_FIGURES = {
     lesson: '4.5-multi-head-attention',
     title: { en: '24 query heads reading 4 shared KV heads', 'pt-br': '24 query heads lendo 4 KV heads compartilhados' },
     caption: {
-      en: `Qwen3.8-27B's grouped-query attention splits ${QWEN.queryHeads.value} query heads into ${QWEN.kvHeads.value} groups of ${GQA_GROUP_SIZE}, then concatenates all ${QWEN.queryHeads.value} outputs and mixes them back to width ${QWEN.hiddenSize.value}.`,
-      'pt-br': `A grouped-query attention do Qwen3.8-27B divide ${QWEN.queryHeads.value} query heads em ${QWEN.kvHeads.value} grupos de ${GQA_GROUP_SIZE}, depois concatena todas as ${QWEN.queryHeads.value} saídas e as mistura de volta à largura ${QWEN.hiddenSize.value}.`,
+      en: `Qwen3.8-27B's gated grouped-query attention splits ${QWEN.queryHeads.value} query heads into ${QWEN.kvHeads.value} groups of ${GQA_GROUP_SIZE}, applies a per-head sigmoid output gate to the attention output immediately before o_proj, and projects the ${both(QWEN.queryStateWidth.value).en}-wide result back to width ${both(QWEN.hiddenSize.value).en}.`,
+      'pt-br': `A grouped-query attention com porta do Qwen3.8-27B divide ${QWEN.queryHeads.value} query heads em ${QWEN.kvHeads.value} grupos de ${GQA_GROUP_SIZE}, aplica uma porta sigmoid de saída por head logo antes de o_proj e projeta o resultado de largura ${both(QWEN.queryStateWidth.value)['pt-br']} de volta à largura ${both(QWEN.hiddenSize.value)['pt-br']}.`,
     },
     steps: [
       {
         label: { en: '1. Split & group (GQA)', 'pt-br': '1. Dividir e agrupar (GQA)' },
         caption: {
-          en: `Queries expand to ${QWEN.queryHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.queryStateWidth.value).en}; keys and values project to ${QWEN.kvHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.kvProjectionOut.value).en}. Every group of ${GQA_GROUP_SIZE} query heads shares one cached KV head.`,
-          'pt-br': `As queries expandem para ${QWEN.queryHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.queryStateWidth.value)['pt-br']}; keys e values projetam para ${QWEN.kvHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.kvProjectionOut.value)['pt-br']}. Cada grupo de ${GQA_GROUP_SIZE} query heads compartilha um KV head em cache.`,
+          en: `q_proj emits ${both(QWEN.qProjectionOut.value).en} values per token—${QWEN.queryHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.queryStateWidth.value).en} query values plus a matching ${both(QWEN.queryStateWidth.value).en}-wide per-head output gate—while keys and values project to ${QWEN.kvHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.kvProjectionOut.value).en}. Every group of ${GQA_GROUP_SIZE} query heads shares one cached KV head.`,
+          'pt-br': `q_proj emite ${both(QWEN.qProjectionOut.value)['pt-br']} valores por token — ${QWEN.queryHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.queryStateWidth.value)['pt-br']} valores de query mais uma porta de saída por head de largura ${both(QWEN.queryStateWidth.value)['pt-br']} — enquanto keys e values projetam para ${QWEN.kvHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.kvProjectionOut.value)['pt-br']}. Cada grupo de ${GQA_GROUP_SIZE} query heads compartilha um KV head em cache.`,
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Residual stream', 'pt-br': 'Residual stream (fluxo residual)' }, detail: { en: `${both(QWEN.hiddenSize.value).en} numbers per token`, 'pt-br': `${both(QWEN.hiddenSize.value)['pt-br']} números por token` }, pigment: 'muted' },
-            { label: { en: `${QWEN.queryHeads.value} query heads`, 'pt-br': `${QWEN.queryHeads.value} query heads` }, detail: { en: `${both(QWEN.queryStateWidth.value).en} wide (${QWEN.headDim.value} each)`, 'pt-br': `largura ${both(QWEN.queryStateWidth.value)['pt-br']} (${QWEN.headDim.value} cada)` }, pigment: 'accent' },
+            { label: { en: `${QWEN.queryHeads.value} query + gate heads`, 'pt-br': `${QWEN.queryHeads.value} heads de query + porta` }, detail: { en: `${both(QWEN.qProjectionOut.value).en} total (${QWEN.headDim.value} Q + ${QWEN.headDim.value} gate each)`, 'pt-br': `${both(QWEN.qProjectionOut.value)['pt-br']} no total (${QWEN.headDim.value} Q + ${QWEN.headDim.value} porta cada)` }, pigment: 'accent' },
             { label: { en: `${QWEN.kvHeads.value} shared KV heads`, 'pt-br': `${QWEN.kvHeads.value} KV heads compartilhados` }, detail: { en: `${both(QWEN.kvProjectionOut.value).en} wide (${GQA_GROUP_SIZE} Q heads per KV)`, 'pt-br': `largura ${both(QWEN.kvProjectionOut.value)['pt-br']} (${GQA_GROUP_SIZE} Q heads por KV)` }, pigment: 'caution' },
           ],
         },
       },
       {
-        label: { en: '2. Attend & mix back', 'pt-br': '2. Calcular attention e misturar' },
+        label: { en: '2. Attend, gate & mix back', 'pt-br': '2. Attention, porta e mistura' },
         caption: {
-          en: `Each of the ${QWEN.queryHeads.value} heads runs scaled, causally masked softmax in its own ${QWEN.headDim.value}-dim subspace. Concatenation restores ${both(QWEN.queryStateWidth.value).en}, and W_O mixes across heads back to ${both(QWEN.hiddenSize.value).en}.`,
-          'pt-br': `Cada um dos ${QWEN.queryHeads.value} heads roda softmax escalado com máscara causal no seu subespaço de ${QWEN.headDim.value} dimensões. A concatenação restaura ${both(QWEN.queryStateWidth.value)['pt-br']}, e W_O mistura entre heads de volta a ${both(QWEN.hiddenSize.value)['pt-br']}.`,
+          en: `Each of the ${QWEN.queryHeads.value} heads runs scaled, causally masked softmax in its own ${QWEN.headDim.value}-dim subspace. Concatenation restores ${both(QWEN.queryStateWidth.value).en}, a per-head sigmoid output gate scales the attention output immediately before o_proj, and o_proj (W_O) mixes across heads back to ${both(QWEN.hiddenSize.value).en}.`,
+          'pt-br': `Cada um dos ${QWEN.queryHeads.value} heads roda softmax escalado com máscara causal no seu subespaço de ${QWEN.headDim.value} dimensões. A concatenação restaura ${both(QWEN.queryStateWidth.value)['pt-br']}, uma porta sigmoid de saída por head escala a saída de attention imediatamente antes de o_proj, e o_proj (W_O) mistura entre heads de volta a ${both(QWEN.hiddenSize.value)['pt-br']}.`,
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: `${QWEN.queryHeads.value} masked softmaxes`, 'pt-br': `${QWEN.queryHeads.value} softmaxes mascarados` }, detail: { en: `1 independent weight map per head`, 'pt-br': `1 mapa de pesos independente por head` }, pigment: 'accent' },
             { label: { en: 'Concatenate heads', 'pt-br': 'Concatenar os heads' }, detail: { en: `${QWEN.queryHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.queryStateWidth.value).en}`, 'pt-br': `${QWEN.queryHeads.value} × ${QWEN.headDim.value} = ${both(QWEN.queryStateWidth.value)['pt-br']}` }, pigment: 'caution' },
-            { label: { en: 'Output projection W_O', 'pt-br': 'Projeção de saída W_O' }, detail: { en: `${both(QWEN.queryStateWidth.value).en} → ${both(QWEN.hiddenSize.value).en} (cross-head mix)`, 'pt-br': `${both(QWEN.queryStateWidth.value)['pt-br']} → ${both(QWEN.hiddenSize.value)['pt-br']} (mistura entre heads)` }, pigment: 'success' },
+            { label: { en: 'Per-head sigmoid gate', 'pt-br': 'Porta sigmoid por head' }, detail: { en: 'attn_out ⊙ sigmoid(gate), right before o_proj', 'pt-br': 'saída ⊙ sigmoid(gate), logo antes de o_proj' }, pigment: 'danger' },
+            { label: { en: 'Output projection o_proj', 'pt-br': 'Projeção de saída o_proj' }, detail: { en: `${both(QWEN.queryStateWidth.value).en} → ${both(QWEN.hiddenSize.value).en} (cross-head mix)`, 'pt-br': `${both(QWEN.queryStateWidth.value)['pt-br']} → ${both(QWEN.hiddenSize.value)['pt-br']} (mistura entre heads)` }, pigment: 'success' },
           ],
         },
       },
@@ -561,23 +562,23 @@ export const TRACK_4_FIGURES = {
     lesson: '4.9-feed-forward-block',
     title: { en: 'Three matrices per layer, 17 billion across the model', 'pt-br': 'Três matrizes por camada, 17 bilhões no modelo inteiro' },
     caption: {
-      en: `Qwen3.8-27B's SiLU-gated FFN uses three ${both(QWEN.hiddenSize.value).en} × ${both(QWEN.ffnIntermediate.value).en} matrices per layer (${millions(MOE.denseFfnPerLayer.value, 'en')}M), making the 64 FFNs the largest share of the ~27B parameters.`,
-      'pt-br': `A FFN com gate SiLU do Qwen3.8-27B usa três matrizes ${both(QWEN.hiddenSize.value)['pt-br']} × ${both(QWEN.ffnIntermediate.value)['pt-br']} por camada (${millions(MOE.denseFfnPerLayer.value, 'pt-br')} M), tornando as 64 FFNs a maior fatia dos ~27B parâmetros.`,
+      en: `Qwen3.8-27B's SiLU-gated FFN uses three matrices per layer (${millions(MOE.denseFfnPerLayer.value, 'en')}M total): gate and up have shape ${both(QWEN.ffnIntermediate.value).en} × ${both(QWEN.hiddenSize.value).en}, while down has the swapped shape ${both(QWEN.hiddenSize.value).en} × ${both(QWEN.ffnIntermediate.value).en} (same parameter count each). Across 64 layers, these FFNs take the largest share of the ~27B parameters.`,
+      'pt-br': `A FFN com gate SiLU do Qwen3.8-27B usa três matrizes por camada (${millions(MOE.denseFfnPerLayer.value, 'pt-br')} M no total): gate e up têm shape ${both(QWEN.ffnIntermediate.value)['pt-br']} × ${both(QWEN.hiddenSize.value)['pt-br']}, enquanto down tem o shape invertido ${both(QWEN.hiddenSize.value)['pt-br']} × ${both(QWEN.ffnIntermediate.value)['pt-br']} (mesmo número de parâmetros em cada uma). Ao longo das 64 camadas, essas FFNs ocupam a maior fatia dos ~27B parâmetros.`,
     },
     steps: [
       {
         label: { en: '1. One layer’s gated FFN', 'pt-br': '1. FFN gated de uma camada' },
         caption: {
-          en: `Counting only two matrices misses the gate. Gate, up and down each hold ${millions(FFN_MATRIX_PARAMS, 'en')}M parameters, totaling ${millions(MOE.denseFfnPerLayer.value, 'en')}M per layer.`,
-          'pt-br': `Contar só duas matrizes esquece o gate. Gate, up e down guardam ${millions(FFN_MATRIX_PARAMS, 'pt-br')} M de parâmetros cada, totalizando ${millions(MOE.denseFfnPerLayer.value, 'pt-br')} M por camada.`,
+          en: `Counting only two matrices misses the gate. Gate (${both(QWEN.ffnIntermediate.value).en} × ${both(QWEN.hiddenSize.value).en}), up (${both(QWEN.ffnIntermediate.value).en} × ${both(QWEN.hiddenSize.value).en}) and down (${both(QWEN.hiddenSize.value).en} × ${both(QWEN.ffnIntermediate.value).en}) share the same ${millions(FFN_MATRIX_PARAMS, 'en')}M parameter count with swapped dimensions on down, totaling ${millions(MOE.denseFfnPerLayer.value, 'en')}M per layer.`,
+          'pt-br': `Contar só duas matrizes esquece o gate. Gate (${both(QWEN.ffnIntermediate.value)['pt-br']} × ${both(QWEN.hiddenSize.value)['pt-br']}), up (${both(QWEN.ffnIntermediate.value)['pt-br']} × ${both(QWEN.hiddenSize.value)['pt-br']}) e down (${both(QWEN.hiddenSize.value)['pt-br']} × ${both(QWEN.ffnIntermediate.value)['pt-br']}) têm a mesma contagem de ${millions(FFN_MATRIX_PARAMS, 'pt-br')} M de parâmetros com dimensões invertidas em down, totalizando ${millions(MOE.denseFfnPerLayer.value, 'pt-br')} M por camada.`,
         },
         body: {
           kind: 'stack',
           direction: 'down',
           steps: [
-            { label: { en: 'W_gate (5,120 → 17,408)', 'pt-br': 'W_gate (5.120 → 17.408)' }, detail: { en: `${millions(FFN_MATRIX_PARAMS, 'en')}M parameters · enters SiLU`, 'pt-br': `${millions(FFN_MATRIX_PARAMS, 'pt-br')} M parâmetros · entra na SiLU` }, pigment: 'caution', weight: FFN_MATRIX_PARAMS },
-            { label: { en: 'W_up (5,120 → 17,408)', 'pt-br': 'W_up (5.120 → 17.408)' }, detail: { en: `${millions(FFN_MATRIX_PARAMS, 'en')}M parameters · proposes features`, 'pt-br': `${millions(FFN_MATRIX_PARAMS, 'pt-br')} M parâmetros · propõe features` }, pigment: 'accent', weight: FFN_MATRIX_PARAMS },
-            { label: { en: 'W_down (17,408 → 5,120)', 'pt-br': 'W_down (17.408 → 5.120)' }, detail: { en: `${millions(FFN_MATRIX_PARAMS, 'en')}M parameters · writes back to stream`, 'pt-br': `${millions(FFN_MATRIX_PARAMS, 'pt-br')} M parâmetros · escreve no stream` }, pigment: 'success', weight: FFN_MATRIX_PARAMS },
+            { label: { en: 'W_gate (5,120 → 17,408)', 'pt-br': 'W_gate (5.120 → 17.408)' }, detail: { en: `17,408 × 5,120 · ${millions(FFN_MATRIX_PARAMS, 'en')}M params · enters SiLU`, 'pt-br': `17.408 × 5.120 · ${millions(FFN_MATRIX_PARAMS, 'pt-br')} M parâmetros · entra na SiLU` }, pigment: 'caution', weight: FFN_MATRIX_PARAMS },
+            { label: { en: 'W_up (5,120 → 17,408)', 'pt-br': 'W_up (5.120 → 17.408)' }, detail: { en: `17,408 × 5,120 · ${millions(FFN_MATRIX_PARAMS, 'en')}M params · proposes features`, 'pt-br': `17.408 × 5.120 · ${millions(FFN_MATRIX_PARAMS, 'pt-br')} M parâmetros · propõe features` }, pigment: 'accent', weight: FFN_MATRIX_PARAMS },
+            { label: { en: 'W_down (17,408 → 5,120)', 'pt-br': 'W_down (17.408 → 5.120)' }, detail: { en: `5,120 × 17,408 (swapped) · ${millions(FFN_MATRIX_PARAMS, 'en')}M params · writes back`, 'pt-br': `5.120 × 17.408 (invertido) · ${millions(FFN_MATRIX_PARAMS, 'pt-br')} M parâmetros · escreve no stream` }, pigment: 'success', weight: FFN_MATRIX_PARAMS },
           ],
         },
       },
@@ -768,8 +769,8 @@ export const TRACK_4_FIGURES = {
     lesson: '4.14-reading-real-weights',
     title: { en: 'Anatomy of Qwen3.8-27B’s safetensors checkpoint', 'pt-br': 'Anatomia do checkpoint safetensors do Qwen3.8-27B' },
     caption: {
-      en: 'Every major tensor group in the checkpoint maps directly to an architectural component: nested text stack under model.language_model., vision tower under model.visual., and untied lm_head.weight at the top level.',
-      'pt-br': 'Cada grande grupo de tensores no checkpoint corresponde diretamente a um componente da arquitetura: pilha de texto aninhada em model.language_model., torre de visão em model.visual. e lm_head.weight não amarrado no topo.',
+      en: 'Major tensor groups in the checkpoint index map directly to architectural components: nested text stack under model.language_model., vision tower under model.visual., untied lm_head.weight at the top level, and auxiliary multi-token prediction head tensors under mtp.*.',
+      'pt-br': 'Os grandes grupos de tensores no índice do checkpoint correspondem diretamente a componentes da arquitetura: pilha de texto aninhada em model.language_model., torre de visão em model.visual., lm_head.weight não amarrado no topo e tensores auxiliares do multi-token prediction head em mtp.*.',
     },
     body: {
       kind: 'flow',
@@ -798,6 +799,11 @@ export const TRACK_4_FIGURES = {
           label: { en: 'lm_head.weight (top level)', 'pt-br': 'lm_head.weight (no topo)' },
           detail: { en: `[${QWEN.vocabSize.value}, ${QWEN.hiddenSize.value}] · untied (~1.271B)`, 'pt-br': `[${QWEN.vocabSize.value}, ${QWEN.hiddenSize.value}] · separado (~1,271B)` },
           pigment: 'success',
+        },
+        {
+          label: { en: 'mtp.* (auxiliary head)', 'pt-br': 'mtp.* (head auxiliar)' },
+          detail: { en: 'multi-token prediction tensors in checkpoint index', 'pt-br': 'tensores de multi-token prediction no índice' },
+          pigment: 'muted',
         },
       ],
     },
@@ -890,8 +896,8 @@ export const TRACK_4_FIGURES = {
       {
         label: { en: `2. Decode memory at ${both(QWEN.contextNative.value).en} tokens`, 'pt-br': `2. Memória em decode a ${both(QWEN.contextNative.value)['pt-br']} tokens` },
         caption: {
-          en: `Contrary to intuition, the ${QWEN.attentionLayers.value} attention layers account for ${QWEN.kvGibFullContext.value} GiB (${both(KV_CACHE_MIB).en} MiB), while all ${QWEN.deltaNetLayers.value} DeltaNet layers together stay flat at ${QWEN.deltaNetStateMib.value} MiB (reference fp32 state).`,
-          'pt-br': `Ao contrário da intuição, as ${QWEN.attentionLayers.value} camadas de attention respondem por ${QWEN.kvGibFullContext.value} GiB (${both(KV_CACHE_MIB)['pt-br']} MiB), enquanto todas as ${QWEN.deltaNetLayers.value} camadas DeltaNet juntas ficam paradas em ${QWEN.deltaNetStateMib.value} MiB (estado fp32 de referência).`,
+          en: `Contrary to intuition, the ${QWEN.attentionLayers.value} attention layers account for ${QWEN.kvGibFullContext.value} GiB (${both(KV_CACHE_MIB).en} MiB, 2-byte BF16 KV cache), while all ${QWEN.deltaNetLayers.value} DeltaNet layers together stay flat at ${QWEN.deltaNetStateMib.value} MiB (4-byte FP32 Transformers reference state).`,
+          'pt-br': `Ao contrário da intuição, as ${QWEN.attentionLayers.value} camadas de attention respondem por ${QWEN.kvGibFullContext.value} GiB (${both(KV_CACHE_MIB)['pt-br']} MiB, KV cache em BF16 de 2 bytes), enquanto todas as ${QWEN.deltaNetLayers.value} camadas DeltaNet juntas ficam paradas em ${QWEN.deltaNetStateMib.value} MiB (estado de referência em FP32 de 4 bytes no Transformers).`,
         },
         body: {
           kind: 'stack',
@@ -899,13 +905,13 @@ export const TRACK_4_FIGURES = {
           steps: [
             {
               label: { en: `${QWEN.attentionLayers.value} Attention layers (KV cache)`, 'pt-br': `${QWEN.attentionLayers.value} camadas Attention (KV cache)` },
-              detail: { en: `${QWEN.kvGibFullContext.value} GiB (${both(KV_CACHE_MIB).en} MiB) · grows linearly with context`, 'pt-br': `${QWEN.kvGibFullContext.value} GiB (${both(KV_CACHE_MIB)['pt-br']} MiB) · cresce linearmente com o contexto` },
+              detail: { en: `${QWEN.kvGibFullContext.value} GiB (${both(KV_CACHE_MIB).en} MiB, BF16) · grows linearly with context`, 'pt-br': `${QWEN.kvGibFullContext.value} GiB (${both(KV_CACHE_MIB)['pt-br']} MiB, BF16) · cresce linearmente com o contexto` },
               pigment: 'danger',
               weight: KV_CACHE_MIB,
             },
             {
               label: { en: `${QWEN.deltaNetLayers.value} DeltaNet layers (recurrent state)`, 'pt-br': `${QWEN.deltaNetLayers.value} camadas DeltaNet (estado recorrente)` },
-              detail: { en: `${QWEN.deltaNetStateMib.value} MiB (reference fp32) · constant at any length`, 'pt-br': `${QWEN.deltaNetStateMib.value} MiB (fp32 de referência) · constante em qualquer tamanho` },
+              detail: { en: `${QWEN.deltaNetStateMib.value} MiB (reference FP32) · constant at any length`, 'pt-br': `${QWEN.deltaNetStateMib.value} MiB (FP32 de referência) · constante em qualquer tamanho` },
               pigment: 'success',
               weight: QWEN.deltaNetStateMib.value,
             },

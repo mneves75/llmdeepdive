@@ -278,8 +278,8 @@ export const TRACK_2_FIGURES = {
     lesson: '2.3-activation-functions',
     title: { en: 'From a fixed curve to a learned gate', 'pt-br': 'De uma curva fixa a um gate aprendido' },
     caption: {
-      en: 'Fixed activations map each number on its own. SwiGLU splits the token into two projections so a learned gate branch can suppress or amplify the exact same content value.',
-      'pt-br': 'Ativações fixas mapeiam cada número isoladamente. O SwiGLU divide o token em duas projeções para que um ramo de gate aprendido suprima ou amplifique exatamente o mesmo valor de conteúdo.',
+      en: 'Fixed activations map each number on its own. SwiGLU projects the same input vector x in parallel through a gate branch (W_gate x) and an up branch (W_up x), then multiplies SiLU(gate) × up elementwise so the gate can suppress or amplify the exact same content value.',
+      'pt-br': 'Ativações fixas mapeiam cada número isoladamente. O SwiGLU projeta o mesmo vetor de entrada x em paralelo por um ramo de gate (W_gate x) e um ramo up (W_up x), multiplicando SiLU(gate) × up elemento a elemento para que o gate suprima ou amplifique exatamente o mesmo valor de conteúdo.',
     },
     steps: [
       {
@@ -341,34 +341,32 @@ export const TRACK_2_FIGURES = {
       {
         label: { en: 'SwiGLU: gate = −3.0', 'pt-br': 'SwiGLU: gate = −3,0' },
         caption: {
-          en: `In Qwen3.8-27B (${HIDDEN.en} → ${FFN.en} → ${HIDDEN.en}), a strong +8.0 value on the content branch is nearly shut off when the gate branch outputs −3.0.`,
-          'pt-br': `No Qwen3.8-27B (${HIDDEN['pt-br']} → ${FFN['pt-br']} → ${HIDDEN['pt-br']}), um valor forte de +8,0 no ramo de conteúdo é quase desligado quando o ramo de gate emite −3,0.`,
+          en: `In Qwen3.8-27B (${HIDDEN.en} → ${FFN.en} → ${HIDDEN.en}), W_gate x and W_up x project the same input vector x in parallel. Multiplying SiLU(−3.0) ≈ −0.14 elementwise with +8.0 from the up branch suppresses it to ≈ −1.1.`,
+          'pt-br': `No Qwen3.8-27B (${HIDDEN['pt-br']} → ${FFN['pt-br']} → ${HIDDEN['pt-br']}), W_gate x e W_up x projetam o mesmo vetor de entrada x em paralelo. Multiplicar SiLU(−3,0) ≈ −0,14 elemento a elemento por +8,0 do ramo up o suprime para ≈ −1,1.`,
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Hidden state x', 'pt-br': 'Hidden state (estado oculto) x' }, detail: { en: `${HIDDEN.en} numbers`, 'pt-br': `${HIDDEN['pt-br']} números` }, pigment: 'muted' },
-            { label: { en: 'Gate branch (W_g)', 'pt-br': 'Ramo do gate (W_g)' }, detail: { en: '−3.0 → SiLU ≈ −0.14', 'pt-br': '−3,0 → SiLU ≈ −0,14' }, pigment: 'danger' },
-            { label: { en: 'Up branch (W_u)', 'pt-br': 'Ramo de conteúdo (W_u)' }, detail: { en: 'content value = +8.0', 'pt-br': 'valor de conteúdo = +8,0' }, pigment: 'muted' },
-            { label: { en: 'Multiply (⊙)', 'pt-br': 'Multiplicar (⊙)' }, detail: { en: '−0.14 × 8.0 ≈ −1.1 (suppressed)', 'pt-br': '−0,14 × 8,0 ≈ −1,1 (suprimido)' }, pigment: 'danger' },
-            { label: { en: 'Down projection (W_d)', 'pt-br': 'Projeção down (W_d)' }, detail: { en: `back to ${HIDDEN.en}`, 'pt-br': `volta para ${HIDDEN['pt-br']}` }, pigment: 'muted' },
+            { label: { en: 'Hidden state x', 'pt-br': 'Hidden state (estado oculto) x' }, detail: { en: `${HIDDEN.en} numbers (shared input)`, 'pt-br': `${HIDDEN['pt-br']} números (entrada compartilhada)` }, pigment: 'muted' },
+            { label: { en: 'Parallel: W_gate x ∥ W_up x', 'pt-br': 'Em paralelo: W_gate x ∥ W_up x' }, detail: { en: 'gate = −3.0 (SiLU ≈ −0.14) · up = +8.0', 'pt-br': 'gate = −3,0 (SiLU ≈ −0,14) · up = +8,0' }, pigment: 'danger' },
+            { label: { en: 'Elementwise SiLU(gate) ⊙ up', 'pt-br': 'Elemento a elemento SiLU(gate) ⊙ up' }, detail: { en: '−0.14 × 8.0 ≈ −1.1 (suppressed)', 'pt-br': '−0,14 × 8,0 ≈ −1,1 (suprimido)' }, pigment: 'danger' },
+            { label: { en: 'Down projection (W_down)', 'pt-br': 'Projeção down (W_down)' }, detail: { en: `back to ${HIDDEN.en}`, 'pt-br': `volta para ${HIDDEN['pt-br']}` }, pigment: 'muted' },
           ],
         },
       },
       {
         label: { en: 'SwiGLU: gate = +3.0', 'pt-br': 'SwiGLU: gate = +3,0' },
         caption: {
-          en: 'On another token, the exact same +8.0 content value meets a +3.0 gate and leaves amplified to about +22.9. A fixed curve applied to +8.0 alone cannot distinguish the two tokens.',
-          'pt-br': 'Em outro token, exatamente o mesmo valor de conteúdo +8,0 encontra um gate de +3,0 e sai amplificado para cerca de +22,9. Uma curva fixa aplicada só a +8,0 não distingue os dois tokens.',
+          en: 'On another token, the same parallel projections produce gate = +3.0 and up = +8.0; multiplying SiLU(+3.0) ≈ +2.86 elementwise by +8.0 amplifies the value to about +22.9. A fixed curve on +8.0 alone cannot distinguish the two tokens.',
+          'pt-br': 'Em outro token, as mesmas projeções paralelas produzem gate = +3,0 e up = +8,0; multiplicar SiLU(+3,0) ≈ +2,86 elemento a elemento por +8,0 amplifica o valor para cerca de +22,9. Uma curva fixa só sobre +8,0 não distingue os dois tokens.',
         },
         body: {
           kind: 'flow',
           steps: [
-            { label: { en: 'Hidden state x', 'pt-br': 'Hidden state (estado oculto) x' }, detail: { en: `${HIDDEN.en} numbers`, 'pt-br': `${HIDDEN['pt-br']} números` }, pigment: 'muted' },
-            { label: { en: 'Gate branch (W_g)', 'pt-br': 'Ramo do gate (W_g)' }, detail: { en: '+3.0 → SiLU ≈ +2.86', 'pt-br': '+3,0 → SiLU ≈ +2,86' }, pigment: 'success' },
-            { label: { en: 'Up branch (W_u)', 'pt-br': 'Ramo de conteúdo (W_u)' }, detail: { en: 'same content = +8.0', 'pt-br': 'mesmo conteúdo = +8,0' }, pigment: 'muted' },
-            { label: { en: 'Multiply (⊙)', 'pt-br': 'Multiplicar (⊙)' }, detail: { en: '2.86 × 8.0 ≈ +22.9 (amplified)', 'pt-br': '2,86 × 8,0 ≈ +22,9 (amplificado)' }, pigment: 'success' },
-            { label: { en: 'Down projection (W_d)', 'pt-br': 'Projeção down (W_d)' }, detail: { en: `back to ${HIDDEN.en}`, 'pt-br': `volta para ${HIDDEN['pt-br']}` }, pigment: 'muted' },
+            { label: { en: 'Hidden state x', 'pt-br': 'Hidden state (estado oculto) x' }, detail: { en: `${HIDDEN.en} numbers (shared input)`, 'pt-br': `${HIDDEN['pt-br']} números (entrada compartilhada)` }, pigment: 'muted' },
+            { label: { en: 'Parallel: W_gate x ∥ W_up x', 'pt-br': 'Em paralelo: W_gate x ∥ W_up x' }, detail: { en: 'gate = +3.0 (SiLU ≈ +2.86) · up = +8.0', 'pt-br': 'gate = +3,0 (SiLU ≈ +2,86) · up = +8,0' }, pigment: 'success' },
+            { label: { en: 'Elementwise SiLU(gate) ⊙ up', 'pt-br': 'Elemento a elemento SiLU(gate) ⊙ up' }, detail: { en: '2.86 × 8.0 ≈ +22.9 (amplified)', 'pt-br': '2,86 × 8,0 ≈ +22,9 (amplificado)' }, pigment: 'success' },
+            { label: { en: 'Down projection (W_down)', 'pt-br': 'Projeção down (W_down)' }, detail: { en: `back to ${HIDDEN.en}`, 'pt-br': `volta para ${HIDDEN['pt-br']}` }, pigment: 'muted' },
           ],
         },
       },
@@ -528,8 +526,8 @@ export const TRACK_2_FIGURES = {
       {
         label: { en: '3. Branching adds', 'pt-br': '3. Ramificação soma' },
         caption: {
-          en: 'When one value feeds two downstream paths, the multivariable chain rule adds both returning gradients — which is why frameworks accumulate into gradient buffers and loops must zero them per batch.',
-          'pt-br': 'Quando um valor alimenta dois caminhos à frente, a regra da cadeia multivariada soma os dois gradientes que retornam — por isso frameworks acumulam nos buffers de gradiente e loops precisam zerá-los a cada batch.',
+          en: 'When one value feeds two downstream paths, the multivariable chain rule adds both returning gradients — which is why frameworks accumulate into gradient buffers and training loops clear them once per optimizer update (after any gradient accumulation across microbatches), not unconditionally every microbatch.',
+          'pt-br': 'Quando um valor alimenta dois caminhos à frente, a regra da cadeia multivariada soma os dois gradientes que retornam — por isso frameworks acumulam nos buffers de gradiente e loops de treino os zeram uma vez por atualização do otimizador (após eventual acumulação entre microbatches), e não incondicionalmente a cada microbatch.',
         },
         body: {
           kind: 'flow',
@@ -626,7 +624,7 @@ export const TRACK_2_FIGURES = {
                 [3, 0.9269],
                 [4, 0.9037],
               ],
-              marks: [{ at: [2, 0.9506], label: { en: 'y = 0.90 at step 4', 'pt-br': 'y = 0,90 no passo 4' } }],
+              marks: [{ at: [4, 0.9037], label: { en: 'y = 0.90 at step 4', 'pt-br': 'y = 0,90 no passo 4' } }],
             },
           ],
         },
@@ -650,14 +648,14 @@ export const TRACK_2_FIGURES = {
       {
         label: { en: 'Plain SGD', 'pt-br': 'SGD puro' },
         caption: {
-          en: 'No extra optimizer state per parameter: one global learning rate η multiplies every coordinate’s gradient directly, leaving the ravine unsolved.',
-          'pt-br': 'Nenhum estado extra de otimizador por parâmetro: um único learning rate global η multiplica diretamente o gradiente de cada coordenada, deixando a ravina sem solução.',
+          en: 'No extra optimizer state per parameter: one shared learning rate η scales each coordinate by its own gradient magnitude, so steep axes take huge steps while flat axes creep, leaving the ravine unsolved.',
+          'pt-br': 'Nenhum estado extra de otimizador por parâmetro: um único learning rate compartilhado η escala cada coordenada pela magnitude do seu próprio gradiente, fazendo eixos íngremes darem passos enormes enquanto eixos rasos se arrastam, deixando a ravina sem solução.',
         },
         body: {
           kind: 'flow',
           steps: [
             { label: { en: 'Gradient g', 'pt-br': 'Gradiente g' }, detail: { en: 'noisy minibatch slope', 'pt-br': 'inclinação ruidosa do minibatch' }, pigment: 'muted' },
-            { label: { en: 'Scale by −η', 'pt-br': 'Escalar por −η' }, detail: { en: 'same step size for every axis', 'pt-br': 'mesmo tamanho de passo em todo eixo' }, pigment: 'caution' },
+            { label: { en: 'Scale by −η', 'pt-br': 'Escalar por −η' }, detail: { en: 'shared η × g: steep axes leap, flat axes creep', 'pt-br': 'η compartilhado × g: eixos íngremes saltam, rasos se arrastam' }, pigment: 'caution' },
             { label: { en: 'Update θ', 'pt-br': 'Atualizar θ' }, detail: { en: '0 extra state tensors', 'pt-br': '0 tensores extras de estado' }, pigment: 'muted' },
           ],
         },
@@ -680,8 +678,8 @@ export const TRACK_2_FIGURES = {
       {
         label: { en: 'Adam + L2 (wrong turn)', 'pt-br': 'Adam + L2 (desvio errado)' },
         caption: {
-          en: 'Adding L2 (λθ) to the gradient pushes decay through m and v, then divides it by √v̂ + ε. Large-gradient weights get shrunk less; tiny-gradient weights get shrunk more.',
-          'pt-br': 'Somar L2 (λθ) ao gradiente envia o decay por m e v e depois o divide por √v̂ + ε. Pesos com gradientes grandes encolhem menos; pesos com gradientes minúsculos encolhem mais.',
+          en: 'Adding L2 (λθ) to the gradient pushes regularization through m and v and divides it by √v̂ + ε. Relative to decoupled weight decay (Loshchilov & Hutter, 2019), weights with large historical gradients tend to be shrunk less strongly than they would under uniform decay.',
+          'pt-br': 'Somar L2 (λθ) ao gradiente envia a regularização por m e v e a divide por √v̂ + ε. Em relação ao weight decay desacoplado (Loshchilov & Hutter, 2019), pesos com gradientes históricos grandes tendem a encolher com menos força do que sob decay uniforme.',
         },
         body: {
           kind: 'flow',
@@ -784,8 +782,8 @@ export const TRACK_2_FIGURES = {
       {
         label: { en: 'Post-norm (wrong turn)', 'pt-br': 'Post-norm (desvio errado)' },
         caption: {
-          en: 'Putting normalization on the stream itself (y = Norm(x + F(x))) forces every backward gradient through 64 normalizations, breaking the clean identity highway.',
-          'pt-br': 'Colocar a normalização no próprio stream (y = Norm(x + F(x))) força cada gradiente do backward a atravessar 64 normalizações, quebrando a rodovia identidade limpa.',
+          en: `Putting normalization on the stream itself (y = Norm(x + F(x))) forces every backward gradient through ${LAYERS * 2} sublayer normalizations across ${LAYERS} two-sublayer blocks, breaking the clean identity highway.`,
+          'pt-br': `Colocar a normalização no próprio stream (y = Norm(x + F(x))) força cada gradiente do backward a atravessar ${LAYERS * 2} normalizações de subcamada ao longo de ${LAYERS} blocos de duas subcamadas, quebrando a rodovia identidade limpa.`,
         },
         body: {
           kind: 'flow',
