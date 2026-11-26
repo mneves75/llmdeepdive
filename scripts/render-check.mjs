@@ -419,7 +419,7 @@ const MOTION_ROUTES = {
   flow: '/lessons/1-text-to-tensors/1.3-bpe-step-by-step/',
   stack: '/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/',
   grid: '/lessons/4-transformer/4.4-causal-masking/',
-  plot: '/lessons/0-orientation-and-foundations/0.3-the-probability-you-need/',
+  plot: '/lessons/0-orientation-and-foundations/0.3-probability-you-need/',
   singleGrid: '/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/',
 }
 const MOTION_DEFECTS = {
