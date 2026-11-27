@@ -14,12 +14,16 @@ const t = {
   label: isPt ? 'Buscar nas aulas' : 'Search lessons',
   placeholder: isPt ? 'Buscar aulas, conceitos…' : 'Search lessons, concepts…',
   empty: isPt ? 'Nada encontrado.' : 'No results.',
-  hint: isPt ? 'Digite para buscar' : 'Type to search',
+  searching: isPt ? 'Buscando…' : 'Searching…',
+  unavailable: isPt ? 'A busca está indisponível. Tente novamente.' : 'Search is unavailable. Try again.',
+  hint: isPt ? 'Digite pelo menos dois caracteres.' : 'Enter at least two characters.',
   close: isPt ? 'Fechar (Esc)' : 'Close (Esc)',
   shortcut: isPt ? 'Atalho: tecla barra' : 'Shortcut: slash key',
   results: isPt ? 'Resultados' : 'Results',
   countOne: isPt ? '1 resultado' : '1 result',
   countOther: isPt ? '{n} resultados' : '{n} results',
+  navigate: isPt ? 'Percorrer' : 'Navigate',
+  select: isPt ? 'Selecionar' : 'Select',
 }
 ---
 
@@ -39,9 +43,15 @@ const t = {
   and no Escape handler, which is an accessibility failure that is easy to avoid
   by not hand-rolling it.
 */}
-<dialog class="search" data-search-dialog aria-label={t.label} data-empty={t.empty} data-hint={t.hint} data-count-one={t.countOne} data-count-other={t.countOther}>
-  <form method="dialog" class="search__head">
-    <Icon name="search" size="1.35rem" />
+<dialog class="search" data-search-dialog aria-labelledby="search-title" data-empty={t.empty} data-searching={t.searching} data-unavailable={t.unavailable} data-hint={t.hint} data-count-one={t.countOne} data-count-other={t.countOther}>
+  <header class="search__header">
+    <h2 id="search-title">{t.label}</h2>
+    <button type="button" class="search__close" data-search-close aria-label={t.close}>
+      <Icon name="close" size="1.15rem" />
+    </button>
+  </header>
+  <form method="dialog" class="search__field">
+    <Icon name="search" size="1.4rem" />
     <input
       type="search"
       class="search__input"
@@ -51,11 +61,14 @@ const t = {
       autocomplete="off"
       spellcheck="false"
     />
-    <button type="button" class="search__close" data-search-close aria-label={t.close}>Esc</button>
   </form>
 
   <p class="search__status" data-search-status role="status" aria-live="polite">{t.hint}</p>
   <ul class="search__results" data-search-results aria-label={t.results}></ul>
+  <footer class="search__keys" aria-hidden="true">
+    <span><kbd>↑</kbd> <kbd>↓</kbd> {t.navigate}</span>
+    <span><kbd>Enter</kbd> {t.select}</span>
+  </footer>
 </dialog>
 
 {/*
@@ -72,6 +85,7 @@ const t = {
   {
   let pagefind = null
   let loading = null
+  let loads = 0
 
   const dialog = document.querySelector('[data-search-dialog]')
   const input = document.querySelector('[data-search-input]')
@@ -80,13 +94,19 @@ const t = {
   if (dialog && input && list && status) {
     const emptyText = dialog.dataset.empty ?? ''
     const hintText = dialog.dataset.hint ?? ''
+    const searchingText = dialog.dataset.searching ?? ''
+    const unavailableText = dialog.dataset.unavailable ?? ''
     const countText = (count) => count === 1
       ? dialog.dataset.countOne ?? String(count)
       : (dialog.dataset.countOther ?? '{n}').replace('{n}', String(count))
     const loadIndex = () => {
       if (pagefind) return Promise.resolve(pagefind)
       if (loading) return loading
-      loading = import(/* @vite-ignore */ '/pagefind/pagefind.js')
+      // Module failures and failed fragment requests are cached for the life
+      // of the document and the Pagefind instance respectively.
+      const indexUrl = loads === 0 ? '/pagefind/pagefind.js' : `/pagefind/pagefind.js?retry=${loads}`
+      loads += 1
+      loading = import(/* @vite-ignore */ indexUrl)
         .then(async (mod) => {
           await mod.options({ baseUrl: '/' })
           pagefind = mod
@@ -96,16 +116,30 @@ const t = {
           // Search is an enhancement. If the index is missing the rest of the
           // site is unaffected, so fail visibly here and nowhere else.
           console.error('[search] index unavailable:', err)
-          status.textContent = emptyText
           loading = null
           return null
         })
       return loading
     }
 
+    let returnFocus = null
+    let restoredFocus = false
     const open = () => {
-      if (!dialog.open) dialog.showModal()
-      void loadIndex()
+      if (!dialog.open) {
+        returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : opener
+        restoredFocus = false
+        dialog.showModal()
+      }
+      if (!pagefind) {
+        if (input.value.trim().length >= 2) {
+          void run(input.value)
+        } else {
+          const openedAt = seq
+          void loadIndex().then((pf) => {
+            if (openedAt === seq && dialog.open) status.textContent = pf ? hintText : unavailableText
+          })
+        }
+      }
       input.focus()
     }
 
@@ -138,9 +172,14 @@ const t = {
         return false
       }
       pending = true
+      lastRendered = ''
+      list.replaceChildren()
+      status.textContent = searchingText
       const pf = await loadIndex()
-      if (!pf || mine !== seq) {
-        if (mine === seq) pending = false
+      if (mine !== seq) return false
+      if (!pf) {
+        pending = false
+        status.textContent = unavailableText
         return false
       }
 
@@ -150,12 +189,14 @@ const t = {
         if (mine !== seq) return false // a newer keystroke already won
         loaded = await Promise.all(search.results.slice(0, 12).map((r) => r.data()))
       } catch (err) {
-        // A fragment that fails to load must not leave the dialog saying
-        // "Type to search" forever; report it like a missing index.
         console.error('[search] query failed:', err)
+        if (pagefind === pf) {
+          pagefind = null
+          loading = null
+        }
         if (mine === seq) {
           pending = false
-          status.textContent = emptyText
+          status.textContent = unavailableText
         }
         return false
       }
@@ -176,12 +217,6 @@ const t = {
         })
       const results = loaded.filter((r) => relevant(r.excerpt)).slice(0, 8)
 
-      list.replaceChildren()
-      if (results.length === 0) {
-        status.textContent = emptyText
-        return false
-      }
-      status.textContent = countText(results.length)
       for (const r of results) {
         const li = document.createElement('li')
         const a = document.createElement('a')
@@ -213,19 +248,22 @@ const t = {
         li.append(a)
         list.append(li)
       }
-      return mine === seq
+      const count = list.children.length
+      status.textContent = count === 0 ? emptyText : countText(count)
+      return count > 0
     }
 
     let debounce = 0
     input.addEventListener('input', () => {
       window.clearTimeout(debounce)
+      seq += 1
       pending = true
+      list.replaceChildren()
       debounce = window.setTimeout(() => void run(input.value), 120)
     })
 
-    // Enter in the field must not submit the form (its only button would
-    // close the dialog): flush any pending query, await it, and focus the
-    // first result only if the query is still current.
+    // Enter in the field flushes any pending query, then focuses the first
+    // result only if the query is still current.
     dialog.querySelector('form')?.addEventListener('submit', async (ev) => {
       ev.preventDefault()
       window.clearTimeout(debounce)
@@ -237,9 +275,38 @@ const t = {
       const current = await run(input.value ?? '')
       if (current && (input.value ?? '').trim() === query) list.querySelector('a')?.focus()
     })
+    const restoreFocus = () => {
+      if (restoredFocus) return
+      restoredFocus = true
+      const target = returnFocus?.isConnected ? returnFocus : opener
+      returnFocus = null
+      target?.focus()
+    }
     dialog.querySelector('[data-search-close]')?.addEventListener('click', () => {
       dialog.close()
-      opener?.focus()
+      restoreFocus()
+    })
+    dialog.addEventListener('click', (ev) => {
+      const box = dialog.getBoundingClientRect()
+      const outside = ev.clientX < box.left || ev.clientX > box.right || ev.clientY < box.top || ev.clientY > box.bottom
+      if (outside) dialog.close()
+    })
+    dialog.addEventListener('close', restoreFocus)
+
+    list.addEventListener('focusin', (ev) => {
+      const link = ev.target
+      if (!(link instanceof HTMLAnchorElement)) return
+      // An oversized result can cover the scroll area while its title is
+      // clipped. Align the top after the browser's native focus scroll.
+      requestAnimationFrame(() => {
+        if (document.activeElement !== link) return
+        const region = list.getBoundingClientRect()
+        const row = link.getBoundingClientRect()
+        const title = link.querySelector('.search__title')?.getBoundingClientRect()
+        if (row.top < region.top || (title && title.bottom > region.bottom)) {
+          list.scrollTop += row.top - region.top
+        }
+      })
     })
 
     // Escape closes in one press even when the native search field has a value.
@@ -248,7 +315,6 @@ const t = {
       if (ev.key === 'Escape') {
         ev.preventDefault()
         dialog.close()
-        opener?.focus()
         return
       }
       if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return
@@ -300,12 +366,13 @@ const t = {
   /* A native modal <dialog>: Tailwind's preflight zeroes its UA `margin: auto`,
      which pinned it to the left edge, so centring is restated here. */
   .search {
-    width: min(46rem, calc(100vw - 2rem));
-    max-height: min(40rem, calc(100dvh - 16vh));
-    margin: 8vh auto auto;
+    width: min(43rem, calc(100vw - 1.5rem));
+    max-height: min(43rem, 84dvh);
+    margin: 8dvh auto auto;
     padding: 0;
     overflow: hidden;
     border: 1px solid var(--rule-strong);
+    border-block-start: 3px solid var(--reticle);
     border-radius: var(--radius-md);
     background: var(--plate);
     color: var(--ink);
@@ -320,15 +387,15 @@ const t = {
     transition-behavior: allow-discrete;
   }
 
-  .search:not([open]) { opacity: 0; translate: 0 -0.75rem; }
+  .search:not([open]) { opacity: 0; translate: 0 -0.6rem; }
 
   @starting-style {
-    .search[open] { opacity: 0; translate: 0 -0.75rem; }
+    .search[open] { opacity: 0; translate: 0 -0.6rem; }
   }
 
   .search::backdrop {
-    background: color-mix(in srgb, var(--night) 74%, transparent);
-    backdrop-filter: blur(5px);
+    background: color-mix(in srgb, var(--night) 72%, transparent);
+    backdrop-filter: blur(4px);
     opacity: 1;
     transition: opacity var(--dur-base) var(--ease-out), overlay var(--dur-base), display var(--dur-base);
     transition-behavior: allow-discrete;
@@ -342,24 +409,43 @@ const t = {
 
   .search[open] { display: flex; flex-direction: column; }
 
-  .search__head {
+  .search__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-xs);
+    margin: var(--space-xs) var(--space-md);
+  }
+
+  .search__header h2 {
+    margin: 0;
+    font-size: var(--text-xl);
+    letter-spacing: var(--tracking-tight);
+  }
+
+  .search__field {
     display: flex;
     gap: var(--space-xs);
     align-items: center;
-    padding: var(--space-sm) var(--space-md);
-    border-block-end: 2px solid var(--accent);
-    color: var(--accent);
+    margin: 0 var(--space-md);
+    padding: 0 var(--space-xs);
+    border: 1px solid var(--rule-field);
+    border-radius: var(--radius-sm);
+    background: var(--plate-raised);
+    color: var(--reticle);
   }
+
+  .search__field:focus-within { outline: 2px solid var(--reticle); outline-offset: 1px; }
 
   .search__input {
     flex: 1;
     min-width: 0;
-    min-height: 2.75rem;
+    min-height: 3.25rem;
     border: 0;
     background: transparent;
     color: var(--ink);
     font-family: var(--font-body);
-    font-size: var(--text-lg);
+    font-size: max(1rem, var(--text-lg));
   }
 
   .search__input:focus { outline: none; }
@@ -368,19 +454,19 @@ const t = {
   .search__input::-webkit-search-cancel-button { appearance: none; }
 
   .search__close {
+    display: grid;
+    place-items: center;
+    flex: none;
     min-width: 2.75rem;
     min-height: 2.75rem;
-    padding: 0.2rem 0.55rem;
     border: 1px solid var(--rule-strong);
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-sm);
     background: transparent;
     color: var(--ink-muted);
-    font-family: var(--font-data);
-    font-size: var(--text-3xs);
     cursor: pointer;
   }
 
-  .search__close:hover { border-color: var(--accent); color: var(--accent); }
+  .search__close:hover { border-color: var(--reticle); color: var(--reticle); }
 
   .search__status {
     margin: 0;
@@ -405,17 +491,40 @@ const t = {
   .search__results :global(a) {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
+    align-content: start;
     gap: var(--space-3xs);
-    padding: var(--space-sm) var(--space-md);
+    position: relative;
+    padding: var(--space-sm) calc(var(--space-md) + 1.25rem) var(--space-sm) var(--space-md);
     border-top: 1px solid var(--rule);
     color: var(--ink);
     text-decoration: none;
   }
 
+  .search__results :global(a)::after {
+    content: '';
+    position: absolute;
+    inset-inline-end: var(--space-md);
+    inset-block-start: 50%;
+    width: 0.45rem;
+    height: 0.45rem;
+    border-block-start: 1px solid currentColor;
+    border-inline-end: 1px solid currentColor;
+    rotate: 45deg;
+    translate: 0 -50%;
+    color: var(--ink-muted);
+    transition: translate var(--dur-fast) var(--ease-out);
+  }
+
   .search__results :global(a:hover),
   .search__results :global(a:focus-visible) {
-    color: var(--ink-on-night);
-    background: var(--night-raised);
+    background: var(--plate-raised);
+    box-shadow: inset 3px 0 var(--reticle);
+  }
+
+  .search__results :global(a:hover)::after,
+  .search__results :global(a:focus-visible)::after {
+    color: var(--reticle);
+    translate: 0.18rem -50%;
   }
 
   .search__results :global(a:focus-visible) { outline-offset: -3px; }
@@ -425,6 +534,7 @@ const t = {
     font-size: var(--text-base);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-snug);
+    overflow-wrap: anywhere;
   }
 
   .search__results :global(.search__excerpt) {
@@ -436,17 +546,46 @@ const t = {
     -webkit-line-clamp: 2;
     line-clamp: 2;
     -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
   }
 
-  .search__results :global(a:hover .search__excerpt),
-  .search__results :global(a:focus-visible .search__excerpt) {
-    color: var(--ink-muted-on-night);
+  .search__keys {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs) var(--space-md);
+    padding: var(--space-xs) var(--space-md);
+    border-block-start: 1px solid var(--rule);
+    background: var(--plate-raised);
+    color: var(--ink-muted);
+    font-size: var(--text-xs);
+  }
+
+  .search__keys kbd {
+    padding: 0.15em 0.35em;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius-xs);
+    color: var(--ink);
+    font-family: var(--font-data);
   }
 
   @media (max-width: 32rem) {
     .search-open { padding-inline: 0.6rem; }
     .search-open__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .search-open kbd { display: none; }
-    .search { margin-block-start: var(--space-sm); max-height: calc(100dvh - 2rem); }
+    .search { margin-block-start: 0.75rem; max-height: calc(100dvh - 1.5rem); }
+    .search__header, .search__field { margin-inline: var(--space-sm); }
+    .search__header h2 { font-size: clamp(1.05rem, 4.4vw, var(--text-xl)); }
+    .search__keys { display: none; }
+  }
+
+  @media (max-height: 24rem) {
+    .search { margin-block-start: 0.5rem; max-height: calc(100dvh - 1rem); }
+    .search__header { margin-block: var(--space-3xs); }
+    .search__header h2 { font-size: var(--text-base); }
+    .search__input { min-height: 2.75rem; }
+    .search__status { padding-block: var(--space-3xs); }
+    .search__results :global(a) { min-block-size: 2.75rem; padding-block: var(--space-2xs); }
+    .search__keys,
+    .search__results :global(.search__excerpt) { display: none; }
   }
 </style>

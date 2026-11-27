@@ -3,7 +3,72 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.19.0] — 2026-11-26
+
+### Added
+
+- **Track 34 — A Model in Your Browser (`34-a-model-in-your-browser`, 8 bilingual lessons = 16 MDX files, 10 zero-JS figures) and [`examples/qwen-local-lab/`](examples/qwen-local-lab/):**
+  - Teaches running Qwen3-0.6B completely inside a single browser tab (`34.1` architecture & privacy boundary, `34.2` GGUF format & 639.45 MB arithmetic, `34.3` WebAssembly vs WebGPU feature routing, `34.4` streaming incremental SHA-256 verification without a duplicate model buffer, `34.5` chat templates, 2,048-token context fitting, sampling differences & prefix-cache reuse, `34.6` CSP, fetch guard & 3-second stop-to-terminate fallback, `34.7` single-file 15.66 MB base64 packaging, `34.8` honest measurement).
+  - Single numeric source of truth in `src/lib/browser-lab-facts.ts` (structurally separate from Qwen3.8-27B in `src/lib/model-facts.ts`). Every quoted code block is checked verbatim by `pnpm content:excerpts` (314 excerpts total across both example projects).
+  - Hardened `examples/qwen-local-lab/`: `scripts/fetch_vendor.py` reproduces all vendored engines (`@wllama/wllama@2.3.7` + 1-line worker base-URL patch, `@mlc-ai/web-llm@0.2.89`, `hash-wasm@4.13.0`) from npm with pinned SHA-512 tarball integrity, strict safe archive extraction, exact patch-application count, and pinned SHA-256 output verification; `src/inference-worker.js` streams full SHA-256 over downloaded and cached 639.45 MB GGUF files via `hash-wasm` and pins + SHA-256-verifies the 6.56 MB WebGPU `model_lib` WASM before `blob:` handoff; `scripts/build.py` emits matching hashed CSP in `dist/_headers` and `<meta>`. Wired into CI as the `lab` job (12 Node worker tests + 9 Python build/fetch/server tests).
+  - Real-browser verification on Apple M5 Pro (64 GiB, macOS 27.3, Chromium `156.0.8078.4`, 2026-11-26): CPU 4-thread WASM cold load 40.93 s, warm Cache API re-hash 1.89 s (0 HTTP requests), 43.7–52.1 tok/s decode, 0.65 s -> 0.44 s TTFT via prefix cache; Metal-3 WebGPU (`shader-f16`) cold load 26.87 s, warm reload 1.22 s, 133.7 tok/s warm-shader decode, 0.18 s TTFT; 0 CSP violations, 0 console/page errors.
+- **208 new zero-JS animated bilingual figures (248 figures across 237 of 238 lessons, 35 tracks):**
+  - Expanded from 40 lessons with figures in 0.18.0 to 237 of 238 lessons (`0.8` intentionally kept prose-only after the Track 0 pilot kill criterion fired).
+  - Every lesson in all 35 tracks triaged in `docs/plans/0.19-pictures-and-the-browser-lab/ledger/` (`keep|clarify|restructure|rewrite`, obstacle removed, figure replacing prose, facts checked).
+  - `scripts/content-figures.mjs` enforces 100% triage-ledger coverage across all 238 lessons with no exemption list, cross-checks `none` rows against actual `<Figure>` tags, and checks all 12 lab IDs against collisions, backed by a negative-control unit test.
+- **Lesson 7.6 — a KV-cache what-if lab and a table across attention families (owner scope addition, 2026-11-26):**
+  - The `kv-whatif` lab (the site's 12th) combines four design axes at once — KV heads (24, 4 or 1), how many of the 64 layers run attention (64, 16 or 8), cache precision (2 or 1 bytes) and context — and judges three design problems, telling a smaller design apart from a shorter job. Its arithmetic is `kvCounterfactual`/`kvWhatIf` in `src/lib/lab-math.ts`; its server-rendered defaults reproduce lesson 7.2's 4 KiB per layer, 64 KiB per token, 16 GiB per sequence and 144 MiB of DeltaNet state in both locales, and track 7's sharing-spectrum figure now calls the same function.
+  - A table of KV cache per token for seven models (GPT-2 XL, Phi-4, GLM-4.5, DeepSeek-V3, Qwen3.8-27B, Qwen3.5-397B-A17B, Nemotron 3 Nano 30B-A3B), each row read from its `config.json` at a pinned Hugging Face revision that its last column links (`KV_PEER_CONFIGS` and `QWEN_CONFIG` in `src/lib/model-facts.ts`) and normalised to 2 bytes per cached number. Every row agrees with Sebastian Raschka's LLM Architecture Gallery at `660cc18` (Apache-2.0), cited in both locales. `tests/kv-content.test.mjs` holds every cell in both locales, the row arithmetic, the revision links and the citations.
+- **Zero-JS figure motion contract & real-engine verification:**
+  - Time-based replay inside stepped figures (`<= 1.5 s`, no loop, clicking the active step replays nothing), scroll-linked entrances on single panels (`@supports (animation-timeline: view())` with named `--fig-rows` timeline for grids), instant end state under `prefers-reduced-motion: reduce`, pure-CSS print expansion (`@media print` revealing all panels and plot `<details>` data tables with zero JavaScript), and forced-colors distinctions.
+  - Extended `scripts/render-check.mjs` and its `--self-test` across all four figure kinds (`flow`, `stack`, `grid`, `plot`) plus active-step re-click, reduced motion, print panels and plot tables, and forced colors in Chromium, WebKit, and Firefox.
+
+### Changed
+
+- **First-year university student reader contract across all 35 tracks (238 lessons per locale = 476 MDX files):**
+  - Updated `docs/WRITING.md`, `PRODUCT.md`, and every lesson across tracks 0–34 so new terms (including computing terms) are glossed or linked at first use, code blocks are preceded by plain-words introductions, and process/structure passages are carried by figures rather than repeated in prose. All 35 tracks underwent independent fresh-context cross-model fact checks.
+- **CSS delivery & figure styling:**
+  - Extracted `Figure.astro` and `FigureBody.astro` BEM styles into `src/styles/figure.css` (same pattern as `prose.css` and `lab.css`), eliminating duplicated Astro scope classes and bringing worst-route render-blocking CSS to **70.0 KB** (under the 72 KB budget; CSP remains 559 chars <= 1,900 with pinned `2` inline script + `1` inline style hashes). The 7.6 lab's layout rules in `lab.css` then took the worst route to **70.4 KB**.
+- **Lab select labels fit a 320 px screen:** a closed `<select>` cuts a label wider than its box, silently, with the page still fitting. The 7.6 `kv-whatif` options, the 7.4 sampling presets (in production since 0.18.0) and the 23.2 trajectory presets (since 0.14.0) now say the same thing in fewer words, and `pnpm render:check` fails any visible select option wider than its box in Chromium, WebKit, Firefox and the wide-font pass; its `--self-test` plants a clipped option.
+- **Lab input handling:** `readLabControl` (`src/lib/lab-form.ts`) treats a select with no option chosen as invalid; the browser reads it as `''`, which `Number()` turned into 0, so a lab computed on zero heads instead of blanking its results.
+  - Stripped duplicate leading step numbers (`1. `, `2. `) in `Figure.astro` stepped tabs so the `01`/`02` counter never doubles up, and raised `.figure` list/caption specificity against `.prose`.
+- **Frontend accessibility & UI polish (Wave 5 & 6):**
+  - Restored focus deterministically on `<dialog>` search close, hardened `LessonQuiz.astro` and `Lesson.astro` DOM guards, prevented `Pagefind` from indexing stepped labels and non-default panels, and verified desktop (1440 px) and mobile (390 px) layouts in both Desk and Field editions plus two angles of the 3D Explorer.
+- **Corpus scale & roadmap:**
+  - Site now serves **35 tracks / 238 lessons per locale (476 MDX files, 556 built HTML pages)**; `/roadmap/` links Track 34 lessons in Level 16.
+- **Readability metrics (reported, not accepted on; text measurements only — no learners were tested):**
+
+| Corpus slice | EN words | EN words/sentence | EN Flesch–Kincaid grade | pt-BR words | pt-BR words/sentence | pt-BR Flesch–Kincaid grade |
+|---|---:|---:|---:|---:|---:|---:|
+| Baseline `0.18.0` (`c7148f3`, 230 lessons) | 260,439 | 18.24 | 9.60 | 284,680 | 19.87 | 14.45 |
+| `0.19.0` same 230 lessons (excl. Track 34) | 279,351 | 20.61 | 10.61 | 305,650 | 22.48 | 15.65 |
+| `0.19.0` full corpus (238 lessons incl. Track 34) | 287,657 | 20.80 | 10.69 | 314,726 | 22.69 | 15.72 |
+
+  *(Inline definitions and plain-words code introductions added ~18.9k English words across the 230 existing lessons and slightly lengthened average sentences because technical terms are glossed in-sentence.)*
+
+## [0.18.0] — 2026-11-21
+
+### Changed
+
+- The anatomy explorer opens with a hands-on example. Follow the same phrase through tokenization, context and next-token probabilities before inspecting the model in 3D.
+- Both language editions now open with a next-token prediction experiment. Adjusting temperature changes the probabilities, and the example links to the full sampling lab.
+- Learners can enter the course by goal, expand the curriculum map on demand, jump to a lesson section, and open the first lesson of each roadmap level directly.
+- Redesigned the course shell, curriculum, roadmap, reading view, labs, assessments, anatomy explorer, search, 404s and sharing cards across both languages. The temperature diagram shows probability changes through branch weight, the section navigator follows the reader, and selecting a model port updates its evidence panel. Motion respects the system preference.
+- Search distinguishes an unavailable index from an empty result. Quizzes distinguish skipped questions from wrong answers, and wide inline equations can be scrolled with the keyboard.
+
+### Changed
+
+- **Lesson 5.2** now carries a published pipeline a reader can audit: FineWeb's 15 trillion tokens from 96 Common Crawl snapshots, its documented filtering and deduplication ablations, and the 1.3-trillion-token FineWeb-Edu subset, set against Qwen3.8-27B's undisclosed mixture.
+- **Lesson 7.12** gains a second bilingual case study: colibri v2.2.0's `coli setup`, which measures RAM and card bandwidth before recommending a model, and the release's own CUDA/Vulkan table on one RTX PRO 4000, which shows a tenfold prefill change between builds and a backend ranking that reversed.
+
+### Added
+
+- **`pnpm verify:learning`**, a real-engine check of the lesson-completion record. 120 record cases per engine in Chromium and WebKit (eight teach-back states around both floors × quiz true/false/absent × no action or one of four actions), plus the two producers driven through their own controls: the teach-back textarea at each floor, and the quiz Check button with the documented answers and with one wrong. It seeds storage before any script runs and asserts the record against the input state alone — present only while the quiz is right and the teach-back passes 80 characters and 15 words, never withdrawn by a reload. Wired into CI after the browser install.
+- The check was proven to fail before it was trusted. Five mutations, each rebuilt and reverted, broke it: `teachBackValid || quizValid` (118 cases), seeding `teachBackValid = false` (18, the returning-learner reload among them), dropping the 15-word floor (20, both producer cases between the floors), forcing every quiz answer correct (2), and removing the quiz's completion event (2, the record left absent after a real correct click).
+
+### Changed
+
+- `scripts/render-check.mjs` now shares its dist server through `scripts/serve-dist.mjs`, so a second real-engine check serves the same bytes including the 404 page.
 
 ## [0.17.1] — 2026-11-21
 

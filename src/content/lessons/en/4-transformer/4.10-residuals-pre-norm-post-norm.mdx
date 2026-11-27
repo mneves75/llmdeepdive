@@ -42,12 +42,12 @@ citations:
     authors: "Hugging Face and Qwen Team"
     year: 2026
     url: "https://github.com/huggingface/transformers/blob/e4dd56a373b51a2ed2a6330b64f9d44c51260d5c/src/transformers/models/qwen3_5/modeling_qwen3_5.py"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 ## Why can 64 different layers share one model?
 
-Here is a problem the next lesson will make vivid. Qwen3.8-27B stacks 64 layers, and they are not even all the same kind of layer: most mix tokens one way, a minority another way, and every one of them ends in the wide gated FFN you just met in [lesson 4.9](/lessons/4-transformer/4.9-feed-forward-block/). How do sixty-four heterogeneous processing stages cooperate without any stage destroying what earlier stages built? And how do gradients (the error signals training sends backward, [lesson 2.5](/lessons/2-neural-network-fundamentals/2.5-backpropagation/)) survive the trip back down?
+Here is a problem the next lesson will make vivid. Qwen3.8-27B stacks 64 layers, and they are not even all the same kind of layer: most mix tokens one way, a minority another way, and every one of them ends in the wide gated FFN you just met in [lesson 4.9](/lessons/4-transformer/4.9-feed-forward-block/). How do sixty-four **heterogeneous** (more than one kind of) processing stages cooperate without any stage destroying what earlier stages built? And how do gradients (the error signals training sends backward, [lesson 2.5](/lessons/2-neural-network-fundamentals/2.5-backpropagation/)) survive the trip back down?
 
 The answer is the architecture's least visible and most important decision: a single continuous **residual stream**, 5120 numbers wide per token, that no layer ever replaces. Layers only add to it. [Lesson 2.8](/lessons/2-neural-network-fundamentals/2.8-initialization-normalization-residuals/) introduced residual connections and normalization in general; this lesson looks at how they hold a 64-layer Transformer together.
 
@@ -88,15 +88,17 @@ $$
 
 renormalizing the combined state after every addition. Walk the naive reasoning first, because it feels right: "normalize the final sum; surely the cleanest signal comes from calibrating the result."
 
-But trace the gradient. In post-norm, the identity path itself passes through the normalization, so every backward step multiplies through a norm's Jacobian. With 64 layers, that is 128 sublayer normalizations standing between the loss and the embedding. Deep post-norm stacks historically demanded careful warmup (very small learning rates for the first training steps) and were prone to divergence, where the loss blows up instead of falling. The correction is **pre-norm**:
+But trace the gradient. In post-norm, the identity path itself passes through the normalization, so every backward step multiplies through a norm's Jacobian. Deep post-norm stacks historically demanded careful warmup (very small learning rates for the first training steps) and were prone to divergence, where the loss blows up instead of falling. The correction is **pre-norm**:
 
 $$
 x' = x+F(\operatorname{Norm}(x)),
 $$
 
-which is what Qwen3.8-27B does. Each sublayer receives a calibrated copy, but the main path remains a bare chain of additions: the light table never gets repainted. Concretely, one Qwen layer computes $x_1 = x + \operatorname{Mixer}(\operatorname{RMSNorm}(x))$ and then $x_2 = x_1 + \operatorname{FFN}(\operatorname{RMSNorm}(x_1))$. The model repeats that contract 64 times before a final RMSNorm prepares the state for the output head.
+which is what Qwen3.8-27B does. Compare the two paths in the figure below: concretely, one Qwen layer computes $x_1 = x + \operatorname{Mixer}(\operatorname{RMSNorm}(x))$ and then $x_2 = x_1 + \operatorname{FFN}(\operatorname{RMSNorm}(x_1))$, repeating that contract 64 times before a final RMSNorm prepares the state for the output head.
 
-Pre-norm has its own dynamics. Because the stream is never rescaled on the main path, its magnitude tends to grow as updates accumulate through depth. The per-sublayer RMSNorm hides that growth from each reader, and the final norm hides it from the head. Initialization, learning-rate schedule, precision, and optimizer all interact with these choices: pre-norm is an empirically friendlier default for very deep stacks, not a theorem about accuracy.
+<Figure id="t4-prenorm-vs-postnorm" />
+
+Pre-norm has its own dynamics. Because the stream is never rescaled on the main path, its magnitude tends to grow as updates accumulate through depth. The per-sublayer RMSNorm hides that growth from each reader, and the final norm hides it from the head. Initialization, **learning-rate schedule** (how step size changes during training), **precision** (how many bits store each number), and **optimizer** (the rule that updates weights from gradients) all interact with these choices: pre-norm is an empirically friendlier default for very deep stacks, not a theorem about accuracy.
 
 :::caveat
 "Pre-norm" is not a complete specification, and neither is "RMSNorm." A model may normalize its two sublayers differently, add sandwich norms (a second norm after the sublayer as well as before) or QK-norms (normalizing queries and keys before their dot product), scale residual branches, or place extra norms around embeddings and output. When inspecting a checkpoint, do not assume its norm parameters mean the same thing as in your reference implementation; read the actual block equations before assuming compatibility.

@@ -42,7 +42,7 @@ citations:
     authors: "LangChain"
     year: 2026
     url: "https://docs.langchain.com/oss/python/langgraph/checkpointers"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 The run for PO-1001 has reached `ready`, and its next step creates the invoice in the accounts-payable system, the service that records what the company owes. The worker sends the request. Thirty seconds pass with no reply, and the connection times out. Was the invoice created? The worker cannot know. If it sends again and the first request succeeded, the company owes the same USD 500.00 twice. If it does nothing and the first request was lost, the supplier is never paid. This lesson gives the run a way out of that dilemma that does not depend on guessing.
@@ -51,17 +51,17 @@ The run for PO-1001 has reached `ready`, and its next step creates the invoice i
 
 A *side effect* is any change a step makes outside its own state: a row in another system, an e-mail, a payment. Two events are easy to confuse here. *Delivery* is the request reaching the service. The *effect* is the service acting on it. Between them sits the reply, and the reply can be lost even when the effect happened.
 
-RFC 9110, the HTTP specification, calls a method *idempotent* if "the intended effect on the server of multiple identical requests with that method is the same as the effect for a single such request". `PUT` and `DELETE` are idempotent, so a client may retry them after a broken connection. `POST`, the usual way to create something, is not. The RFC says a client "SHOULD NOT automatically retry" a non-idempotent request unless it has some means to know the request is safe to repeat.
+RFC 9110, the HTTP specification ([lesson 14.1](/lessons/14-agent-architecture-and-state/14.1-when-a-workflow-needs-an-agent/)), calls a method *idempotent* if "the intended effect on the server of multiple identical requests with that method is the same as the effect for a single such request". `PUT` (replace a record) and `DELETE` (remove a record) are idempotent, so a client may retry them after a broken connection. `POST`, the usual HTTP method to create something, is not. The RFC says a client "SHOULD NOT automatically retry" a non-idempotent request unless it has some means to know the request is safe to repeat.
 
 ## Why does a replay repeat work?
 
-[Lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/) made a restart resume from the last committed checkpoint. That is exactly why work repeats. The checkpoint is written *after* a step, so a crash in the middle of a step means the step runs again from its start. Any effect it caused before the crash happens a second time, unless something stops it. LangGraph's checkpointer documentation states the same boundary: "you can only resume execution from a checkpoint (i.e., a super-step boundary)".
+[Lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/) made a restart resume from the last committed checkpoint. That is exactly why work repeats. The checkpoint is written *after* a step, so a crash in the middle of a step means the step runs again from its start. Any effect it caused before the crash happens a second time, unless something stops it. LangGraph's checkpointer documentation states the same boundary: "you can only resume execution from a checkpoint (i.e., a super-step boundary)" (a *super-step* is one finished step of the graph, covered in [lesson 14.5](/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/)).
 
 Model calls add a second reason. A model can answer the same prompt differently on two calls. So a replay must never *re-ask* the model for a decision it already made. It must read the decision from the checkpoint. That is why the run's status is stored, and not recomputed.
 
 ## Idempotency keys
 
-An *idempotency key* is a value sent with a request so the receiver can recognise a repeat. The receiver stores the result under the key. When the same key arrives again, it returns the stored result instead of acting twice. An IETF draft for an `Idempotency-Key` HTTP header describes this behaviour: the server "SHOULD respond with the result of the previously completed operation". Its last revision (October 2025) expired in April 2026 without becoming a standard, so treat it as a description of the idea, not as a rule a server must follow. The project's fake accounts system implements it:
+An *idempotency key* is a value sent with a request so the receiver can recognise a repeat. The receiver stores the result under the key. When the same key arrives again, it returns the stored result instead of acting twice. A draft from the IETF (Internet Engineering Task Force, the body that publishes internet specifications like HTTP and JSON) for an `Idempotency-Key` HTTP header (a metadata field on a web request) describes this behaviour: the server "SHOULD respond with the result of the previously completed operation". Its last revision (October 2025) expired in April 2026 without becoming a standard, so treat it as a description of the idea, not as a rule a server must follow. The project's fake accounts system implements that rule below: it counts each call, optionally simulates a lost request (`before_write`) or a lost reply (`after_write`), and stores a new invoice number only if the key has not been seen before:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/outbox.py
@@ -76,9 +76,9 @@ An *idempotency key* is a value sent with a request so the receiver can recognis
         return number
 ```
 
-`setdefault` stores a new number only when the key is new. `fail_next` injects one failure: `before_write` loses the request, and `after_write` records the invoice and then loses the reply.
+`setdefault` (a Python dictionary method that inserts a value only when the key is absent and returns the existing value otherwise) stores a new number only when the key is new. `fail_next` injects one failure: `before_write` loses the request, and `after_write` records the invoice and then loses the reply.
 
-The key must be the same on every attempt, so the sender derives it from durable identifiers:
+The key must be the same on every attempt, so the function below combines two durable identifiers—the run id and the operation name—into one string such as `run-1:create_invoice`:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/outbox.py
@@ -87,11 +87,11 @@ def idempotency_key(run_id: str, operation: str) -> str:
     return f"{run_id}:{operation}"
 ```
 
-A random id generated at send time would be different on the retry, and the service would treat it as a new request. Temporal's documentation makes the same recommendation for its activities. It suggests a key built from the workflow run's id and the activity's id, because that pair stays the same across retries.
+A random id generated at send time would be different on the retry, and the service would treat it as a new request. Temporal's documentation makes the same recommendation for its *activities* (Temporal's name for functions that talk to external systems, covered in lesson 14.5). It suggests a key built from the workflow run's id and the activity's id, because that pair stays the same across retries.
 
 ## The outbox: decide in one place, act in another
 
-Where does the request get sent from? If a step commits its new state and *then* calls the service, a crash between the two loses the effect. If it calls the service and then commits, a crash between them repeats the effect without a record. The *outbox* removes that gap. The step writes its intent, the key and the invoice draft, as a row in an `outbox` table, in the same transaction as the new state. That is the `effects` argument of `save` from lesson 14.3. A separate deliverer then sends each pending row:
+Where does the request get sent from? If a step commits its new state and *then* calls the service, a crash between the two loses the effect. If it calls the service and then commits, a crash between them repeats the effect without a record. The *outbox* removes that gap. The step writes its intent, the key and the invoice draft, as a row in an `outbox` table, in the same transaction as the new state. That is the `effects` argument of `save` from lesson 14.3. A separate deliverer then loops over every pending row, calls the service with its key, marks the row `reconciling` when the outcome is unknown, or marks it `done` with the invoice number when a reply arrives:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/outbox.py
@@ -110,7 +110,7 @@ So delivery happens *at least once*. The row stays pending until a result is rec
 
 ## Unknown outcomes and reconciliation
 
-When the deliverer cannot tell what happened, it does not guess. It moves the row to `reconciling`. *Reconciliation* asks the service what it recorded for the key, then acts on the answer:
+When the deliverer cannot tell what happened, it does not guess. It moves the row to `reconciling`. *Reconciliation* loops over every `reconciling` row, asks the service what it recorded for that key, moves the row back to `pending` if no record exists (so it is safe to send again), or marks it `done` if an invoice number is already there:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/outbox.py
@@ -134,4 +134,4 @@ A key protects you only while the receiver remembers it. The IETF draft lets a s
 
 The module is `src/agentlab/state/outbox.py`; the tests are in `tests/test_state_outbox.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_state_outbox.py"`.
 
-Expected output ends with `Ran 6 tests` and `OK`. The central test loses a reply after the write, sends again with the same key and asserts that the service holds exactly one invoice. Its control sends two *different* keys and expects two invoices, so the test cannot pass by a service that only ever stores one. To watch it catch a bug, make `create` store every request under a new entry instead of using `setdefault`. Two tests fail: the repeated delivery now leaves two invoices, and reconciliation can no longer find the first one by its key. [Lesson 14.5](/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/) shows the same mechanics inside LangGraph and Temporal.
+Expected output ends with `Ran 6 tests` and `OK`. The central test loses a reply after the write, sends again with the same key and asserts that the service holds exactly one invoice. Its control test (like a control group in an experiment) sends two *different* keys and expects two invoices, so the test cannot pass by a service that only ever stores one. To watch it catch a bug, make `create` store every request under a new entry instead of using `setdefault`. Two tests fail: the repeated delivery now leaves two invoices, and reconciliation can no longer find the first one by its key. [Lesson 14.5](/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/) shows the same mechanics inside LangGraph and Temporal.

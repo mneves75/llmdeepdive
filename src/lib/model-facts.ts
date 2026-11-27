@@ -17,7 +17,8 @@
  * ## Provenance
  *
  * `config` values are verified against the model's own config.json (fetched
- * 2026-08-18); `card` values come from the model card only. Sources:
+ * 2026-08-18); `card` values come from the model card only; `tokenizer` values
+ * come from the published tokenizer files in the same repository. Sources:
  *   - https://huggingface.co/Qwen/Qwen3.8-27B
  *   - https://huggingface.co/Qwen/Qwen3.8-27B/resolve/main/config.json
  *
@@ -27,9 +28,9 @@
  */
 
 /** Where a number came from, so a reviewer can check it without leaving the file. */
-import { dispatchBytes, moeParameterBudget } from './moe-math'
+import { dispatchBytes, moeParameterBudget } from './moe-math.ts'
 
-export type FactSource = 'config' | 'card' | 'derived' | 'measured'
+export type FactSource = 'config' | 'card' | 'tokenizer' | 'derived' | 'measured'
 export interface ModelFact {
   readonly value: number
   /** Unit as it should be spoken, e.g. 'layers', 'KiB per token'. Not localised. */
@@ -59,6 +60,7 @@ export const QWEN = {
   hiddenSize: fact(5120, 'dimensions', 'config', 'hidden_size'),
   ffnIntermediate: fact(17408, 'dimensions', 'config', 'intermediate_size'),
   vocabSize: fact(248320, 'rows', 'config', 'vocab_size, padded'),
+  tokenizerMappedIds: fact(248077, 'ids', 'tokenizer', 'token ids the published tokenizer maps; the other vocabSize rows have no id'),
   queryHeads: fact(24, 'query heads', 'config', 'num_attention_heads'),
   kvHeads: fact(4, 'KV heads', 'config', 'num_key_value_heads — GQA'),
   headDim: fact(256, 'dimensions', 'config', 'head_dim'),
@@ -410,6 +412,135 @@ export const LLAMA_CPP_QUANT_BENCH = [
 
 /** The model the rows above were measured on. Stated wherever they are shown. */
 export const LLAMA_CPP_QUANT_BENCH_MODEL = 'Llama-3.1-8B'
+
+/**
+ * KV cache per token for six peer models, the rows of lesson 7.6's table
+ * "across attention families". None of them is the course model; the table's
+ * Qwen3.8-27B row is built from `QWEN`.
+ *
+ * Each row is read from the model's `config.json` at the pinned revision
+ * (Hugging Face, read 2026-11-26) and counts 2 bytes per cached number, whatever
+ * precision the checkpoint ships, so rows compare designs, not number formats.
+ * A K/V layer caches a key and a value per KV head: 2 × kvHeads × headDim
+ * numbers. An MLA layer caches what DeepSeek-V2 (arXiv 2405.04434, Table 1)
+ * says it must: the latent plus the decoupled RoPE key, kv_lora_rank +
+ * qk_rope_head_dim numbers. Only layers that keep every past token count:
+ *   - GPT-2 XL and Phi-4 state no head_dim; it is n_embd ÷ n_head (1600 ÷ 25)
+ *     and hidden_size ÷ num_attention_heads (5120 ÷ 40).
+ *   - `layers` is num_hidden_layers (GPT-2: n_layer). DeepSeek-V3 and GLM-4.5
+ *     also declare `num_nextn_predict_layers: 1`, a multi-token-prediction
+ *     layer the table does not count.
+ *   - Qwen3.5-397B-A17B caches in its 15 `full_attention` layers of 60; the
+ *     others are `linear_attention`, Gated DeltaNet in the reference
+ *     implementation (transformers e4dd56a, `Qwen3_5MoeGatedDeltaNet`).
+ *   - Nemotron 3 Nano's `hybrid_override_pattern` has 6 `*` (attention), 23 `M`
+ *     (Mamba-2) and 23 `E` (expert feed-forward) among its 52 layers, per
+ *     `configuration_nemotron_h.py` at the same revision.
+ *
+ * The Qwen3.8-27B row cites the config revision track 7 already cites
+ * (`QWEN_CONFIG`); on 2026-11-26 that config.json was byte-identical to main's
+ * (3756181) and its KV fields matched `QWEN`.
+ *
+ * Cross-check: `KV_TABLE_GALLERY` lists the same KV per token for all seven rows
+ * of the table, printed to one decimal (DeepSeek-V3 as 68.6).
+ *
+ * The plan's candidates also named Llama 3 8B and Llama 3.1 405B. Their configs
+ * are gated (meta-llama, manual approval; HTTP 401 without an accepted licence
+ * on 2026-11-26), so they could not be re-read at a pinned revision. Phi-4
+ * (dense GQA) and GLM-4.5 (GQA mixture of experts) cover those two families.
+ */
+export type KvPeerGeometry =
+  | { readonly kind: 'kv'; readonly kvHeads: number; readonly headDim: number }
+  | { readonly kind: 'latent'; readonly latentDim: number; readonly ropeDim: number }
+
+export interface KvPeerConfig {
+  readonly model: string
+  readonly repo: string
+  readonly revision: string
+  /** The attention family as the table prints it. Notation, never localised. */
+  readonly attention: string
+  readonly geometry: KvPeerGeometry
+  readonly layers: number
+  readonly cachedLayers: number
+  readonly kibPerToken: number
+}
+
+export const KV_PEER_CONFIGS = [
+  {
+    model: 'GPT-2 XL',
+    repo: 'openai-community/gpt2-xl',
+    revision: '15ea56dee5df4983c59b2538573817e1667135e2',
+    attention: 'MHA',
+    geometry: { kind: 'kv', kvHeads: 25, headDim: 64 },
+    layers: 48,
+    cachedLayers: 48,
+    kibPerToken: 300,
+  },
+  {
+    model: 'Phi-4',
+    repo: 'microsoft/phi-4',
+    revision: '2db69c1c3e91a05d2c64a3185acfbaf36f744e25',
+    attention: 'GQA',
+    geometry: { kind: 'kv', kvHeads: 10, headDim: 128 },
+    layers: 40,
+    cachedLayers: 40,
+    kibPerToken: 200,
+  },
+  {
+    model: 'GLM-4.5',
+    repo: 'zai-org/GLM-4.5',
+    revision: 'cbb2c7cfb52fa128a9660cb1a7a78e017899e115',
+    attention: 'GQA',
+    geometry: { kind: 'kv', kvHeads: 8, headDim: 128 },
+    layers: 92,
+    cachedLayers: 92,
+    kibPerToken: 368,
+  },
+  {
+    model: 'DeepSeek-V3',
+    repo: 'deepseek-ai/DeepSeek-V3',
+    revision: 'e815299b0bcbac849fa540c768ef21845365c9eb',
+    attention: 'MLA',
+    geometry: { kind: 'latent', latentDim: 512, ropeDim: 64 },
+    layers: 61,
+    cachedLayers: 61,
+    kibPerToken: 68.625,
+  },
+  {
+    model: 'Qwen3.5-397B-A17B',
+    repo: 'Qwen/Qwen3.5-397B-A17B',
+    revision: '8472618112abcbd45acbcdc58436aff4233c23f7',
+    attention: 'GQA + Gated DeltaNet',
+    geometry: { kind: 'kv', kvHeads: 2, headDim: 256 },
+    layers: 60,
+    cachedLayers: 15,
+    kibPerToken: 30,
+  },
+  {
+    model: 'Nemotron 3 Nano 30B-A3B',
+    repo: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16',
+    revision: 'bf77c3174f68ad409e1c2aa60daeb46e32d1c606',
+    attention: 'GQA + Mamba-2',
+    geometry: { kind: 'kv', kvHeads: 2, headDim: 128 },
+    layers: 52,
+    cachedLayers: 6,
+    kibPerToken: 6,
+  },
+] as const satisfies readonly KvPeerConfig[]
+
+/** The Qwen3.8-27B config revision track 7 cites, lesson 7.2 and 7.6's table alike. */
+export const QWEN_CONFIG = {
+  repo: 'Qwen/Qwen3.8-27B',
+  revision: '1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0',
+} as const
+
+/** The independent catalog lesson 7.6's table was cross-checked against, cited there. */
+export const KV_TABLE_GALLERY = {
+  repo: 'rasbt/llm-architecture-gallery',
+  revision: '660cc1886a9d2a009c46ecc8e17e98b1075f58b2',
+  file: 'models.yml',
+  licence: 'Apache-2.0',
+} as const
 
 /**
  * The instructive wrong turn in lesson 7.2: assuming every layer caches KV.

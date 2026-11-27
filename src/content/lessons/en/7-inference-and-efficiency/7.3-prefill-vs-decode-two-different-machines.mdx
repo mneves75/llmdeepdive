@@ -38,10 +38,10 @@ citations:
     authors: "Woosuk Kwon et al."
     year: 2023
     url: "https://arxiv.org/abs/2309.06180"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Serve Qwen3.8-27B and watch the timings: an 8,192-token prompt is absorbed in about the time it takes to read this clause, then the answer trickles out token by token. Same weights, same GPU, yet the two phases run at speeds separated by orders of magnitude. They are effectively two different machines. **Prefill** processes the prompt and creates state; **decode** consumes that state one token at a time. Knowing which machine is slow tells you which fix can possibly help.
+Serve Qwen3.8-27B and watch the timings: an 8,192-token prompt is absorbed in about the time it takes to read this clause, then the answer trickles out token by token. Same weights, same GPU, yet the two phases run at speeds separated by orders of magnitude (factors of ten or more). They are effectively two different machines. **Prefill** processes the prompt and creates state; **decode** consumes that state one token at a time. Knowing which machine is slow tells you which fix can possibly help.
 
 ## Prefill: the whole prompt at once
 
@@ -53,10 +53,9 @@ Accelerators love this shape: plenty of independent work across tokens, heads, a
 
 Decode presents the opposite shape: one new position per active sequence per step, through every layer.
 
-When decode feels slow, most people reach for the wrong fix. They assume the GPU has run out of arithmetic and buy more FLOPs (floating-point operations per second). Run the numbers instead, starting with one weight matrix and two cases:
+When decode feels slow, most people reach for the wrong fix. They assume the GPU has run out of arithmetic and buy more FLOPs (floating-point operations per second — binary floating-point arithmetic used for formats like bf16, fp16, and fp32). Compare the two phases on one weight matrix instead:
 
-- **Prefill, 8,192 tokens.** Each weight is fetched from memory once and then used for all 8,192 prompt positions.
-- **Decode, one token.** Each weight is fetched once and used for exactly one position.
+<Figure id="t7-prefill-vs-decode" />
 
 In general, for a weight matrix of $P$ parameters in bf16 (2 bytes each), processing $n$ tokens costs about $2nP$ operations (one multiply and one add per weight per token) against at least $2P$ bytes of weight traffic. The ratio of the two is the **arithmetic intensity**, the useful work done per byte fetched:
 
@@ -66,7 +65,7 @@ $$
 
 Prefill with $n = 8{,}192$ prompt positions performs roughly 8,192 useful operations for every weight byte it fetches. Batch-1 decode, serving a single sequence, has $n = 1$: about one operation per byte. And the bytes are substantial. Qwen3.8-27B's bf16 checkpoint is about 54 GB, and a text decode step streams most of it from memory: every layer's weights, though not the vision tower, and only one row of the input embedding table. So 54 GB is a planning approximation of the bytes per step, not a measurement; actual traffic has to be measured.
 
-One operation per byte is far below what any modern accelerator needs to keep its arithmetic units busy. So the decode step is limited by memory bandwidth (how many bytes per second memory can deliver), not by compute, and adding FLOPs would change nothing. The roofline model (Williams et al.) makes this precise. [Lesson 9.1](/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/) divides H100-class memory bandwidth by the 54 GB checkpoint size to get an order-of-magnitude tokens-per-second heuristic, and explains why an exact roofline needs measured active bytes.
+One operation per byte is far below what any modern accelerator needs to keep its arithmetic units busy. So the decode step is limited by memory bandwidth (how many bytes per second memory can deliver), not by compute, and adding FLOPs would change nothing. The roofline model (Williams et al.) — a chart comparing a chip's peak math speed against its memory-bandwidth limit — makes this precise. [Lesson 9.1](/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/) divides H100-class memory bandwidth by the 54 GB checkpoint size to get an order-of-magnitude tokens-per-second heuristic, and explains why an exact roofline needs measured active bytes.
 
 The corrected picture explains why every decode remedy is about bytes:
 
@@ -78,7 +77,7 @@ The corrected picture explains why every decode remedy is about bytes:
 
 The second stream of decode traffic is state, and here Qwen3.8-27B's hybrid layout changes the classic picture. In a uniform attention model, every layer reads a KV history (the cached keys and values of all earlier tokens) that grows with context, so decode gets progressively more expensive per token.
 
-In this model only the 16 full-attention layers do that, reading a cache that grows at the 64 KiB per token derived in [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/). Illustratively, at 100,000 cached tokens those layers stream about 6 GiB of K/V per step. The 48 DeltaNet layers instead read and update fixed-size matrix states totaling 144 MiB in the reference float32 path, the same at token ten and token 200,000.
+In this model only the 16 full-attention layers do that, reading a cache that grows at the 64 KiB per token derived in [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/). Illustratively, as step 3 of the figure above shows, at 100,000 cached tokens those layers stream about 6 GiB of K/V per step. The 48 DeltaNet layers instead read and update fixed-size matrix states totaling 144 MiB in the reference float32 path, the same at token ten and token 200,000.
 
 Three-quarters of the depth therefore contributes constant decode traffic. Cost still grows with context, but far more slowly than the layer count alone would suggest, and that flattening is precisely what the architecture bought.
 
@@ -86,9 +85,9 @@ Three-quarters of the depth therefore contributes constant decode traffic. Cost 
 
 Batching changes the arithmetic for both phases. Independent sequences decoded together share each weight read, multiplying useful work per byte. That is why $n$ in the intensity formula is really the number of tokens in flight, not just prompt length.
 
-But batches have costs. Waiting to form one raises queue latency, and sequences finish at different times. Continuous batching ([lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/)) replaces a fixed rectangle of requests with a shifting set of token steps, which the scheduler must keep fair.
+But batches have costs. Waiting to form one raises queue latency (time spent waiting in line before work starts), and sequences finish at different times. Continuous batching ([lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/)) replaces a fixed rectangle of requests with a shifting set of token steps, which the scheduler must keep fair.
 
-The phases also interfere. A large prefill monopolizes compute and bandwidth exactly while decode requests need their steady cadence. Two remedies exist. Chunked prefill cuts a long prompt into pieces and interleaves them between decode steps. Some deployments disaggregate the phases, running prefill and decode on separate workers and paying to transfer the KV cache between them to avoid the contention.
+The phases also interfere. A large prefill monopolizes compute and bandwidth exactly while decode requests need their steady cadence. Two remedies exist. Chunked prefill cuts a long prompt into pieces and interleaves them between decode steps. Some deployments disaggregate the phases, running prefill and decode on separate workers (independent server processes or GPUs) and paying to transfer the KV cache between them to avoid contention (competing for the same chip at once).
 
 :::caveat
 "Compute-bound prefill, bandwidth-bound decode" is a first-order model, not a law. Tiny prompts, very large decode batches, quantized kernels, and extreme context lengths (where the 16 attention layers' cache reads rival the weight reads) can all move the bottleneck. Measure per phase before optimizing.
@@ -96,6 +95,6 @@ The phases also interfere. A large prefill monopolizes compute and bandwidth exa
 
 ## Measuring each phase on its own
 
-Metrics should respect the split. Record queue time, prefill duration, and prompt throughput separately from decode step time and output throughput. Report them as percentiles (for example the 99th, the latency that 99 of every 100 requests stay at or below), broken down by prompt length and concurrency. A single average can hide a scheduler that feeds bulk jobs while starving interactive users.
+Metrics should respect the split. Record queue time, prefill duration, and prompt throughput separately from decode step time and output throughput. Report them as percentiles (for example the 99th, the latency that 99 of every 100 requests stay at or below), broken down by prompt length and concurrency (how many requests run at the same time). A single average can hide a scheduler that feeds bulk background jobs while starving interactive users.
 
 Put the two halves together: a parallel prompt processor hands state to a latency-sensitive token engine that mostly moves memory. Everything in the rest of this track (IO-aware attention, paged caches, quantization, speculative decoding) attacks one side or the other of that boundary.

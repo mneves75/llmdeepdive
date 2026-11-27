@@ -34,51 +34,46 @@ citations:
     authors: "Vladimir Karpukhin, Barlas Oğuz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, Wen-tau Yih"
     year: 2020
     url: "https://arxiv.org/abs/2004.04906"
-updated: "2026-11-21"
+updated: "2026-11-26"
 ---
 
-Even after clean layout parsing from [Document Ingestion & Why PDFs Break RAG](/lessons/27-retrieval-and-hybrid-search/27.1-document-ingestion-and-layout-parsing/), you cannot embed an entire 80-page handbook as one vector and hope search pulls the right paragraph. You must slice documents into **chunks**—the atomic retrieval units stored in your search index. Choose chunks too large and embeddings blur across unrelated topics; choose them too small and answers lose the caveats that make a fact true.
+Even after clean layout parsing from [Document Ingestion & Why PDFs Break RAG](/lessons/27-retrieval-and-hybrid-search/27.1-document-ingestion-and-layout-parsing/), you cannot embed an entire 80-page handbook as one vector (one list of numbers summarizing its topic) and hope search pulls the right paragraph. You must slice documents into **chunks**—the smallest indivisible retrieval units stored in your search index. Choose chunks too large and embeddings blur across unrelated topics; choose them too small and answers lose the caveats that make a fact true.
 
 ## The precision-versus-context tension
 
-Every chunk serves two competing masters:
+Every chunk serves two competing components of a Retrieval-Augmented Generation (RAG) system:
 
-- **The retriever** wants small, focused chunks (roughly 150 to 400 tokens). One embedding vector represents an entire chunk's mean topic; cram five unrelated policies into one 2,000-token chunk and its vector lands somewhere between all five, matching none of them sharply.
-- **The LLM generator** wants enough surrounding text to resolve pronouns, exceptions, and units. A chunk that says `"Fees are waived if submitted within 14 days"` is dangerous if the prior sentence said `"For non-EU enterprise contracts only."`
+- **The retriever** (the search component that selects candidate passages) wants small, focused chunks (roughly 150 to 400 tokens). One embedding vector represents an entire chunk's average topic; cram five unrelated policies into one 2,000-token chunk and its vector lands somewhere between all five, matching none of them sharply.
+- **The LLM generator** (the large language model that writes the final answer from retrieved text) wants enough surrounding prose to resolve pronouns, exceptions, and units. A chunk that says `"Fees are waived if submitted within 14 days"` is dangerous if the prior sentence said `"For non-EU enterprise contracts only."`
 
 Chunking strategy is how you balance those two forces for your specific document type.
 
 ## Overlap arithmetic and storage overhead
 
-Before picking fancy algorithms, compute the real cost of fixed-size chunking with sliding overlap. Suppose a parsed handbook section has length $L = 2{,}400$ tokens, and you slice it into chunks of $C = 400$ tokens with an overlap of $O = 80$ tokens (20%) so facts sitting on a cut boundary appear intact in at least one window.
+Before picking complex algorithms, compute the real cost of fixed-size chunking with sliding overlap (repeating a few trailing tokens of each chunk at the start of the next so facts near a cut appear intact in at least one window). Suppose a parsed handbook section has length $L = 2{,}400$ tokens, and you slice it into chunks of $C = 400$ tokens. Each new chunk moves forward by a **stride** (step size) of `C - O` tokens. Step through `O = 0`, `O = 80` (20% overlap), and `O = 200` (50% overlap) below to see how window boundaries shift and why indexed token volume climbs sharply.
 
-Each new chunk advances by a **stride** of `C - O = 400 - 80 = 320` tokens:
+<Figure id="27-2-sliding-chunk-overlap" />
 
-- Chunk 1 covers tokens `1..400`.
-- Chunk 2 covers tokens `321..720`.
-- Chunk 7 covers tokens `1,921..2,320`.
-- Chunk 8 covers tokens `2,241..2,400` (160 tokens).
+With 20% overlap ($O = 80$, stride `320`), the section yields `8` chunks and `7 × 400 + 160 = 2,960` indexed tokens—an extra `560` tokens, or `23.3%` more embedding compute than the raw `2,400`-token section, while fixed-width vector storage grows from 6 vectors without overlap to 8 vectors. Raising overlap to 50% (`O = 200`, stride `200`) gives $\lceil (2{,}400 - 200) / (400 - 200) \rceil = \lceil 2{,}200 / 200 \rceil = 11$ chunks and `11 × 400 = 4,400` indexed tokens—nearly doubling both embedding work and stored vector count.
 
-That produces `8` chunks and `7 × 400 + 160 = 2,960` indexed tokens—an extra `560` tokens, or `23.3%` more embedding compute than the raw `2,400`-token section (while fixed-width vector storage scales with the number of chunks, growing from 6 vectors without overlap to 8 vectors). Raise overlap to 50% (`O = 200`, stride `200`), and the formula $\lceil (2{,}400 - 200) / (400 - 200) \rceil = \lceil 2{,}200 / 200 \rceil = 11$ yields `11` chunks and `11 × 400 = 4,400` indexed tokens—nearly doubling both embedding work and stored vector count.
-
-In general, for any document with length $L > O$, chunk size $C > O$, and overlap $O$:
+In general, for any document with length $L > O$, chunk size $C > O$, and overlap $O$ (where $\lceil \cdot \rceil$ means ceiling, rounding up to the next whole number):
 
 $$N_{\text{chunks}} = \left\lceil \frac{L - O}{C - O} \right\rceil$$
 
-Check the worked case: $\lceil (2{,}400 - 80) / (400 - 80) \rceil = \lceil 2{,}320 / 320 \rceil = \lceil 7.25 \rceil = 8$. Most production pipelines keep overlap between 10% and 20% only when splitting unstructured prose, and drop overlap toward 0% when splitting along clean structural boundaries.
+Check the 20%-overlap case: $\lceil (2{,}400 - 80) / (400 - 80) \rceil = \lceil 2{,}320 / 320 \rceil = \lceil 7.25 \rceil = 8$. Most production pipelines keep overlap between 10% and 20% only when splitting unstructured prose, and drop overlap toward 0% when splitting along clean structural boundaries.
 
 ## Five chunking strategies compared
 
-Start with the simplest strategy that respects your corpus's structure, then measure retrieval recall before adding complexity:
+Start with the simplest strategy that respects your corpus's structure, then measure retrieval recall (the share of relevant passages found) before adding complexity:
 
-- **Fixed-size token windows.** Fast and deterministic (Karpukhin et al. 2020 used 100-word Wikipedia passages for Dense Passage Retrieval), but blind to sentences, tables, and code blocks—a hard cut can slice a SQL query or JSON block in half.
-- **Recursive structure-aware splitting.** Try splitting on top-level headings (`## `) first; if a section still exceeds your token budget, fall back to subheadings, then paragraphs (`\n\n`), then sentences, and only finally raw tokens. Keep Markdown tables and fenced code blocks atomic whenever they fit under a safety ceiling.
-- **Document- and AST-aware splitting.** For source code, parse the Abstract Syntax Tree (AST) so each function or class stays whole; for legal contracts, split on numbered clauses; for HTML, split on semantic containers (`<section>`, `<article>`).
-- **Semantic chunking.** Embed consecutive sentences and start a new chunk whenever cosine similarity between adjacent sentences drops below a threshold. It sounds attractive on flat transcripts without headings, yet it adds embedding calls at ingestion and rarely beats structure-aware splitting when documents already contain headings and paragraphs.
-- **Parent-child (small-to-big) chunking.** Break each document into large **parent** sections (for example, 800 tokens) and smaller **child** chunks (for example, 200 tokens) linked by `parent_id`. Embed and search the sharp child chunks, then deduplicate and pass the enclosing parent sections to the LLM.
+- **Fixed-size token windows.** Fast and deterministic (Karpukhin et al. 2020 used 100-word Wikipedia passages for Dense Passage Retrieval), but blind to sentences, tables, and code blocks—a hard cut can slice a database query (SQL) or structured data block (JSON) in half.
+- **Recursive structure-aware splitting.** Try splitting on top-level headings (`## ` in Markdown, a plain-text format) first; if a section still exceeds your token budget, fall back to subheadings, then paragraphs (`\n\n`), then sentences, and only finally raw tokens. Keep Markdown tables and fenced code blocks (code wrapped between triple backticks) whole whenever they fit under a safety ceiling.
+- **Document- and AST-aware splitting.** For source code, parse the Abstract Syntax Tree (AST, a structural tree of the program's functions and classes) so each function or class stays whole; for legal contracts, split on numbered clauses; for HTML web pages, split on semantic section tags (`<section>`, `<article>`).
+- **Semantic chunking.** Embed consecutive sentences and start a new chunk whenever cosine similarity (a directional closeness score covered in the next lesson) between adjacent sentences drops below a threshold. It helps on flat transcripts without headings, yet it adds extra embedding calls during ingestion and rarely beats structure-aware splitting when documents already contain headings and paragraphs.
+- **Parent-child (small-to-big) chunking.** Break each document into large **parent** sections (for example, 800 tokens) and smaller **child** chunks (for example, 200 tokens) linked by a `parent_id` tag. Embed and search the sharp child chunks, then deduplicate (remove repeat copies when two matched children share a parent) and pass the enclosing parent sections to the LLM.
 
 :::insight
-Parent-child chunking solves the retriever-versus-generator conflict directly: retrieval gets 200-token precision while the LLM receives 800-token context, without blowing up vector noise.
+Parent-child chunking solves the retriever-versus-generator conflict directly: retrieval gets 200-token precision while the LLM receives 800-token context, without blurring the search vectors.
 :::
 
 ## Contextual headers: never ship an orphan chunk
@@ -87,9 +82,9 @@ Even a clean paragraph cut loses global scope. Look at this real chunk from a se
 
 > `"It must be rotated every 90 days and stored only in the hardware module."`
 
-What is `"It"`? A TLS certificate, a database password, or a signing key? A user searching `"signing key rotation period"` may miss that chunk completely because `"signing key"` appeared three paragraphs higher in the heading.
+What is `"It"`? A Transport Layer Security (TLS) web encryption certificate, a database password, or a signing key? A user searching `"signing key rotation period"` may miss that chunk completely because `"signing key"` appeared three paragraphs higher in the heading.
 
-Fix this cheaply at ingestion by prepending a compact structural breadcrumb to every chunk before embedding and indexing:
+Fix this cheaply at ingestion by prepending a compact structural breadcrumb (a short path naming the document and section) to every chunk before embedding and indexing. In the example below, the first line supplies the missing document title and section name so the second line's pronoun `"It"` is unambiguous to both search and the LLM:
 
 ```text
 [Document: Security Policy v4 | Section: 3.2 API Signing Keys]
@@ -97,5 +92,5 @@ It must be rotated every 90 days and stored only in the hardware module.
 ```
 
 :::note
-Always measure chunking changes on an offline evaluation set before shipping. A 15-token contextual header prefix costs almost nothing to compute, requires zero LLM calls, and often lifts retrieval recall more than switching chunking libraries.
+Always measure chunking changes on an offline evaluation set (a saved test suite of sample questions and known right passages) before shipping. A 15-token contextual header prefix costs almost nothing to compute, requires zero LLM calls, and often lifts retrieval recall more than switching chunking libraries.
 :::

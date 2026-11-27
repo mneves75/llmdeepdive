@@ -30,30 +30,30 @@ citations:
     authors: "Yu. A. Malkov, D. A. Yashunin"
     year: 2016
     url: "https://arxiv.org/abs/1603.09320"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-When your corpus has 10,000 chunks, you do not need a specialized vector index at all: a flat brute-force dot product over 10,000 normalized vectors from [Dense Embeddings, Geometry & Matryoshka](/lessons/27-retrieval-and-hybrid-search/27.3-dense-embeddings-and-matryoshka/) finishes in a couple of milliseconds with 100% exact recall. At 1,000,000 or 50,000,000 chunks, scanning every vector on every query explodes latency and CPU cost. **Approximate Nearest Neighbor (ANN)** indexes trade a tiny sliver of recall (say 98% instead of 100%) to find top-k matches in single-digit milliseconds.
+When your corpus has 10,000 chunks, you do not need a specialized vector index at all: a flat brute-force scan (checking every stored vector one by one) over 10,000 normalized vectors from [Dense Embeddings, Geometry & Matryoshka](/lessons/27-retrieval-and-hybrid-search/27.3-dense-embeddings-and-matryoshka/) finishes in a couple of milliseconds with 100% exact recall (finding every true nearest match). At 1,000,000 or 50,000,000 chunks, scanning every vector on every query explodes latency (waiting time per search) and CPU (central processing unit) cost. **Approximate Nearest Neighbor (ANN)** indexes trade a tiny sliver of recall (say 98% instead of 100%) to find the top-k (highest-scoring) matches in single-digit milliseconds.
 
 ## How HNSW navigates millions of vectors in milliseconds
 
-The workhorse ANN structure across modern vector engines is **Hierarchical Navigable Small World (HNSW)**, proposed by Malkov and Yashunin (2016). Think of a skip list generalized to high-dimensional geometry:
+The workhorse ANN structure across modern vector engines is **Hierarchical Navigable Small World (HNSW)**, proposed by Malkov and Yashunin (2016). Think of a skip list (a sorted list with express lanes on top so search can leap across long stretches before walking step by step) generalized to high-dimensional geometry:
 
 - Every vector lives on **layer 0**, linked to up to `2 × M` nearby neighbors.
-- A geometrically shrinking fraction of nodes also appear on **upper layers** (layer 1, layer 2, and so on), each linked to up to `M` neighbors that span long distances across the space.
-- At query time, search starts at a single entry point on the top layer, greedily hops to closer nodes until it reaches a local minimum, drops down one layer, and repeats. Only on dense layer 0 does it expand a bounded priority queue of size `efSearch` to collect the top-k candidates.
+- A geometrically shrinking fraction (far fewer nodes on each higher floor) also appears on **upper layers** (layer 1, layer 2, and so on), each linked to up to `M` neighbors that span long distances across the space.
+- At query time, search starts at a single entry point on the top layer, greedily hops (always stepping to whichever connected neighbor is closest right now) until it reaches a local minimum (a node with no closer neighbor), drops down one layer, and repeats. Only on dense layer 0 does it expand a bounded priority queue (a ranked shortlist of the best candidates found so far) of size `efSearch` to collect the top-k candidates.
 
 Three parameters govern every HNSW deployment:
 
-- **`M`** (typically 16 to 32): maximum links per node on upper layers (`2 × M` on layer 0). Larger `M` builds a denser graph that improves high-dimensional recall at the cost of more RAM and slower builds.
-- **`efConstruction`** (typically 100 to 200): beam width explored while inserting nodes at build time. Higher values yield cleaner edges with no query-time memory penalty, only slower indexing.
+- **`M`** (typically 16 to 32): maximum links per node on upper layers (`2 × M` on layer 0). Larger `M` builds a denser graph that improves high-dimensional recall at the cost of more working memory (RAM) and slower builds.
+- **`efConstruction`** (typically 100 to 200): beam width (how many candidate paths stay open at once) explored while inserting nodes at build time. Higher values yield cleaner edges with no query-time memory penalty, only slower indexing.
 - **`efSearch`** (typically 32 to 256): beam width explored during a query. You can tune `efSearch` per request without rebuilding the index to trade latency for recall.
 
 ## Exact RAM budgeting: vectors versus graph edges
 
-Because HNSW hops randomly across memory pointers, keeping the hot graph and vectors in RAM is what makes search fast. Never guess your server sizing—compute it from exact byte counts first.
+Because HNSW hops randomly across memory pointers (saved memory addresses telling the processor where to jump next), keeping the hot graph and vectors in RAM is what makes search fast. Never guess your server sizing—compute it from exact byte counts first.
 
-Work through `1,000,000` vectors of `1,536` dimensions with HNSW `M = 16`. Layer 0 stores up to `2 × M` 4-byte node IDs and upper layers plus per-node headers add roughly `M × 4` bytes, giving a standard graph edge budget of `12 × M = 12 × 16 = 192` bytes per vector—`0.18 GiB` across `1,000,000` vectors. Now compare three vector precisions:
+Work through `1,000,000` vectors of `1,536` dimensions with HNSW `M = 16`. Layer 0 stores up to `2 × M` 4-byte node IDs and upper layers plus per-node headers add roughly `M × 4` bytes, giving a standard graph edge budget of `12 × M = 12 × 16 = 192` bytes per vector—`0.18 GiB` (gibibytes, powers-of-two gigabytes of `1,024³` bytes) across `1,000,000` vectors. Now compare three vector precisions—full 32-bit decimals (`fp32`), scalar quantization (rounding each 4-byte decimal to a 1-byte `int8` integer), and 1-bit binary quantization (reducing each coordinate to a single 0/1 sign bit):
 
 - **fp32 (`4 B/dim`):** `1,536 × 4 = 6,144 B` vector + `192 B` graph = `6,336 B/vec` → `5.72 GiB` vectors + `0.18 GiB` graph = **`5.90 GiB` total**.
 - **int8 scalar quantization (`1 B/dim`):** `1,536 × 1 = 1,536 B` vector + `192 B` graph = `1,728 B/vec` → `1.43 GiB` vectors + `0.18 GiB` graph = **`1.61 GiB` total**.
@@ -65,20 +65,20 @@ In general, for $N$ vectors of dimension $d$, precision $b_{\text{dim}}$ bytes p
 
 $$\text{RAM}_{\text{GiB}} = \frac{N \cdot (d \cdot b_{\text{dim}} + 12 M)}{1024^3}$$
 
-Look closely at the 1-bit binary row: compressing coordinates from 32 bits to 1 bit shrinks vector bytes by `32×` (`5.72 GiB` → `0.18 GiB`), yet total RAM shrinks by `16.4×` (`5.90 GiB` → `0.36 GiB`) because the `0.18 GiB` HNSW graph pointers do not quantize. In practice, int8 or 1-bit binary indexes oversample (for instance, fetch the top-60 quantized candidates) and rescore those 60 finalists against full-precision vectors stored on NVMe disk, recovering almost all fp32 recall at a fraction of the RAM cost.
+Look closely at the 1-bit binary row: compressing coordinates from 32 bits to 1 bit shrinks vector bytes by `32×` (`5.72 GiB` → `0.18 GiB`), yet total RAM shrinks by `16.4×` (`5.90 GiB` → `0.36 GiB`) because the `0.18 GiB` HNSW graph pointers do not quantize. In practice, int8 or 1-bit binary indexes oversample (fetch a wider shortlist, such as the top-60 quantized candidates) and rescore those 60 finalists against full-precision vectors stored on an NVMe solid-state drive (SSD, slower than RAM but much larger and cheaper), recovering almost all fp32 recall at a fraction of the RAM cost.
 
 :::note
-Disk-oriented indexes such as Inverted File with Product Quantization (IVF-PQ) or DiskANN trade higher p95 latency (tens of milliseconds instead of single-digit milliseconds) to serve tens of millions of vectors from SSD when RAM budgets do not fit HNSW.
+Disk-oriented indexes such as Inverted File with Product Quantization (IVF-PQ) or DiskANN trade higher p95 latency (the response time that 95% of queries finish under—tens of milliseconds instead of single-digit milliseconds) to serve tens of millions of vectors from SSD when RAM budgets do not fit HNSW.
 :::
 
 ## Filtered ANN search: why post-filtering collapses
 
-Real applications rarely run unfiltered global search—every query filters by `tenant_id`, `acl_groups`, `language`, or `updated_at`. Filtering interacts awkwardly with proximity graphs:
+Real applications rarely run unfiltered global search—every query filters by `tenant_id` (the customer organization), `acl_groups` (permitted user groups), `language`, or `updated_at`. Filtering interacts awkwardly with proximity graphs (networks linking similar vectors to nearby neighbors):
 
 - **Post-filtering** runs global HNSW to fetch top-k (say `k = 20`) and discards rows that fail the filter afterwards. If a tenant owns only 1% of a 1,000,000-chunk index, the expected number of matching chunks inside a global top-20 is `0.2`—so queries come back empty even when 10,000 tenant chunks exist.
-- **Naive pre-filtering** evaluates the SQL predicate first and scans every matching vector brute-force. That works great when only 2,000 rows match (exact, fast, zero graph distortion), yet slows to a crawl when 500,000 rows match.
-- **Single-stage filter-aware HNSW (and tenant partitioning)** checks the metadata filter *during* graph traversal—skipping disallowed nodes while still following edges through the neighborhood—and falls back automatically to brute-force scan when filter selectivity drops below a small threshold.
+- **Naive pre-filtering** evaluates the database filter condition (SQL predicate) first and scans every matching vector brute-force. That works well when only 2,000 rows match (exact, fast, zero graph distortion), yet slows to a crawl when 500,000 rows match.
+- **Single-stage filter-aware HNSW (and tenant partitioning)** checks the metadata filter *during* graph traversal—skipping disallowed nodes while still following edges through the neighborhood—and falls back automatically to brute-force scan when filter selectivity (the share of the corpus passing the filter) drops below a small threshold.
 
 :::warning
-Always benchmark recall *with your real production metadata filters active*, not on unfiltered queries. A graph with 98% unfiltered recall can silently drop below 50% recall under selective tenant or date filters unless single-stage filtering or per-tenant sharding is enabled.
+Always benchmark recall *with your real production metadata filters active*, not on unfiltered queries. A graph with 98% unfiltered recall can drop below 50% recall without throwing an error under selective tenant or date filters unless single-stage filtering or per-tenant sharding (splitting the index into separate smaller indexes per customer) is enabled.
 :::

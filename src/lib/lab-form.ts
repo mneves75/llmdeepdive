@@ -74,8 +74,10 @@ export function readLabControl(form: HTMLFormElement, name: string, locale: Numb
   const control = form.elements.namedItem(name)
   if (control === null || !('tagName' in control)) return null
   if (control.tagName === 'SELECT') {
-    const value = Number((control as HTMLSelectElement).value)
-    return Number.isFinite(value) ? value : null
+    // A select with no option chosen reads '', which Number() turns into 0.
+    const raw = (control as HTMLSelectElement).value
+    const value = Number(raw)
+    return raw !== '' && Number.isFinite(value) ? value : null
   }
   if (control.tagName !== 'INPUT') return null
   const input = control as HTMLInputElement

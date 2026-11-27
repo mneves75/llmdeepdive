@@ -42,7 +42,7 @@ citations:
     authors: "Ash Hart e contribuidores"
     year: 2026
     url: "https://github.com/ashhart/TensorFold/blob/v1.2.1/README.md"
-updated: "2026-11-02"
+updated: "2026-11-26"
 ---
 
 A [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) deixou o decode numa posição desconfortável: em batch 1, o Qwen3.8-27B transmite a maior parte dos pesos da memória para cada token que emite, cerca de 54 GB pelo tamanho do checkpoint (uma aproximação de planejamento, como aquela aula explica). A cadeia é serial, já que o token $t+1$ não pode ser finalizado antes do token $t$, e isso parece impor o preço a cada token.
@@ -57,11 +57,9 @@ O beam search brilha quando a verossimilhança em nível de sequência importa: 
 
 ## Speculative decoding: chutar barato, conferir numa passagem
 
-O speculative decoding ataca a latência diretamente. Ele junta dois modelos:
+O speculative decoding ataca a latência diretamente juntando um **draft model** barato, que chuta $k$ tokens futuros, ao **target model** caro cuja saída você realmente quer. Uma passagem paralela do target amortiza (divide) sua leitura de ~54 GB de pesos entre todos os $k$ candidatos de uma vez:
 
-1. Um **draft model** barato propõe um bloco de $k$ tokens futuros, um depois do outro, como qualquer modelo faria.
-2. O **target model** caro, aquele cuja saída você quer, avalia todas as $k$ posições numa única passagem. Essa passagem tem o mesmo formato paralelo de um prefill curto, então uma leitura de pesos é amortizada sobre $k$ candidatos.
-3. Uma regra de aceitação compara a probabilidade do draft com a do target, token a token. Os tokens aceitos são efetivados. Na primeira rejeição, o sufixo que dependia dela é descartado, e um token corrigido é amostrado de uma distribuição ajustada.
+<Figure id="t7-speculative-verify" />
 
 Feito corretamente (Leviathan et al.), a saída se distribui *exatamente* como se o target tivesse decodificado sozinho sob o mesmo sampler. Essa garantia é mais forte do que apenas checar se os dois modelos concordam no argmax, o único token do topo.
 
@@ -89,17 +87,17 @@ Entender isso diz quando recorrer à técnica: serving sensível à latência, c
 
 O draft model é um jogo de equilíbrio. Fraco demais, e suas propostas são rejeitadas. Grande demais, e propor custa o que verificar economiza. E um modelo separado precisa ser hospedado, agendado e mantido compatível com o target.
 
-O **Medusa** (Cai et al.) elimina o modelo separado ao parafusar heads leves de decoding no próprio target. Cada head prevê o token num offset futuro diferente. Juntos, os heads propõem uma pequena árvore de continuações, que uma única passagem de verificação poda até um caminho aceito. Os heads precisam ser treinados contra o checkpoint base exato: mudou a base, retreine os heads.
+O **Medusa** (Cai et al.) elimina o modelo separado ao parafusar heads leves de decoding no próprio target. Cada head prevê o token num offset futuro diferente. Juntos, os heads propõem uma pequena árvore de continuações, que uma única passagem de verificação poda até um caminho aceito. Os heads precisam ser treinados contra o checkpoint base exato (o conjunto salvo de pesos treinados): mudou a base, retreine os heads.
 
 O Qwen3.8-27B oferece uma opção parecida: o model card afirma que ele foi treinado com **multi-token prediction** (MTP, previsão de múltiplos tokens) ao longo de múltiplos passos, então o próprio checkpoint consegue propor vários tokens futuros. Na inferência, isso funciona como fonte nativa de draft, sem segundo modelo para implantar. Serving stacks que dão suporte a isso (o model card lista vLLM e SGLang entre seus runtimes) podem verificar propostas de MTP exatamente como fariam com as de um draft model.
 
-Drafters externos também se combinam com o Qwen3.8-27B quando um motor de serving quer uma árvore dedicada de rascunho. O TensorFold v1.2.1 ([aula 11.4](/pt-br/lessons/11-mac-studio-ultra-and-mlx/11.4-serving-from-a-mac-mlx-lm-server-and-mlx-serve/)) combina `TensorFold/Qwen3.8-27B-MLX-4bit` com `z-lab/Qwen3.8-27B-DFlash2` (`--drafter z-lab/Qwen3.8-27B-DFlash2 --drafter-bits 4`). No Metal, até 128 streams concorrentes nas rodadas de pista compartilhada do Qwen3.8-27B rascunham sua própria árvore DFlash2, e uma única passagem de verificação do target efetiva apenas tokens iguais a `"draft": false` (`--no-drafts`) no mesmo motor, backend e checkpoint.
+Drafters externos também se combinam com o Qwen3.8-27B quando um motor de serving quer uma árvore dedicada de rascunho. O TensorFold v1.2.1 ([aula 11.4](/pt-br/lessons/11-mac-studio-ultra-and-mlx/11.4-serving-from-a-mac-mlx-lm-server-and-mlx-serve/)) combina `TensorFold/Qwen3.8-27B-MLX-4bit` com `z-lab/Qwen3.8-27B-DFlash2` (`--drafter z-lab/Qwen3.8-27B-DFlash2 --drafter-bits 4`). No Metal (a interface de computação em GPU da Apple no Mac), até 128 streams concorrentes nas rodadas de pista compartilhada do Qwen3.8-27B rascunham sua própria árvore DFlash2, e uma única passagem de verificação do target efetiva apenas tokens iguais a `"draft": false` (`--no-drafts`) no mesmo motor, backend (o software de baixo nível que executa a matemática no hardware) e checkpoint.
 
 ## Medindo um ganho atrás de um gate de correção
 
-Uma campanha pública em RTX 5090 mostra por que isso precisa ser medido atrás de um gate de correção. Os canários dela são prompts de teste fixos cujo comportamento correto se conhece de antemão. Nesse relatório, um stack acelerado stock com TurboQuant 4-bit KV (um KV cache guardado com 4 bits por número) e MTP3 subiu, mas falhou os canários de saída exata, JSON, ferramentas, coding e multi-turn. Por isso o resultado de velocidade ficou em HOLD em vez de virar vitória publicada.
+Uma campanha pública em RTX 5090 mostra por que isso precisa ser medido atrás de um gate de correção. Os canários dela são prompts de teste fixos cujo comportamento correto se conhece de antemão. Nesse relatório, um stack acelerado stock com TurboQuant 4-bit KV (um KV cache guardado com 4 bits por número) e MTP3 subiu, mas falhou os canários de saída exata, JSON (um formato padrão de dados estruturados), ferramentas, coding e multi-turn (conversas com várias trocas seguidas). Por isso o resultado de velocidade ficou em HOLD em vez de virar vitória publicada.
 
-Depois do patch #40914, os mesmos canários congelados passaram. O C1 pareado então reportou decode real de 151,27 tok/s, TTFT (time to first token) de 0,920 s, E2E (tempo ponta a ponta) de 7,69 s e 830 de 834 propostas de MTP aceitas (99,52 por cento). Isso é um estudo de caso útil para esse stack, não um número universal do Qwen. O aprendizado é correção antes da velocidade, e depois estatísticas de aceitação e formato da carga reportados ao lado do throughput.
+Depois do patch #40914, os mesmos canários congelados passaram. O C1 pareado então reportou decode real de 151,27 tok/s, TTFT (time to first token) de 0,920 s, E2E (tempo ponta a ponta) de 7,69 s e 830 de 834 propostas de MTP aceitas (99,52 por cento). Isso é um estudo de caso útil para esse stack, não um número universal do Qwen. O aprendizado é correção antes da velocidade, e depois estatísticas de aceitação e formato da carga reportados ao lado do throughput (total de tokens por segundo).
 
 :::caveat
 Qualquer alegação de aceleração precisa declarar target model, configuração de draft ou de heads, hardware, tamanho de batch e concorrência, comprimentos de prompt e de saída, configurações do sampler e estatísticas de aceitação. Uma única demo de latência sob carga baixa não prevê nada sobre vazão em produção.

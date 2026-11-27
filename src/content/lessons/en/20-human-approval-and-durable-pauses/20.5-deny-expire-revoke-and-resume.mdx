@@ -38,7 +38,7 @@ citations:
     authors: "Temporal Technologies"
     year: 2026
     url: "https://docs.temporal.io/encyclopedia/workflow-message-passing"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
 The approver approves INV-0042 at 10:00 on Wednesday. At 10:00 and a few milliseconds, the buyer cancels the purchase, because the supplier withdrew its offer. At almost the same moment, a worker that read the approval as `approved` begins to submit the invoice. Which wins? The answer the business needs is simple to state: whatever the order, at most one invoice, and none if the cancellation came first.
@@ -47,7 +47,7 @@ This lesson finishes the wait from [lesson 20.3](/lessons/20-human-approval-and-
 
 ## Which endings can a wait have?
 
-A request starts `pending`. From there, a person can *deny* it, the deadline can *expire* it, the business can *revoke* it (cancel the request or withdraw an approval), or the approver can approve it. An approved request has three possible futures: it is *consumed* by its one use, it expires unused, or it is revoked before use. The store's docstring lists the transitions:
+A request starts `pending`. From there, a person can *deny* it, the deadline can *expire* it, the business can *revoke* it (cancel the request or withdraw an approval), or the approver can approve it. An approved request has three possible futures: it is *consumed* by its one use, it expires unused, or it is revoked before use. The docstring (the comment at the top of the store file) lists those legal transitions:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/store.py
@@ -61,7 +61,7 @@ A request starts `pending`. From there, a person can *deny* it, the deadline can
 
 The dangerous moment is the gap between looking and acting. MITRE's catalogue of software weaknesses lists it as CWE-367, the *time-of-check time-of-use* (TOCTOU) race: "The product checks the state of a resource before using that resource", and the resource can change in between. In our case, a worker reads `approved`, the buyer revokes, and the worker submits anyway.
 
-The store closes the gap by making the check and the use one transaction. `execute` is the only path from an approval to an effect:
+The store closes that gap by making the check and the use one `BEGIN IMMEDIATE` write transaction. `execute` is the only path from an approval to an effect: inside the transaction, it re-reads the row, confirms its status is still `approved`, runs `covers` from [lesson 20.2](/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/) to verify the deadline and draft hash, marks the approval `consumed`, and inserts the invoice into track 14's outbox.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/store.py
@@ -88,13 +88,13 @@ The store closes the gap by making the check and the use one transaction. `execu
             return Outcome(True, "consumed", "effect queued in the outbox")
 ```
 
-Inside one `BEGIN IMMEDIATE` transaction, `execute` re-reads the row, checks the status, runs `covers` from [lesson 20.2](/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/) (deadline and hash), marks the approval consumed and inserts the invoice into track 14's outbox. Either all of that commits or none of it does. The outbox row uses the operation id as its idempotency key, so [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/)'s `deliver_pending` sends it, and `reconcile` resolves a lost reply by asking the accounts system what it recorded under that key.
+Either all of those changes commit together or none of them do. The outbox row uses the operation id as its idempotency key, so [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/)'s `deliver_pending` sends it, and `reconcile` resolves a lost reply by asking the accounts system what it recorded under that key.
 
 <Figure id="approval-race" />
 
 ## Racing approval against cancellation
 
-The race test takes four operations on one request: `approve`, `revoke`, and `execute` from two workers, A and B, each with its own connection to the same file. It runs all 24 orders of them, each against a fresh database:
+The race test takes four operations on one request: `approve`, `revoke`, and `execute` from two workers, A and B, each with its own connection to the same file. It runs all 24 orderings of them against fresh databases, computes whether an invoice should be sent — yes only when some `execute` lands after `approve` and before `revoke` — and checks that the database produced that exact count and never let both workers execute.
 
 ```python
 # file: examples/agent-engineering/tests/test_approval_lifecycle.py
@@ -109,10 +109,10 @@ The race test takes four operations on one request: `approve`, `revoke`, and `ex
                 self.assertLessEqual(sum(step.startswith("execute") for step in won), 1)
 ```
 
-The *invariant*, the property that must hold in every order, is stated before the code runs, not read off the results. Exactly one invoice when some execute lands between approval and revocation, none otherwise, and never two executes that both succeed. A separate test plays the scenario from the start of the lesson step by step: worker A reads `approved`, a second worker revokes, worker A executes and is refused, and the outbox stays empty.
+The *invariant*, the property that must hold in every order, is stated before the code runs, not read off the results. A separate test plays the scenario from the start of the lesson step by step: worker A reads `approved`, a second worker revokes, worker A executes and is refused, and the outbox stays empty.
 
 :::caveat
-This test is deterministic: it enumerates orders of *whole* operations, with no threads and no sleeps, so it gives the same answer on every run. It does not run two transactions at literally the same instant. That case is SQLite's job: only one write transaction can be active, so a second `BEGIN IMMEDIATE` waits for the first or fails with `SQLITE_BUSY`, and it never interleaves. The `WHERE status = ?` guard in `_move` is a second line of defence. Remove it and every test still passes, because the write lock already serializes whole operations. It stays because it costs nothing and keeps the store correct if someone later weakens the transaction.
+This test is deterministic: it enumerates orders of *whole* operations, with no threads and no sleeps, so it gives the same answer on every run. It does not run two transactions at literally the same instant. That case is SQLite's job: only one write transaction can be active, so a second `BEGIN IMMEDIATE` waits for the first or fails with `SQLITE_BUSY` (an error saying the database is busy), and it never interleaves. The `WHERE status = ?` guard in `_move` is a second line of defence. Remove it and every test still passes, because the write lock already serializes (forces to run one after another) whole operations. It stays because it costs nothing and keeps the store correct if someone later weakens the transaction.
 :::
 
 ## Revoking after the effect, and resuming after a refusal
@@ -121,10 +121,10 @@ Revoking a consumed approval fails. `revoke` returns `ok=False` with status `con
 
 A run continues after a denial or an expiry by asking again, never by reusing the old answer. In `test_a_denied_run_resumes_with_a_new_request`, the approver denies version 1. The corrected draft is version 2 at USD 9,500.00. The old approval cannot cover it, because its hash differs, and the store refuses it. The run opens a new request, `ap-2`, the approver approves it, and `execute` queues exactly one invoice. Resuming after a crash needs no special code: a new process calls `waiting()` and finds every request still pending, as in lesson 20.3.
 
-Temporal's version of these endings uses the same ideas. Cancellation would be one more message into the workflow, a Signal or an Update, as Temporal's message-passing documentation describes. The workflow's check before submitting would sit in the same deterministic code that runs the activity. This lesson tests only the SQLite version.
+Temporal's version of these endings uses the same ideas. Cancellation would be one more message into the workflow, a Signal or an Update, as Temporal's message-passing documentation describes. The workflow's check before submitting would sit in the same deterministic code that runs the activity (the Temporal step that performs the external side effect, from [lesson 14.5](/lessons/14-agent-architecture-and-state/14.5-langgraph-and-temporal/)). This lesson tests only the SQLite version.
 
 ## Run the exercise
 
-The code is in `src/agentlab/approval/store.py` and the tests in `tests/test_approval_lifecycle.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_approval_lifecycle.py"`. Expected output ends with `Ran 9 tests` and `OK`. The race test counts as one test with 24 subtests.
+The code is in `src/agentlab/approval/store.py` and the tests in `tests/test_approval_lifecycle.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_approval_lifecycle.py"`. Expected output ends with `Ran 9 tests` and `OK`. The race test counts as one test with 24 subtests (sub-checks inside one test function).
 
-The other tests cover one use (a second execute is refused), a pending request that cannot run, an edited draft, an approval that lapses unused, a revoked request that cannot be approved, a revocation after execution, the revocation between check and use, and the resume after denial. The first test is also the positive control: an approved, unchanged draft produces exactly one call to the fake accounts system, so a store that refused everything would fail. Now break the time-of-use check. In `execute`, change `if status != "approved":` to `if status not in ("approved", "consumed"):` and run again. The run reports five errors: `test_an_approved_draft_is_executed_once_through_the_outbox` and four orders of the race test. In each, a second execute gets past the status check, and only the compare-and-swap in `_move`, raising `StaleWrite`, stops a second invoice. Restore the line.
+The other tests cover one use (a second execute is refused), a pending request that cannot run, an edited draft, an approval that lapses unused, a revoked request that cannot be approved, a revocation after execution, the revocation between check and use, and the resume after denial. The first test is also the positive control: an approved, unchanged draft produces exactly one call to the fake accounts system, so a store that refused everything would fail. Now break the time-of-use check. In `execute`, change `if status != "approved":` to `if status not in ("approved", "consumed"):` and run again. The run reports five errors: `test_an_approved_draft_is_executed_once_through_the_outbox` and four orders of the race test. In each, a second execute gets past the status check, and only the compare-and-swap in `_move`, raising `StaleWrite` (an error signalling that the row's status already changed), stops a second invoice. Restore the line.

@@ -38,24 +38,24 @@ citations:
     authors: "Jeremy Hadfield, Barry Zhang, Kenneth Lien, Florian Scholz, Jeremy Fox and Daniel Ford, Anthropic"
     year: 2025
     url: "https://www.anthropic.com/engineering/multi-agent-research-system"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Four children run at once for one purchasing run. The first reserves invoice number INV-0001. The second finds that PO-1003's record is missing and raises an error. The third is still waiting on a slow supplier portal for PO-1004. What state is the run in now, who decides it, and what happens to INV-0001?
 
-Without an owner the answer is "whatever happened last". This lesson gives each question a defined answer, in code that the tests run deterministically: no sleeps, no real threads racing, and every interleaving written out step by step.
+Without an owner the answer is "whatever happened last". This lesson gives each question a defined answer, in code that the tests run *deterministically* (producing the exact same result on every run): no timed pauses (`sleeps`), no real *threads* (parallel execution paths inside one program) racing unpredictably, and every *interleaving* (the exact order in which concurrent steps land) written out step by step.
 
 ## Who owns the run?
 
 A *topology* is the shape of who talks to whom. In a *supervisor* topology one coordinator hands out the work, collects the results and decides the run's final state. The orchestrator-workers design of [lesson 22.1](/lessons/22-multi-agent-systems-and-a2a/22.1-decide-whether-to-divide-work/) is one. In a *peer* topology agents work side by side, reading and writing shared state or waiting on each other's output, and no single agent decides for all.
 
-Neither is safer by default. A supervisor is one place for cancellation and cleanup, and also one place that can stall: Anthropic's research system runs its subagents synchronously, which "simplifies coordination, but creates bottlenecks." Peers avoid that bottleneck but must guard shared state and waits themselves. The rest of the lesson takes the peer problems first, then the supervisor's.
+Neither is safer by default. A supervisor is one place for cancellation and cleanup, and also one place that can stall: Anthropic's research system runs its subagents *synchronously* (waiting for each batch to finish before moving on), which "simplifies coordination, but creates bottlenecks." Peers avoid that bottleneck but must guard shared state and waits themselves. The rest of the lesson takes the peer problems first, then the supervisor's.
 
 ## Peers sharing state lose updates
 
-Two workers each add an evidence reference to the same `RunState`. Each reads the run, adds its reference and writes the run back. If both read before either writes, the second write replaces the first, and the first worker's evidence is gone with no error. Berenson and colleagues name this the *lost update*, which "occurs when transaction T1 reads a data item and then T2 updates the data item (possibly based on a previous read), then T1 (based on its earlier read value) updates the data item and commits." The test `test_a_plain_shared_dict_loses_an_update` shows it on an ordinary dictionary.
+Two workers each add an evidence reference to the same `RunState`. Each reads the run, adds its reference and writes the run back. If both read before either writes, the second write replaces the first, and the first worker's evidence is gone with no error. Berenson and colleagues name this the *lost update*, which "occurs when transaction T1 reads a data item and then T2 updates the data item (possibly based on a previous read), then T1 (based on its earlier read value) updates the data item and commits" (a *transaction* is one all-or-nothing read/write unit in a database). The test `test_a_plain_shared_dict_loses_an_update` shows it on an ordinary Python *dictionary* (a key–value lookup table).
 
-The fix is the compare-and-swap save of [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): a write names the version it read, and the store refuses it with `StaleWrite` if someone committed since. Refusing is half the answer. The worker must then read again and retry, a bounded number of times:
+The fix is the *compare-and-swap* save of [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): a write names the version it read, and the store refuses it with `StaleWrite` if someone committed since. Refusing is half the answer. The function below loops up to `attempts` times: it loads the latest run, appends the new evidence, tries to save against the version it read, and if `StaleWrite` occurs it reads again instead of overwriting:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/multiagent/topology.py
@@ -78,19 +78,19 @@ def add_evidence(store: CheckpointStore, run_id: str, ref: EvidenceRef, *, attem
     raise Contention(f"{run_id}: lost the write race {attempts} times")
 ```
 
-`between` is a hook that runs after the read and before the write, so a test can place another peer's commit exactly there. With it, `test_add_evidence_rereads_after_a_conflict_and_keeps_both` ends with both references in the run. If another writer wins every time, the loop gives up with `Contention` after its attempts instead of spinning forever, and the caller decides what to do.
+`between` is a test *hook* (a plug-in function inserted between two steps) that runs after the read and before the write, so a test can place another peer's commit exactly there. With it, `test_add_evidence_rereads_after_a_conflict_and_keeps_both` ends with both references in the run. If another writer wins every time, the loop gives up with `Contention` after its attempts instead of spinning forever, and the caller decides what to do.
 
 ## Peers waiting on each other
 
 Suppose the researcher waits for the reviewer to say which report format it wants, the reviewer waits for the coder's report and the coder waits for the researcher's findings. Each is waiting for another, so none ever starts. That is a *deadlock*.
 
-Draw an arrow from each peer to every peer it waits on, and you have a *wait-for graph*. A deadlock is a cycle in that graph. `plan_peers` walks the graph before anyone starts. If the walk returns to a peer still on its current path, it raises `DeadlockRefused` with the cycle, here researcher, reviewer, coder. Otherwise it returns an order in which every peer starts after the peers it waits on. A peer waiting on someone nobody starts is an error too.
+Draw an arrow from each peer to every peer it waits on, and you have a *wait-for graph* (a diagram of nodes linked by directional arrows). A deadlock is a *cycle* (a closed loop of arrows) in that graph. `plan_peers` walks the graph before anyone starts. If the walk returns to a peer still on its current path, it raises `DeadlockRefused` with the cycle, here researcher, reviewer, coder. Otherwise it returns an order in which every peer starts after the peers it waits on. A peer waiting on someone nobody starts is an error too.
 
-This is a narrower rule than "no loops". [Lesson 14.2](/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) showed that a run's own state machine may loop, bounded by a step budget. What must stay acyclic is the set of waits between peers, because a cycle there blocks every peer in it, and a step budget would only end the run after wasting it.
+This is a narrower rule than "no loops". [Lesson 14.2](/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) showed that a run's own state machine may loop, bounded by a step budget. What must stay *acyclic* (free of closed loops) is the set of waits between peers, because a cycle there blocks every peer in it, and a step budget would only end the run after wasting it.
 
 ## A supervisor's fan-out and fan-in
 
-*Fan-out* is starting several children at once; *fan-in* is collecting their results into one outcome. The supervisor marks each child as required or optional and gives it an optional `undo`, a *compensation*: an action that reverses what the child did, such as releasing a reserved invoice number.
+*Fan-out* is starting several children at once; *fan-in* is collecting their results into one outcome. The supervisor marks each child as required or optional and gives it an optional `undo`, a *compensation*: an action that reverses what the child did, such as releasing a reserved invoice number. In Python's `asyncio` (a library for cooperative multitasking where functions pause at `await` while waiting for input or network replies), the loop below launches every child task, collects whichever finishes first, and cancels all remaining tasks as soon as any required child raises an error:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/multiagent/topology.py
@@ -121,14 +121,18 @@ async def supervise(children: list[Child], *, cleanup_attempts: int = 2) -> FanI
             pending = set()
 ```
 
-The run ends in one of three defined states. *Completed*: every child succeeded. *Partial*: only optional children failed; their errors are recorded and the other results are kept. *Failed*: a required child failed. Then the supervisor cancels the children still running and waits for them to finish their cleanup. Python's documentation describes what cancelling does: "asyncio.CancelledError will be raised in the task at the next opportunity," and it recommends that coroutines "use try/finally blocks to robustly perform clean-up logic." In the opening case, the PO-1004 child is cancelled inside its wait, and its `finally` block releases its lock.
+Step through the three defined end states below — `completed`, `partial`, and the opening `failed` case with cancellation and undo:
+
+<Figure id="t22-supervisor-fan-in" />
+
+When a required child fails, Python's documentation describes what cancelling the remaining tasks does: "asyncio.CancelledError will be raised in the task at the next opportunity," and it recommends that *coroutines* (pausable `async` functions) "use try/finally blocks to robustly perform clean-up logic." In the opening case, cancelling the PO-1004 child inside its wait triggers its `finally` block so it releases its *lock* (exclusive hold on a shared resource).
 
 ## Cleanup has a bound too
 
-After a required failure, every finished child with an `undo` is compensated: INV-0001 is released. The run's history still records that the reservation happened, because hiding it would make the audit lie. A compensation can fail too, for example when the numbering service is down. It gets a fixed number of attempts (`cleanup_attempts`, two by default). A child whose undo kept failing goes to `cleanup_pending` instead of being retried forever. That list is work for a person or a reconciler, the job [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) gave to reconciliation of unknown outcomes.
+After a required failure, every finished child with an `undo` is compensated: INV-0001 is released, while the run's history still records that the reservation happened so the audit stays truthful. Because a compensation can fail too (for example when the numbering service is down), `_undo` gives it a fixed number of attempts (`cleanup_attempts`, two by default). Any child whose undo keeps failing goes to `cleanup_pending` instead of retrying forever. That list is work for a person or a *reconciler* (a background checker that resolves unfinished state), the job [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) gave to reconciliation of unknown outcomes.
 
 :::caveat
-Cancellation in asyncio is cooperative. A child that catches `CancelledError` and keeps running would make `supervise` wait for it, as the function's docstring says; production code puts a deadline on the cancel as well. Undo also only reverses what can be reversed: an email that was sent stays sent.
+Cancellation in asyncio is cooperative. A child that catches `CancelledError` and keeps running would make `supervise` wait for it, as the function's *docstring* (its embedded documentation note) says; production code puts a deadline on the cancel as well. Undo also only reverses what can be reversed: an email that was sent stays sent.
 :::
 
 ## Run the exercise

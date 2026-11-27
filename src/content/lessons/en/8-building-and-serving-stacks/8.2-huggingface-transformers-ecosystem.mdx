@@ -42,22 +42,24 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 A colleague reports that Qwen3.8-27B "ignores the thinking toggle": they set it, the model reasons anyway, and the flag appears to be decorative. Another reports that the same script gave different answers last month than it does today, with no code change. Both bugs are real, and neither is in the model. Both live in the thin layer of plumbing between weights on the Hub (Hugging Face's hosting site for models) and text on a screen.
 
-That layer has four parts: which bytes you fetched, how they were loaded, how your conversation became a string, and how tokens were sampled. [Lesson 8.1](/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) gave you the runtime; this lesson covers everything wrapped around it.
+[Lesson 8.1](/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) gave you the runtime; this lesson covers the four parts wrapped around it.
+
+<Figure id="t8-transformers-plumbing" />
 
 ## Which bytes did you actually download?
 
-A Hub repository such as `Qwen/Qwen3.8-27B` is a git repository with large files. A repository identifier alone names a branch, not a snapshot. So loading without pinning a revision means "whatever main points at when the download cache misses". That is why the same script drifts across months: the vendor pushes a tokenizer fix or a config correction, and your next download picks it up.
+A Hub repository such as `Qwen/Qwen3.8-27B` is a **git repository** (a version-controlled folder of files) with large files. A repository identifier alone names a **branch** (a moving label pointing to the latest version), not a fixed snapshot. So loading without pinning a revision means "whatever main points at when the download cache misses". That is why the same script drifts across months: the vendor pushes a tokenizer fix or a config correction, and your next download picks it up.
 
-The fix is the one you already use for dependencies. Pin a commit hash, record it next to your evaluation results, and treat the model directory as an artifact with a version, exactly as you would a container image.
+The fix is the one you already use for software dependencies. Pin a **commit hash** (a unique fingerprint identifying one exact snapshot), record it next to your evaluation results, and treat the model directory as a versioned artifact, just like a **container image** (a packaged snapshot of software and its files).
 
 ## How does safetensors load 54 GB safely?
 
-Qwen3.8-27B ships bf16 safetensors, and safetensors is deliberately dull. A file is a JSON header listing every tensor with its dtype (number type), shape and byte range, followed by one contiguous blob of raw numbers. Loading is a memory map (asking the operating system to expose the file as memory, reading pages only when touched) plus slicing. Nothing is deserialized into Python objects, so no code from the file ever runs.
+Qwen3.8-27B ships bf16 safetensors, and safetensors is deliberately dull. A file is a **JSON header** (a plain-text structured index at the start of the file) listing every tensor with its dtype (number type), shape and byte range, followed by one unbroken block of raw numbers. Loading is a memory map (asking the operating system to expose the file as memory, reading pages only when touched) plus slicing. Nothing is **deserialized** (rebuilt into live Python objects), so no code from the file ever runs.
 
 The 54 GB of bf16 weights are split across several files called shards, with an index file mapping each tensor name to its shard. That is how [lesson 4.14](/lessons/4-transformer/4.14-reading-real-weights/) could open real weights and find `model.layers.31.mlp.gate_proj.weight` without loading the other fifty gigabytes. Three practical consequences follow:
 
@@ -69,13 +71,11 @@ The 54 GB of bf16 weights are split across several files called shards, with an 
 
 Now the part that causes the reported bug. Qwen3.8-27B is a chat model, and chat models are trained on a very specific string layout: role markers, turn boundaries, and the special tokens that mark where a thinking block starts and ends. That layout is not baked into the weights, and it is not in the model config. It is a Jinja template (a text template language) shipped *with the tokenizer*, and `apply_chat_template` is the function that renders it.
 
-You hand `apply_chat_template` a list of dictionaries with roles and contents. It hands back the exact string the model was trained to continue, and tokenizing that string gives the ids for the forward pass. The model never sees a role. It sees tokens.
+You hand `apply_chat_template` a list of **dictionaries** (key-value pairs) holding each turn's role and content. It hands back the exact string the model was trained to continue, and tokenizing that string gives the ids for the forward pass. The model never sees a role. It sees tokens.
 
-That is where `enable_thinking` lives. It is a variable consumed by the template. It is not a parameter of the model, and it is not an argument to the generation loop. Setting it to false makes the template render a prompt whose scaffolding suppresses the thinking block; setting it to true (the default) renders the version that invites one. Identical weights, identical forward pass, different input tokens. So the sequence is:
+That is where `enable_thinking` lives. It is a variable consumed by the template — not a parameter of the model, and not an argument to the generation loop. Setting it to false makes the template render **scaffolding** (fixed wrapper text around the prompt) that suppresses the thinking block; setting it to true (the default) invites one. Identical weights, identical forward pass, different input tokens.
 
-1. Build the messages.
-2. Call the template with `add_generation_prompt=True` and your thinking choice, and tokenize.
-3. Unpack the returned encoding into `generate()`.
+The two calls below carry out that sequence: the first renders `messages` with thinking disabled and converts the result into PyTorch tensors on the model's device, and the second generates up to 256 sampled tokens using the supported instruct settings.
 
 ```python
 inputs = tok.apply_chat_template(
@@ -97,7 +97,7 @@ out = model.generate(
 )
 ```
 
-This excerpt assumes `tok` and a single-device `model` were loaded from the same pinned revision, and that `messages` is already defined. In Transformers v5, `apply_chat_template(..., return_tensors="pt")` returns a `BatchEncoding`, so passing it as the positional `ids` argument fails; `**inputs` supplies both `input_ids` and `attention_mask`. `do_sample=True` is also required, or temperature, top-p, top-k and min-p have no effect on decoding. The length cap is explicit so a copied example has a finite boundary.
+This excerpt assumes `tok` and a single-device `model` were loaded from the same pinned revision, and that `messages` is already defined. In Transformers v5, `apply_chat_template(..., return_tensors="pt")` returns a `BatchEncoding` (a dictionary holding both `input_ids` and `attention_mask`, a list of 1s and 0s marking real tokens versus padding), so passing it as one positional argument fails; `**inputs` unpacks both entries by name. `do_sample=True` is also required, or temperature, top-p, top-k and min-p have no effect on decoding. The length cap is explicit so a copied example has a finite boundary.
 
 :::warning
 Hand-assembling the prompt string is the single most common way to break a chat model, and nothing tells you it happened. A prompt that is merely close to the trained layout still produces fluent text, so nothing crashes and no error appears. What you get is a model operating outside the distribution it was instruction-tuned on, with a thinking toggle that does nothing because no template ever ran. Render the template, then log the rendered string once and read it.
@@ -107,14 +107,9 @@ Hand-assembling the prompt string is the single most common way to break a chat 
 
 Because the template is a file rather than a property of the weights, people also **redistribute and replace** it. Some repositories contain no weights at all, only a `chat_template.jinja` and a note on what it changes. GGUF carries the template in its metadata header, and MLX conversions keep it beside the tokenizer, so one such file can be pointed at the same model under several different runtimes.
 
-What a swapped template buys is real but bounded. It can change the system framing, the scaffolding around a thinking block, and how tool definitions are laid out, so it can measurably shorten replies or shift their format. It cannot change what the model knows. Treat a claimed token saving the way [lesson 0.8](/lessons/0-orientation-and-foundations/0.8-how-to-read-ml-paper/) teaches you to treat any benchmark number: ask which model, which harness, how many samples, and against which baseline template. Also remember that swapping the template moves the model away from the layout it was tuned on. That is a trade, with a cost on the other side.
+What a swapped template buys is real but bounded. It can change the opening system instructions, the scaffolding around a thinking block, and how tool definitions are laid out, so it can measurably shorten replies or shift their format. It cannot change what the model knows. Treat a claimed token saving the way [lesson 0.8](/lessons/0-orientation-and-foundations/0.8-how-to-read-ml-paper/) teaches you to treat any benchmark number: ask which model, which **harness** (the surrounding code that calls the model and grades or runs its output), how many samples, and against which baseline template. Also remember that swapping the template moves the model away from the layout it was tuned on. That is a trade, with a cost on the other side.
 
-Tool calling rides on the same mechanism: the model emits structured text and your harness parses it. Rendering and parsing are where most bugs live, but they are not the whole problem. A production tool call also needs semantic argument validation, authorization, idempotency, and failure handling, which [lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) and [lesson 16.1](/lessons/16-agent-security-and-guardrails/16.1-threat-model-the-assistant/) cover. The loop here has four steps, and every one of them is text:
-
-1. You pass tool definitions to `apply_chat_template` alongside the messages.
-2. The template renders them into the exact special-token layout the model was trained to answer in.
-3. The model emits a structured call as ordinary tokens.
-4. Your harness parses that span back into a function name and arguments, checks that the arguments make sense and that this caller may run this tool, runs it, and appends the result as another message.
+Tool calling rides on the same mechanism, traced in frame 2 of the figure above: the model emits structured text and your harness **parses** it (reads the text back into structured function names and arguments). Rendering and parsing are where most bugs live, while a production tool call also needs semantic argument validation, authorization, **idempotency** (running the same action twice produces the same effect as once), and failure handling, which [lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) and [lesson 16.1](/lessons/16-agent-security-and-guardrails/16.1-threat-model-the-assistant/) cover.
 
 Nothing in the forward pass knows that a tool exists. So when tool calling misbehaves, the bug is almost always in the rendering or the parsing rather than in the model. [Lesson 8.5](/lessons/8-building-and-serving-stacks/8.5-sglang/) covers the complementary half: constraining the decode so the emitted call is guaranteed to parse at all.
 
@@ -130,7 +125,7 @@ The raw Transformers `generate()` interface at the cited revision supports the f
 Thinking has three independent controls:
 
 - `enable_thinking` decides whether a reasoning block exists.
-- `reasoning_effort` controls depth and currently defaults to `xhigh` in the official card. The labels are API and template semantics, so inspect the effective template before comparing runtimes.
+- `reasoning_effort` controls depth and currently defaults to `xhigh` in the official card. The labels are application programming interface (API) and template semantics, so inspect the effective template before comparing runtimes.
 - `preserve_thinking` currently defaults to true and keeps reasoning blocks from earlier turns. That can help an agent, but it also makes old reasoning consume prompt tokens on every turn. Measure tokens and wall time for the whole job, and decide deliberately whether that history belongs in context.
 
 ## Why this is still not a server

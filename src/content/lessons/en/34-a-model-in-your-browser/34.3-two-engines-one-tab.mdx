@@ -1,0 +1,134 @@
+---
+id: "34.3-two-engines-one-tab"
+track: "34-a-model-in-your-browser"
+order: 3
+title: "Two Engines, One Tab: WASM and WebGPU"
+summary: "How Qwen Local Lab probes WebGPU shader-f16, WebAssembly SIMD/exceptions, and crossOriginIsolated headers to route one tab cleanly between WebLLM and wllama."
+tier: "frontier"
+locale: "en"
+prerequisites: ["34.1-what-runs-where"]
+unlocks: ["34.4-streaming-and-verifying-weights", "34.5-chat-tokens-and-context", "34.8-measuring-browser-inference"]
+analogy: "Think of a delivery truck fitted with both an electric highway drive and a rugged low-gear axle. Before pulling out, the truck checks whether the road ahead is paved and powered rather than reading a faded sticker on the bumper; if the highway rail is absent, it drops cleanly onto its reliable road axle—and if only one lane is open, it limits itself to a single lane instead of crashing into oncoming traffic. The comparison stops at binary security: on the GPU route, the browser also refuses to run a compiled shader library from a moving branch and verifies its exact SHA-256 fingerprint before plugging it in."
+teachBack:
+  prompt: "Explain how Qwen Local Lab selects between WebLLM (WebGPU) and wllama (WASM CPU) using real capability probes (`shader-f16`, `WebAssembly.validate`, and `crossOriginIsolated`), why HTTP COOP/COEP headers change CPU thread count from 1 to up to 4, and why the worker pins WebLLM's 6.56 MB `model_lib` to commit `5b7251f3` via a `blob:` URL."
+  modelAnswer: "Qwen Local Lab never guesses from user-agent strings. On startup and load, Auto mode checks `navigator.gpu?.requestAdapter()` and verifies `adapter.features.has('shader-f16')`, because the `Qwen3-0.6B-q4f16_1-MLC` GPU shaders require 16-bit floating-point support. If available, `loadGpu()` fetches the 6,561,594-byte (~6.56 MB) compiled `model_lib` WASM from immutable commit `5b7251f3bdce957be2a7bf73a6f6c560d9874df4` instead of WebLLM 0.2.89's default mutable `main` branch, verifies its exact byte size and SHA-256 (`b277797f...`), wraps those bytes in a `blob:` URL via `URL.createObjectURL`, hands that URL to `MLCEngine` so WebLLM bypasses its URL-keyed cache and runs those exact bytes, and revokes the URL in `finally`. If WebGPU or `shader-f16` is absent (or the user picks CPU mode), `loadCpu()` runs `WebAssembly.validate()` on two tiny bytecode probes checking WASM SIMD and exception handling before downloading 639.45 MB. Finally, multi-threaded WASM requires `SharedArrayBuffer`, which browsers enable only when real HTTP COOP and COEP headers set `crossOriginIsolated = true` (meta tags cannot grant it). When isolated, CPU mode caps threads at `min(hardwareConcurrency, 4)` using `multi-thread/wllama.wasm`; otherwise it falls back cleanly to 1 thread using `single-thread/wllama.wasm`."
+quiz:
+  - question: "A developer deploys `dist/index.html` to a static host that ignores `_headers`, so the page loads over HTTPS without COOP or COEP HTTP headers. On an 8-core laptop with no WebGPU support, what does Qwen Local Lab do?"
+    options: ["It refuses to start CPU mode and asks the user to add `<meta>` COOP/COEP tags to the HTML file", "It spawns 4 WebAssembly threads using standard `postMessage` copies instead of `SharedArrayBuffer`", "It sees `crossOriginIsolated` is false and runs `single-thread/wllama.wasm` on 1 CPU thread", "It switches to WebGPU software emulation automatically"]
+    correctIndex: 2
+    explanation: "Browsers enable `SharedArrayBuffer` only when real HTTP COOP and COEP headers make `crossOriginIsolated` true; `<meta>` tags cannot grant isolation. When `crossOriginIsolated` is false, the worker selects 1 thread and runs `single-thread/wllama.wasm` rather than failing."
+  - question: "Why does `loadGpu()` download the 6.56 MB WebGPU `model_lib` WASM from commit `5b7251f3...`, verify its SHA-256, and hand WebLLM a temporary `blob:` URL?"
+    options: ["WebLLM's default URL tracks mutable `main`; a `blob:` URL forces it to run verified bytes", "WebLLM cannot fetch files over HTTPS from GitHub directly because browsers forbid cross-origin `.wasm` downloads", "Converting the compiled library to a `blob:` URL shrinks its size from 6.56 MB to under 1 MB in GPU memory", "A `blob:` URL enables `shader-f16` on GPUs that do not natively advertise it"]
+    correctIndex: 0
+    explanation: "WebLLM 0.2.89's prebuilt record loads `model_lib` from the mutable `main` branch of `mlc-ai/binary-mlc-llm-libs`. Pinning commit `5b7251f3...`, checking its 6,561,594-byte size and SHA-256, and passing a `blob:` URL makes WebLLM fetch and execute those exact verified bytes."
+  - question: "What do the two small byte arrays inside `validateWasmSupport()` actually test?"
+    options: ["Whether the user's GPU adapter supports `shader-f16` compute shaders", "Whether the browser has enough free RAM to allocate the 639.45 MB Q8_0 GGUF weights", "Whether `SharedArrayBuffer` and 4 CPU threads are active", "Whether the browser's WASM engine accepts SIMD and exception bytecode"]
+    correctIndex: 3
+    explanation: "The 31-byte `simd` array and 28-byte `exceptions` array are minimal valid WebAssembly modules containing one SIMD instruction and one exception-handling block. `WebAssembly.validate()` checks whether the browser's engine supports both features before downloading the model."
+citations:
+  - title: "WebGPU Specification"
+    authors: "W3C GPU for the Web Working Group"
+    year: 2025
+    url: "https://www.w3.org/TR/webgpu/"
+  - title: "Window.crossOriginIsolated and SharedArrayBuffer"
+    authors: "MDN Web Docs"
+    year: 2026
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Window/crossOriginIsolated"
+  - title: "WebAssembly SIMD and Pthreads Support"
+    authors: "Emscripten Documentation"
+    year: 2025
+    url: "https://emscripten.org/docs/porting/pthreads.html"
+  - title: "Qwen3-0.6B-q4f16_1-MLC Model Repository"
+    authors: "MLC AI"
+    year: 2025
+    url: "https://huggingface.co/mlc-ai/Qwen3-0.6B-q4f16_1-MLC"
+updated: "2026-11-26"
+---
+
+Browsers run on dramatically different hardware. One reader opens your link on a modern laptop with a fast graphics processor; another opens it inside a locked-down corporate browser or a cloud virtual machine with no GPU at all. Checking the browser's `User-Agent` string (its self-reported name and version) fails constantly because drivers, privacy settings, and hosting headers can disable hardware features on any browser. Qwen Local Lab therefore ships two complete engines inside one tab—**WebLLM** for the GPU and **wllama** for the CPU—and chooses between them by probing actual capabilities at runtime.
+
+Crucially, CPU (`wllama`) and GPU (`WebLLM`) are **mutually exclusive alternative routes** per load, not sequential stages: each click on **Load model** initializes only one engine and downloads only that engine's weights. Even though the diagram below arranges the capability checks left to right, a tab takes either the GPU branch *or* the CPU branch, never both in sequence.
+
+<Figure id="browser-engine-selection" />
+
+## Probing WebAssembly SIMD and exceptions before downloading
+
+**WebAssembly (WASM)** is a compact binary instruction format that browsers compile into fast machine code for the CPU. Running `llama.cpp` inside WebAssembly depends on two specific extensions: **SIMD** (Single Instruction, Multiple Data, which lets one CPU instruction multiply or add a whole vector of numbers in parallel) and **WASM exceptions** (structured error handling compiled from C++).
+
+Instead of downloading 639.45 MB of GGUF weights only to crash on an older browser, `validateWasmSupport()` runs `WebAssembly.validate()` on two tiny hand-assembled WASM modules—31 bytes for SIMD and 28 bytes for exceptions. Notice that both arrays start with `[0, 97, 115, 109]`, the ASCII magic bytes `\0asm` for WebAssembly. If either probe returns `false`, CPU mode fails in under a millisecond with an actionable error.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+function validateWasmSupport() {
+  const simd = [0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11];
+  const exceptions = [0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,10,8,1,6,0,6,64,25,11,11];
+  if (typeof WebAssembly === "undefined" ||
+      !WebAssembly.validate(new Uint8Array(simd)) ||
+      !WebAssembly.validate(new Uint8Array(exceptions))) {
+    throw new AppError("This browser does not support the WebAssembly SIMD and exception features required by CPU mode. Use an up-to-date desktop browser.", "WASM_UNSUPPORTED");
+  }
+}
+```
+
+## Why HTTP headers decide 1 CPU thread vs 4
+
+Passing the SIMD probe lets CPU mode run, yet a second browser security rule controls how fast it runs. Parallel CPU inference requires **SharedArrayBuffer**, a shared block of memory that multiple WebAssembly worker threads can read simultaneously without copying 639 MB of weights per thread. Because shared high-resolution timers can be abused for Spectre-class side-channel attacks, browsers lock `SharedArrayBuffer` behind **cross-origin isolation**.
+
+A page becomes cross-origin isolated (`crossOriginIsolated === true`) only when the web server sends two real HTTP response headers: `Cross-Origin-Opener-Policy: same-origin` (COOP) and `Cross-Origin-Embedder-Policy: require-corp` (COEP). HTML `<meta>` tags cannot grant this status—a browser enforces isolation only from HTTP headers. Qwen Local Lab reads `crossOriginIsolated` and sets the CPU thread count cleanly:
+
+$$
+n_{\text{threads}} = \begin{cases} \min(\text{hardwareConcurrency},\ 4) & \text{if } \text{crossOriginIsolated} = \text{true} \\ 1 & \text{if } \text{crossOriginIsolated} = \text{false} \end{cases}
+$$
+
+When isolated, `wllama` loads its embedded `multi-thread/wllama.wasm` binary (2,189,054 bytes) and caps concurrency at **4 threads** so a background chat tab never starves the rest of the user's operating system. When a plain static host omits COOP/COEP headers, the worker falls back to **1 thread** using `single-thread/wllama.wasm` (2,158,740 bytes) rather than crashing.
+
+## WebGPU, `shader-f16`, and pinning the compiled library
+
+When a device has a capable graphics processor, **WebGPU** lets the browser run parallel matrix math directly on GPU cores through compute **shaders** (small programs executed across thousands of GPU threads at once). Qwen Local Lab's GPU route runs `Qwen3-0.6B-q4f16_1-MLC` via WebLLM 0.2.89: roughly **335.37 MB** of 4-bit quantized weight shards plus **11.42 MB** for the tokenizer, configuration, and compiled model library. Upstream estimates roughly **1.4 GB** of GPU working memory at a 4,096-token context; this lab configures a 2,048-token context, and download size is always smaller than live working memory.
+
+One hardware capability gate determines whether GPU mode can start: **`shader-f16`** (native 16-bit floating-point arithmetic inside GPU shaders). Because `q4f16_1` dequantizes 4-bit weights into 16-bit floats during matrix multiplication, an adapter without `shader-f16` cannot execute those shaders. Auto mode therefore requires both a real `requestAdapter()` result and `adapter.features.has("shader-f16")`. If GPU initialization fails after the user clicks Load, the app displays the error and invites an explicit retry in CPU mode instead of silently starting a second 639 MB download.
+
+There is also a supply-chain detail easy to overlook in WebLLM 0.2.89. WebLLM's prebuilt model record fetches the compiled WebAssembly model library (`Qwen3-0.6B-q4f16_1_cs1k-webgpu.wasm`) from the mutable `main` branch of `mlc-ai/binary-mlc-llm-libs`. Any future commit pushed to `main` would silently change executable code inside the user's tab. In the code below, `loadGpu()` checks `navigator.gpu` and `shader-f16`, downloads the library from immutable commit `5b7251f3bdce957be2a7bf73a6f6c560d9874df4` via `obtainModelLibrary()`—which verifies that it is **6,561,594 bytes** (~6.56 MB) and matches its pinned SHA-256 (`b277797f...`)—and hands those exact verified bytes to WebLLM through a short-lived `blob:` URL, revoking the URL as soon as `reload()` finishes.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+  if (!navigator.gpu) {
+    throw new AppError("WebGPU is unavailable in this browser. Select CPU / WebAssembly mode, or use a supported browser over HTTPS or localhost.", "GPU_UNAVAILABLE");
+  }
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+  assertActive(op);
+  if (!adapter || !adapter.features.has("shader-f16")) {
+    throw new AppError("This GPU does not expose the shader-f16 feature required by the embedded Qwen3 GPU model. Select CPU / WebAssembly mode.", "GPU_UNAVAILABLE");
+  }
+  progress(op, 0.01, "Preparing the GPU runtime. First load downloads about 350 MB of model assets.");
+  const library = await obtainModelLibrary(op, message.assets);
+  const webllm = await getWebllm(message.assets);
+  assertActive(op);
+  // WebLLM fetches a non-http(s) model_lib with plain fetch() and skips its URL-keyed cache,
+  // so it runs exactly the bytes verified above.
+  const libraryUrl = URL.createObjectURL(new Blob([library], { type: "application/wasm" }));
+  webllmConfig.model_list[0].model_lib = libraryUrl;
+  runtime = new webllm.MLCEngine({
+    appConfig: webllmConfig,
+    logLevel: "SILENT",
+    initProgressCallback(report) {
+      progress(op, report.progress, report.text);
+    },
+  });
+  backend = "webgpu";
+  try {
+    await runtime.reload(GPU_MODEL_ID, { context_window_size: CONTEXT_SIZE });
+  } finally {
+    URL.revokeObjectURL(libraryUrl);
+  }
+```
+
+## What that routing choice feels like in practice
+
+Single-environment measurements recorded in `examples/qwen-local-lab/VERIFICATION.md` on 2026-11-26 illustrate why supporting all three paths matters—treat these as device-specific observations rather than universal benchmarks:
+
+- **Cloud Chromium, 1 WASM thread (no COOP/COEP)**: decode ran at **2.8–3.4 tokens/second**, slow enough to watch word by word, yet still completely functional with zero special server headers.
+- **Apple M5 Pro, 4 WASM threads (cross-origin isolated)**: decode jumped to **43.7–52.1 tokens/second**, comfortable reading speed on pure CPU.
+- **Apple M5 Pro, Metal-3 WebGPU (`shader-f16`)**: turn 1 ran at **14.0 tokens/second** on cold shaders, then turn 2 reached **133.7 tokens/second** on a short warm follow-up (single-device observations rather than isolated shader-overhead or steady-state benchmarks).
+
+Having both engines inside one tab turns hardware diversity into graceful fallback rather than a broken blank screen. Next, [lesson 34.4](/lessons/34-a-model-in-your-browser/34.4-streaming-and-verifying-weights/) shows how the worker streams 639.45 MB into Cache API and verifies every byte without materializing a contiguous 639.45 MB `ArrayBuffer` in JavaScript memory.

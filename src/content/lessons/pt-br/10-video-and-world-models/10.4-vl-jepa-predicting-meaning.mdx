@@ -46,7 +46,7 @@ citations:
     authors: "Shuai Bai et al. (Qwen Team)"
     year: 2025
     url: "https://arxiv.org/abs/2511.21631"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Todo modelo de visão e linguagem (VLM, na sigla em inglês) deste curso até aqui responde do jeito que um modelo de linguagem responde. O Qwen3-VL da [aula 10.1](/pt-br/lessons/10-video-and-world-models/10.1-how-video-models-see-time/) transforma um vídeo em tokens visuais, coloca-os numa sequência com a pergunta e então gera a resposta um token por vez. Ele foi treinado, como a [aula 5.1](/pt-br/lessons/5-pretraining-at-scale/5.1-pretraining-objectives/) descreveu, com entropia cruzada sobre o próximo token: uma loss que recompensa pôr probabilidade alta no próximo token correto.
@@ -58,9 +58,9 @@ As JEPAs da [aula 10.2](/pt-br/lessons/10-video-and-world-models/10.2-jepa-predi
 O artigo dá às partes os nomes do próprio vocabulário da JEPA e monta cada uma a partir de um modelo existente.
 
 - **X-encoder** — leva a entrada visual a embeddings. Um V-JEPA 2 ViT-L (um Vision Transformer grande) congelado, de 304 milhões de parâmetros, com frames de 256×256.
-- **Predictor** — lê os embeddings visuais junto com a pergunta em texto e prevê o embedding da resposta. Ele parte das últimas 8 camadas transformer do Llama-3.2-1B, o que dá 490 milhões de parâmetros treináveis. A **causal mask fica desligada** ([aula 4.4](/pt-br/lessons/4-transformer/4.4-causal-masking/)), para que os tokens de visão e de pergunta se atendam mutuamente nas duas direções. Suas saídas passam por average pooling, uma média sobre as posições, e viram um vetor só.
-- **Y-encoder** — gera o embedding do texto da resposta real como alvo da previsão. Parte do EmbeddingGemma-300M e é treinado com um multiplicador de taxa de aprendizado de 0,05, então sua taxa de aprendizado é um vigésimo da taxa base.
-- **Y-decoder** — transforma um embedding previsto de volta em texto. Ele não participa do treino principal e, na inferência, só roda quando uma pessoa precisa de palavras.
+- **Predictor** — lê os embeddings visuais junto com a pergunta em texto e prevê o embedding da resposta. Ele é iniciado com os pesos já treinados das últimas 8 camadas transformer do Llama-3.2-1B, o que dá 490 milhões de parâmetros treináveis. A **causal mask** (a regra que impede um token de ler tokens posteriores, [aula 4.4](/pt-br/lessons/4-transformer/4.4-causal-masking/)) **fica desligada**, para que os tokens de visão e de pergunta se atendam mutuamente nas duas direções. Suas saídas passam por average pooling, uma média sobre as posições, e viram um vetor só.
+- **Y-encoder** — gera o embedding do texto da resposta real como alvo da previsão. Parte dos pesos do EmbeddingGemma-300M e é treinado com um multiplicador de taxa de aprendizado de 0,05, então sua taxa de aprendizado (o tamanho de cada atualização de peso) é um vigésimo da taxa base.
+- **Y-decoder** — transforma um embedding previsto de volta em texto. Ele não participa do treino principal e, na inferência (quando o modelo pronto responde a requisições reais), só roda quando uma pessoa precisa de palavras.
 
 O sistema inteiro tem 1,6 bilhão de parâmetros. A mudança em relação a um modelo clássico cabe numa linha. Um modelo gerativo de tokens minimiza uma distância no espaço dos dados; a VL-JEPA, no espaço de embeddings:
 
@@ -68,7 +68,7 @@ $$
 \mathcal{L}_{\text{VLM}} = D(\hat{Y}, Y) \qquad \mathcal{L}_{\text{VL-JEPA}} = D(\hat{S}_Y, S_Y)
 $$
 
-À esquerda, $D$ compara os tokens previstos da resposta $\hat{Y}$ com os reais $Y$. À direita, compara o embedding previsto $\hat{S}_Y$ com o embedding $S_Y$ da resposta real feito pelo Y-encoder.
+À esquerda, $D$ compara os tokens previstos da resposta $\hat{Y}$ com os reais $Y$. À direita, compara o embedding previsto $\hat{S}_Y$ com o embedding $S_Y$ da resposta real feito pelo Y-encoder. Avance pelas etapas da figura abaixo para comparar como essas partes se ligam no treino e na inferência com decodificação seletiva.
 
 <Figure id="vl-jepa-pipeline" />
 
@@ -76,18 +76,18 @@ $$
 
 O problema do colapso da aula 10.2 volta, porque o Y-encoder também é treinado: se ele levasse toda resposta ao mesmo ponto, o predictor acertaria sempre. A VL-JEPA *não* usa o alvo por média móvel dos artigos de V-JEPA. Ela treina predictor e Y-encoder juntos com uma loss **InfoNCE bidirecional**, a loss contrastiva que o CLIP (um modelo de embeddings de imagem e texto) tornou padrão.
 
-Imagine um batch de quatro pares inventados de pergunta e resposta. A InfoNCE pede que cada previsão fique mais perto do embedding da sua própria resposta do que das outras três respostas e, por ser bidirecional, pede que cada resposta fique mais perto da sua própria previsão do que das outras três previsões. A loss se divide em dois termos:
+Imagine um batch (um grupo de exemplos de treino processados juntos) de quatro pares inventados de pergunta e resposta. A InfoNCE pede que cada previsão fique mais perto do embedding da sua própria resposta do que das outras três respostas e, por ser bidirecional, pede que cada resposta fique mais perto da sua própria previsão do que das outras três previsões. A loss se divide em dois termos:
 
 - um termo de **alinhamento**, que puxa cada previsão para o próprio alvo;
 - um termo de **uniformidade**, que afasta os embeddings de um batch.
 
-É o segundo termo que descarta o colapso, porque embeddings idênticos o violariam. A ablação do artigo achou a InfoNCE em geral melhor que losses de cosseno, L1 ou L2 (o cosseno venceu em VQA, perguntas e respostas visuais). O artigo também observa que só a InfoNCE traz o próprio termo anticolapso, e por isso só ela funciona com um Y-encoder não congelado.
+É o segundo termo que descarta o colapso, porque embeddings idênticos o violariam. A ablação do artigo achou a InfoNCE em geral melhor que losses de similaridade de cosseno, L1 ou L2 de distância entre vetores (o cosseno venceu em VQA, perguntas e respostas visuais). O artigo também observa que só a InfoNCE traz o próprio termo anticolapso, e por isso só ela funciona com um Y-encoder não congelado (ainda sendo atualizado durante o treino).
 
 ## Por que prever um embedding, e como o artigo testou isso
 
-O argumento do artigo é sobre o formato do alvo. Pergunte "O que acontece se eu baixar este interruptor?" e tanto "a lâmpada apaga" quanto "o quarto fica escuro" estão certas. Como sequências de tokens, elas não têm token em comum, então uma loss de entropia cruzada as trata como dois alvos separados sobre os quais o modelo precisa espalhar probabilidade. Um bom text encoder as põe perto uma da outra, então o predictor precisa acertar uma região do espaço de embeddings em vez de várias regiões disjuntas. Esse é um argumento sobre a dificuldade de aprender, e o experimento abaixo o testa.
+O argumento do artigo é sobre o formato do alvo. Pergunte "O que acontece se eu baixar este interruptor?" e tanto "a lâmpada apaga" quanto "o quarto fica escuro" estão certas. Como sequências de tokens, elas não têm token em comum, então uma loss de entropia cruzada as trata como dois alvos separados sobre os quais o modelo precisa espalhar probabilidade. Um bom text encoder as põe perto uma da outra, então o predictor precisa acertar uma região do espaço de embeddings em vez de várias regiões separadas e sem sobreposição. Esse é um argumento sobre a dificuldade de aprender, e o experimento abaixo o testa.
 
-O artigo treina dois modelos com o mesmo encoder congelado, dados, tamanho de batch, iterações e schedule, mas os preditores diferem em tamanho e origem (uma fatia de 0,5B do Llama-3.2-1B com a máscara causal removida versus o modelo completo de 1B next-token), então esta é uma comparação com dados e schedule pareados e diferenças arquiteturais, não uma ablação causal apenas do objetivo:
+O artigo treina dois modelos com o mesmo encoder congelado, dados, tamanho de batch, iterações e cronograma de taxa de aprendizado (o plano de como o tamanho do passo sobe e desce ao longo do treino), mas os preditores diferem em tamanho e origem (uma fatia de 0,5B do Llama-3.2-1B com a máscara causal removida versus o modelo completo de 1B de próximo token), então esta é uma comparação com dados e cronograma pareados e diferenças arquiteturais, não uma ablação causal apenas do objetivo:
 
 - o mesmo Perception Encoder congelado (um ViT-L/14 a 336 pixels, 16 frames por vídeo, sem tiling, isto é, sem cortar os frames em recortes);
 - a mesma mistura de dados, batch de 128, as mesmas iterações e o mesmo cronograma de taxa de aprendizado.
@@ -103,30 +103,30 @@ Duas notas medem o resultado. A legendagem é medida pelo CIDEr, que pontua o qu
 | 15 milhões | VL-JEPA | 14,8 | 41,0% |
 | 15 milhões | VLM gerativo de tokens | 7,1 | 27,2% |
 
-No começo os dois estão empatados, com o modelo de referência um pouco à frente na legendagem. Com 5 milhões de amostras a VL-JEPA já chegou a 14,7 de CIDEr e 35,3%, e a diferença então se mantém. Essa é a evidência mais forte do artigo, porque isola a variável.
+No começo os dois estão empatados, com o modelo de referência um pouco à frente na legendagem. Com 5 milhões de amostras a VL-JEPA já chegou a 14,7 de CIDEr e 35,3%, e a diferença então se mantém. Essa é a evidência mais forte do artigo, porque pareia o encoder, os dados e o cronograma o mais de perto que as duas arquiteturas permitem.
 
-Ela também é pequena: um modelo de linguagem de 1 bilhão de parâmetros, legendagem e classificação zero-shot, uma única mistura de dados. O artigo descreve a VL-JEPA como usando cerca de metade dos parâmetros treináveis do modelo de referência.
+Ela também é pequena: um modelo de linguagem de 1 bilhão de parâmetros, legendagem e classificação zero-shot (sem treino específico para a tarefa), uma única mistura de dados. O artigo descreve a VL-JEPA como usando cerca de metade dos parâmetros treináveis do modelo de referência.
 
 ## Decodificação seletiva
 
-A VL-JEPA prevê um embedding de resposta num único forward pass, uma passada pela rede. Assim, um stream de vídeo rende um **fluxo contínuo de significados**, disponível a cada passo sem gerar uma palavra. O artigo propõe suavizar esse fluxo e decodificar só quando ele muda.
+A VL-JEPA prevê um embedding de resposta num único forward pass, uma passada pela rede. Assim, um stream de vídeo (filmagem contínua que chega frame a frame) rende um **fluxo contínuo de significados**, disponível a cada passo sem gerar uma palavra. O artigo propõe suavizar esse fluxo e decodificar só quando ele muda.
 
-O experimento testa a ideia offline. Ele agrupa a sequência de embeddings de cada vídeo em segmentos de significado parecido e decodifica uma vez por segmento, no ponto médio. O average pooling dos embeddings ajudou tanto essa estratégia quanto a decodificação uniforme.
+O experimento testa a ideia offline (em vídeos já gravados, e não em transmissão ao vivo). Ele agrupa (faz clustering) a sequência de embeddings de cada vídeo em segmentos de significado parecido e decodifica uma vez por segmento, no ponto médio. O average pooling dos embeddings ajudou tanto essa estratégia quanto a decodificação uniforme.
 
-O conjunto de teste tinha 218 vídeos de atividades procedurais do EgoExo4D, com média de 6 minutos e cerca de 143 ações anotadas cada. A decodificação seletiva a cerca de 0,35 Hz — uma decodificação a cada 2,85 segundos — igualou a qualidade da decodificação uniforme a 1 Hz, uma vez por segundo: cerca de **2,85 vezes menos operações de decodificação**. Um modelo gerativo de tokens não tem um jeito barato de saber se a resposta mudou sem gerá-la.
+O conjunto de teste tinha 218 vídeos de atividades procedurais do EgoExo4D, com média de 6 minutos e cerca de 143 ações anotadas cada. Decodificar no ponto médio de cada segmento obtido por clustering offline teve média de cerca de 0,35 Hz (hertz, vezes por segundo — cerca de 2,85 segundos em média entre decodificações, não um intervalo fixo de 2,85 segundos nem um detector online de mudança semântica) e igualou a qualidade da decodificação uniforme a 1 Hz, uma vez por segundo: cerca de **2,85 vezes menos operações de decodificação**. Um modelo gerativo de tokens não tem um jeito barato de saber se a resposta mudou sem gerá-la.
 
 ## Um espaço, várias tarefas
 
 O mesmo espaço de embeddings atende tarefas que VLMs clássicos e modelos ao estilo CLIP dividem entre si.
 
-- **Busca e classificação** funcionam comparando o embedding previsto de um vídeo com embeddings de textos candidatos. Depois da primeira etapa de treino, só com legendas, o modelo que o artigo chama de VL-JEPA-BASE supera CLIP, SigLIP2 e Perception Encoder em duas médias: a acurácia zero-shot em 8 datasets de classificação de vídeo e o recall@1 (o primeiro resultado da lista é o certo) em 8 datasets de busca de vídeo por texto.
+- **Busca (encontrar o vídeo ou a legenda correspondente numa coleção) e classificação** funcionam comparando o embedding previsto de um vídeo com embeddings de textos candidatos. Depois da primeira etapa de treino, só com legendas, o modelo que o artigo chama de VL-JEPA-BASE supera CLIP, SigLIP2 e Perception Encoder em duas médias: a acurácia zero-shot em 8 datasets de classificação de vídeo e o recall@1 (o primeiro resultado da lista é o certo) em 8 datasets de busca de vídeo por texto.
 - **Responder perguntas** vem depois do fine-tuning supervisionado (SFT, na sigla em inglês, [aula 6.2](/pt-br/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/)). A VL-JEPA-SFT responde de forma **discriminativa**: codifica cada resposta candidata com o Y-encoder e escolhe a mais próxima da sua previsão. Em GQA, TallyQA, POPE e POPEv2 ela é comparável ao InstructBLIP e ao Qwen-VL.
 
 Repare no formato: escolher entre respostas dadas não é a mesma tarefa que escrever uma livremente.
 
 ## Fechando a trilha: dois jeitos de prever
 
-Esta trilha começou com um modelo de visão e linguagem que transforma um minuto de vídeo em 11.520 tokens e gera a resposta palavra por palavra. Ela termina com modelos que nunca geram nada durante o treino. É tentador enquadrá-los como rivais. As evidências são mais estreitas que isso, nos dois sentidos.
+Esta trilha começou com um modelo de visão e linguagem que transforma um minuto de vídeo em 11.520 tokens e gera a resposta palavra por palavra (um modelo autorregressivo, que devolve cada token gerado como entrada do passo seguinte). Ela termina com modelos que nunca geram nada durante o treino. É tentador enquadrá-los como rivais. As evidências são mais estreitas que isso, nos dois sentidos.
 
 | | Modelos de linguagem e de visão e linguagem autorregressivos | Modelos que preveem embeddings (família JEPA) |
 | --- | --- | --- |
@@ -134,7 +134,7 @@ Esta trilha começou com um modelo de visão e linguagem que transforma um minut
 | O que sai | Texto, diretamente | Vetores; texto ou ações precisam de um decoder ou de um planejador |
 | Colapso | Não é risco: os alvos são tokens fixos | Risco central, tratado com EMA (média móvel exponencial) e stop-gradient ou com termos contrastivos |
 | Pontos fortes medidos nesta trilha | Busca de agulha no palheiro em vídeo longo até 256K tokens, no Qwen3-VL-235B-A22B (10.1) | Compreensão de movimento com probe congelado; planejamento robótico zero-shot de horizonte curto, 16 segundos por ação contra 4 minutos de um gerador de vídeo; legendagem mais eficiente em amostras num estudo controlado de pequena escala; menos decodificações em streaming |
-| Principal limitação vista nesta trilha | O custo cresce com cada token: um minuto de vídeo são 11.520 tokens de prefill e de cache (10.1) | Sem saída direta de texto ou de ação; raciocínio, uso de ferramentas e comportamentos agênticos ainda precisam de avaliação mais ampla — a lista dos próprios autores da VL-JEPA |
+| Principal limitação vista nesta trilha | O custo cresce com cada token: um minuto de vídeo são 11.520 tokens de prefill e de cache (10.1) | Sem saída direta de texto ou de ação; raciocínio, uso de ferramentas e comportamentos agênticos (planejar e agir ao longo de vários passos) ainda precisam de avaliação mais ampla — a lista dos próprios autores da VL-JEPA |
 
 :::insight
 As duas famílias são menos separadas do que o enquadramento sugere. O V-JEPA 2 é alinhado a um modelo de linguagem para responder perguntas sobre vídeo. O predictor da VL-JEPA é feito de camadas do Llama. O vision encoder do Qwen3-VL parte do SigLIP-2, que o artigo do V-JEPA 2 classifica entre os modelos contrastivos de imagem e texto, não entre os geradores de pixels. O que de fato difere é onde a loss é calculada — sobre tokens ou sobre representações —, e cada escolha compra algo específico.

@@ -38,59 +38,55 @@ citations:
     authors: "European Parliament and Council of the European Union"
     year: 2016
     url: "https://eur-lex.europa.eu/eli/reg/2016/679/oj"
-updated: "2026-11-21"
+updated: "2026-11-26"
 ---
 
-Access control from [lesson 30.1](/lessons/30-rag-security-privacy-and-governance/30.1-rag-access-control-and-tenant-isolation/) decides *which users* may read a chunk. Privacy engineering answers a second, independent question: *which bytes* are allowed to enter an embedding index, cross an external API boundary, or land in an observability trace in the first place. A single leaked API key in an indexed Slack thread or a patient's tax ID logged in a prompt trace turns a routine RAG feature into a reportable data breach (OWASP LLM02: Sensitive Information Disclosure).
+Access control from [lesson 30.1](/lessons/30-rag-security-privacy-and-governance/30.1-rag-access-control-and-tenant-isolation/) decides *which users* may read a chunk. Privacy engineering answers a second, independent question: *which data* is allowed to enter an embedding index, cross an external **API** (Application Programming Interface, a network service another company hosts) boundary, or land in an **observability trace** (a detailed debugging log recording prompts, retrieved chunks, and replies) in the first place. A single leaked **API key** (a secret password string granting access to a service) in an indexed Slack thread or a patient's tax ID logged in a prompt trace turns a routine Retrieval-Augmented Generation (RAG) feature into a reportable data breach (OWASP LLM02: Sensitive Information Disclosure).
 
 ## Where sensitive data leaks in a RAG stack
 
-Sensitive data does not travel along one wire. Every production RAG application copies text across at least five storage or network hops:
+Sensitive data never travels along one wire. Raw PDFs, emails, and support tickets carry **Personally Identifiable Information (PII)**—any detail identifying a specific person, such as names, emails, phone numbers, or national IDs—alongside secrets like **bearer tokens** (reusable login strings) and private keys. Compare the two steps below to see why waiting until the model replies to scrub output fails across all five storage and network hops: hosted embedding **endpoints** (web addresses that compute meaning vectors), vector stores, inference APIs with abuse-monitoring logs or shared caches, third-party **SaaS** (hosted cloud software) observability dashboards, and final answers that can surface hidden fields from structured **JSON metadata** (attached key-value labels).
 
-- **Ingestion and chunking:** Raw PDFs, emails, and tickets carry Personally Identifiable Information (PII, any information that identifies a specific person such as names, emails, phone numbers, or national IDs) and credentials such as bearer tokens or private keys.
-- **Embedding APIs and vector stores:** Text sent to a hosted embedding endpoint leaves your network, and the resulting vectors plus chunk text sit in the vector database indefinitely unless scrubbed.
-- **Inference APIs and prompt caches:** Prompt text crosses to a model provider, where abuse-monitoring logs or shared prefix caches may retain payloads unless governed by explicit contractual bounds.
-- **Observability and eval pipelines:** Tracing tools capture full prompts, retrieved chunks, and completions for debugging, often piping production PII into third-party SaaS dashboards with wide internal read access.
-- **Model outputs:** The LLM synthesizes retrieved text and can accidentally surface hidden fields (such as an internal email address inside JSON metadata) to an end user who should only see an aggregate summary.
+<Figure id="t30-pii-redaction-hops" />
 
-Because leaks occur at every hop, waiting until output generation to scrub text is too late.
+Because raw sensitive data can be copied or cached at every hop before generation finishes, privacy controls have to run at a **gateway** (an entry checkpoint) *before* data enters your index or crosses an outside network boundary.
 
 ## Layered detection: regex, checksums, entropy, and NER
 
-No single detector catches every sensitive token with acceptable precision and recall. Production redaction gateways run a fast two-stage pipeline before indexing or calling an external model:
+No single detector catches every sensitive item with acceptable accuracy. Production redaction gateways run a fast two-stage pipeline before indexing or calling an external model:
 
-1. **Deterministic detectors (sub-millisecond):** Regular expressions paired with mathematical validation catch structured secrets and IDs cleanly. A 16-digit number is validated with the Luhn checksum before flagging it as a payment card; national IDs (such as Brazilian CPF check digits) verify their checksums; credentials (AWS keys, GitHub tokens, JWTs) match known prefixes plus Shannon entropy thresholds so normal English words are not misclassified.
-2. **Contextual Named Entity Recognition (NER, 10–30 ms on CPU):** Lightweight token-classification models detect unstructured PII—person names, street addresses, dates of birth, medical diagnoses—that no regular expression can specify.
+1. **Deterministic detectors (under 1 ms):** **Regular expressions (regex)**—pattern-matching rules for text with a fixed format—paired with mathematical checks catch structured secrets and IDs cleanly. A 16-digit number is tested with the **Luhn checksum** (a built-in arithmetic check digit on payment cards that rejects random 16-digit strings); national IDs such as Brazilian CPF numbers verify their check digits; credentials (AWS keys, GitHub tokens, and **JWTs**, signed login tokens) match known prefixes plus **Shannon entropy** thresholds (a measure of character randomness that separates high-randomness keys from ordinary words).
+2. **Contextual Named Entity Recognition (NER, 10–30 ms on a standard CPU processor):** Lightweight token-classification models detect unstructured PII—person names, street addresses, dates of birth, and medical diagnoses—that no fixed pattern can list.
 
 Work through a concrete error-budget calculation. Suppose your support pipeline processes $10{,}000$ tickets per day, each containing an average of $2$ sensitive entities ($20{,}000$ total entities daily). Compare two redaction configs:
 
-- A **regex-only** pipeline achieves $99\%$ recall on structured IDs (half of all entities) and $0\%$ on unstructured names/addresses (the other half), yielding an overall recall of $50\%$—leaving $10{,}000$ raw PII entities unredacted every day.
+- A **regex-only** pipeline achieves $99\%$ **recall** (share of real entities caught) on structured IDs (half of all entities) and $0\%$ on unstructured names and addresses (the other half), yielding an overall recall of $50\%$—leaving $10{,}000$ raw PII entities unredacted every day.
 - A **hybrid regex + NER** pipeline achieves $99\%$ recall on structured IDs and $94\%$ on unstructured entities, raising overall recall to $96.5\%$:
 
 $$
 \text{Missed Entities} = 20{,}000 \times (1 - 0.965) = 700\ \text{entities/day}.
 $$
 
-That remaining $3.5\%$ miss rate explains a critical engineering rule from NIST AI 600-1: automated PII redaction is a **risk-reduction control**, never a license to send regulated records to an unapproved vendor without legal and contractual safeguards.
+That remaining $3.5\%$ miss rate explains an essential engineering rule from NIST AI 600-1: automated PII redaction is a **risk-reduction control**, never a license to send regulated records to an unapproved vendor without legal and contractual safeguards.
 
 ## Masking vs. reversible pseudonymization vaults
 
-Once a detector flags an entity, you choose between two transformations depending on whether downstream reasoning needs entity identity:
+Once a detector flags an entity, you choose between two transformations depending on whether downstream reasoning needs to tell entities apart:
 
-- **Irreversible masking** replaces every instance with a generic tag (`[REDACTED_SECRET]` or `[REDACTED_CARD]`). Always use irreversible redaction for API keys, passwords, private keys, and payment card numbers; an LLM never needs a real secret to answer a question.
-- **Reversible pseudonymization (tokenization)** replaces recurring entities with consistent, scoped placeholders inside a single request or session (`Alice Silva` becomes `<PERSON_1>`, `alice@corp.invalid` becomes `<EMAIL_1>`). The mapping table lives in an encrypted, short-lived vault inside your own infrastructure, keyed by session ID and TTL (for example, 15 minutes). The LLM reasons accurately over `<PERSON_1>` and `<EMAIL_1>`, and your application gateway substitutes the real values back only when returning the response to an authorized caller.
+- **Irreversible masking** replaces every instance with a generic tag (`[REDACTED_SECRET]` or `[REDACTED_CARD]`). Always use irreversible redaction for API keys, passwords, private keys, and payment card numbers; a Large Language Model (LLM) never needs a real secret to answer a question.
+- **Reversible pseudonymization (tokenization)** replaces recurring entities with consistent placeholders scoped to a single request or session (`Alice Silva` becomes `<PERSON_1>`, `alice@corp.invalid` becomes `<EMAIL_1>`), as shown in the second step of the figure above. The lookup table sits in an encrypted, short-lived **vault** inside your own infrastructure, keyed by session ID and a **TTL** (Time to Live, an automatic expiration timer such as 15 minutes). The LLM reasons accurately over `<PERSON_1>` and `<EMAIL_1>`, and your gateway restores the real values only when returning the reply to an authorized caller.
 
 :::note
-Never reuse the same pseudonym token (`<PERSON_1>`) across different sessions or store the lookup vault in the same database as the unencrypted traces. Cross-session reuse lets an attacker correlate identities across logs, defeating pseudonymization.
+Never reuse the same pseudonym token (`<PERSON_1>`) across different sessions or store the lookup vault in the same database as unencrypted traces. Cross-session reuse lets an attacker correlate identities across logs, defeating pseudonymization.
 :::
 
 ## Zero Data Retention, training opt-outs, and right to erasure
 
 Contractual data boundaries close the gap that automated redactors cannot eliminate. Verify four concrete terms before sending production data to any model or embedding vendor:
 
-- **Zero Data Retention (ZDR):** The provider commits not to store prompts or completions on disk after returning the HTTP response, disabling even standard 30-day abuse-monitoring logs. Note that ZDR often disables provider-hosted batch files, persistent thread APIs, or cross-request prompt-logging dashboards.
+- **Zero Data Retention (ZDR):** The provider commits not to store prompts or completions on disk after returning the **HTTP response** (the web reply), disabling even standard 30-day abuse-monitoring logs. Note that ZDR often disables provider-hosted batch files, persistent thread APIs, or cross-request prompt-logging dashboards, and it binds only the vendor—never your own application logs or vector database.
 - **No training on customer data:** Explicitly verify in the enterprise Data Processing Agreement (DPA) that neither prompts nor completions feed model pretraining, fine-tuning, or human review queues.
-- **Regional residency:** Pin inference and embedding endpoints to approved geographic regions (for example, EU-only endpoints for GDPR-governed workloads) and verify where failover traffic routes when a primary region degrades.
-- **Right to erasure (GDPR Article 17):** Deleting a user's record from your primary SQL database does not erase their data if their chunks remain in the vector store, BM25 index, semantic cache, or fine-tuned adapters. Track a `subject_id` or `source_doc_id` on every chunk so a deletion request purges the vector store, lexical index, and caches atomically.
+- **Regional residency:** Pin inference and embedding endpoints to approved geographic regions (for example, EU-only endpoints for General Data Protection Regulation—GDPR—workloads) and verify where **failover traffic** (backup traffic rerouted during an outage) goes if a primary region degrades.
+- **Right to erasure (GDPR Article 17):** Deleting a user's record from your primary **SQL database** (structured relational database) does not erase their data if their chunks remain in the vector store, BM25 keyword index, semantic cache, or **fine-tuned adapters** (small add-on weights trained on customer text). Track a `subject_id` or `source_doc_id` on every chunk so a deletion request purges the vector store, lexical index, and caches **atomically** (all together, leaving no leftover copy).
 
-When you combine pre-ingestion secret stripping, hybrid regex + NER pseudonymization, redacted observability traces, and verified ZDR endpoints, sensitive bytes stay inside boundaries you control and can audit.
+When you combine pre-ingestion secret stripping, hybrid regex + NER pseudonymization, redacted observability traces, and verified ZDR endpoints, sensitive data stays inside boundaries you control and can audit.

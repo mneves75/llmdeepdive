@@ -42,23 +42,23 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-You have one 80 GB accelerator and a product requirement: serve Qwen3.8-27B to as many simultaneous conversations as the card allows, each with an 8,192-token window. Somebody subtracts 54 for the weights from 80, divides the remainder by [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)'s 64 KiB per token (the size of the key-value cache each token adds), and reports 48 users. The worked result is 36. The naive estimate is high by one third, and the way it fails is an out-of-memory crash under load. This lesson does the budget line by line, because every later lesson that prices serving builds on it.
+You have one 80 GB accelerator and a product requirement: serve Qwen3.8-27B to as many simultaneous conversations as the card allows, each with an 8,192-token window. Somebody subtracts 54 for the weights from 80, divides the remainder by [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)'s 64 KiB per token (the size of the key-value cache each token adds), and reports 48 users. The worked result is 36. The naive estimate is high by one third, and the way it fails is an **out-of-memory crash** (the program stops abruptly because it asks for more memory than the hardware has) under load. This lesson does the budget line by line, because every later lesson that prices serving builds on it.
 
 ## How much of the card can you actually use?
 
-Start with usable capacity rather than brochure capacity. A part marketed as 80 GB carries 80 GiB-class HBM (its high-bandwidth memory). It reports roughly 79.6 GiB to the runtime once ECC (error correction) and reserved firmware regions are taken out. So the number you can actually allocate is smaller than the number on the box.
+Start with usable capacity rather than brochure capacity. A part marketed as 80 GB carries 80 GiB-class HBM (its high-bandwidth memory). It reports roughly 79.6 GiB to the **runtime** (the software layer that loads and runs the model on the GPU) once ECC (error correction) and reserved **firmware** regions (low-level control software built into the chip) are taken out. So the number you can actually allocate is smaller than the number on the box.
 
-The second trap is units. A GB is one billion bytes; a GiB (gibibyte) is 1,024 × 1,024 × 1,024 bytes, about 7 percent more. Vendors quote weights in GB and runtimes report memory in GiB, and mixing the two skews a budget by that 7 percent without any error message. The only defence is to do the entire budget in one unit family: convert everything to gibibytes and stay there. The bf16 weights, about 54 GB from the canonical figure, are 50.3 GiB.
+The second trap is units. A GB is one billion bytes; a GiB (gibibyte) is 1,024 × 1,024 × 1,024 bytes, about 7 percent more. Vendors quote weights in GB and runtimes report memory in GiB, and mixing the two skews a budget by that 7 percent without any error message. The only defence is to do the entire budget in one unit family: convert everything to gibibytes and stay there. The bf16 weights (two bytes per number), about 54 GB from the canonical figure, are 50.3 GiB.
 
 Next comes a line the naive subtraction omits entirely: the **runtime reserve**. Several things consume memory before a single token of cache exists:
 
 - the driver context, the GPU-side bookkeeping every process needs;
 - activation buffers for the largest batch you intend to run (activations are the intermediate results of each layer);
-- temporary workspace for the attention and feed-forward kernels;
-- allocator fragmentation: free memory split into blocks too small or scattered to satisfy the allocation being requested.
+- temporary **workspace** (scratch memory) for the attention and feed-forward kernels;
+- **allocator** fragmentation: free memory split by the memory manager into blocks too small or scattered to satisfy the allocation being requested.
 
 Together they take several gibibytes. Six gibibytes is an illustrative and not especially generous figure. Serving frameworks encode the same idea as a utilization fraction, by default holding back roughly a tenth of the device. What remains is the **pool**, the memory left for per-conversation state:
 
@@ -76,7 +76,7 @@ $$
 8{,}192\ \text{tokens} \times 64\ \text{KiB} \ =\ 524{,}288\ \text{KiB} \ =\ 512\ \text{MiB}
 $$
 
-of keys and values. But the 48 Gated DeltaNet layers also cost memory. In the reference Transformers path, each keeps a 3 MiB float32 matrix state, 144 MiB across the layers, excluding the small convolution state.
+of keys and values. But the 48 Gated DeltaNet layers also cost memory. In the reference Transformers path (the standard Hugging Face Transformers implementation), each keeps a 3 MiB **float32** (four bytes per number) matrix state, 144 MiB across the layers, excluding the small **convolution state** (a tiny buffer holding the last few tokens for a short sliding-window filter).
 
 That state belongs to the sequence, not the model: every concurrent conversation carries its own copy, the way each open file carries its own read position while the file's contents are shared. So the true per-sequence cost is 512 plus 144, or 656 MiB, and the pool holds
 
@@ -109,11 +109,11 @@ and five full-native-context conversations rather than one. That is about a 3.4-
 Leave the DeltaNet state out and the budget predicts 46 bf16 sequences instead of 36, about 28 percent too many. At FP8 it predicts 193 sequences instead of 124, about 56 percent too many. The state is constant, so as each variable term shrinks, the state's share of the budget grows. Many copies of a fixed 144 MiB become a major budget line.
 
 :::warning
-The most expensive mistake is reserving maximum context for every request. Paged allocation, introduced in [lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/), hands out cache blocks on demand, so a 300-token conversation holds 300 tokens of KV memory. That is what turns the theoretical pool into 36 concurrent 8K users under this worked budget. Admit requests against measured occupancy rather than declared limits.
+The most expensive mistake is reserving maximum context for every request. Paged allocation, introduced in [lesson 7.8](/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/), hands out cache blocks on demand, so a 300-token conversation holds 300 tokens of KV memory. That is what turns the theoretical pool into 36 concurrent 8K users under this worked budget. Admit requests against measured **occupancy** (how full the pool actually is) rather than declared limits.
 :::
 
 :::caveat
-Every figure here is an illustrative planning estimate, not a deployment specification. The 144 MiB matrix-state figure follows the reference float32 path and excludes the small short-convolution state; another runtime may choose a different state dtype. The six-gibibyte reserve and quantized-cache overhead also depend on the exact stack. Derive the budget, then verify by loading the model and reading the allocator.
+Every figure here is an illustrative planning estimate, not a deployment specification. The 144 MiB matrix-state figure follows the reference float32 path and excludes the small short-convolution state; another runtime may choose a different state **dtype** (data type — how many bits store each number). The six-gibibyte reserve and quantized-cache overhead also depend on the exact stack. Derive the budget, then verify by loading the model and reading the allocator.
 :::
 
 Carry two habits out of this lesson. Budget in one unit family, and price a sequence completely rather than pricing only its cache. [Lesson 9.4](/lessons/9-hardware-and-infrastructure/9.4-nvidia-cuda-hopper-blackwell/) changes the capacity line by changing the silicon, and [lesson 9.10](/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) turns these occupancy figures into cost per token.

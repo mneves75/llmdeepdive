@@ -1,0 +1,257 @@
+---
+import { QWEN } from '../../lib/model-facts'
+import { fillTemplate, kvCounterfactual, kvWhatIf, labFormatters, upToOneDecimal, upToThreeDecimals, type KvCounterfactualInput } from '../../lib/lab-math'
+/**
+ * Lesson 7.6 — the four axes of the KV cache, combined.
+ *
+ * The lesson and its figure move one axis at a time (KV heads at 1, 4 and 24).
+ * Here a reader sets KV heads, the attention-layer count, cache precision and
+ * context together, and three design problems ask for a combination. The
+ * defaults are Qwen3.8-27B as shipped, so they reproduce lesson 7.2's numbers;
+ * every other choice is labelled a counterfactual, and the lab claims nothing
+ * about parameters, speed or quality.
+ *
+ * Server-rendered with its defaults already computed, so a reader without
+ * JavaScript still gets the worked shipped design and its three open problems.
+ */
+interface Props { locale: 'en' | 'pt-br' }
+const { locale } = Astro.props
+const isPt = locale === 'pt-br'
+
+const shipped: KvCounterfactualInput = {
+  kvHeads: QWEN.kvHeads.value,
+  headDim: QWEN.headDim.value,
+  cachedLayers: QWEN.attentionLayers.value,
+  totalLayers: QWEN.layers.value,
+  bytes: QWEN.bytesPerElement.value,
+  context: QWEN.contextNative.value,
+  stateMibPerRecurrentLayer: QWEN.deltaNetStateMib.value / QWEN.deltaNetLayers.value,
+}
+const QUERY_HEADS = QWEN.queryHeads.value
+const SPARSE_LAYERS = shipped.cachedLayers / 2
+const lab = kvWhatIf(shipped, shipped, QUERY_HEADS)
+const base = lab.result
+const halfGib = base.gibPerSequence / 2
+const mqaGib = kvCounterfactual({ ...shipped, kvHeads: 1 }).gibPerSequence
+const mhaFactor = kvCounterfactual({ ...shipped, kvHeads: QUERY_HEADS, cachedLayers: shipped.totalLayers }).gibPerSequence / base.gibPerSequence
+
+const { whole } = labFormatters(locale)
+const kib = upToOneDecimal(locale)
+const gib = upToThreeDecimals(locale)
+const n = {
+  heads: whole.format(shipped.kvHeads),
+  query: whole.format(QUERY_HEADS),
+  layers: whole.format(shipped.totalLayers),
+  cached: whole.format(shipped.cachedLayers),
+  deltaNet: whole.format(shipped.totalLayers - shipped.cachedLayers),
+  context: whole.format(shipped.context),
+  sparse: whole.format(SPARSE_LAYERS),
+  dropped: whole.format(shipped.cachedLayers - SPARSE_LAYERS),
+  headShare: whole.format(QUERY_HEADS / shipped.kvHeads),
+  stateLayer: whole.format(shipped.stateMibPerRecurrentLayer),
+  state: whole.format(base.stateMib),
+  perToken: kib.format(base.kibPerToken),
+  gib: gib.format(base.gibPerSequence),
+  half: gib.format(halfGib),
+  mqa: gib.format(mqaGib),
+  mha: whole.format(mhaFactor),
+}
+
+const copy = isPt
+  ? {
+      legend: 'Os quatro eixos do KV cache, combinados',
+      lead: `O Qwen3.8-27B sai com as opções já marcadas: ${n.heads} KV heads, full attention em ${n.cached} das suas ${n.layers} camadas, cache em bf16 e ${n.context} tokens de contexto. Qualquer outra escolha é contrafactual: KV heads e a mistura de camadas descrevem outro modelo, que precisaria de treinamento; a precisão do cache e o contexto são escolhas de serving.`,
+      heads: 'KV heads por camada de attention',
+      layers: `Camadas de full attention (de ${n.layers})`,
+      precision: 'Precisão do KV cache',
+      context: 'Contexto por sequência (tokens)',
+      headOptions: [`${n.query} (MHA)`, `${n.heads} (GQA, Qwen)`, '1 (MQA)'],
+      layerOptions: [`${n.layers} (todas)`, `${n.cached} (1 em 4, Qwen)`, `${n.sparse} (1 em 8)`],
+      precisionOptions: ['bf16 (2 B, Qwen)', 'fp8 (1 B)'],
+      native: 'nativo',
+      perLayer: 'Por token por camada',
+      perToken: 'Por token',
+      perSequence: 'Por sequência',
+      against: 'Contra o Qwen',
+      state: 'Estado DeltaNet',
+      larger: '{n}× maior',
+      smaller: '{n}× menor',
+      same: 'Igual',
+      problemsLead: 'Três problemas de design',
+      problems: [
+        `Mantenha o contexto de ${n.context} tokens e leve o cache a ${n.half} GiB por sequência ou menos.`,
+        `Encontre o único design que guarda ${n.mha} vezes o cache do Qwen, no mesmo contexto.`,
+        `Chegue aos ${n.mqa} GiB do MQA em contexto completo sem mexer nos ${n.heads} KV heads.`,
+      ],
+      met: 'Resolvido: {gib} GiB por sequência.',
+      notYet: 'Ainda não: {gib} GiB por sequência.',
+      shrankJob: `Isso encolheu a tarefa, não o design: mantenha ${n.context} tokens.`,
+      keepHeads: `Mantenha os ${n.heads} KV heads: este problema pede outro caminho.`,
+      shipped: `Este é o Qwen3.8-27B como ele é: os ${n.perToken} KiB por token e ${n.gib} GiB por sequência da aula 7.2.`,
+      headsUp: `Com ${n.query} KV heads, cada query head tem suas próprias keys e values, e cada camada de attention guarda ${n.headShare} vezes mais.`,
+      headsDown: `Com um único KV head, os ${n.query} query heads leem uma só visão compartilhada de key/value; o custo disso em qualidade esta conta não mostra.`,
+      layersUp: `Attention nas ${n.layers} camadas descreve outro modelo, sem camadas DeltaNet e portanto sem estado fixo. Supor que todas as camadas fazem cache é justamente o erro que a aula 7.2 aponta no Qwen3.8-27B.`,
+      layersDown: `As ${n.dropped} camadas que perdem a attention viram camadas Gated DeltaNet, cada uma com ${n.stateLayer} MiB de estado fixo: o cache encolhe enquanto o estado cresce.`,
+      bytesDown: 'Um cache em fp8 guarda cada elemento em 1 byte em vez de 2. Ao contrário de heads e camadas, um engine de serving pode trocá-lo sem retreinar; o custo em acurácia não aparece aqui.',
+      contextDown: 'Um contexto menor encolhe a tarefa, não o design: o custo por token não muda.',
+      invalid: 'Escolha uma opção em cada lista.',
+      note: `Conta só bytes de cache, não parâmetros, velocidade ou qualidade. O estado DeltaNet é a matriz float32 de referência, ${n.stateLayer} MiB por camada (os ${n.state} MiB da aula 7.2 em ${n.deltaNet} camadas), por isso não acompanha a precisão do cache.`,
+    }
+  : {
+      legend: 'The four axes of the KV cache, combined',
+      lead: `Qwen3.8-27B ships the options already selected: ${n.heads} KV heads, full attention in ${n.cached} of its ${n.layers} layers, a bf16 cache and ${n.context} tokens of context. Every other choice is a counterfactual: KV heads and the layer mix describe a different model, one that would need training, while cache precision and context are serving choices.`,
+      heads: 'KV heads per attention layer',
+      layers: `Full-attention layers (of ${n.layers})`,
+      precision: 'KV-cache precision',
+      context: 'Context per sequence (tokens)',
+      headOptions: [`${n.query} (MHA)`, `${n.heads} (GQA, Qwen)`, '1 (MQA)'],
+      layerOptions: [`${n.layers} (all)`, `${n.cached} (1 in 4, Qwen)`, `${n.sparse} (1 in 8)`],
+      precisionOptions: ['bf16 (2 B, Qwen)', 'fp8 (1 B)'],
+      native: 'native',
+      perLayer: 'Per token per layer',
+      perToken: 'Per token',
+      perSequence: 'Per sequence',
+      against: 'Against Qwen',
+      state: 'DeltaNet state',
+      larger: '{n}× larger',
+      smaller: '{n}× smaller',
+      same: 'Same',
+      problemsLead: 'Three design problems',
+      problems: [
+        `Keep the ${n.context}-token context and bring the cache to ${n.half} GiB per sequence or less.`,
+        `Find the one design that caches ${n.mha} times what Qwen does, at the same context.`,
+        `Match MQA's ${n.mqa} GiB at full context while keeping the ${n.heads} KV heads.`,
+      ],
+      met: 'Solved: {gib} GiB per sequence.',
+      notYet: 'Not yet: {gib} GiB per sequence.',
+      shrankJob: `That shrank the job, not the design: keep ${n.context} tokens.`,
+      keepHeads: `Keep the ${n.heads} KV heads: this problem asks for another route.`,
+      shipped: `This is Qwen3.8-27B as shipped: lesson 7.2's ${n.perToken} KiB per token and ${n.gib} GiB per sequence.`,
+      headsUp: `${n.query} KV heads give each query head its own keys and values, so every attention layer caches ${n.headShare} times as much.`,
+      headsDown: `One KV head makes all ${n.query} query heads read a single shared key/value view; what that costs in quality is not something this arithmetic shows.`,
+      layersUp: `Attention in all ${n.layers} layers describes a different model, with no DeltaNet layers and so no fixed state. Assuming every layer caches is exactly the misreading of Qwen3.8-27B that lesson 7.2 warns about.`,
+      layersDown: `The ${n.dropped} layers that lose attention become Gated DeltaNet layers, each holding ${n.stateLayer} MiB of fixed state: the cache shrinks while the state grows.`,
+      bytesDown: 'An fp8 cache stores each element in 1 byte instead of 2. Unlike heads and layers, a serving engine can switch it without retraining; its accuracy cost is not shown here.',
+      contextDown: 'A shorter context shrinks the job, not the design: the cost per token is unchanged.',
+      invalid: 'Choose one option in every list.',
+      note: `Counts cache bytes only, not parameters, speed or quality. The DeltaNet state is the reference float32 matrix, ${n.stateLayer} MiB per layer (lesson 7.2's ${n.state} MiB over ${n.deltaNet} layers), so it does not follow the cache precision.`,
+    }
+
+const headValues = [QUERY_HEADS, shipped.kvHeads, 1]
+const layerValues = [shipped.totalLayers, shipped.cachedLayers, SPARSE_LAYERS]
+const precisionValues = [shipped.bytes, shipped.bytes / 2]
+const contexts = [shipped.context / 8, shipped.context / 2, shipped.context]
+const gibText = gib.format(base.gibPerSequence)
+const status = (problem: number): string => fillTemplate(copy[lab.problems[problem] ?? 'notYet'], { gib: gibText })
+---
+
+<form class="lab" data-lab="kv-whatif" data-kv-heads={shipped.kvHeads} data-head-dim={shipped.headDim} data-cached-layers={shipped.cachedLayers} data-total-layers={shipped.totalLayers} data-bytes={shipped.bytes} data-context={shipped.context} data-state-mib={shipped.stateMibPerRecurrentLayer} data-query-heads={QUERY_HEADS} aria-label={copy.legend}>
+  <p class="lab__lead">{copy.lead}</p>
+  <div class="lab__controls">
+    <label>
+      <span>{copy.heads}</span>
+      <select name="kvHeads">
+        {headValues.map((value, i) => <option value={value} selected={value === shipped.kvHeads}>{copy.headOptions[i]}</option>)}
+      </select>
+    </label>
+    <label>
+      <span>{copy.layers}</span>
+      <select name="cachedLayers">
+        {layerValues.map((value, i) => <option value={value} selected={value === shipped.cachedLayers}>{copy.layerOptions[i]}</option>)}
+      </select>
+    </label>
+    <label>
+      <span>{copy.precision}</span>
+      <select name="bytes">
+        {precisionValues.map((value, i) => <option value={value} selected={value === shipped.bytes}>{copy.precisionOptions[i]}</option>)}
+      </select>
+    </label>
+    <label>
+      <span>{copy.context}</span>
+      <select name="context">
+        {contexts.map((value) => <option value={value} selected={value === shipped.context}>{value === shipped.context ? `${whole.format(value)} (${copy.native})` : whole.format(value)}</option>)}
+      </select>
+    </label>
+  </div>
+
+  {/* Always in the accessibility tree, empty until needed: a live region that
+      only appears when it is revealed is often never announced. */}
+  <p class="lab__validation" data-out="validation" data-invalid={copy.invalid} role="status"></p>
+
+  <output class="lab__out" aria-live="polite">
+    <div class="lab__stat"><span>{copy.perLayer}</span><b data-out="perLayer">{kib.format(base.kibPerLayer)} KiB</b></div>
+    <div class="lab__stat"><span>{copy.perToken}</span><b data-out="perToken">{kib.format(base.kibPerToken)} KiB</b></div>
+    <div class="lab__stat lab__stat--lead"><span>{copy.perSequence}</span><b data-out="perSequence">{gibText} GiB</b></div>
+    <div class="lab__stat"><span>{copy.against}</span><b data-out="against" data-larger={copy.larger} data-smaller={copy.smaller} data-same={copy.same}>{copy.same}</b></div>
+    <div class="lab__stat"><span>{copy.state}</span><b data-out="state">{whole.format(base.stateMib)} MiB</b></div>
+  </output>
+
+  {/* The script reads verdict and status copy from data-* so it stays data-free (CSP). */}
+  <p class="lab__verdict" data-out="verdict" data-shipped={copy.shipped} data-heads-up={copy.headsUp} data-heads-down={copy.headsDown} data-layers-up={copy.layersUp} data-layers-down={copy.layersDown} data-bytes-down={copy.bytesDown} data-context-down={copy.contextDown}>{copy.shipped}</p>
+
+  <div class="lab__policy">
+    <p id="kv-whatif-problems">{copy.problemsLead}</p>
+    {/* role="list": WebKit drops list semantics from an unmarked list. */}
+    <ol class="lab__problems" role="list" aria-labelledby="kv-whatif-problems" aria-live="polite">
+      {copy.problems.map((problem, i) => (
+        <li>{problem} <b data-out={`p${i + 1}`} data-kv-status data-met={copy.met} data-not-yet={copy.notYet} data-shrank-job={copy.shrankJob} data-keep-heads={copy.keepHeads}>{status(i)}</b></li>
+      ))}
+    </ol>
+  </div>
+  <p class="lab__note">{copy.note}</p>
+</form>
+
+<script>
+  import { pageLocale, readLabControl, showLabOutputs } from '../../lib/lab-form'
+  import { fillTemplate, kvWhatIf, labFormatters, upToOneDecimal, upToThreeDecimals } from '../../lib/lab-math'
+
+  for (const form of document.querySelectorAll<HTMLFormElement>('[data-lab="kv-whatif"]')) {
+    const locale = pageLocale(form)
+    const facts = form.dataset
+    const shipped = {
+      kvHeads: Number(facts.kvHeads),
+      headDim: Number(facts.headDim),
+      cachedLayers: Number(facts.cachedLayers),
+      totalLayers: Number(facts.totalLayers),
+      bytes: Number(facts.bytes),
+      context: Number(facts.context),
+      stateMibPerRecurrentLayer: Number(facts.stateMib),
+    }
+    const queryHeads = Number(facts.queryHeads)
+    if (![...Object.values(shipped), queryHeads].every(Number.isFinite)) continue
+    const { whole } = labFormatters(locale)
+    const kib = upToOneDecimal(locale)
+    const gib = upToThreeDecimals(locale)
+    const templates = (name: string): DOMStringMap => form.querySelector<HTMLElement>(`[data-out="${name}"]`)?.dataset ?? {}
+    const invalid = templates('validation').invalid ?? ''
+    const verdicts = templates('verdict')
+    const against = templates('against')
+    const problems = ['p1', 'p2', 'p3'].map((name) => ({ name, copy: templates(name) }))
+
+    const update = (): void => {
+      const [kvHeads, cachedLayers, bytes, context] = ['kvHeads', 'cachedLayers', 'bytes', 'context'].map((name) => readLabControl(form, name, locale))
+      if (kvHeads == null || cachedLayers == null || bytes == null || context == null) {
+        const blank = Object.fromEntries(problems.map(({ name }) => [name, '']))
+        showLabOutputs(form, { perLayer: '—', perToken: '—', perSequence: '—', against: '—', state: '—', verdict: '', ...blank }, invalid)
+        return
+      }
+      const lab = kvWhatIf(shipped, { ...shipped, kvHeads, cachedLayers, bytes, context }, queryHeads)
+      const perSequence = gib.format(lab.result.gibPerSequence)
+      const statuses = Object.fromEntries(problems.map(({ name, copy }, i) => [name, fillTemplate(copy[lab.problems[i] ?? 'notYet'], { gib: perSequence })]))
+      showLabOutputs(form, {
+        perLayer: `${kib.format(lab.result.kibPerLayer)} KiB`,
+        perToken: `${kib.format(lab.result.kibPerToken)} KiB`,
+        perSequence: `${perSequence} GiB`,
+        against: fillTemplate(against[lab.against.direction], { n: kib.format(lab.against.factor) }),
+        state: `${whole.format(lab.result.stateMib)} MiB`,
+        verdict: lab.changes.map((change) => verdicts[change] ?? '').join(' '),
+        ...statuses,
+      }, '')
+    }
+
+    form.addEventListener('input', update)
+    form.addEventListener('change', update)
+    form.addEventListener('submit', (event) => { event.preventDefault(); update() })
+    update()
+  }
+</script>

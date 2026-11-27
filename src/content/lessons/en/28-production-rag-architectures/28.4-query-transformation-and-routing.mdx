@@ -38,24 +38,24 @@ citations:
     authors: "Akari Asai et al."
     year: 2023
     url: "https://arxiv.org/abs/2310.11511"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Even a sharp hybrid index and cross-encoder reranker fail when the user's raw message is a poor search query. Real users type pronouns tied to three turns ago, pack two contrasting questions into one sentence, or ask conversational questions whose phrasing shares few words with formal documentation. Sending that raw string straight to retrieval poisons every stage downstream, including the context assembly from [lesson 28.2](/lessons/28-production-rag-architectures/28.2-baseline-rag-and-context-assembly/). *Query transformation* and *retrieval routing* insert a fast planning step before search so the retriever sees clean, standalone, route-matched queries.
+Even a sharp hybrid index and cross-encoder reranker fail when the user's raw message is a poor search query. Real users type pronouns tied to three turns ago, pack two contrasting questions into one sentence, or ask conversational questions whose phrasing shares few words with formal documentation. Sending that raw string (piece of text) straight to retrieval poisons every stage downstream, including the context assembly from [lesson 28.2](/lessons/28-production-rag-architectures/28.2-baseline-rag-and-context-assembly/). *Query transformation* and *retrieval routing* insert a fast planning step before search so the retriever sees clean, standalone, route-matched queries.
 
 ## Coreference rewriting and parallel decomposition
 
 Start with two everyday chat failures and trace their exact latency cost.
 
-First, consider a two-turn conversation:
+First, consider a two-turn conversation with *coreference* (a pronoun pointing back to an earlier turn):
 - Turn 1: `"What is our EU refund window?"`
 - Turn 2: `"And does that apply to digital gift cards?"`
 
-If your backend embeds Turn 2 verbatim, `"that"` points to nothing inside the vector store. Search returns general gift-card FAQs and misses the EU refund clause entirely. A lightweight *query rewriter* (usually a small, fast model) reads the recent conversation window and emits one self-contained search string: `"EU refund window policy for digital gift card purchases"`.
+If your backend (the server program handling the request) embeds Turn 2 verbatim, `"that"` points to nothing inside the vector store (the database storing text embeddings). Search returns general gift-card frequently asked questions (FAQs) and misses the EU refund clause entirely. A lightweight *query rewriter* (usually a small, fast model) reads the recent conversation window and emits one self-contained search string: `"EU refund window policy for digital gift card purchases"`.
 
-Second, consider a compound question: `"Compare our 2024 and 2026 SOC 2 log retention rules."` A single search vector averages both years together and often fills all top-6 slots with 2026 documents, leaving 2024 absent. *Query decomposition* splits the prompt into two independent sub-queries—`"SOC 2 log retention rules 2024"` and `"SOC 2 log retention rules 2026"`—runs them concurrently, and merges both candidate lists with Reciprocal Rank Fusion before reranking.
+Second, consider a compound question: `"Compare our 2024 and 2026 SOC 2 log retention rules."` (SOC 2 is a common security compliance audit standard.) A single search vector averages both years together and often fills all top-6 slots with 2026 documents, leaving 2024 absent. *Query decomposition* splits the prompt into two independent sub-queries—`"SOC 2 log retention rules 2024"` and `"SOC 2 log retention rules 2026"`—runs them concurrently (at the same time), and merges both candidate lists with Reciprocal Rank Fusion (combining ranked lists so top hits from either search rise, from [lesson 27.5](/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/)) before reranking.
 
-Check the latency arithmetic carefully. Suppose the fast rewrite/decomposition call takes $180\ \text{ms}$ and each hybrid search takes $35\ \text{ms}$. Running the two searches serially costs:
+Check the latency arithmetic carefully. Suppose the fast rewrite/decomposition call takes $180\ \text{ms}$ and each hybrid search takes $35\ \text{ms}$. Running the two searches serially (one after another) costs:
 
 $$
 T_{\text{serial}} = 180 + 35 + 35 = 250\ \text{ms}.
@@ -67,32 +67,34 @@ $$
 T_{\text{parallel}} = 180 + \max(35, 35) = 215\ \text{ms}.
 $$
 
-Always budget that extra $180\ \text{ms}$ explicitly: skip rewriting on Turn 1 when the user's input is already a short standalone keyword query, and keep the rewriter prompt strict so it never answers the question itself.
+Always budget that extra $180\ \text{ms}$ explicitly: skip rewriting on Turn 1 when the user's input is already a short standalone keyword query, and keep the rewriter prompt strict so it never tries to answer the question itself.
 
 ## HyDE: Hypothetical Document Embeddings
 
-Short user questions and long reference paragraphs live in slightly different regions of embedding space—questions use interrogative phrasing (`"how do I stop memory spikes?"`) while answers use declarative prose (`"configure max_tokens and paged KV blocks"`). Gao et al. (2022) proposed *Hypothetical Document Embeddings* (*HyDE*) to close that asymmetry without training a custom retriever.
+Short user questions and long reference paragraphs live in slightly different regions of *embedding space* (the geometric map where similar texts sit close together)—questions use interrogative phrasing (`"how do I stop memory spikes?"`) while answers use declarative prose (`"configure max_tokens and paged KV blocks"`). Gao et al. (2022) proposed *Hypothetical Document Embeddings* (*HyDE*) to close that asymmetry without training a custom retriever.
 
-Instead of embedding the raw question, HyDE asks a language model to draft a short hypothetical passage that *looks like* an answer, embeds that synthetic passage, and searches the real corpus for documents closest to it. The synthetic text is discarded immediately after search; only real retrieved documents enter the final generation prompt.
+Instead of embedding the raw question, HyDE asks a language model to draft a short synthetic (model-generated) passage that *looks like* an answer, embeds that draft to find nearby real documents, and discards the draft before final generation.
 
-HyDE shines on conceptual, vocabulary-mismatched queries where general technical language overlaps well with the corpus. It backfires sharply when the query contains private identifiers, internal error codes (`ERR-7042`), custom SKU numbers, or brand-new product names absent from pretraining. In those cases, the hypothetical passage fabricates plausible-sounding but false details, shifting the query vector away from the exact matching chunk. A safe production rule is to reserve HyDE for conceptual queries and keep BM25 plus original-query dense search active alongside it so lexical identifiers never get erased.
+HyDE works best on conceptual, vocabulary-mismatched queries where general technical language overlaps well with the corpus. It backfires sharply when the query contains private identifiers, internal error codes (`ERR-7042`), custom SKU (stock-keeping unit) numbers, or brand-new product names absent from pretraining (the model's original broad training). In those cases, the hypothetical passage fabricates plausible-sounding but false details, shifting the query vector away from the exact matching chunk. A safe production rule is to reserve HyDE for conceptual queries and keep BM25 plus original-query dense search active alongside it so lexical identifiers never get erased.
 
 ## Retrieval routing across heterogeneous sources
 
 Not every question belongs in the same vector index—and some questions do not need retrieval at all. A *retrieval router* classifies the incoming request before touching any database and sends it to the right backend:
 
 - **No-retrieval route:** greetings, pure text reformatting, or follow-up questions fully answerable from passages already in the active turn's context skip search completely, saving latency and preventing irrelevant chunks from muddying the reply.
-- **Structured query route:** quantitative aggregations (`"total invoices over USD 10,000 in Q3"`) belong in SQL or a typed API, not a top-6 vector lookup that cannot sum rows across a table.
-- **Scoped semantic route:** policy and documentation questions carry extracted metadata filters (product line, jurisdiction, effective date) straight into filtered hybrid search.
+- **Structured query route:** quantitative aggregations (`"total invoices over USD 10,000 in Q3"`) belong in SQL (a structured database query language) or a typed API (a software interface with strict input and output fields), not a top-6 vector lookup that cannot sum rows across a table.
+- **Scoped semantic route:** policy and documentation questions carry extracted metadata filters (structured tags such as product line, jurisdiction, or effective date) straight into filtered hybrid search.
 - **Multi-source route:** complex requests fan out across both structured APIs and document indexes in parallel, then assemble both outputs into labeled context blocks.
 
 ## Adaptive retrieval: Corrective RAG and Self-RAG
 
-Static pipelines retrieve once and pray. Two influential research patterns make retrieval *adaptive* by inspecting evidence quality before generating the final answer:
+Static pipelines retrieve once and hope for the best. The stepped flow below compares all three query-rescue patterns—parallel rewrite, HyDE, and bounded corrective retrieval—showing where each extra model step sits:
 
-In *Corrective RAG* (Yan et al., 2024), a lightweight relevance evaluator scores the retrieved chunks against the query before generation. When scores are high, the pipeline filters out noisy sentences and proceeds. When scores are low or ambiguous, it rejects the weak set and triggers a corrective loop—rewriting the query, relaxing metadata filters, or falling back to a secondary source—bounded to at most one retry so tail latency cannot spiral.
+<Figure id="28-4-query-transform-pipeline" />
 
-In *Self-RAG* (Asai et al., 2023), the model itself decides on demand whether retrieval is even needed for a segment, critiques whether each retrieved passage is relevant, and checks whether its drafted claim is supported by the text. In production APIs without custom-trained reflection tokens, teams implement the same control flow explicitly as small, bounded state transitions: decide whether to retrieve, score returned chunks, allow at most one corrective rewrite on weak recall, and pass verified evidence—or an explicit empty-evidence signal—to the generator.
+Two research patterns make retrieval *adaptive* by inspecting evidence quality before generating the final answer. In *Corrective RAG* (Yan et al., 2024), a lightweight relevance evaluator routes retrieved chunks into three branches: high-confidence chunks are refined and kept, weak chunks are discarded for fallback search, and ambiguous sets combine both sources; production pipelines typically cap that corrective loop at one retry (frame 3 above) so tail latency (the slowest few percent of requests) cannot spiral.
+
+In *Self-RAG* (Asai et al., 2023), the model itself decides on demand whether retrieval is needed for a segment, critiques whether each retrieved passage is relevant, and checks whether its drafted claim is supported by the text. In production APIs without custom-trained reflection tokens, teams implement the same control flow explicitly as small, bounded state transitions (step-by-step rules deciding what the program does next): decide whether to retrieve, score returned chunks, allow at most one corrective rewrite on weak recall, and pass verified evidence—or an explicit empty-evidence signal—to the generator.
 
 :::warning
 Every extra LLM hop before search adds both latency and failure surface. Cap corrective loops at one retry and log before-and-after retrieval metrics on every query transform; an unmeasured rewriter often breaks exact-match queries while looking clever in demos.

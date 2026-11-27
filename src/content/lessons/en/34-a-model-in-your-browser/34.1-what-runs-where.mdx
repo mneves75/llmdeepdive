@@ -1,0 +1,127 @@
+---
+id: "34.1-what-runs-where"
+track: "34-a-model-in-your-browser"
+order: 1
+title: "What Runs Where in a Browser Tab"
+summary: "How one browser tab divides work across the main thread, a dedicated Web Worker, two embedded inference engines, separately fetched Qwen3-0.6B weights, and local Cache API storage."
+tier: "frontier"
+locale: "en"
+prerequisites: ["7.12-running-models-locally"]
+unlocks: ["34.2-inside-the-gguf-file", "34.3-two-engines-one-tab", "34.6-keeping-it-local-and-stoppable"]
+analogy: "Think of a restaurant with a quiet front counter and a separate kitchen behind a swinging door. The host at the front counter takes your order, hands you a receipt, and stays free to answer questions or cancel a dish, while heavy cooking happens in the kitchen using ingredients delivered to the pantry once rather than carried in the host's pockets. The comparison stops at isolation: a browser kitchen (the Web Worker) cannot reach the dining room's screen directly, so every status update and word must pass through typed messages across that door."
+teachBack:
+  prompt: "Trace the five layers inside Qwen Local Lab (page UI, wrapper Web Worker, embedded engines, model weights, and Cache API), explain why the 15.66 MB HTML bundles the engines while fetching Qwen3-0.6B weights separately, and state where network traffic stops."
+  modelAnswer: "Qwen Local Lab separates responsibilities into five layers inside one browser tab. First, the page UI (`src/app.js`) runs on the main thread, handling input, rendering replies with `textContent` so model text cannot run as HTML, and keeping chat history in tab memory unless the user opts into `localStorage`. Second, a dedicated wrapper Web Worker (`src/inference-worker.js`) runs off the main thread as a `blob:` module so heavy matrix math never freezes typing or the Stop button; it communicates with the page through numbered `postMessage` RPC calls and blocks `http:`/`https:` `fetch()` whenever an operation is not a model load. Third, the 15.66 MB single HTML file embeds the two inference engines (`wllama` 2.3.7 for WebAssembly CPU and `WebLLM` 0.2.89 for WebGPU) plus `hash-wasm` 4.13.0. Fourth, the Qwen3-0.6B weights stay outside the HTML—639.45 MB for CPU Q8_0 GGUF (full-file SHA-256 verified) or about 346.79 MB total for GPU Q4 MLC (where the pinned 6.56 MB `model_lib` WASM is SHA-256 verified, while GPU weight shards, tokenizer, and config are revision-pinned over HTTPS and not re-hashed by our worker)—because encoding hundreds of megabytes into HTML text would bloat the page and overwhelm the parser. Fifth, the browser's Cache API stores downloaded weights locally on the device (with CPU weights re-hashed before reuse). Network traffic crosses the boundary only during an explicit model load; once loaded, prompt processing and token generation run entirely on the device (a saved-HTML offline local-GGUF workflow is implemented in code, though still unverified end to end)."
+quiz:
+  - question: "Why does Qwen Local Lab run model loading and token generation inside a dedicated Web Worker instead of directly on the browser's main thread?"
+    options: ["Heavy math would block page rendering, scrolling, and the Stop button on the main thread", "The browser's main thread cannot allocate typed arrays larger than 64 MB for neural network weights", "WebAssembly and WebGPU APIs are disabled on the main thread by every modern browser engine", "A Web Worker bypasses the browser sandbox and reads local disk files directly"]
+    correctIndex: 0
+    explanation: "The browser's main thread paints the screen and handles clicks and keystrokes. Running model initialization or token generation there freezes the tab and prevents the user from clicking Stop; moving inference into a dedicated Web Worker keeps the interface responsive."
+  - question: "Look at `ensureWorker()` in `examples/qwen-local-lab/src/app.js`. If the inference worker crashes with an unhandled error while an answer is streaming, what does the page do?"
+    options: ["The page silently restarts the worker and resends the user's prompt automatically", "The error is swallowed so the partial reply stays marked as a finished normal turn", "Partial output ends, pending RPCs reject, the worker terminates, and phase becomes error", "Only the failed RPC call rejects while the same worker stays attached for future messages"]
+    correctIndex: 2
+    explanation: "The `worker.onerror` handler finishes the active generation with the error message, rejects every unresolved promise in `state.pending`, calls `destroyWorker()` to terminate and detach the dead worker, shows the error banner, and sets the phase to `error`."
+  - question: "On a cold first visit to the 15.66 MB single-file app, roughly how much total data crosses the network when the user loads CPU mode (639.45 MB GGUF) versus GPU mode (335.37 MB weights plus 11.42 MB auxiliary files)?"
+    options: ["About 639.45 MB for CPU mode and 335.37 MB for GPU mode, since HTML is never transferred", "About 655.11 MB for CPU and 362.45 MB for GPU, including the 15.66 MB HTML", "About 15.66 MB for both modes, because Qwen3-0.6B weights are base64-encoded inside the HTML file", "About 986.24 MB for both modes, as the tab downloads CPU and GPU weights"]
+    correctIndex: 1
+    explanation: "The visitor first downloads the 15.66 MB single-file HTML carrying the UI and embedded runtimes, then fetches only the chosen backend's model assets: 15.66 + 639.45 = 655.11 MB for CPU mode, or 15.66 + 335.37 + 11.42 = 362.45 MB for GPU mode."
+citations:
+  - title: "Using Web Workers"
+    authors: "MDN Web Docs"
+    year: 2026
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Using_web_workers"
+  - title: "CacheStorage (Cache API)"
+    authors: "MDN Web Docs"
+    year: 2026
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/CacheStorage"
+  - title: "wllama — WebAssembly binding for llama.cpp"
+    authors: "Xuan-Son Nguyen (ngxson)"
+    year: 2025
+    url: "https://github.com/ngxson/wllama"
+  - title: "WebLLM Documentation"
+    authors: "MLC AI"
+    year: 2025
+    url: "https://webllm.mlc.ai/docs/"
+updated: "2026-11-26"
+---
+
+Running a language model on your own laptop ([lesson 7.12](/lessons/7-inference-and-efficiency/7.12-running-models-locally/)) puts the course's 27B model on native hardware—removing cloud bills and keeping private drafts off remote servers, yet still asking a user to install a binary or open a terminal. Moving local inference inside one browser tab eliminates every installation step, at the cost of a much smaller model: instead of the 27B native model from lesson 7.12, this browser lab runs **Qwen3-0.6B**, chosen to fit inside a single tab's memory and download budget. A reader clicks a link or opens a saved HTML file, waits once for the model weights, and chats inside the browser's built-in security sandbox with zero inference server and zero API key.
+
+To understand how a browser tab pulls this off without freezing or leaking prompts, this track walks through a complete working reference app in the repository: `examples/qwen-local-lab/`. Every number in this track describes that browser system running **Qwen3-0.6B**—a compact 0.6-billion-parameter model with 28 transformer layers and a 1,024-dimensional hidden state, distinct from the much larger Qwen3.8-27B model studied in earlier tracks. Although Qwen3-0.6B supports a native 32,768-token context, the lab configures a **2,048-token** context window (`CONTEXT_SIZE = 2048`) so the KV cache stays manageable inside browser memory.
+
+## Why one tab splits into five layers
+
+A web page does not behave like a command-line program that owns the whole machine. Every tab starts with a single **main thread**—one sequential lane responsible for drawing pixels, listening for keystrokes, and handling button clicks. If you run matrix multiplications on that main thread, the browser cannot repaint the screen or notice a click on **Stop** until the calculation finishes.
+
+The diagram below maps the five layers that keep Qwen Local Lab responsive and auditable. Two rules hold the boundary together: `src/app.js` renders every generated token via `textContent` rather than `innerHTML` (so model output cannot execute as HTML) and keeps history in tab memory unless the user checks **Remember this conversation** (`localStorage`), while `src/inference-worker.js` isolates heavy compute behind integer-tagged `postMessage` RPC calls and replaces `self.fetch` once loading finishes so any `http:` or `https:` request during generation throws immediately.
+
+Inside the 15.66 MB deliverable (`dist/index.html`, 15,658,390 bytes), that worker drives two embedded runtimes—`wllama` 2.3.7 (a WebAssembly build of `llama.cpp` that spawns its own internal compute worker) and `WebLLM` 0.2.89 (WebGPU)—alongside `hash-wasm` 4.13.0 for checksum verification. The Qwen3-0.6B weights stay outside the HTML, entering only on an explicit **Load model** click or via the browser's File API, backed by the best-effort Cache API (which the browser may evict when disk space runs low).
+
+<Figure id="browser-lab-architecture" />
+
+## Booting embedded code without a server
+
+Because the entire app ships as one self-contained HTML document, there are no separate `.js` or `.wasm` URLs sitting beside it on a server. Instead, the build embeds the five third-party binaries and the worker source as **base64** text blocks (an encoding that represents raw binary bytes using printable ASCII characters) inside hidden elements in the HTML.
+
+Before reading the code below, notice what the two functions accomplish. `embeddedAssets()` decodes each embedded runtime once into a temporary in-memory **Blob URL** (an address starting with `blob:` that points to raw bytes already inside the browser, never over the network). `ensureWorker()` turns the embedded worker script into its own `blob:` URL, launches the dedicated Web Worker, wires up incoming messages, and guarantees clean teardown if the worker ever crashes unexpectedly.
+
+```js
+// file: examples/qwen-local-lab/src/app.js
+function embeddedAssets() {
+  if (state.assets) return state.assets;
+  state.assets = {
+    wllama:blobFromBase64('asset-wllama','text/javascript'),
+    webllm:blobFromBase64('asset-webllm','text/javascript'),
+    singleWasm:blobFromBase64('asset-single-wasm','application/wasm'),
+    multiWasm:blobFromBase64('asset-multi-wasm','application/wasm'),
+    hashwasm:blobFromBase64('asset-hashwasm','text/javascript'),
+  };
+  return state.assets;
+}
+
+function ensureWorker() {
+  if (state.worker) return state.worker;
+  const workerURL = blobFromBase64('asset-worker','text/javascript');
+  const worker = new Worker(workerURL,{type:'module',name:'qwen-local-inference'});
+  worker.onmessage = event => { if (state.worker === worker) onWorkerMessage(event.data); };
+  worker.onerror = event => {
+    if (state.worker !== worker) return;
+    event.preventDefault();
+    const message = event.message || 'The inference worker stopped unexpectedly. Reload the model to retry.';
+    if (state.current) finishGeneration(null, message);
+    for (const pending of state.pending.values()) pending.reject(new Error(message));
+    state.pending.clear();
+    destroyWorker();
+    showError(message);
+    setPhase('error');
+  };
+  state.worker = worker;
+  return worker;
+}
+```
+
+Look closely at the guard `if (state.worker === worker)` inside `onmessage` and `onerror`. A user might click **Unload** or **Stop**, terminating an old worker and creating a new one milliseconds later. Checking object identity ensures a late event from a terminated worker can never corrupt the state of a fresh session.
+
+## Why runtimes live inside HTML while weights stay outside
+
+A natural first question is why the app bundles 15.66 MB of runtime code into `dist/index.html` yet refuses to bundle the model weights in the same file. The answer comes straight from the transfer arithmetic.
+
+The five embedded runtime binaries total 11,659,803 raw bytes (11.66 MB); after base64 expansion and UI markup, `dist/index.html` weighs **15.66 MB** (15,658,390 bytes). By contrast, Qwen3-0.6B's CPU file (`Qwen3-0.6B-Q8_0.gguf`) is **639.45 MB** (639,446,688 bytes), and the GPU WebLLM bundle (`Qwen3-0.6B-q4f16_1-MLC`) is roughly **335.37 MB** of 4-bit weight shards plus **11.42 MB** of tokenizer, configuration, and compiled library files (**346.79 MB** combined).
+
+On a visitor's cold first load, total bytes crossing the network equal the HTML shell plus whichever weight set the visitor selects:
+
+$$
+T_{\text{CPU}} = 15.66 + 639.45 = 655.11\ \text{MB}
+$$
+
+$$
+T_{\text{GPU}} = 15.66 + 335.37 + 11.42 = 362.45\ \text{MB}
+$$
+
+Keeping weights outside the HTML delivers two concrete engineering benefits. First, a visitor running GPU mode never downloads the 639.45 MB CPU file, and a visitor running CPU mode never downloads the 346.79 MB GPU bundle. Second, browsers parse an entire HTML file as text before executing scripts; embedding a 639.45 MB binary in base64 would add ~852.6 MB of text to the 15.66 MB shell—producing roughly an 868 MB HTML file before any code could run, as [lesson 34.2](/lessons/34-a-model-in-your-browser/34.2-inside-the-gguf-file/) calculates in detail.
+
+## Where the network boundary actually sits
+
+"Runs locally in your browser" is easy to misunderstand, so state the boundary precisely. When you open a hosted copy of Qwen Local Lab and click **Load model**, the tab **does** cross the network to fetch pinned model weights from Hugging Face (and, in GPU mode, a pinned compiled library from `raw.githubusercontent.com`). Full-file SHA-256 verification covers the official 639.45 MB CPU GGUF and the pinned 6.56 MB GPU `model_lib` WASM, whereas WebLLM's GPU weight shards, tokenizer, and config are revision-pinned over HTTPS rather than re-hashed by our worker. Once loaded into the worker, generation requires zero HTTP requests—the prompts you type and the tokens the model produces never leave your device.
+
+Two caveats stay true even after loading. First, if you use a hosted URL and later go offline, reopening the page depends on whether your browser retained the HTML and cached weights; browser cache eviction is outside the app's control. Second, a zero-network workflow—exporting the pristine page with **Save HTML**, keeping a compatible Qwen3-0.6B `.gguf` file beside it on disk, and reopening and loading it offline in CPU mode—is implemented in the app, but remains unverified end to end (see [lesson 34.8](/lessons/34-a-model-in-your-browser/34.8-measuring-browser-inference/)). The next three lessons open each layer under the hood: the 639.45 MB GGUF file format, the dual WebAssembly/WebGPU engine selector, and the streaming SHA-256 pipeline that guards every downloaded byte.

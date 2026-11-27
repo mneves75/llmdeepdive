@@ -13,14 +13,30 @@
  * wire. That needs a reader, not a script, and the reader pass is a separate
  * step — see AGENTS.md.
  */
-import { readFileSync } from 'node:fs'
-import { displayPath, finish, readLessons } from './content-utils.mjs'
+import { existsSync, readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { displayPath, finish, readLessons, stringField } from './content-utils.mjs'
 
 const FIGURE_TAG = /<Figure\s+id="([^"]+)"\s*\/>/gu
 const REGISTRY_ID = /^\s*'?([a-z0-9][a-z0-9-]*)'?\s*:\s*\{$/u
+const LEDGER_ROOT = resolve(process.env.LLMDEEPDIVE_LEDGER_ROOT ?? 'docs/plans/0.19-pictures-and-the-browser-lab/ledger')
+const VALID_VERDICTS = new Set(['keep', 'clarify', 'restructure', 'rewrite'])
 
 /** Lab ids, so a figure id can never collide with one. See the note below. */
-const LAB_IDS = ['kv-budget', 'cost-per-token', 'video-tokens']
+const LAB_IDS = [
+  'kv-budget',
+  'kv-whatif',
+  'cost-per-token',
+  'video-tokens',
+  'token-sampling',
+  'rag-eval',
+  'ai-system-budget',
+  'moe-balance',
+  'context-budget',
+  'retry-budget',
+  'trace-check',
+  'cost-per-success',
+]
 
 /**
  * Terms AGENTS.md keeps in English inside Portuguese prose. A pt-BR label equal
@@ -169,7 +185,73 @@ try {
     }
   }
 
-  finish('content:figures', failures, `${registry.size} figure(s) resolve against ${lessonIds.size} lesson id(s)`)
+  // 4. Every lesson in the corpus is triaged in its track ledger with a valid
+  //    verdict (keep, clarify, restructure, rewrite), with no exemption list.
+  const tracks = new Map()
+  for (const lesson of lessons) {
+    if (lesson.locale !== 'en') continue
+    const track = stringField(lesson.frontmatter, 'track', lesson.file)
+    if (!track) {
+      failures.push(`${displayPath(lesson.file)}: missing track frontmatter field`)
+      continue
+    }
+    if (!tracks.has(track)) tracks.set(track, [])
+    tracks.get(track).push(lesson)
+  }
+
+  let triagedCount = 0
+  let withFigureCount = 0
+  for (const [track, trackLessons] of tracks) {
+    const ledgerFile = join(LEDGER_ROOT, `${track}.md`)
+    if (!existsSync(ledgerFile)) {
+      failures.push(`track "${track}": missing triage ledger ${displayPath(ledgerFile)}`)
+      continue
+    }
+    const rows = readFileSync(ledgerFile, 'utf8')
+      .split(/\r?\n/u)
+      .filter((line) => line.trim().startsWith('|'))
+      .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()))
+      .filter((cells) => cells.length >= 5 && !cells[0].startsWith('---') && cells[0].toLowerCase() !== 'lesson')
+
+    for (const lesson of trackLessons) {
+      if ((usedByLesson.get(`en:${lesson.id}`)?.size ?? 0) > 0) withFigureCount += 1
+      const num = lesson.id.match(/^\d+\.\d+/u)?.[0]
+      const row = rows.find((cells) => {
+        const first = cells[0].replace(/[`*]/gu, '').trim()
+        return (
+          first === lesson.id ||
+          first.startsWith(`${lesson.id} `) ||
+          (num ? first === num || first.startsWith(`${num} `) || first.startsWith(`${num}-`) : false)
+        )
+      })
+      if (!row) {
+        failures.push(`${displayPath(ledgerFile)}: missing triage row for lesson "${lesson.id}"`)
+        continue
+      }
+      const verdict = row[1].replace(/[`*]/gu, '').trim().toLowerCase()
+      if (!VALID_VERDICTS.has(verdict)) {
+        failures.push(`${displayPath(ledgerFile)}: lesson "${lesson.id}" has invalid verdict "${row[1]}"`)
+        continue
+      }
+      if (!row[2] || !row[3] || !row[4]) {
+        failures.push(`${displayPath(ledgerFile)}: lesson "${lesson.id}" must record its obstacle, figure decision, and changes`)
+        continue
+      }
+      const hasFigure = (usedByLesson.get(`en:${lesson.id}`)?.size ?? 0) > 0
+      const figureCell = row[3].replace(/[`*]/gu, '').trim().toLowerCase()
+      if (hasFigure && figureCell === 'none') {
+        failures.push(`${displayPath(ledgerFile)}: lesson "${lesson.id}" embeds a figure but its ledger Figure cell says "none"`)
+        continue
+      }
+      triagedCount += 1
+    }
+  }
+
+  finish(
+    'content:figures',
+    failures,
+    `${registry.size} figure(s) resolve against ${lessonIds.size} lesson id(s); ${triagedCount}/${lessonIds.size} triaged in ${tracks.size} track ledger(s) (${withFigureCount} with figures)`,
+  )
 } catch (error) {
   console.error(`content:figures failed: ${error instanceof Error ? error.message : String(error)}`)
   process.exit(1)

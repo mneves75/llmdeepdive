@@ -58,7 +58,7 @@ citations:
     authors: "Hugging Face"
     year: 2026
     url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
-updated: "2026-11-06"
+updated: "2026-11-26"
 ---
 
 ## The bytes, counted
@@ -75,7 +75,7 @@ Across 64 layers that is 5 MiB per token, and a 2,048-token micro-batch sends 10
 
 <Figure id="moe-all-to-all-bytes" />
 
-Two facts make that number matter. Inside a node the copies travel on NVLink, at hundreds of gigabytes per second. Between nodes they cross the cluster fabric, where the handbook's measured all-to-all bus bandwidth ran 77.14 GB/s on two nodes, 39.25 on four and 30.91 on eight. The same bytes cost very different time depending on where the experts sit.
+Two facts make that number matter. Inside a node the copies travel on NVLink (the high-speed direct link between GPUs in one server), at hundreds of gigabytes per second. Between nodes they cross the cluster fabric (the specialized high-speed network linking servers), where the handbook's measured all-to-all bus bandwidth (effective transfer speed across the link) ran 77.14 GB/s on two nodes, 39.25 on four and 30.91 on eight. The same bytes cost very different time depending on where the experts sit.
 
 On one node, the handbook traced a single step of a 7B-A1B MoE and found half of it spent in all-to-all that nothing overlapped — with the router still sending uneven loads. Forcing an even distribution in an otherwise identical run cut that iteration's time by 40%. So before treating the network as the problem, check the load — [lesson 5.14](/lessons/5-pretraining-at-scale/5.14-keeping-experts-busy/) is the cheaper fix.
 
@@ -88,26 +88,26 @@ The difference is not small. In the handbook's comparison, EP16 across two nodes
 The practical sequence is: fit the experts inside a node, add data-parallel replicas as you add nodes, and time both placements at your target node count before committing. A larger EP reduces the weights each GPU holds but widens the group every token may have to reach.
 
 :::warning
-Check the transport before blaming the fabric. NCCL can fall back to TCP sockets while the job asks for the fabric: the handbook reports two runs that set the EFA variables and still logged "Using network Socket", running about 25 times slower than its EP16 run (1.7 against 42.0 TFLOP/s). `NCCL_DEBUG=INFO` prints the chosen transport on a "Using network" line; Libfabric or IB is the fabric, Socket is the fallback.
+Check the transport before blaming the fabric. NCCL (NVIDIA's library for GPU-to-GPU communication) can fall back to TCP sockets (ordinary internet networking, much slower than cluster fabrics) while the job asks for the fabric: the handbook reports two runs that set the EFA (Elastic Fabric Adapter) variables and still logged "Using network Socket", running about 25 times slower than its EP16 run (1.7 against 42.0 TFLOP/s). `NCCL_DEBUG=INFO` (an environment flag that logs communication details) prints the chosen transport on a "Using network" line; Libfabric or IB (InfiniBand) is the fabric, Socket is the fallback.
 :::
 
 ## Overlapping the exchange
 
-The exchange is on the critical path because it sits between two computations: the router reads attention's output, so dispatch cannot start earlier, and the next layer reads the MoE's output, so nothing starts until combine ends. Three ways break that dependency.
+The exchange is on the critical path (the chain of steps that directly sets total wait time) because it sits between two computations: the router reads attention's output, so dispatch cannot start earlier, and the next layer reads the MoE's output, so nothing starts until combine ends. Three ways break that dependency.
 
 - **A parallel block** hands attention and the MoE one shared input, so the exchange can start while attention is still working. Combine has less room: only work remaining in the same layer can cover it.
 - **A shortcut-connected MoE** also hides combine, behind the dense compute that runs beside it. A LLaMA2-style model wired this way trained 1.14 times faster than a standard top-2 MoE on one node of eight GPUs, and a GPT-2-sized one gained 1.12, and LongCat-Flash reports its exposed communication falling from 25.3% to 8.4%.
 - **Interleaving micro-batches** needs no architecture change: one micro-batch's forward runs beside another's backward, so one's all-to-all hides behind the other's compute. The handbook measured up to 35% more throughput on two nodes, at a cost of 5 to 10 GB more reserved memory per rank.
 
 :::caveat
-The overlap and activation recomputation compete for the same memory and, in Megatron, full recomputation must be off for the overlap to run. If the run only fits with full recompute, the overlap is not available without a finer grained memory plan — selective recompute plus offloading the large inputs — which is a different trade than "turn on the flag".
+The overlap and activation recomputation compete for the same memory and, in Megatron, full recomputation must be off for the overlap to run. If the run only fits with full recompute, the overlap is not available without a finer grained memory plan — selective recompute plus offloading (temporarily moving tensors to host CPU memory) the large inputs — which is a different trade than "turn on the flag".
 :::
 
 ## Capping where tokens go
 
 A token's top-k experts can sit anywhere. **Group-limited routing** restricts where it may look first: DeepSeek-V3 scores each node by summing the token's top-2 expert scores there, keeps 4 of 8 nodes, and then picks the top-k among the experts on them, so no token reaches more than four nodes.
 
-What that saves depends entirely on the dispatcher. Megatron's `alltoall` dispatcher sends one copy per selected expert, so capping nodes only moves the copies onto fewer nodes: if a token still reaches experts outside its own node, the same number of copies crosses the fabric. With the DeepEP dispatcher, a token sends one copy per destination node and that node forwards it internally, so capping nodes caps bytes. Recent models mostly dropped the cap — DeepSeek-V4 removed V3's limit — while Ling and Ring keep it.
+What that saves depends entirely on the dispatcher (the routing layer that packs and sends token copies across GPUs). Megatron's `alltoall` dispatcher sends one copy per selected expert, so capping nodes only moves the copies onto fewer nodes: if a token still reaches experts outside its own node, the same number of copies crosses the fabric. With the DeepEP dispatcher, a token sends one copy per destination node and that node forwards it internally, so capping nodes caps bytes. Recent models mostly dropped the cap — DeepSeek-V4 removed V3's limit — while Ling and Ring keep it.
 
 :::insight
 The cap changes which experts a token may choose, so it changes what the model learns, for a small quality cost. That is a different kind of change from a faster kernel: try every recommendation that leaves training unchanged before you spend quality on the network.
@@ -125,9 +125,9 @@ Keep dropless as the default. A capacity factor is for a run short of memory who
 
 ## Precision
 
-The Megatron Core team puts the end-to-end gain for large MoE training between about 10 and 25%.
+Matrix multiplications dominate an MoE layer's compute, and the tensors they save for backward dominate activation memory. **FP8** halves the bytes of both and runs faster on Hopper and Blackwell tensor cores (specialized matrix-multiply units); the Megatron Core team puts the end-to-end gain for large MoE training between about 10 and 25%.
 
-The split matters. The linear layers' forward and both backward multiplications run in FP8; outside them, the norms, attention's core, the embedding and output head, and the router keep higher precision. The router is not negotiable: quantization noise there changes which experts a token reaches. DeepSeek trained 16B and 230B MoEs in FP8 for about a trillion tokens each and stayed within 0.25% relative error of bf16; The handbook reports Ling-1T holding the same bound over 900B tokens with about 15% more MFU.
+The split matters. The linear layers' forward and both backward multiplications run in FP8; outside them, the norms, attention's core, the embedding and output head, and the router keep higher precision. The router is not negotiable: quantization noise (rounding error from fewer bits) there changes which experts a token reaches. DeepSeek trained 16B and 230B MoEs in FP8 for about a trillion tokens each and stayed within 0.25% relative error of bf16; the handbook reports Ling-1T holding the same bound over 900B tokens with about 15% more MFU.
 
 Four bits is the next step, and the first large MoEs have been pretrained there. Nemotron 3 Super ran 25T tokens in NVFP4 for most linear layers, holding bf16 for the final 15% of layers, the attention projections, the embeddings and the MTP blocks. The handbook notes the cost signal: under NVFP4, exactly-zero expert weight-gradient elements grew to 7% of parameters by the end, and switching an ablation back to bf16 restored the count.
 

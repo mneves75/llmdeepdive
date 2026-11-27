@@ -34,69 +34,71 @@ citations:
     authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
     year: 2026
     url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Ao longo da Parte 3, você aprendeu a chamar LLMs de forma confiável, recuperar texto e páginas visuais, medir qualidade com rigor, proteger isolamento de tenants, orçar latência e economia unitária, operar rollouts de LLMOps e construir agentes de voz abaixo de 500 ms. Duas realidades separam quem domina cada peça isolada do engenheiro de IA sênior que sustenta sistemas em produção: **servir modelos ajustados sob medida sem explodir a fatura de GPUs** e **defender uma arquitetura completa sob incidentes reais, crescimento de 100x e cortes agressivos de orçamento**.
+Ao longo da Parte 3, você aprendeu a chamar LLMs de forma confiável, recuperar texto e páginas visuais, medir qualidade com rigor, isolar dados de clientes, orçar latência e economia unitária, operar rollouts de LLMOps e construir agentes de voz abaixo de 500 ms. Dois desafios práticos separam quem domina cada peça isolada do engenheiro de IA sênior que sustenta sistemas vivos: **servir modelos ajustados sob medida sem explodir a fatura de unidades de processamento gráfico (GPUs)** e **defender uma arquitetura completa sob incidentes reais, crescimento de 100x e cortes duros de orçamento**.
 
-Esta aula final cobre serving multi-adaptador com S-LoRA, um manual de depuração para quatro incidentes clássicos e o roteiro de defesa de arquitetura que estende a [aula 25.5](/pt-br/lessons/25-agent-capstone-and-portfolio/25.5-defend-and-publish-deliberately/) para todos os sistemas em produção da Parte 3.
+Esta aula final cobre serving multi-adaptador com S-LoRA, um manual de depuração para quatro incidentes clássicos e a sequência de defesa de arquitetura que estende a [aula 25.5](/pt-br/lessons/25-agent-capstone-and-portfolio/25.5-defend-and-publish-deliberately/) para todos os sistemas em produção da Parte 3.
 
 ## Serving multi-adaptador: a conta de memória do S-LoRA
 
-Na [aula 28.1](/pt-br/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/), você viu quando o fine-tuning vence prompts ou RAG—por exemplo travar um estilo rígido de domínio, uma sintaxe especializada de extração ou um classificador compacto destilado. Assim que o fine-tuning funciona para um cliente corporativo, a área comercial pede na hora um modelo sob medida para 100 tenants.
+Na [aula 28.1](/pt-br/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/), você viu quando o **fine-tuning** (atualizar os pesos do modelo em exemplos especializados) vence prompts ou RAG—por exemplo travar um estilo rígido de domínio, um formato próprio de extração ou um classificador compacto destilado. Assim que o fine-tuning funciona para um cliente, a área comercial pede modelos sob medida para 100 **tenants** (organizações clientes separadas compartilhando a mesma plataforma).
 
-Veja o muro de memória se você fundir os pesos LoRA de cada tenant em uma cópia completa separada de um modelo base de 54 GB (bf16):
+Veja o muro de memória se você fundir os pesos de **Adaptação de Posto Baixo (LoRA)** de cada tenant (um par minúsculo de matrizes extras, $A$ e $B$, que ajustam um modelo grande sem alterar seus pesos principais) em uma cópia completa separada de um modelo base de 54 GB em floats de 16 bits (bf16):
 
 $$
 M_{\text{merged}} = 100 \times 54\ \text{GB} = 5{,}400\ \text{GB}
 $$
 
-Você precisaria de cerca de 68 GPUs dedicadas de 80 GB paradas só para segurar os pesos na VRAM antes de atender um único token.
+Você precisaria de cerca de 68 GPUs dedicadas de 80 GB paradas só para segurar os pesos na **Memória de Vídeo (VRAM, memória rápida no chip da GPU)** antes de atender um único token.
 
-O **S-LoRA** (Sheng et al., 2023) derruba esse muro separando o modelo base congelado compartilhado das pequenas matrizes de adaptador de posto baixo ($A$ e $B$). Suponha que o adaptador LoRA de posto $r = 16$ de cada tenant ocupe **60 MB** em bf16. Mantenha **um** modelo base de 54 GB fixo na memória da GPU e guarde os 100 adaptadores em um pool de **Unified Paging** (a mesma ideia de memória paginada do PagedAttention, estendida para fatias de adaptadores de posto variável ao lado das páginas de cache KV, paginando adaptadores frios da RAM da CPU sob demanda):
+O **S-LoRA** (Sheng et al., 2023) derruba esse muro mantendo **um** modelo base congelado de 54 GB fixo na VRAM da GPU e guardando o adaptador de posto $r = 16$ de cada tenant (um complemento estreito de 16 colunas pesando **60 MB** em bf16) em um pool de **Unified Paging**—armazenando fatias de adaptadores de tamanho variável em páginas fixas de memória ao lado do cache KV de attention, e carregando adaptadores frios sob demanda da RAM principal da CPU do servidor:
 
 $$
 M_{\text{S-LoRA}} = 54\ \text{GB} + 100 \times 0.06\ \text{GB} = 54 + 6 = 60\ \text{GB}
 $$
 
-A memória total de pesos cai **90x**, de 5.400 GB para 60 GB—cabendo com folga em uma única GPU da classe de 80 GB enquanto kernels em lote calculam a projeção base compartilhada uma vez para o lote misto e aplicam em paralelo os deltas $A, B$ do adaptador de cada requisição. Combinado ao roteamento isolado por tenant ([aula 32.5](/pt-br/lessons/32-llmops-and-managed-platforms/32.5-enterprise-tenancy-residency-and-portability/)), um único cluster sustenta centenas de customizações independentes.
+A memória total de pesos cai **90x**, de 5.400 GB para 60 GB—cabendo em uma única GPU da classe de 80 GB. Como mostra a figura abaixo, o passo 1 traça essa diferença de 90x de 1 a 100 tenants, e o passo 2 acompanha como uma GPU processa um lote misto e aplica em paralelo o adaptador isolado de cada tenant ([aula 32.5](/pt-br/lessons/32-llmops-and-managed-platforms/32.5-enterprise-tenancy-residency-and-portability/)).
+
+<Figure id="33-5-slora-multi-adapter" />
 
 ## Manual de depuração de incidentes em produção
 
-Quando um sistema de IA falha às 2h da manhã, chutar desperdiça horas. Ligue cada sintoma a uma triagem disciplinada guiada por traces nos quatro incidentes clássicos de IA:
+Quando um sistema de IA falha às 2h da manhã, chutar desperdiça horas. Ligue cada sintoma a uma triagem guiada por **spans OpenTelemetry (OTel)** (registros padronizados de tempo ligados a um `trace_id` de requisição e à marca de versão `release_id`) nos quatro incidentes clássicos:
 
 | Sintoma do incidente | Primeira telemetria a inspecionar | Causas-raiz mais comuns | Contenção imediata |
 | --- | --- | --- | --- |
-| **Queda súbita de fidelidade em RAG** (HTTP 200) | `release_id` OTel, contagem de chunks recuperados, distribuição do rerank | Desalinhamento embedding/índice, regressão no parser de PDF, bug de pré-filtro ACL | Rollback atômico para o manifesto imutável anterior ([aula 32.3](/pt-br/lessons/32-llmops-and-managed-platforms/32.3-shadow-canary-and-incident-rollbacks/)) |
-| **Loop descontrolado de agente / fatura 3x** | Spans por `trace_id`, taxas de erro em `execute_tool`, `output_tokens` | Ferramenta devolvendo erros ambíguos gerando retries sem fim, falta de teto de passos | Disparar circuit breaker / baixar teto de passos, isolar rota afetada |
-| **Pico de latência p95 na cauda** | Fatiar spans filhos OTel: busca vs guardrail vs TTFT vs decode vs retries 429 | Backoff de rate limit do provedor, filtro sem índice, prompt verboso (`finish_reason=length`) | Cortar retries não críticos, transbordar para modelo/PAYG reserva, limitar `max_output_tokens` |
+| **Queda súbita de fidelidade em RAG** (HTTP 200, código indicando que a requisição web funcionou mesmo com respostas piores) | `release_id` OTel, contagem de chunks recuperados, distribuição do rerank | Desalinhamento embedding/índice, regressão no parser de PDF, bug no filtro de permissão da Lista de Controle de Acesso (ACL) | Rollback atômico para o manifesto imutável anterior (pacote com versão fixa de prompt, modelo e índice, [aula 32.3](/pt-br/lessons/32-llmops-and-managed-platforms/32.3-shadow-canary-and-incident-rollbacks/)) |
+| **Loop descontrolado de agente / fatura 3x** | Spans por `trace_id`, taxas de erro em `execute_tool`, `output_tokens` | Ferramenta devolvendo erros ambíguos gerando retries sem fim, falta de teto de passos ou orçamento | Disparar **circuit breaker** (disjuntor automático de corte), baixar teto de passos, isolar rota afetada |
+| **Pico de latência p95 na cauda** (tempo de resposta ultrapassado pelos 5% de pedidos mais lentos) | Fatiar spans filhos OTel: busca vs guardrail vs TTFT vs decode vs retries HTTP 429 ("muitas requisições") | Backoff de rate limit do provedor, filtro sem índice, prompt verboso (`finish_reason=length`, indicando que a resposta bateu no limite de tokens) | Cortar retries não críticos, transbordar para modelo reserva ou pagamento por uso (PAYG), limitar `max_output_tokens` (teto fixo de tamanho da resposta) |
 | **Regressão em adaptador ajustado** | Delta de eval offline vs ao vivo por `adapter_id`, falhas de esquema | Esquecimento catastrófico em casos de borda, base atualizada sob adaptador antigo | Fixar adaptador à revisão exata da base; voltar ao adaptador anterior ou manifesto base+prompt |
 
-Todo incidente encerrado termina com um passo obrigatório do guia de avaliações da Anthropic: **converter o trace real que falhou (sem PII) em um caso de teste determinístico permanente** na sua suíte offline de CI para que aquele defeito exato nunca volte a subir.
+Todo incidente encerrado termina com um passo obrigatório do guia de avaliações da Anthropic: **converter o trace real que falhou (sem Informações Pessoalmente Identificáveis, ou PII) em um caso de teste determinístico permanente** na sua suíte offline de integração contínua (CI) para que aquele defeito exato nunca volte a subir.
 
 ## Quadro branco estruturado de arquitetura
 
-Seja diante de um comitê de engenharia sênior ou defendendo um projeto de portfólio, arquitetos claros seguem a mesma sequência de cinco passos em ordem—nunca começando pelo nome de um framework:
+Seja diante de um comitê de engenharia sênior ou defendendo um projeto de portfólio, arquitetos claros seguem cinco passos em ordem—nunca abrindo pelo nome de um framework:
 
-1. **Restrições e SLAs primeiro**: declare volume de tráfego (requisições por dia/mês, razão pico/média), orçamento duro de latência (por exemplo < 2 s em RAG textual, < 500 ms em voz pela [aula 33.4](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.4-realtime-voice-agents-and-barge-in/)), piso de acurácia e teto de custo unitário.
-2. **Fronteira de dados, privacidade e residência**: aponte o que é sensível (PII, ACLs multi-tenant, residência regional), onde roda a redação e como o isolamento envolve índices, caches e adaptadores.
-3. **Modalidade central e pipeline de recuperação**: justifique por que RAG híbrido textual, RAG visual de documentos ([aula 33.1](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.1-visual-document-rag-and-cross-modal-search/)), filas assíncronas de difusão/flow matching ([aula 33.2](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.2-diffusion-and-flow-matching-generation/)) ou speech-to-speech em streaming cabem na carga—comparando explicitamente contra o baseline mais simples.
-4. **Avaliação, observabilidade e gates de rollout**: especifique taxonomia de erros, métricas de busca e geração, spans OpenTelemetry `gen_ai.*` presos a manifestos acoplados, janelas shadow/canary e gatilhos automáticos de rollback.
+1. **Restrições e Acordos de Nível de Serviço (SLAs) primeiro**: declare volume de tráfego (requisições por dia e mês, razão pico/média), orçamento duro de latência (por exemplo < 2 s em RAG textual, < 500 ms em voz pela [aula 33.4](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.4-realtime-voice-agents-and-barge-in/)), piso de acurácia e teto de custo unitário.
+2. **Fronteira de dados, privacidade e residência**: aponte o que é sensível (PII, ACLs multi-tenant, residência regional de dados), onde roda o tarjamento e como o isolamento envolve índices, caches e adaptadores.
+3. **Modalidade central e pipeline de recuperação**: justifique por que RAG híbrido textual, RAG visual de documentos ([aula 33.1](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.1-visual-document-rag-and-cross-modal-search/)), filas assíncronas de difusão ou flow matching ([aula 33.2](/pt-br/lessons/33-multimodal-voice-and-system-defense/33.2-diffusion-and-flow-matching-generation/)) ou speech-to-speech em streaming cabem na carga—comparando explicitamente contra o baseline mais simples.
+4. **Avaliação, observabilidade e gates de rollout**: especifique taxonomia de erros, métricas de busca e geração, spans OpenTelemetry `gen_ai.*` presos a manifestos acoplados, **janelas shadow/canary** (testar em silêncio em tráfego copiado ou em uma fatia pequena ao vivo antes da liberação total) e gatilhos automáticos de rollback.
 5. **Modos de falha e economia unitária**: apresente a aritmética da fatura mensal ([aula 31.5](/pt-br/lessons/31-ai-system-design-and-caching/31.5-production-system-design-case-studies/) e trilha 32) e nomeie as três principais formas pelas quais o sistema degrada com segurança se um provedor ou banco cair.
 
 ## Defendendo choques de escala 100x e corte de 50% no custo
 
-Revisões sênior sempre terminam com dois choques deliberados. Prepare aritmética concreta em vez de frases vagas:
+Revisões sênior terminam com dois choques deliberados. Responda com aritmética concreta em vez de frases vagas:
 
-- **Choque 1 — "O tráfego cresce 100x no próximo trimestre"**: diga *o que quebra primeiro* com números. Rate limits da API direta (RPM/TPM) saturam primeiro, exigindo reservas de vazão provisionada com transbordo multirregional ou multiproveedor. Em seguida, a RAM de um nó único HNSW bate no teto, pedindo quantização escalar/binária e sharding particionado por tenant. Ao mesmo tempo, o ponto de equilíbrio vira: em 100x de volume, capacidade provisionada de alta utilização ou clusters self-hosted com S-LoRA costumam bater o PAYG em 40% a 60%.
-- **Choque 2 — "Corte 50% do custo de inferência este mês"**: priorize alavancas sem arrependimento em ordem estrita—(1) rotear 60% a 75% dos pedidos rotineiros para um modelo menor e mais barato em cascata, (2) maximizar cache de prefixo e cache exato isolado por tenant, (3) enxugar top-k de contexto e limitar `max_output_tokens` em rotas verbosas e (4) destilar um adaptador LoRA pequeno para extração estruturada de alto volume. Igualmente importante, diga **o que você se recusa a cortar**: pré-filtros ACL de tenant, validação restrita de esquema e o gate de avaliação reservado provando que a fidelidade não colapsou em silêncio.
+- **Choque 1 — "O tráfego cresce 100x no próximo trimestre"**: diga *o que quebra primeiro* com números. Rate limits da API direta—requisições por minuto (RPM) e tokens por minuto (TPM)—saturam primeiro, exigindo capacidade provisionada reservada com transbordo multirregional ou multiproveedor. Em seguida, a RAM de um nó único de índice vetorial **Hierarchical Navigable Small World (HNSW)** bate no teto, pedindo quantização escalar ou binária e **sharding** por tenant (dividir um índice grande entre várias máquinas). Em 100x de volume, capacidade provisionada de alta utilização ou clusters self-hosted com S-LoRA costumam bater o PAYG em 40% a 60%.
+- **Choque 2 — "Corte 50% do custo de inferência este mês"**: priorize alavancas seguras em ordem estrita—(1) rotear 60% a 75% dos pedidos rotineiros para um modelo menor e mais barato em **cascata** (chamando o modelo grande só nos casos difíceis), (2) maximizar cache de prefixo e cache exato isolado por tenant, (3) enxugar `top-k` de contexto e limitar `max_output_tokens` em rotas verbosas e (4) destilar um adaptador LoRA pequeno para extração estruturada de alto volume. Igualmente importante, diga **o que você se recusa a cortar**: pré-filtros ACL de tenant, validação restrita de esquema e o gate de avaliação reservado provando que a fidelidade não caiu em silêncio.
 
 :::warning
-Nunca responda a um desafio de corte de 50% removendo guardrails, desligando chaves de tenant no cache ou apagando avaliações offline. Essas "economias" escondem passivos catastróficos de segurança ou conformidade atrás de uma fatura menor de tokens.
+Nunca responda a um desafio de corte de 50% removendo guardrails, desligando chaves de tenant no cache ou apagando avaliações offline. Essas "economias" escondem passivos sérios de segurança ou conformidade atrás de uma fatura menor de tokens.
 :::
 
 :::caveat
-Toda decisão de arquitetura tem prazo de validade. Preços de modelos de fronteira, janelas de contexto multimodais e recursos de plataformas gerenciadas continuarão mudando depois de 2026. A habilidade duradoura que você construiu ao longo de todas as 34 trilhas não é decorar o catálogo de fornecedores de hoje—é derivar orçamentos de latência, tetos de memória, métricas de recuperação, janelas estatísticas de rollout e economia unitária a partir de primeiros princípios sempre que a próxima geração de modelos chegar.
+Toda decisão de arquitetura tem prazo de validade. Preços de modelos de fronteira, janelas de contexto multimodais e ofertas de plataformas gerenciadas continuarão mudando depois de 2026. A habilidade duradoura que você construiu ao longo de todas as 34 trilhas não é decorar o catálogo de planos de fornecedores (SKUs) de hoje—é derivar orçamentos de latência, tetos de memória, métricas de recuperação, janelas estatísticas de rollout e economia unitária a partir de primeiros princípios sempre que a próxima geração de modelos chegar.
 :::
 
 Com a aula 33.5 concluída, você encerrou a Parte 3—Engenharia de IA em Produção—e o currículo completo de 34 trilhas do `llmdeepdive.com`, de um único parâmetro e uma fusão BPE até internos de transformers, agentes autônomos e sistemas multimodais de IA em produção.

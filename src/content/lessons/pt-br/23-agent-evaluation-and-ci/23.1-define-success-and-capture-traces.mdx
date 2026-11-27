@@ -34,10 +34,10 @@ citations:
     authors: "Shunyu Yao, Noah Shinn, Pedram Razavi and Karthik Narasimhan"
     year: 2024
     url: "https://arxiv.org/abs/2406.12045"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
-O assistente de compras lê a mensagem benigna do fornecedor sobre o PO-1001 e responde: "Draft created for PO-1001: USD 500.00." Deu certo? Um teste que procura "draft created" na resposta diz que sim. O back office diz que não: ele não guarda rascunho nenhum, porque o modelo escreveu a frase sem nunca chamar `create_invoice_draft`. Esta aula fixa a definição de sucesso antes que o resto da trilha se apoie nela, e depois registra cada execução para que uma falha como esta possa ser lida mais tarde.
+O assistente de compras lê a mensagem benigna do fornecedor sobre o PO-1001 e responde: "Draft created for PO-1001: USD 500.00." Deu certo? Um teste que procura "draft created" na resposta diz que sim. O back office (o sistema interno da empresa que registra pedidos, rascunhos e e-mails) diz que não: ele não guarda rascunho nenhum, porque o modelo escreveu a frase sem nunca chamar `create_invoice_draft`. Esta aula fixa a definição de sucesso antes que o resto da trilha se apoie nela, e depois registra cada execução para que uma falha como esta possa ser lida mais tarde.
 
 ## O que significa "a execução deu certo"?
 
@@ -45,13 +45,13 @@ Uma *avaliação* (*eval*) roda o sistema numa entrada fixa e verifica o resulta
 
 O mesmo guia separa a transcrição do *resultado* (*outcome*), "the final state in the environment at the end of the trial", o estado final do ambiente ao fim da tentativa. O exemplo é a reserva de um voo: o agente dizer que reservou não conta, e o resultado é se existe uma reserva no banco de dados. O τ-bench (Yao et al., 2024) julga do mesmo jeito: compara o estado do banco de dados ao fim de uma conversa com um estado-alvo anotado.
 
-Para o assistente de compras, o ambiente é o back office falso da [aula 16.2](/pt-br/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/). Os efeitos dele vêm em tipos: rascunhos, aprovações, e-mails enviados, gravações de registro. Um tipo a mais não tem linha em tabela nenhuma. Uma chamada que cita o pedido de compra de outro tenant (outro cliente do mesmo sistema) é uma *exposição de dados* mesmo sem mudar nada, então `observe` lista essas chamadas como `foreign_reads`.
+Para o assistente de compras, o ambiente é o back office falso da [aula 16.2](/pt-br/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/). Os efeitos dele vêm em tipos: rascunhos, aprovações, e-mails enviados, gravações de registro. Um tipo a mais não tem linha em tabela nenhuma. Uma chamada que cita o pedido de compra de outro *tenant* (outro cliente que compartilha o mesmo sistema) é uma *exposição de dados* mesmo sem mudar nada, então `observe` lista essas chamadas como `foreign_reads`.
 
 ## Efeitos exigidos e efeitos permitidos
 
 Um caso descreve o resultado com duas listas. Os *efeitos exigidos* são um limite inferior: o que precisa existir quando a execução termina. Os *efeitos permitidos* são um limite superior: tudo o que pode existir. O caso `ord-001` exige exatamente um rascunho, para o PO-1001, Supplier Alpha, USD 500,00, e não permite mais nada. Um caso construído sobre um ataque, que você vai conhecer na [aula 23.3](/pt-br/lessons/23-agent-evaluation-and-ci/23.3-build-a-100-case-corpus/), não exige nada e permite o rascunho honesto: recusar tudo e criar o rascunho honesto são dois finais seguros.
 
-O avaliador compara multiconjuntos (*bags*), listas em que a ordem não importa mas as duplicatas contam:
+A função `grade_effects` compara os efeitos observados com as listas de efeitos exigidos e permitidos usando multiconjuntos (*bags*), coleções em que a ordem não importa mas as duplicatas contam. Para cada tipo de efeito, ela relata o que era exigido e faltou e o que foi observado além do permitido, devolvendo uma lista vazia só quando a execução passa:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/evals/outcome.py
@@ -74,7 +74,7 @@ def grade_effects(observed: Mapping[str, Sequence], required: Mapping[str, Seque
     return problems
 ```
 
-`_bag` transforma cada efeito em JSON canônico (chaves ordenadas) e o conta com o `Counter` do Python, então dois rascunhos iguais são um efeito contado duas vezes. Três execuções do `ord-001` mostram os três vereditos:
+A auxiliar `_bag` transforma cada efeito em JSON canônico (um formato padrão de texto para registros estruturados, com os nomes dos campos em ordem alfabética para que registros idênticos gerem exatamente o mesmo texto) e conta cada um com o `Counter` do Python (uma tabela que contabiliza quantas vezes cada item aparece), então dois rascunhos iguais contam como um efeito ocorrido duas vezes. Três execuções do `ord-001` mostram os três vereditos:
 
 | Execução | Back office depois | `grade_effects` |
 |---|---|---|
@@ -92,18 +92,20 @@ A resposta não é um argumento de `grade_effects`. Isso é uma decisão de proj
 
 Um resultado diz *que* uma execução falhou. Um trace diz *onde*. `trial_trace` transforma uma tentativa numa lista dos registros `ExecutionEvent` do projeto:
 
-- **Um id por tentativa.** `run_id` dá nome ao caso e à tentativa, como `ord-001.t1`, então um evento achado num painel leva de volta ao caso e à tentativa exatos.
+- **Um id por tentativa.** `run_id` dá nome ao caso e à tentativa, como `ord-001.t1`, então um evento achado num painel de monitoramento leva de volta ao caso e à tentativa exatos.
 - **Um número de sequência e um pai causal.** `seq` conta os eventos a partir de 0. `parent` guarda o `seq` do evento que causou este: cada `tool.call` aponta para a decisão `policy.allowed` que o deixou rodar.
 - **Argumentos e resultados das ferramentas.** Os argumentos são o que o modelo pediu; o resultado é o que a ferramenta devolveu. Chamadas recusadas ficam no trace como `policy.denied`, com o motivo do gate.
 - **A resposta, por último.** Ela é registrada para que uma pessoa possa lê-la, nunca para que um avaliador a pontue.
 
-Uma tentativa em que o modelo consulta o PO-1001, pede para aprová-lo e depois cria o rascunho produz oito eventos: `run.started`, `policy.allowed`, `tool.call`, `policy.denied`, `policy.allowed`, `tool.call`, `run.finished`, `run.reply`. Ler a recusa no lugar em que aconteceu, entre as duas chamadas, é o que torna um trace útil para depurar.
+Avance passo a passo por uma tentativa em que o modelo consulta o PO-1001, pede para aprová-lo e é recusado, e depois cria o rascunho:
+
+<Figure id="t23-trial-trace-chain" />
 
 ## Por que remover segredos antes de o evento existir?
 
 Traces são copiados para relatórios de bug, painéis e, nesta trilha, conjuntos de avaliação. Um segredo escrito uma vez num trace é um segredo publicado para todo mundo que os lê. Por isso `trial_trace` compara cada string com os segredos conhecidos da execução enquanto monta cada evento. Ele reaproveita o `scrub` da [aula 18.3](/pt-br/lessons/18-computer-use-and-gui-automation/18.3-login-and-session-state/), que percorre strings, listas e dicionários.
 
-O exercício planta o vazamento realista: uma ferramenta do back office cuja mensagem de erro repete a credencial usada na chamada, `401: key bo-key-test-0001 expired`. Ninguém marcou esse campo como secreto. O trace registra `401: key [secret] expired`, e o teste procura a chave crua no trace serializado. Remover strings conhecidas tem um limite: não remove um segredo que o runtime nunca informou, então a lista de segredos vem do controlador que os guarda, não do modelo.
+O exercício planta o vazamento realista: uma ferramenta do back office cuja mensagem de erro repete a credencial usada na chamada, `401: key bo-key-test-0001 expired` (`401` é o código web para "não autorizado"). Ninguém marcou esse campo como secreto. O trace registra `401: key [secret] expired`, e o teste procura a chave crua no trace serializado (os eventos convertidos em texto simples para gravação). Remover strings conhecidas tem um limite: não remove um segredo que o runtime (o programa que executa o agente) nunca informou, então a lista de segredos vem do controlador (o programa externo que conduz o laço e guarda as credenciais), não do modelo.
 
 :::caveat
 Um trace com os segredos removidos continua sensível. Ele guarda texto de fornecedores, valores de compra e, num sistema real, dados pessoais. Quem pode ler traces de avaliação é uma decisão de controle de acesso, e a remoção de segredos é um controle dentro dela, não um substituto.
@@ -111,6 +113,6 @@ Um trace com os segredos removidos continua sensível. Ele guarda texto de forne
 
 ## Rode o exercício
 
-O módulo é `src/agentlab/evals/outcome.py`; os testes ficam em `tests/test_evals_outcome.py`. De dentro de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_evals_outcome`. A saída termina com `Ran 8 tests` e `OK`. Os testes incluem o avaliador ingênuo de transcrição como contraste: na execução que só responde, ele diz sucesso, e `grade_effects` diz `drafts: missing 1 required`. Um controle positivo, a execução honesta, confere que o avaliador também sabe dizer sim. Esses resultados são *fixture-tested*, com um modelo roteirizado; eles provam a lógica de avaliação, não como um modelo real se comporta.
+O módulo é `src/agentlab/evals/outcome.py`; os testes ficam em `tests/test_evals_outcome.py`. De dentro de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest tests.test_evals_outcome`. A saída termina com `Ran 8 tests` e `OK`. Os testes incluem o avaliador ingênuo de transcrição como contraste: na execução que só responde, ele diz sucesso, e `grade_effects` diz `drafts: missing 1 required`. Um controle positivo, a execução honesta, confere que o avaliador também sabe dizer sim. Esses resultados são *fixture-tested*, com um modelo roteirizado (um substituto pré-escrito que devolve respostas fixas em vez de chamar um modelo real); eles provam a lógica de avaliação, não como um modelo real se comporta.
 
 Para ver a verificação pegar a falha que abriu esta aula, troque `missing = need - got` por `missing = Counter()` em `grade_effects`. O `test_a_success_message_with_no_draft_fails` fica vermelho: a execução mentirosa agora passa, que é o defeito que um avaliador de transcrição tem por construção. Restaure a linha antes de seguir. A próxima aula mantém a verificação de resultado e acrescenta uma para a ordem dos passos, porque uma fatura pode estar certa e mesmo assim ter sido enviada antes de alguém aprová-la. Quando um passo falha, a [aula 24.1](/pt-br/lessons/24-agent-resilience-and-fallbacks/24.1-classify-failures-before-retrying/) lê o mesmo trace para decidir se tentar de novo é seguro.

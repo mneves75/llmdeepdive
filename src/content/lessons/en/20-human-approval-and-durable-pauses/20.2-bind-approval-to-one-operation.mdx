@@ -34,7 +34,7 @@ citations:
     authors: "Model Context Protocol"
     year: 2026
     url: "https://modelcontextprotocol.io/specification/2026-07-28/server/tools"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 At 09:00 the approver opens the request from [lesson 20.1](/lessons/20-human-approval-and-durable-pauses/20.1-decide-when-approval-is-needed/), reads `Submit INV-0042 version 1 to Supplier Gamma for 10000.00 USD`, and clicks Approve. At 09:05 the assistant reads the injected supplier message from [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) and changes the payee to Supplier Omega. It still holds an approval. What does that approval cover?
@@ -43,23 +43,23 @@ If the answer is "invoice INV-0042", the attacker has won: the approval follows 
 
 ## What exactly does a person approve?
 
-List what the approver saw: invoice id, version, payee, amount and currency, plus the tenant the invoice belongs to. Each of those fields is part of the decision, so each must be part of the binding. Five more facts complete it:
+List what the approver saw: invoice id, version, payee, amount and currency, plus the tenant (company account) the invoice belongs to. Each of those fields is part of the decision, so each must be part of the binding. Five more facts complete it:
 
-- an *operation id*, naming the effect the approval allows (here `run-1:submit_invoice`, built the way [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) builds idempotency keys);
-- the user id of the *requester*, the trusted principal on whose behalf the run asked;
+- an *operation id*, naming the effect the approval allows (here `run-1:submit_invoice`, built the way [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) builds idempotency keys, unique labels that stop retries from repeating work);
+- the user id of the *requester*, the trusted principal (verified user identity record) on whose behalf the run asked;
 - an *expiry*, a moment after which the approval is void;
 - the *approver*, recorded when the decision arrives;
 - whether the approval was already *used*.
 
-The shared record `ApprovalRequest` in `agentlab/domain.py` holds the first group: the operation id, the draft, a content hash, `requested_by` and `expires_at`. Its `expires_at` is a timezone-aware datetime, so comparing it with "now" compares two instants, not two wall clocks in different zones. The approver and the used status are deliberately absent. Both arrive later and change over time, so they live in the store of [lesson 20.3](/lessons/20-human-approval-and-durable-pauses/20.3-durable-waits-and-callbacks/).
+The shared record `ApprovalRequest` in `agentlab/domain.py` holds the first group: the operation id, the draft, a content hash, `requested_by` and `expires_at`. Its `expires_at` is a timestamp that carries its time zone (`datetime`), so comparing it with "now" compares two real instants rather than two wall clocks in different zones. The approver and the used status are deliberately absent. Both arrive later and change over time, so they live in the approval store (the database that tracks each request's live state) of [lesson 20.3](/lessons/20-human-approval-and-durable-pauses/20.3-durable-waits-and-callbacks/).
 
 ## Why a hash rather than the invoice id?
 
-A *hash* such as SHA-256 maps any input to a 64-character digest that changes completely when one byte of the input changes; [lesson 15.3](/lessons/15-tool-contracts-and-mcp/15.3-tools-resources-prompts-and-discovery/) used one to pin tool definitions. Hashing the draft turns "is this still the document the person approved?" into a comparison of two short strings.
+A *hash* such as SHA-256 maps any input to a 64-character digest (fingerprint) that changes completely when even one byte (a single unit of stored data) of the input changes; [lesson 15.3](/lessons/15-tool-contracts-and-mcp/15.3-tools-resources-prompts-and-discovery/) used one to pin tool definitions. Hashing the draft turns "is this still the document the person approved?" into a comparison of two short strings.
 
 Why not compare invoice id and version? Because labels can stay the same while content changes. A bug, or the injected message, could edit the payee without bumping the version. The hash notices anyway. The version is still inside the hash, for the opposite case: if a corrected draft happens to return to the old amount, its version differs, so an old approval cannot cover it by coincidence.
 
-A hash is only useful if equal drafts always produce equal bytes. JSON allows the same object in many spellings: keys in any order, spaces or none. So the exercise first writes the draft in one *canonical* form, sorted keys and no spaces, and hashes that:
+A hash is only useful if equal drafts always produce equal bytes. JSON (JavaScript Object Notation, a plain-text format for structured data written as key–value pairs) allows the same object in many spellings: keys in any order, spaces or none. The function below puts the draft into one *canonical* form — sorted keys and no extra spaces — and returns its SHA-256 hash.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/binding.py
@@ -69,11 +69,11 @@ def content_sha256(draft: InvoiceDraft) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 ```
 
-`model_dump(mode="json")` writes the `Decimal` amount as a string, `"10000.00"`, so no float rounding enters the hash. This canonical form is the project's own convention. Two systems written in different languages would need a form both implement identically, which is a contract to agree on, not something sorted keys guarantee on their own.
+`model_dump(mode="json")` converts the draft's fields into JSON-ready values and writes the `Decimal` amount as text (`"10000.00"`), so no approximate floating-point rounding enters the hash. This canonical form is the project's own convention. Two systems written in different languages would need a form both implement identically, which is a contract to agree on, not something sorted keys guarantee on their own.
 
 ## Who may approve?
 
-The approver must be a different person, in the same tenant, holding the approver role:
+The approver must be a different person, in the same tenant, holding the approver role. The function below checks those three conditions in order and returns a `Decision` saying whether the person may approve and why.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/binding.py
@@ -90,11 +90,11 @@ def check_approver(request: ApprovalRequest, approver: Principal) -> Decision:
 
 The first check is *separation of duties*: the person who asks cannot also grant. It runs before the role check on purpose, so a buyer who also holds `invoice_approver` still cannot approve their own invoice.
 
-The model cannot self-approve, for two independent reasons. First, the approver is a `Principal`, a record the runtime builds from an authenticated callback ([lesson 20.4](/lessons/20-human-approval-and-durable-pauses/20.4-slack-and-teams-approval-adapters/) builds it from a Slack click). The run's own principal is the requester, so a decision made under the run's identity fails the first check. Second, there is nowhere for model output to put an approver. `ApprovalRequest` is strict and forbids unknown fields, so JSON carrying `"approved_by": "u-approver"` fails validation; one test checks exactly that. And no agent grant in [lesson 16.4](/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/) contains an approve tool. OWASP's guidance on excessive agency asks for the same shape: actions taken for a user run "in the context of that specific user", with a human approving high-impact ones.
+The model cannot self-approve, for two independent reasons. First, the approver is a `Principal`, a record the runtime (the program running the agent outside the language model) builds from an authenticated callback (a verified message sent back by an external app; [lesson 20.4](/lessons/20-human-approval-and-durable-pauses/20.4-slack-and-teams-approval-adapters/) builds it from a Slack click). The run's own principal is the requester, so a decision made under the run's identity fails the first check. Second, there is nowhere for model output to put an approver. `ApprovalRequest` is strict and forbids unknown fields, so JSON carrying `"approved_by": "u-approver"` fails validation; one test checks exactly that. And no agent grant in [lesson 16.4](/lessons/16-agent-security-and-guardrails/16.4-enforce-least-privilege/) contains an approve tool. Guidance from OWASP (the Open Worldwide Application Security Project) on excessive agency asks for the same shape: actions taken for a user run "in the context of that specific user", with a human approving high-impact ones.
 
 ## Does the approval still cover what is about to run?
 
-Just before the effect, one function answers that:
+Just before the invoice is sent, `covers` checks two things in order: first whether the deadline has passed, and then whether the draft's current hash still matches the hash saved in the request.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/binding.py
@@ -107,14 +107,16 @@ def covers(request: ApprovalRequest, draft: InvoiceDraft, now: datetime) -> Deci
     return Decision(True, "the approved draft, unchanged and in time")
 ```
 
-Back to 09:05. The draft now names Supplier Omega, its canonical JSON differs, its hash differs, and `covers` refuses. The assistant would need a new request, and a person would read the new payee in the preview. Notice that `now` is a parameter. The function never reads the clock, so a test can ask what happens three days later without waiting three days.
+<Figure id="t20-approval-binding-check" />
+
+Notice that `now` is passed in as a parameter rather than read from the computer's clock. Because `covers` never reads the clock itself, a test can ask what happens three days later without waiting three days.
 
 :::caveat
-`covers` cannot know whether the approval was already used. That is state, and a pure function has no memory. The store in lesson 20.3 records each use with a compare-and-swap, and [lesson 20.5](/lessons/20-human-approval-and-durable-pauses/20.5-deny-expire-revoke-and-resume/) shows why `covers` must run again inside the same transaction that queues the effect.
+`covers` cannot know whether the approval was already used. That is live state, and a pure function (one that depends only on its inputs and keeps no memory of past calls) cannot track it. The store in lesson 20.3 records each use with a compare-and-swap (an update that succeeds only if the stored status is still what the caller expected), and [lesson 20.5](/lessons/20-human-approval-and-durable-pauses/20.5-deny-expire-revoke-and-resume/) shows why `covers` must run again inside the same transaction that queues the effect.
 :::
 
 ## Run the exercise
 
 The code is in `src/agentlab/approval/binding.py` and the tests in `tests/test_approval_binding.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_approval_binding.py"`. Expected output ends with `Ran 11 tests` and `OK`.
 
-The tests edit the amount, the payee and the version separately and expect each edit to void the approval. They try the requester as approver (holding the role too), a colleague without the role and an approver from another tenant. The positive controls are the exact draft before expiry and a distinct approver with the role; without them, a function that refused everything would pass. Now break the binding. Change `if content_sha256(draft) != request.content_sha256:` to `if False:` and run again. Three tests go red, among them `test_editing_the_payee_voids_the_approval`: an approval would follow the invoice to Supplier Omega. Restore the line.
+The tests edit the amount, the payee and the version separately and expect each edit to void the approval. They try the requester as approver (holding the role too), a colleague without the role and an approver from another tenant. The positive controls (cases that must succeed, so a function that refused everything would fail) are the exact draft before expiry and a distinct approver with the role. Now break the binding. Change `if content_sha256(draft) != request.content_sha256:` to `if False:` and run again. Three tests go red, among them `test_editing_the_payee_voids_the_approval`: an approval would follow the invoice to Supplier Omega. Restore the line.

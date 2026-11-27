@@ -1,0 +1,162 @@
+---
+id: "34.6-keeping-it-local-and-stoppable"
+track: "34-a-model-in-your-browser"
+order: 6
+title: "Mantendo o Modelo Local e Interrompível"
+summary: "Como o qwen-local-lab isola a inferência num Web Worker, combina parada cooperativa com fallback terminate em 3.000 ms, exibe texto com segurança e guarda acessos de rede."
+tier: "frontier"
+locale: "pt-br"
+prerequisites: ["34.1-what-runs-where", "34.5-chat-tokens-and-context"]
+unlocks: ["34.7-shipping-as-one-file"]
+analogy: "Rodar um modelo local dentro de um Web Worker é como colocar um liquidificador barulhento numa cabine de vidro com um botão de desligar educado e um disjuntor na parede. Você passa pedidos por uma janela para a sala continuar fluida, aperta o botão quando quer parar com calma e baixa o disjuntor três segundos depois se o motor travar no meio. A comparação para na segurança de rede: trancar a porta de fetch da cabine barra vazamentos acidentais do wrapper, enquanto só a política de segurança do prédio (CSP) limita o que o navegador permite sair pelo muro externo."
+teachBack:
+  prompt: "Explique como app.js e inference-worker.js se comunicam por RPC sem congelar a interface, por que Stop combina AbortController com fallback de worker.terminate() em 3.000 ms, por que a saída do modelo usa textContent, o que a guarda de self.fetch e a CSP com hash impõem e não impõem, e como o app se recupera de perda de dispositivo WebGPU."
+  modelAnswer: "A página principal cria um Web Worker de módulo a partir de uma URL blob: e envia pedidos numerados (load, generate, reset, clearCache) via postMessage — além de stop, que envia { type: 'stop', id: state.activeId } reutilizando o ID da requisição ativa — recebendo eventos progress, context, token, done e error para que o cálculo pesado em WASM ou GPU nunca trave cliques ou rolagem. Ao clicar em Stop durante a geração, app.js envia essa mensagem stop para handleStop marcar op.stopped, abortar o AbortController (wllama) e chamar runtime.interruptGenerate() (WebLLM). Como o prefill nativo em WASM pode ficar preso numa chamada C++ sem consultar sinais de aborto, app.js inicia um temporizador de 3.000 ms que chama destroyWorker() -> worker.terminate(), encerrando o worker envoltório e suas threads WASM filhas, preservando o texto parcial e permitindo recarregar o modelo. Toda resposta transmitida vai para element.textContent em vez de innerHTML para que tags HTML ou scripts gerados pelo modelo fiquem inertes. Para localidade, o worker sobrescreve self.fetch lançando NETWORK_DURING_GENERATION para URLs http(s) fora de operation.kind === 'load', enquanto a CSP com hash restringe scripts e connect-src a Hugging Face, *.hf.co e raw.githubusercontent.com; com honestidade, a guarda de fetch cobre apenas chamadas diretas no worker envoltório e não é um firewall de rede do navegador inteiro. Por fim, se o WebGPU sofrer erro GPU_UNAVAILABLE ou perda de dispositivo durante a geração, o catch do worker descarta o runtime e responde com unloaded: true para app.js limpar state.backend e deixar o usuário recarregar ou trocar para CPU sem perder o histórico."
+quiz:
+  - question: "Depois que o modelo de CPU termina de carregar, um bug dentro do worker envoltório chama fetch('https://example.com/log') durante a geração. O que ocorre, e qual limite continua valendo?"
+    options: ["A requisição funciona normalmente até o usuário ligar o modo offline do navegador", "A guarda lança NETWORK_DURING_GENERATION, embora não seja um firewall do navegador", "O worker salva o pedido na Cache API e o reenvia na próxima carga do modelo", "A CSP da página bloqueia a chamada apenas porque example.com usa HTTPS e não blob:"]
+    correctIndex: 1
+    explanation: "O self.fetch sobrescrito verifica se a URL normalizada usa http: ou https: enquanto operation?.kind !== 'load' e lança NETWORK_DURING_GENERATION na hora. Ainda assim, essa guarda só envolve self.fetch dentro do worker envoltório; é uma defesa em profundidade, não um firewall para o navegador inteiro."
+  - question: "Num navegador lento de CPU com 1 thread, o usuário clica em Stop um segundo após iniciar um prefill longo enquanto o WASM nativo está travado no llama.cpp. O que acontece após 3.000 ms?"
+    options: ["O botão Stop fica travado até o prefill acabar e só descarta o primeiro token gerado", "A página recarrega a aba inteira e apaga o histórico visível da conversa da memória", "app.js chama worker.terminate(), encerrando threads WASM filhas e liberando memória", "O worker tenta rodar o mesmo prompt em WebGPU sozinho sem precisar recarregar pesos"]
+    correctIndex: 2
+    explanation: "O cancelamento cooperativo via AbortController só age quando o motor consulta o sinal entre passos. Se o prefill WASM nativo não responder em 3.000 ms, o temporizador de fallback de app.js dispara destroyWorker() (chamando worker.terminate() e matando workers WASM aninhados), preserva o texto parcial e devolve a UI a idle."
+  - question: "Suponha que o Qwen3-0.6B responda `<img src=x onerror=\"alert(1)\">` e, no turno seguinte, a GPU do navegador reinicie (`GPUDevice` perdido). Como o qwen-local-lab trata os dois casos?"
+    options: ["textContent exibe as tags como texto puro, e a perda da GPU descarta o runtime como unloaded", "innerHTML limpa atributos de script sozinho, e a perda da GPU muda para CPU no meio do turno", "A CSP edita o texto do modelo antes da tela, e a perda da GPU reutiliza o contexto quebrado", "Uma regex apaga sinais de menor e maior, e a perda da GPU limpa o histórico visível da conversa"]
+    correctIndex: 0
+    explanation: "app.js escreve toda mensagem e token recebido via .textContent, impedindo o navegador de interpretar texto do modelo como HTML. Em caso de erro GPU_UNAVAILABLE/perda de dispositivo no WebGPU durante a geração, o catch do worker chama disposeRuntime() e devolve unloaded: true, limpando state.backend sem apagar o histórico."
+citations:
+  - title: "Usando Web Workers"
+    authors: "MDN Web Docs"
+    year: 2025
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Using_web_workers"
+  - title: "Content Security Policy (CSP)"
+    authors: "MDN Web Docs"
+    year: 2025
+    url: "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP"
+  - title: "API Web AbortController"
+    authors: "MDN Web Docs"
+    year: 2025
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/AbortController"
+updated: "2026-11-26"
+---
+
+Colocar uma rede neural de 600 milhões de parâmetros dentro de uma aba traz três modos de falha raros em páginas comuns. Multiplicações pesadas de matrizes podem congelar todos os botões e a rolagem, um *prefill* demorado pode ignorar o botão Stop por dez segundos, e um texto inesperado do modelo ou uma requisição extraviada do *runtime* pode quebrar a promessa de que seus prompts ficam no dispositivo.
+
+Partindo da arquitetura de aba da [aula 34.1](/pt-br/lessons/34-a-model-in-your-browser/34.1-what-runs-where/) e do ciclo de turno da [aula 34.5](/pt-br/lessons/34-a-model-in-your-browser/34.5-chat-tokens-and-context/), esta aula examina as quatro proteções em execução de `examples/qwen-local-lab/`: isolamento em Web Worker, cancelamento em dois estágios, renderização segura no DOM e fronteiras de rede e perda de GPU — junto com o que essas guardas não conseguem garantir sozinhas.
+
+<Figure id="worker-guards-and-stop" />
+
+## Um canal de mensagens entre página e worker
+
+Navegadores executam layout, cliques, digitação e desenho de tela numa única **thread principal**. Rodar o cálculo de um transformer diretamente ali travaria a aba inteira até a resposta acabar, impedindo até de clicar em Stop.
+
+Para manter a interface responsiva, `src/app.js` coloca os dois motores de inferência num **Web Worker** dedicado — uma thread JavaScript em segundo plano aberta a partir de uma URL `blob:` embutida (`new Worker(workerURL, { type: 'module' })`). Página e worker não compartilham variáveis; toda troca ocorre por mensagens assíncronas de **Chamada de Procedimento Remoto (RPC)** via `postMessage()`:
+
+- **Página para worker:** `load`, `generate`, `reset` e `clearCache`, cada uma marcada com um `id` numérico recém-alocado e crescente; mais `stop`, que envia `{ type: 'stop', id: state.activeId }` reutilizando o ID da requisição ativa em vez de alocar um novo.
+- **Worker para página:** `progress`, `context`, `token`, `done`, `loaded`, `resetDone`, `cacheCleared` e `error`, repetindo esse `id` para descartar eventos atrasados de turnos cancelados.
+
+Apenas uma operação roda por vez (`beginOperation` recusa comandos concorrentes com `BUSY`), evitando corridas entre limpeza de cache, reinício do estado KV e envio de tokens.
+
+## Parada cooperativa e corte forçado em três segundos
+
+Parar um modelo local de forma limpa é mais difícil que cancelar uma requisição HTTP. Em JavaScript, um **AbortController** oferece um sinal de cancelamento cooperativo: o código que verifica `signal.aborted` periodicamente consegue interromper entre tokens e manter o modelo carregado na memória para a próxima pergunta.
+
+Dentro de `src/inference-worker.js`, `handleStop` dispara esse caminho educado nos dois backends — marcando `op.stopped = true`, abortando o controlador do `wllama` e chamando `runtime.interruptGenerate()` (ou `runtime.unload()` durante a carga) no `WebLLM`.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+function handleStop() {
+  const op = operation;
+  if (!op || !["load", "generate"].includes(op.kind)) return;
+  op.stopped = true;
+  op.controller.abort();
+  if (backend === "webgpu" && runtime) {
+    if (op.kind === "load") void runtime.unload().catch(() => {});
+    else void runtime.interruptGenerate().catch(() => {});
+  }
+}
+```
+
+Durante o *decode* token por token, a parada cooperativa responde quase na hora — na verificação no Apple M5 Pro, interromper no meio parou com limpeza em 48 tokens, preservou a resposta parcial e devolveu a aba a `ready` sem recarregar pesos.
+
+Durante o **prefill do prompt**, porém, um motor WebAssembly lento em uma única thread pode passar vários segundos preso numa única chamada C++ bloqueante antes de devolver controle ao JavaScript para ler o sinal de aborto. Para garantir que o usuário nunca fique preso diante de um botão Stop travado, `src/app.js` combina a parada cooperativa com um temporizador rígido de $3{,}000\ \text{ms}$ ($3\ \text{s}$) que chama `destroyWorker()` (`worker.terminate()`).
+
+```js
+// file: examples/qwen-local-lab/src/app.js
+function stop() {
+  if (state.phase === 'loading') {
+    destroyWorker();
+    $('downloadStatus').textContent = 'Loading cancelled. You can retry when ready.';
+    setPhase('idle','Loading cancelled');
+    return;
+  }
+  if (state.phase !== 'generating') return;
+  setPhase('stopping');
+  state.worker.postMessage({type:'stop',id:state.activeId});
+  // A blocked native prefill may not process an abort promptly. Terminating the
+  // owning worker also terminates its nested WASM workers and frees the model.
+  state.stopTimer = setTimeout(() => {
+    destroyWorker();
+    finishGeneration({text:state.current?.text || '',stopped:true,metrics:{}});
+    $('downloadStatus').textContent = 'Stopped and released the model. Load it again to continue.';
+    setPhase('idle','Stopped · model released');
+  },3000);
+}
+```
+
+Por que encerrar o worker envoltório também para as threads de fundo do `wllama`? Pela especificação HTML, `worker.terminate()` encerra o worker imediatamente e derruba quaisquer **workers aninhados** criados por ele, liberando a memória WebAssembly. O compromisso é explícito: o usuário recupera o controle em até 3 segundos, o texto parcial permanece no histórico (ou, se nenhum token saiu, o prompt volta para a caixa de entrada e fica fora do contexto futuro) e o estado volta para `idle` para recarga quando desejado.
+
+## Mantendo a saída do modelo inerte com textContent
+
+Mesmo um modelo local sem acesso à internet pode produzir caracteres arbitrários, incluindo tags HTML como `<script>` ou `<img onerror="...">` — por acaso, ao responder um pedido de código ou a partir de texto colado no campo de chat. Atribuir o texto do modelo a `innerHTML` mandaria o analisador do **Document Object Model (DOM)** interpretar essas tags como marcação ativa, abrindo uma falha de **Cross-Site Scripting (XSS)**.
+
+`src/app.js` dispensa análise de HTML em todo conteúdo de conversa. Tanto `addMessage()` quanto o tratador de streaming `token` atribuem diretamente `content.textContent = text`. O navegador trata `textContent` apenas como caracteres Unicode literais, então `<script>alert(1)</script>` aparece na tela como texto comum e nunca executa.
+
+## O que a guarda de fetch e a CSP impõem—e o que não impõem
+
+"Os prompts nunca saem do navegador" é uma afirmação de arquitetura, então o `qwen-local-lab` sustenta essa fronteira com duas camadas independentes.
+
+Primeiro, no topo de `src/inference-worker.js`, o worker envoltório substitui `self.fetch` por uma guarda que normaliza toda URL solicitada e rejeita qualquer chamada `http:` ou `https:` sempre que a operação ativa não for `'load'`.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+const nativeFetch = self.fetch.bind(self);
+self.fetch = async (resource, options) => {
+  const value = resource instanceof Request ? resource.url : String(resource);
+  const url = new URL(value, self.location.href);
+  if (['http:', 'https:'].includes(url.protocol) && operation?.kind !== 'load') {
+    throw new AppError('Network access is disabled during local generation. Reload the model if an asset is missing.', 'NETWORK_DURING_GENERATION');
+  }
+  return nativeFetch(resource instanceof Request ? resource : url.href, options);
+};
+```
+
+Segundo, a página vem acompanhada de uma **Content Security Policy (CSP)** rigorosa — uma lista de permissões imposta pelo próprio navegador para scripts, workers e conexões de rede. Como veremos na [aula 34.7](/pt-br/lessons/34-a-model-in-your-browser/34.7-shipping-as-one-file/), `default-src 'none'` bloqueia origens não listadas por padrão, `script-src` aceita apenas o hash SHA-256 exato do módulo inline mais `blob:` e `'wasm-unsafe-eval'`, e `connect-src` libera somente `blob:`, `https://huggingface.co`, `https://*.hf.co` e `https://raw.githubusercontent.com`.
+
+Engenharia honesta também delimita onde essas proteções terminam:
+
+- **A guarda de `self.fetch` não é um firewall de rede para o navegador inteiro.** Ela intercepta chamadas diretas a `fetch()` no worker envoltório. Não inspeciona pacotes do sistema operacional, extensões do navegador nem um worker aninhado que abra transporte próprio — embora aqui os recursos dos workers internos estejam embutidos e a geração não faça chamadas de rede.
+- **Nenhuma captura de pacotes nem teste em modo avião consta em `VERIFICATION.md`.** O que foi verificado são zero requisições HTTP externas registradas pelo inspetor de rede do Chromium durante a geração, além de testes unitários provando que a guarda rejeita chamadas HTTP diretas fora do carregamento.
+- **`connect-src` ainda precisa autorizar os servidores dos pesos.** Como a página baixa pesos em `load`, a CSP do navegador não distingue a fase de carga da fase de geração; essa separação por estado fica a cargo da lógica da aplicação e da guarda no worker.
+
+## Recuperando perda de GPU sem perder a conversa
+
+A GPU de um navegador é um recurso compartilhado do sistema. Suspender o computador, reiniciar o driver gráfico ou abrir outra aba pesada pode disparar uma **perda de dispositivo WebGPU** no meio de um turno, inutilizando a instância carregada do `MLCEngine`.
+
+Quando `onmessage` em `src/inference-worker.js` captura um erro classificado como `GPU_UNAVAILABLE` durante a geração, ele descarta explicitamente o runtime quebrado e anexa `unloaded: true` à resposta de erro.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+      const details = errorDetails(error, op);
+      const shouldDispose = op?.kind === "load" || (op?.kind === "generate" && details.code === "GPU_UNAVAILABLE");
+      if (shouldDispose) {
+        try { await disposeRuntime(); } catch { /* The caller can replace a failed worker. */ }
+      }
+      reply(message.id, "error", { ...details, ...(shouldDispose && op?.kind === "generate" ? { unloaded: true } : {}) });
+    }
+```
+
+Ao receber `data.unloaded`, `src/app.js` limpa `state.backend = null`, preserva todas as mensagens anteriores e eventual texto parcial no histórico e devolve a página de `generating` para `idle`. O usuário vê um aviso claro explicando a perda da GPU e pode recarregar o WebGPU ou mudar para CPU / WebAssembly sem perder a conversa.
+
+Com a fronteira do worker, o fallback de parada e as guardas no lugar, a [aula 34.7](/pt-br/lessons/34-a-model-in-your-browser/34.7-shipping-as-one-file/) mostra como toda a aplicação e os dois motores são verificados e empacotados num único arquivo HTML determinístico.

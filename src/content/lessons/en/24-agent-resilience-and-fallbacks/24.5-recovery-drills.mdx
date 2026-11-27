@@ -34,14 +34,14 @@ citations:
     authors: "Mike Ulrich, Google; O'Reilly Media"
     year: 2017
     url: "https://sre.google/sre-book/addressing-cascading-failures/"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-The purchasing assistant has a classifier, retries, a breaker, a fallback and a budget. None of that code has run against a real failure yet. On Friday the team runs a drill: a batch of four supplier invoices, `PO-1001` to `PO-1004`, meets a model provider outage, a reply lost after a write and a crash in the middle. What should come out? Not "everything or nothing". The batch should produce as much correct work as the faults allow, say exactly which parts are degraded and why, hand the rest to a person, and create no invoice twice.
+The purchasing assistant has a classifier, retries, a breaker, a fallback and a budget. None of that code has run against a real failure yet. On Friday the team runs a drill: a batch (a group of items processed together in one run) of four supplier invoices, `PO-1001` to `PO-1004`, meets a model provider outage, a reply lost after a write and a crash in the middle. What should come out? Not "everything or nothing". The batch should produce as much correct work as the faults allow, say exactly which parts are degraded and why, hand the rest to a person, and create no invoice twice.
 
 ## What a drill is for
 
-The Principles of Chaos Engineering (2019) describe an experiment in four steps. Start by defining "steady state" as "some measurable output of a system that indicates normal behavior". Hypothesize that it continues. "Introduce variables that reflect real world events like servers that crash". Then "try to disprove the hypothesis". The same page warns that experimenting in production "has the potential to cause unnecessary customer pain" and asks the experimenter to keep the fallout "minimized and contained". The course's drill runs only on synthetic data in a test, which is the most contained version there is.
+The Principles of Chaos Engineering (2019) describe an experiment in four steps. Start by defining "steady state" as "some measurable output of a system that indicates normal behavior". Hypothesize that it continues. "Introduce variables that reflect real world events like servers that crash". Then "try to disprove the hypothesis". The same page warns that experimenting in production "has the potential to cause unnecessary customer pain" and asks the experimenter to keep the fallout "minimized and contained". The course's drill runs only on synthetic data (artificial test records shaped like real ones) in a test, which is the most contained version there is.
 
 Google's chapter on cascading failures gives the reason to drill at all. Graceful degradation, doing less or lower-quality work under trouble, "shouldn't trigger very often", and "the code path you never use is the code path that (often) doesn't work". A degraded mode that nobody exercises is a guess about the future.
 
@@ -49,7 +49,7 @@ For this batch, steady state is a property you can count. Every item ends **comp
 
 ## The chaos fixture
 
-The faults live in a file, so the drill is the same every time it runs:
+The faults live in a JSON (JavaScript Object Notation, a plain-text format for structured data) fixture file, so the drill runs identically every time. The excerpt below lists the scripted totals for all four orders, which two hit a downed provider, which one loses its reply after writing, and which commit triggers a simulated crash:
 
 ```json
 // file: examples/agent-engineering/src/agentlab/fixtures/resilience/chaos.json
@@ -59,19 +59,21 @@ The faults live in a file, so the drill is the same every time it runs:
   "crash_after_commit": "PO-1002"
 ```
 
-`ChaosModel` answers with a scheduled extraction, or with `transport: ConnectionRefusedError` for the invoices marked down. `ChaosService` wraps lesson 14.4's `FakeInvoiceService` and loses its reply once, after writing, for `PO-1004`. The crash is a test hook: `run_batch` raises `SimulatedCrash` right after the named item's checkpoint commits. Three of the invoices use the supplier's fixed layout. `PO-1003`'s invoice is a friendly paragraph that no fixed pattern can read.
+`ChaosModel` answers with a scheduled extraction, or with `transport: ConnectionRefusedError` for the invoices marked down. `ChaosService` wraps [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/)'s `FakeInvoiceService` and loses its reply once, after writing, for `PO-1004`. The crash is a test hook (an intentional switch tests use to trigger a fault on cue): `run_batch` raises `SimulatedCrash` right after the named item's checkpoint (its saved progress snapshot on disk) commits. Three of the invoices use the supplier's fixed layout. `PO-1003`'s invoice is a friendly paragraph that no fixed pattern can read.
 
 ## Degraded is a label, not a quiet substitute
 
-Each invoice goes to the model through lesson 24.2's `call_with_retries`, with a breaker that opens after two failures. When the model cannot answer, the batch degrades to [lesson 14.1](/lessons/14-agent-architecture-and-state/14.1-when-a-workflow-needs-an-agent/)'s fixed-layout parser. That parser is an approved substitute of the same scope: it reads the same text, needs no extra permission and refuses any layout it does not know. Whatever produced the total, it must still match the purchase record, or the item is escalated.
+Each invoice goes to the model through [lesson 24.2](/lessons/24-agent-resilience-and-fallbacks/24.2-retries-and-circuit-breakers/)'s `call_with_retries`, with a breaker that opens after two failures. When the model cannot answer, the batch degrades to [lesson 14.1](/lessons/14-agent-architecture-and-state/14.1-when-a-workflow-needs-an-agent/)'s fixed-layout parser (rule-based code that extracts fields from a predictable text template without calling a language model). That parser is an approved substitute of the same scope: it reads the same text, needs no extra permission and refuses any layout it does not know. Whatever produced the total, it must still match the purchase record, or the item is escalated.
 
-The outage run ends this way. `PO-1001` is complete. `PO-1002`'s two failed calls open the breaker, and the parser reads its total, so it is degraded. `PO-1003` never reaches the provider, because the breaker is open, and the parser refuses its layout, so it is escalated with a reason that says both. `PO-1004` is degraded too, although the fixture never marked it down: the breaker was still open. That is the cost of a breaker, and the label makes it visible. The model was asked exactly three times.
+<Figure id="t24-recovery-drill-runs" />
 
-The label is written into the checkpoint, never kept only in memory. The run's `RunState` carries an `EvidenceRef` with the invoice text's SHA-256 and a note: "read by the model", or the degraded note. A report built after a crash still says which totals came from the parser.
+Step 1 of the figure traces all four orders through the outage drill. Notice two consequences: the model is asked only three times (`PO-1001` once, `PO-1002` twice), and `PO-1004` ends `degraded` even though the fixture never marked it down, because the breaker stayed open. That is the cost of a breaker, and the label makes it visible rather than silent.
+
+The label is written into the checkpoint, never kept only in memory. The run's `RunState` carries an `EvidenceRef` with the invoice text's SHA-256 (a cryptographic fingerprint that uniquely identifies the exact text read) and a note: "read by the model", or the degraded note. A report built after a crash still says which totals came from the parser.
 
 ## No duplicate effects
 
-The loop that does this is short, because track 14 already built the hard parts:
+The batch loop below stays short because track 14 already built checkpoints and the outbox (a database queue written in the same transaction as the checkpoint so pending external writes survive a crash). For each checked invoice, it saves the checked state with its evidence, writes the `ready` state alongside a pending invoice-creation effect carrying a deterministic idempotency key, raises `SimulatedCrash` when asked, and only after the loop delivers pending rows, reconciles lost replies, and delivers anything reconciliation found unwritten:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/resilience/drill.py
@@ -86,9 +88,9 @@ The loop that does this is short, because track 14 already built the hard parts:
     deliver_pending(store, service)  # effects reconciliation found were never written
 ```
 
-Each item's draft enters the outbox in the same transaction as its state ([lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/)), with an idempotency key derived from the batch and the order. Delivery happens after the loop. `PO-1004`'s lost reply moves its row to reconciling, and `reconcile` asks accounts payable, finds `AP-0003` and records it, so the service sees three create calls for three invoices.
+Each item's draft enters the outbox in the same all-or-nothing transaction as its state ([lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/)), with an idempotency key derived from the batch and the order. Delivery happens after the loop. `PO-1004`'s lost reply moves its row to reconciling, and `reconcile` asks accounts payable, finds `AP-0003` and records it, so the service sees three create calls for three invoices.
 
-In the crash run, the process dies after `PO-1002` commits. Accounts payable holds nothing yet. The resumed run, with the provider back, finds the checkpoints for `PO-1001` and `PO-1002` and skips them, so the model reads only `PO-1003` and `PO-1004`. The outbox then delivers all four, once each. `PO-1002` is still labelled degraded, because the label came from the checkpoint. Running the finished batch again makes no create call at all. An escalation commits nothing, so a rerun tries that item again, which is what an operator wants after fixing the cause.
+Steps 2 and 3 of the figure trace the crash and resume runs: dying right after `PO-1002` commits leaves zero invoices in accounts payable, and the resumed run loads the two checkpoints, skips them, reads only `PO-1003` and `PO-1004`, delivers all four once each, and keeps `PO-1002` labelled `degraded` from its checkpoint. Running the finished batch again makes no create call at all. An escalation commits nothing, so a rerun tries that item again, which is what an operator wants after fixing the cause.
 
 ## The operator runbook
 
@@ -101,7 +103,7 @@ A runbook is the short procedure an operator follows when a known failure happen
 | Items `queued` | Delivery still pending or reconciling | Rerun after the accounts-payable system is back; reconciliation runs first |
 | Breaker open | The provider's status | Wait for its trial call; never reset the breaker by hand during the outage |
 
-Cancelling is the operator's other tool, and it has a precise meaning here. With `cancelled` set, the batch starts no new item and reports the rest as `cancelled`, but it still delivers what it already committed, because a committed effect is a promise the outbox keeps. Undoing an invoice that was already delivered is not a rollback. It is a new operation with its own approval, as [lesson 20.5](/lessons/20-human-approval-and-durable-pauses/20.5-deny-expire-revoke-and-resume/) argued for a late cancellation. A drill like this one is deterministic, so it can run with every change, alongside the replayed checks of [lesson 23.5](/lessons/23-agent-evaluation-and-ci/23.5-ci-replay-and-live-trials/).
+Cancelling is the operator's other tool, and it has a precise meaning here. With `cancelled` set, the batch starts no new item and reports the rest as `cancelled`, but it still delivers what it already committed, because a committed effect is a promise the outbox keeps. Undoing an invoice that was already delivered is not a rollback. It is a new operation with its own approval, as [lesson 20.5](/lessons/20-human-approval-and-durable-pauses/20.5-deny-expire-revoke-and-resume/) argued for a late cancellation. A drill like this one is deterministic (producing the exact same result every run for the same inputs), so it can run with every change, alongside the replayed checks of [lesson 23.5](/lessons/23-agent-evaluation-and-ci/23.5-ci-replay-and-live-trials/).
 
 ## Run the exercise
 

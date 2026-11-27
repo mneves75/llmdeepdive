@@ -19,7 +19,7 @@ const displayFormula = () => ({
   ],
 })
 
-test('the real markdown pipeline makes display MathML a localised keyboard scroll region', async () => {
+test('the real markdown pipeline makes inline and display MathML a localised keyboard scroll region', async () => {
   const processor = await createMarkdownProcessor({
     remarkPlugins: [remarkMath],
     rehypePlugins: [[rehypeKatex, { output: 'mathml' }], rehypeMathScroll],
@@ -40,7 +40,7 @@ test('the real markdown pipeline makes display MathML a localised keyboard scrol
     /<span class="katex math-scroll" tabindex="0" role="region" aria-label="Mathematical formula, scrollable"><math[^>]+display="block">/u,
   )
   assert.match(portuguese.code, /aria-label="Fórmula matemática, rolável"/u)
-  assert.match(english.code, /Inline <span class="katex"><math/u)
+  assert.match(english.code, /Inline <span class="katex" tabindex="0" role="region" aria-label="Mathematical formula, scrollable"><math/u)
 })
 
 test('the display-math transform is idempotent', () => {

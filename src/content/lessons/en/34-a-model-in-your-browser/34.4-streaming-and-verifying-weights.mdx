@@ -1,0 +1,158 @@
+---
+id: "34.4-streaming-and-verifying-weights"
+track: "34-a-model-in-your-browser"
+order: 4
+title: "Streaming 639 MB Into a Tab Safely"
+summary: "How incremental hash-wasm SHA-256 over a TransformStream verifies 639.45 MB without duplicating memory, why warm caches re-hash, and what each path verifies."
+tier: "frontier"
+locale: "en"
+prerequisites: ["34.2-inside-the-gguf-file", "34.3-two-engines-one-tab"]
+unlocks: ["34.7-shipping-as-one-file", "34.8-measuring-browser-inference"]
+analogy: "Think of inspecting 639 sealed crates arriving off a cargo ship. Instead of renting a second warehouse to pile every crate together just so an inspector can count them all at once, you place one inspector beside the conveyor belt who updates a running ledger as each crate rolls past—and rejects the entire shipment before it enters storage if the final tally disagrees. The comparison stops at re-checking storage: every morning the warehouse opens, the same inspector runs stored crates back across the belt before using them, so quiet shelf damage is caught and replaced."
+teachBack:
+  prompt: "Explain why WebCrypto `crypto.subtle.digest()` is dangerous on a 639.45 MB browser download, how `hashingStream()` with `hash-wasm` avoids duplicating the buffer, why Cache API hits are re-hashed before reuse, and state the exact integrity boundary across official CPU, GPU WebLLM, and local GGUF paths."
+  modelAnswer: "The browser's built-in `crypto.subtle.digest('SHA-256', data)` is one-shot and requires holding the entire 639.45 MB input in one contiguous `ArrayBuffer` in memory before `wllama` even initializes. Instead, Qwen Local Lab embeds `hash-wasm` 4.13.0 and pipes `response.body` through a `TransformStream` (`hashingStream()`). Each incoming chunk is checked against cancellation (`assertActive`) and the 639,446,688-byte ceiling, fed incrementally into `hasher.update(chunk)`, and forwarded to `new Response(body).blob()` so the browser collects the `Blob` outside the JS heap. Only after exact size, `GGUF` magic bytes, and `hasher.digest('hex') === CPU_MODEL_SHA256` all pass is the file written to Cache API. On a warm reload, the worker streams the cached `Blob` back through `hashingStream()` into a sink `WritableStream` before trusting it; if corrupted, it deletes the cache entry and downloads fresh bytes (taking 1.89 s on Apple M5 Pro warm reload versus 40.93 s cold). Finally, the honest integrity boundary has three levels: official CPU GGUF (639.45 MB) and GPU `model_lib` (6.56 MB) are full SHA-256 verified on download and cache hit; WebLLM's GPU weights, tokenizer, and config (~335.37 MB + auxiliary) are pinned to a Hugging Face commit over HTTPS and managed by WebLLM's own loader without worker re-hashing; and local GGUF imports skip SHA-256 to allow other quantizations, receiving only UI, magic-byte, and Qwen3-0.6B identity checks."
+quiz:
+  - question: "Why does `obtainCpuModel()` embed `hash-wasm`'s incremental `createSHA256()` instead of calling the browser's built-in `crypto.subtle.digest('SHA-256', ...)` on the 639.45 MB GGUF download?"
+    options: ["`crypto.subtle.digest()` does not implement SHA-256 inside dedicated Web Workers", "`crypto.subtle.digest()` rejects any file fetched with `credentials: \"omit\"` and `cache: \"no-store\"`", "`hash-wasm` skips hashing tensor blocks and checks only the header", "`crypto.subtle.digest()` is one-shot and would force a second 639 MB buffer in memory"]
+    correctIndex: 3
+    explanation: "Standard WebCrypto `digest()` accepts a single contiguous buffer rather than a stream, so hashing a 639.45 MB `Blob` requires holding the entire 639.45 MB input in one contiguous `ArrayBuffer` in memory. Incremental hashing with `hash-wasm` processes small chunks on the fly."
+  - question: "On a 50 Mbps connection, roughly how long does an idealized transfer ($t = S \\times 8 / B$) take for the 639.45 MB CPU GGUF versus the ~346.79 MB GPU MLC bundle?"
+    options: ["About 12.8 seconds for CPU and 6.9 seconds for GPU, dividing megabytes by megabits directly", "About 102.3 seconds for CPU and 55.5 seconds for GPU, nearly twice as long for Q8_0 CPU", "About 511.6 seconds for CPU and 277.4 seconds for GPU, because base64 adds 33% overhead on the wire", "About 40.9 seconds for CPU and 26.9 seconds for GPU on every connection"]
+    correctIndex: 1
+    explanation: "Converting bytes to bits (multiplying by 8) and dividing by 50,000,000 bits/s gives 639,446,688 * 8 / 50,000,000 = 102.3 s for CPU Q8_0 and 346,790,000 * 8 / 50,000,000 = 55.5 s for GPU Q4 MLC."
+  - question: "Which statement accurately describes the integrity boundary across all three weight paths in Qwen Local Lab?"
+    options: ["Every file—official CPU GGUF, WebLLM GPU weight shards, and local GGUF imports—is SHA-256 verified by the wrapper worker", "Official CPU downloads are SHA-256 verified once on download, then trusted blindly from Cache API on later reloads", "Official CPU GGUF and GPU `model_lib` are SHA-256 verified on load and cache hit; GPU shards are revision-pinned; local GGUFs get magic and identity checks", "Only local GGUF imports are SHA-256 verified, because HTTPS prevents corruption on downloads"]
+    correctIndex: 2
+    explanation: "The wrapper worker hashes the official 639.45 MB CPU GGUF and the 6.56 MB GPU `model_lib` both on download and on Cache API hits. WebLLM's GPU weights, tokenizer, and config are pinned to commit `8c14ce48...` via WebLLM's own loader (not re-hashed by our worker), and local GGUFs get magic-byte and identity checks only."
+citations:
+  - title: "hash-wasm — Fast WebAssembly Cryptographic Hashing"
+    authors: "Daninet"
+    year: 2025
+    url: "https://github.com/Daninet/hash-wasm"
+  - title: "TransformStream (Streams API)"
+    authors: "MDN Web Docs"
+    year: 2026
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/TransformStream"
+  - title: "SubtleCrypto.digest()"
+    authors: "MDN Web Docs"
+    year: 2026
+    url: "https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest"
+  - title: "Qwen3-0.6B-GGUF Model Repository"
+    authors: "Qwen Team"
+    year: 2025
+    url: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF"
+updated: "2026-11-26"
+---
+
+Downloading a 639.45 MB model into a browser tab sits near the memory ceiling of everyday laptops and phones. If you skip integrity verification, a truncated proxy response or a corrupted browser cache can feed broken weights into WebAssembly. Yet checking a 639 MB file the obvious way—using the browser's built-in **WebCrypto** `crypto.subtle.digest()` function—can crash the tab with an out-of-memory error before the model ever starts.
+
+## Why one-shot WebCrypto `digest()` is risky at 639 MB
+
+A **cryptographic hash** such as **SHA-256** computes a fixed 256-bit fingerprint of a file: flip even one bit anywhere inside 639,446,688 bytes, and the 64-character hexadecimal digest changes completely. Browsers ship SHA-256 natively in `crypto.subtle.digest()`, so why does Qwen Local Lab embed `hash-wasm` 4.13.0 (216,120 raw bytes) instead?
+
+The reason is API shape. `crypto.subtle.digest('SHA-256', buffer)` is a **one-shot** function: it requires holding the entire 639.45 MB input in one contiguous **ArrayBuffer** (a single flat block of RAM). Calling `await blob.arrayBuffer()` on a 639.45 MB download materializes that entire 639.45 MB contiguous buffer in memory alongside the download `Blob`—before `wllama` even allocates its WebAssembly heap and context cache.
+
+**Streaming** solves this by processing small chunks of bytes as they arrive from the network rather than waiting for the entire file to land in RAM. Qwen Local Lab pipes `response.body` through a **TransformStream** (a browser pipeline stage that inspects each chunk and passes it along unchanged) backed by `hash-wasm`'s incremental `createSHA256()`.
+
+<Figure id="streaming-hash-pipeline" />
+
+Before reading the code below, notice the four safeguards running inside `hashingStream()` and `assertModelDigest()`. Every chunk checks whether the user clicked Cancel (`assertActive`), enforces a hard byte ceiling so a misbehaving server cannot stream past `CPU_MODEL_SIZE` (639,446,688 bytes), updates the incremental SHA-256 state in tiny constant memory, and throttles progress events to roughly once every 120 ms before forwarding the chunk to `new Response(body).blob()` so the browser collects the `Blob` outside the JavaScript heap.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+// Hash the model chunk by chunk as it streams, so verification never holds a second model-sized buffer.
+function hashingStream(op, hasher, onProgress) {
+  let loaded = 0;
+  let lastUpdate = 0;
+  return new TransformStream({
+    transform(chunk, controller) {
+      assertActive(op);
+      loaded += chunk.byteLength;
+      if (loaded > CPU_MODEL_SIZE) {
+        throw new AppError("The model download has an unexpected size. Please retry.", "INVALID_MODEL");
+      }
+      hasher.update(chunk);
+      const now = performance.now();
+      if (now - lastUpdate > 120 || loaded === CPU_MODEL_SIZE) {
+        lastUpdate = now;
+        onProgress(loaded);
+      }
+      controller.enqueue(chunk);
+    },
+  });
+}
+
+function assertModelDigest(hasher) {
+  if (hasher.digest("hex") !== CPU_MODEL_SHA256) {
+    throw new AppError("The model file does not match the official SHA-256 checksum, so it was not used. Download it again.", "INVALID_MODEL");
+  }
+}
+```
+
+The network fetch itself pins the exact Hugging Face commit URL (`23749fef...`) and sets `credentials: "omit"`, `cache: "no-store"`, and `referrerPolicy: "no-referrer"` so cookies, stale HTTP caches, and referrer headers never interfere with the download. Only after `validateGguf()` confirms 639,446,688 bytes and `"GGUF"` magic bytes **and** `assertModelDigest()` confirms `9465e63a...` does `obtainCpuModel()` call `cache.put()`. A corrupted download is refused and never written to the browser's Cache API.
+
+## Re-hashing cached weights before every reuse
+
+Even after a verified file reaches Cache API, disk storage and browser caches can suffer corruption or partial eviction. Rather than trusting a cached entry blindly, `obtainCpuModel()` streams every cache hit back through the exact same `hashingStream()` into a discard `WritableStream`. If size, magic bytes, or SHA-256 fail, the worker deletes the damaged entry (`cache.delete(CPU_MODEL_URL)`) and falls through to a clean network download—while preserving user cancellation via `assertActive(op)`.
+
+```js
+// file: examples/qwen-local-lab/src/inference-worker.js
+    if (globalThis.caches) {
+      cache = await caches.open(MODEL_CACHE_NAME);
+      const saved = await cache.match(CPU_MODEL_URL);
+      if (saved) {
+        progress(op, 0.15, "Reading Qwen3 from this browser's model cache…");
+        const blob = await saved.blob();
+        const hasher = await sha256Hasher(assets);
+        assertActive(op);
+        try {
+          await validateGguf(blob, CPU_MODEL_SIZE);
+          await blob.stream().pipeThrough(hashingStream(op, hasher, loaded => progress(op, 0.15 + 0.6 * loaded / CPU_MODEL_SIZE,
+            `Verifying the cached model's SHA-256 · ${(loaded / 1000000).toFixed(1)} / 639.4 MB`))).pipeTo(new WritableStream());
+          assertModelDigest(hasher);
+          modelCacheStatus = 'hit';
+          modelCacheWarning = '';
+          progress(op, 0.8, "Cached model verified. Preparing the CPU runtime…");
+          return blob;
+        } catch {
+          assertActive(op);
+          await cache.delete(CPU_MODEL_URL);
+        }
+      }
+    }
+```
+
+Re-hashing 639.45 MB sounds expensive, yet WebAssembly SHA-256 runs close to local storage speed. In the Apple M5 Pro verification run (`VERIFICATION.md`, 2026-11-26), a cold CPU load (network download, streaming SHA-256, Cache API write, and 4-thread initialization) took **40.93 s**, whereas a warm reload (Cache API read, full 639.45 MB SHA-256 re-verification, and 4-thread initialization with zero HTTP requests) took **1.89 s**.
+
+## Budgeting first-load download time
+
+Because a cold load must move hundreds of megabytes across the visitor's internet link, network bandwidth dominates the very first wait. Convert file size $S$ in bytes to bits ($S \times 8$) and divide by effective download speed $B$ in bits per second to get the idealized transfer time:
+
+$$
+t = \frac{S \times 8}{B}
+$$
+
+On a 50 Mbps connection ($B = 50 \times 10^6\ \text{bit/s}$), compare the 639.45 MB CPU GGUF against the ~346.79 MB GPU MLC bundle (~335.37 MB weights plus ~11.42 MB tokenizer, configuration, and compiled library):
+
+$$
+t_{\text{CPU}} = \frac{639{,}446{,}688 \times 8}{50 \times 10^6} \approx 102.3\ \text{s}
+$$
+
+$$
+t_{\text{GPU}} = \frac{346{,}790{,}000 \times 8}{50 \times 10^6} \approx 55.5\ \text{s}
+$$
+
+At 100 Mbps those idealized times halve to roughly 51.2 s (CPU) and 27.7 s (GPU); at 10 Mbps the CPU file alone takes 511.6 s (over 8.5 minutes). Real loads add protocol overhead, disk caching, and engine initialization on top—which is why Qwen Local Lab never starts a model download automatically on page open and always requires an explicit click on **Load model**.
+
+<Figure id="gguf-download-time" />
+
+## The honest integrity boundary
+
+Precise engineering documents what a system verifies **and** where its checks stop. Across the three ways weights enter Qwen Local Lab, the verification boundary differs by path:
+
+- **Official CPU Q8_0 GGUF (639.45 MB)**: verified by exact byte count (639,446,688 B), `"GGUF"` magic bytes, full-file SHA-256 (`9465e63a...`) on both download and every Cache API hit, plus post-load Qwen3-0.6B architecture, layer, and hidden-size checks.
+- **GPU WebLLM path (~346.79 MB total)**: the 6,561,594-byte compiled `model_lib` WASM is pinned to commit `5b7251f3...`, SHA-256 verified (`b277797f...`) on download and cache hit, and handed to WebLLM via a `blob:` URL. The GPU weight shards (~335.37 MB), tokenizer, and config are pinned to Hugging Face revision `8c14ce481d4c692769976ad52afea453a102df19` over HTTPS and cached by WebLLM's own loader; our wrapper worker does **not** re-hash those shards.
+- **Local GGUF import**: user-selected files skip the official Q8_0 SHA-256 and exact byte count so compatible alternate quantizations work offline; they receive only the UI filter, `"GGUF"` magic bytes, and post-load Qwen3-0.6B identity checks.
+
+Naming those boundaries plainly lets reviewers and users know exactly what each route guarantees—and what it relies on HTTPS, commit pinning, or local disk trust to cover.

@@ -22,7 +22,7 @@ export interface SamplingPreset {
 export const SAMPLING_PRESETS: readonly SamplingPreset[] = [
   {
     id: 'factual',
-    label: { en: 'Factual recall (sharp)', 'pt-br': 'Fato objetivo (concentrado)' },
+    label: { en: 'Factual recall (sharp)', 'pt-br': 'Fato (concentrado)' },
     prompt: { en: 'The capital of France is …', 'pt-br': 'A capital da França é …' },
     candidates: [
       { token: 'Paris', logit: 4.2 },
@@ -35,7 +35,7 @@ export const SAMPLING_PRESETS: readonly SamplingPreset[] = [
   },
   {
     id: 'code',
-    label: { en: 'Code completion (bimodal)', 'pt-br': 'Código Python (bimodal)' },
+    label: { en: 'Code (bimodal)', 'pt-br': 'Código (bimodal)' },
     prompt: { en: 'def fib(n): return …', 'pt-br': 'def fib(n): return …' },
     candidates: [
       { token: 'n', logit: 2.9 },
@@ -48,7 +48,7 @@ export const SAMPLING_PRESETS: readonly SamplingPreset[] = [
   },
   {
     id: 'creative',
-    label: { en: 'Open continuation (flat)', 'pt-br': 'Continuação aberta (achatada)' },
+    label: { en: 'Open text (flat)', 'pt-br': 'Texto livre (plano)' },
     prompt: { en: 'The skyline glowed like …', 'pt-br': 'O horizonte brilhava como …' },
     candidates: [
       { token: 'embers', logit: 2.1 },

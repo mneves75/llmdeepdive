@@ -50,28 +50,28 @@ citations:
     authors: "LangChain"
     year: 2026
     url: "https://docs.langchain.com/oss/python/langgraph/persistence"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-A worker process is running the purchasing assistant on PO-1001. It has checked the invoice, so the run's status is `checked`. Then a deploy restarts the worker. When the new process starts, what does it know about run-1? If the answer is "whatever was in the old process's memory", it knows nothing. It will start the run again from `received`, and nothing will tell it that the check already happened. This lesson makes the state survive the restart. Then it handles the harder case: two workers that both think they own the run.
+A worker process (a running copy of the program that executes tasks) is running the purchasing assistant on PO-1001. It has checked the invoice, so the run's status is `checked`. Then a deploy (releasing a new version of the software) restarts the worker. When the new process starts, what does it know about run-1? If the answer is "whatever was in the old process's memory", it knows nothing. It will start the run again from `received`, and nothing will tell it that the check already happened. This lesson makes the state survive the restart. Then it handles the harder case: two workers that both think they own the run.
 
 ## Is a snapshot in memory a checkpoint?
 
 A *snapshot* is a copy of the state at one moment. Where it lives decides what it survives. A Python object, or a SQLite database opened as `":memory:"`, lives inside one process and disappears with it. LangGraph's own documentation says the same of its in-memory savers: "When the process restarts, all checkpoints are lost."
 
-A *checkpoint*, in this course, is a snapshot written to *durable storage*: a file or a database that outlives the process and can be read by the next one. The project's `CheckpointStore` keeps one row per run in a SQLite file. SQLite is a database engine in Python's standard library that stores a whole database in one file.
+A *checkpoint*, in this course, is a snapshot written to *durable storage*: a file or a database that outlives the process and can be read by the next one. The project's `CheckpointStore` keeps one row per run in a SQLite file. SQLite is a database engine in Python's standard library (the set of tools that comes built into Python) that stores a whole database in one file.
 
 ## Serialization: the state as text
 
-*Serialization* turns an object into bytes you can store or send. *Deserialization* turns them back. The project serializes `RunState` to JSON with Pydantic's `model_dump_json`. Here is the row the exercise stores after the first step:
+*Serialization* turns an object into bytes (raw numeric data computers store on disk or send over a network). *Deserialization* turns them back. The project serializes `RunState` to JSON with Pydantic's `model_dump_json` (Pydantic is a Python library that checks data shapes and converts them to and from JSON). Here is the row the exercise stores after the first step:
 
 ```json
 {"schema_version":1,"run_id":"run-1","principal":{"user_id":"u1","tenant_id":"tenant-a","roles":[]},"status":"checked","step":1,"max_steps":12,"version":1,"evidence":[]}
 ```
 
-Why JSON? It is plain text, so you can open the database and read a stuck run's state with your own eyes. Any language can parse it. Loading it also cannot execute code. Python's `pickle` format could store the object as well, but its documentation warns that unpickling untrusted data can run arbitrary code. A checkpoint is read back by a later process, possibly after an attacker has touched the file, so that risk matters here.
+Why JSON? It is plain text, so you can open the database and read a stuck run's state with your own eyes. Any language can parse it. Loading it also cannot execute code. Python's `pickle` format could store the object as well, but its documentation warns that unpickling untrusted data can run arbitrary code (any commands hidden inside the file). A checkpoint is read back by a later process, possibly after an attacker has touched the file, so that risk matters here.
 
-Two fields exist because of storage. `schema_version` says which shape of record this is. When a later release changes the shape, old rows still say `1`, and the loader can refuse a version it does not understand. Guessing would be worse. `load` turns that refusal into a clear error:
+Two fields exist because of storage. A *schema* is the agreed list of fields and types a record must have, and `schema_version` says which shape of record this is. When a later release changes the shape, old rows still say `1`, and the loader can refuse a version it does not understand. Guessing would be worse. The `load` method below looks up the run by id, returns `None` if no row exists, or parses the JSON and validates it against schema version 1—raising a clear `ValueError` if the stored record does not match:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/checkpoints.py
@@ -90,9 +90,9 @@ The other field, `version`, counts committed writes. It is the key to the last t
 
 ## Transactions: all of it or none of it
 
-A *transaction* is a group of database changes that succeed or fail as one unit. SQLite's documentation describes atomic commit as "either all database changes within a single transaction occur or none of them occur". It also says transactions "appear to be atomic even if the transaction is interrupted by an operating system crash or power failure". `BEGIN IMMEDIATE` opens a transaction that takes the write lock at once. `COMMIT` makes its changes permanent, and `ROLLBACK` throws them away.
+A *transaction* is a group of database changes that succeed or fail as one unit. SQLite's documentation describes atomic commit as "either all database changes within a single transaction occur or none of them occur". It also says transactions "appear to be atomic even if the transaction is interrupted by an operating system crash or power failure". `BEGIN IMMEDIATE` opens a transaction that takes the write lock (a turn-taking rule so only one writer changes the file at a time) at once. `COMMIT` makes its changes permanent, and `ROLLBACK` throws them away.
 
-The store opens its connection with `isolation_level=None`, which tells Python's `sqlite3` module not to open transactions on its own. Every transaction in `save(state, expected_version, effects=())` is then visible in its body, which commits `state` as version `expected_version + 1` or raises `StaleWrite`:
+The store opens its connection with `isolation_level=None`, which tells Python's `sqlite3` module not to open transactions on its own. Every transaction in `save(state, expected_version, effects=())` is then visible in its body below: it opens a transaction, inserts version 1 or updates the row only if the stored version still matches `expected_version` (raising `StaleWrite` otherwise), inserts any outbox rows in the same transaction, commits them together, and rolls everything back if any error happens:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/checkpoints.py
@@ -123,15 +123,17 @@ The store opens its connection with `isolation_level=None`, which tells Python's
         return new
 ```
 
-Ignore `effects` for now; [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) explains them. The transaction already does one job here. One test starts a real child process that calls `save` and kills itself with `os._exit(1)` after the `UPDATE` and the first outbox insert, before `COMMIT`. When the parent reopens the file, the run is still at version 1 in `checked`, and the outbox is empty. A crash mid-step leaves the last committed checkpoint and nothing half-written.
+Ignore `effects` for now; [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) explains them. One test proves the transaction's crash safety by starting a separate child process that kills itself with `os._exit(1)` mid-save before `COMMIT`: reopening the file rolls back both writes so the run stays cleanly at its last committed checkpoint (frame 2 below).
 
 ## Two writers, one run: compare-and-swap
 
-Durability creates a new problem. Suppose workers A and B both load run-1 at version 3. A decides `ready` and saves. B, still holding version 3, decides `needs_info` and saves. If B's write replaces the row, A's decision is lost without any error. This failure is called a *lost update*.
+Durability creates a new problem. If two workers both load the same version and each saves its own decision, the second write can silently replace the first. That failure is called a *lost update*.
 
-*Compare-and-swap* (CAS) prevents it: write the new value only if the stored value is still the one you read. Here the compared value is the version number. The `UPDATE` carries `WHERE run_id = ? AND version = ?`, so it changes a row only if nobody committed since this writer loaded the state. `cursor.rowcount` reports how many rows matched. Zero means someone else got there first, and the store raises `StaleWrite`. B must then reload version 4 and decide again from what A did.
+*Compare-and-swap* (CAS) prevents it: write the new value only if the stored value is still the one you read. Here the compared value is the version number (`WHERE run_id = ? AND version = ?`). `cursor.rowcount` reports how many rows matched: zero means another writer committed first, so the store raises `StaleWrite` and the slower writer must reload the newer version and decide again.
 
-This style is called *optimistic concurrency control*, after Kung and Robinson's 1981 paper "On optimistic methods for concurrency control". Workers do their work without holding locks, and conflicts are detected at commit time. It suits runs where two writers on the same run are rare but possible.
+This style is called *optimistic concurrency control*, after Kung and Robinson's 1981 paper "On optimistic methods for concurrency control". Workers do their work without holding locks, and conflicts are detected at commit time. It suits runs where two writers on the same run are rare but possible. Step through the three cases below to compare a clean commit, a crash before `COMMIT`, and two workers racing on version 3.
+
+<Figure id="t14-checkpoint-commit-and-cas" />
 
 :::caveat
 CAS rejects the stale write. It does not decide what B should do next. Reloading and re-deciding is usually right for a state machine. If B had already sent an e-mail before its save failed, though, that e-mail is out in the world, and no rollback can recall it. Effects outside the database are the subject of the next lesson.

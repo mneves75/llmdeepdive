@@ -124,3 +124,31 @@ test('content parity rejects structural lesson and track drift across locales', 
     rmSync(fixture, { recursive: true, force: true })
   }
 })
+
+test('content:figures fails closed when a track ledger or lesson triage row is missing', () => {
+  const emptyLedgers = mkdtempSync(join(tmpdir(), 'llmdeepdive-empty-ledgers-'))
+  try {
+    const missingLedger = spawnSync(process.execPath, [resolve('scripts', 'content-figures.mjs')], {
+      cwd: process.cwd(),
+      env: { ...process.env, LLMDEEPDIVE_LEDGER_ROOT: emptyLedgers },
+      encoding: 'utf8',
+    })
+    assert.notEqual(missingLedger.status, 0, 'content:figures passed with missing track ledgers')
+    assert.match(missingLedger.stderr, /missing triage ledger/u)
+
+    writeFileSync(
+      join(emptyLedgers, '0-orientation-and-foundations.md'),
+      '| Lesson | Verdict | Obstacle | Figure | What changed | Facts checked |\n| --- | --- | --- | --- | --- | --- |\n| 0.1-what-is-a-language-model | bogus | none | none | none | none |\n',
+    )
+    const badRow = spawnSync(process.execPath, [resolve('scripts', 'content-figures.mjs')], {
+      cwd: process.cwd(),
+      env: { ...process.env, LLMDEEPDIVE_LEDGER_ROOT: emptyLedgers },
+      encoding: 'utf8',
+    })
+    assert.notEqual(badRow.status, 0, 'content:figures passed with invalid verdict and missing lesson rows')
+    assert.match(badRow.stderr, /invalid verdict "bogus"/u)
+    assert.match(badRow.stderr, /missing triage row for lesson "0\.2-/u)
+  } finally {
+    rmSync(emptyLedgers, { recursive: true, force: true })
+  }
+})

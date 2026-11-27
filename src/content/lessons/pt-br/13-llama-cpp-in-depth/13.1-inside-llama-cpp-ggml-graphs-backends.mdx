@@ -42,50 +42,54 @@ citations:
     authors: "Georgi Gerganov e colaboradores"
     year: 2023
     url: "https://github.com/ggml-org/llama.cpp/blob/b11380/common/common.h"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-A [aula 8.7](/pt-br/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/) deixou você com um arquivo e o comando `llama-server -m model.gguf -ngl 99`. Numa máquina com CPU e GPU, esse comando decide qual processador calcula cada pedaço do modelo. Se a colocação sair errada, ou falta memória na GPU, ou a GPU fica parada. Esta aula pergunta o que o comando faz com cada tensor e como conferir.
+A [aula 8.7](/pt-br/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/) deixou você com um arquivo de modelo e o comando `llama-server -m model.gguf -ngl 99`. Numa máquina com CPU (unidade central de processamento, o processador de uso geral) e GPU (unidade de processamento gráfico, o processador feito para matemática em paralelo), esse comando decide qual processador calcula cada pedaço do modelo. Se a colocação sair errada, ou falta memória na GPU, ou a GPU fica parada. Esta aula pergunta o que essa flag — uma opção de linha de comando que começa com `-` ou `--` — faz com cada tensor de pesos (grade de números) e como conferir.
 
-A resposta está no **log de carregamento**, as linhas que o llama.cpp imprime enquanto carrega um modelo, se você souber lê-lo. Todos os logs abaixo vêm do llama.cpp na tag `b11380`, num Apple M5 Pro com 64 GB. O build 11146 do Homebrew imprimiu os mesmos buffers na execução com `--n-cpu-moe 20`.
+A resposta está no **log de carregamento**, as linhas que o llama.cpp imprime enquanto carrega um modelo, se você souber lê-lo. Todos os logs abaixo vêm do llama.cpp na tag `b11380`, num Apple M5 Pro com 64 GB de memória. O build 11146 do Homebrew imprimiu os mesmos buffers na execução com `--n-cpu-moe 20`.
 
 ## O que o llama.cpp monta antes de calcular
 
-O ggml é a biblioteca de tensores por baixo do llama.cpp. Um tensor, aqui, é um array multidimensional de números. Um tensor ggml carrega quatro coisas:
+O ggml é a biblioteca de tensores por baixo do llama.cpp. Um tensor, aqui, é um array multidimensional (uma tabela aninhada de números, como uma lista, uma matriz ou uma grade 3D). Um tensor ggml carrega quatro coisas:
 
-- o seu formato e os seus strides em bytes (quantos bytes andar para chegar ao próximo elemento em cada dimensão);
+- o seu formato e os seus strides em bytes (quantos bytes — unidades de 8 bits de memória do computador — andar para chegar ao próximo elemento em cada dimensão);
 - a operação que o produz;
-- ponteiros para os tensores de origem;
+- ponteiros (endereços de memória) para os tensores de origem;
 - o **buffer** que guarda os seus dados, um bloco de memória que pertence a um dispositivo.
 
-O cabeçalho diz que definir uma função "não envolve nenhuma computação de fato" (tradução nossa). Você monta um grafo, e uma chamada separada o executa. Um Makefile funciona do mesmo jeito: ele descreve alvos e as dependências de cada um, e só o `make` executa alguma coisa. A comparação para nessa ideia: um grafo ggml guarda operações sobre tensores, não arquivos.
+O cabeçalho da biblioteca (o arquivo de código-fonte que declara como o ggml funciona) diz que definir uma função "não envolve nenhuma computação de fato" (tradução nossa). Primeiro você monta um **grafo** — um mapa de operações conectadas, em que cada operação é um **nó** — e uma chamada separada o executa. Um Makefile (um arquivo de receita de compilação em que programadores listam arquivos de saída e do que cada um depende, enquanto só executar a ferramenta `make` realiza os passos) funciona do mesmo jeito. A comparação para nessa ideia: um grafo ggml guarda operações sobre tensores, não arquivos.
 
-O llama.cpp monta um grafo desses para cada **batch**, o grupo de tokens que ele processa numa chamada. Quando o formato se repete, ele reaproveita o grafo, e a linha de log `graphs reused` conta isso.
+O llama.cpp monta um grafo desses para cada **batch**, o grupo de tokens que ele processa numa chamada. Quando o formato do batch se repete, ele reaproveita o grafo, e a linha de log `graphs reused` conta isso.
 
 ## Quem executa cada nó: backends e o scheduler
 
-Um **backend** é uma forma de executar nós do grafo num tipo de hardware: CPU, Metal (a interface de GPU da Apple), CUDA (a da NVIDIA), Vulkan (uma interface de GPU entre fabricantes), RPC (que manda trabalho para outra máquina, como mostra a [aula 13.5](/pt-br/lessons/13-llama-cpp-in-depth/13.5-speculative-decoding-and-rpc-in-llama-cpp/)) e outros. Um **scheduler** (escalonador) decide qual backend executa cada nó.
+Um **backend** é um driver de software que executa nós do grafo num tipo de hardware: CPU, Metal (a interface de GPU da Apple), CUDA (a interface de GPU da NVIDIA), Vulkan (uma interface de GPU entre fabricantes), RPC (que manda trabalho para outra máquina, como mostra a [aula 13.5](/pt-br/lessons/13-llama-cpp-in-depth/13.5-speculative-decoding-and-rpc-in-llama-cpp/)) e outros. Um **scheduler** (escalonador) decide qual backend executa cada nó.
 
 O comentário em `ggml-backend.h` nomeia duas regras:
 
 1. O backend precisa suportar a operação.
 2. Uma operação é atribuída de preferência ao mesmo backend do buffer que guarda os seus pesos.
 
-O scheduler então corta o grafo em **splits**, um para cada sequência de nós consecutivos no mesmo backend, e copia tensores em cada costura entre splits. Pegue um grafo inventado de seis nós cujos pesos estão em GPU, GPU, CPU, CPU, GPU, GPU. Isso dá três splits e duas costuras, e cada costura copia o tensor que a atravessa. Ou seja: os pesos decidem a colocação, e cada costura custa uma cópia.
+O scheduler então corta o grafo em **splits** — sequências consecutivas de nós no mesmo backend — e copia tensores em cada **costura** onde o hardware muda. Os pesos decidem a colocação, e cada costura custa uma cópia.
+
+<Figure id="t13-graph-splits-and-placement" />
 
 ## Quais camadas o `-ngl` põe na GPU
 
-O `-ngl` define quantas camadas recebem os pesos na GPU. No b11380 o padrão é `auto` e o `--fit` vem ligado, então o servidor primeiro estima a memória e ajusta os valores que você não definiu. No arquivo de 35B mais adiante, o log diz `projected to use 26808 MiB of device memory vs. 53020 MiB of free device memory`, então nada mudou. O `-ngl 99` da aula 8.7 é uma sobrescrita manual desse padrão.
+O `-ngl` define quantas camadas recebem os pesos na GPU. No b11380 o padrão é `auto` e o `--fit` vem ligado, então o servidor primeiro estima a memória livre e ajusta os valores que você não definiu. No arquivo de 35B mais adiante, o log diz `projected to use 26808 MiB of device memory vs. 53020 MiB of free device memory`, então nada mudou. O `-ngl 99` da aula 8.7 é uma sobrescrita manual desse padrão.
 
-Experimente um número. O arquivo Qwen3-1.7B Q8_0 tem 28 camadas, e `-ngl 10` imprimiu `offloaded 10/29 layers to GPU`. A 29ª "camada" é a projeção de saída, que o loader conta por último. O loader acha a primeira camada de GPU como o total de camadas mais um menos o `-ngl`: 28 + 1 − 10 = 19. O log de debug confirmou. Ele pôs as camadas 0 a 18 na CPU e 19 a 28 no `MTL0`, o primeiro dispositivo Metal. Então as **últimas** camadas vão para a GPU, não as primeiras. O KV cache (as chaves e os valores guardados dos tokens anteriores, da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)) acompanha a sua camada: 152 MiB na CPU, 72 MiB no Metal.
+Experimente um número, como mostra o passo 2 da figura acima. O arquivo Qwen3-1.7B Q8_0 tem 28 camadas, e `-ngl 10` imprimiu `offloaded 10/29 layers to GPU`. A 29ª "camada" é a projeção de saída (a matriz final que transforma os números da última camada em notas do vocabulário), que o loader conta por último. O loader acha a primeira camada de GPU como o total de camadas mais um menos o `-ngl`: 28 + 1 − 10 = 19. O log de debug confirmou. Ele pôs as camadas 0 a 18 na CPU e 19 a 28 no `MTL0`, o primeiro dispositivo Metal. Então as **últimas** camadas vão para a GPU, não as primeiras. O KV cache (as chaves e os valores guardados dos tokens anteriores, da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)) acompanha a sua camada: 152 MiB na CPU, 72 MiB no Metal.
 
-O modo de carregamento segue a mesma lógica. Segundo o README, `-lm auto` mapeia o arquivo com mmap (o sistema operacional mapeia o arquivo na memória virtual, e as páginas são carregadas sob demanda ou antecipadamente), a menos que um dispositivo não consiga. O `Mapped` em `MTL0_Mapped` marca um buffer apoiado nesse mapeamento. O `--load-mode none` lê os pesos para memória alocada. O aviso do loader mostrado mais adiante o recomenda quando você sobrescreve tensores para a CPU. Nenhum dos modos foi cronometrado.
+O modo de carregamento segue a mesma lógica. Segundo o README, `-lm auto` mapeia o arquivo com mmap (o sistema operacional trata o arquivo em disco como parte da memória virtual, carregando pequenos blocos chamados páginas sob demanda ou antecipadamente), a menos que um dispositivo não consiga. O `Mapped` em `MTL0_Mapped` marca um buffer apoiado nesse mapeamento. O `--load-mode none` lê os pesos para RAM alocada (memória principal reservada de antemão). O aviso do loader mostrado mais adiante o recomenda quando você sobrescreve tensores para a CPU. Nenhum dos modos foi cronometrado.
 
 Depois de qualquer mudança, compare três coisas no log: a linha `offloaded`, os tamanhos dos buffers e a contagem de splits.
 
 ## Experts: `--n-cpu-moe` e `-ot`
 
-Um modelo mixture-of-experts (MoE, mistura de especialistas) troca alguns ou todos os seus blocos feed-forward densos por um roteador e vários blocos especialistas, os experts, e roda só alguns experts por token ([aula 4.9](/pt-br/lessons/4-transformer/4.9-feed-forward-block/)). Um modelo assim guarda a maior parte dos bytes nas matrizes de experts, com nomes como `blk.N.ffn_up_exps.weight`, `ffn_gate_exps` e `ffn_down_exps`. O `llama-gguf` confirmou esses nomes no arquivo Qwen3.6-35B-A3B Q4_K_XL. O Qwen3.8-27B é denso, então esse modelo serve apenas como exemplo público de MoE. O padrão de `common.h` que seleciona esses nomes é `\.ffn_(up|down|gate|gate_up)_(ch|)exps`.
+Um modelo mixture-of-experts (MoE, mistura de especialistas) troca alguns ou todos os seus blocos feed-forward densos por um roteador e vários blocos especialistas, os experts, e roda só alguns experts por token ([aula 4.9](/pt-br/lessons/4-transformer/4.9-feed-forward-block/)). Um modelo assim guarda a maior parte dos bytes nas matrizes de experts, com nomes como `blk.N.ffn_up_exps.weight`, `ffn_gate_exps` e `ffn_down_exps`. O `llama-gguf` confirmou esses nomes no arquivo Qwen3.6-35B-A3B Q4_K_XL. O Qwen3.8-27B é denso, então esse modelo serve apenas como exemplo público de MoE. O padrão de correspondência de texto (expressão regular) em `common.h` que seleciona esses nomes é `\.ffn_(up|down|gate|gate_up)_(ch|)exps`.
+
+O comando abaixo gera dois tokens no arquivo MoE com log detalhado (`-v`) enquanto força os pesos dos experts das primeiras 20 camadas para a CPU (`--n-cpu-moe 20`), de modo que o log de carregamento imprima cada buffer e a contagem de splits.
 
 ```
 llama-completion -m MODEL.gguf -c 4096 -n 2 -p "Hello" -no-cnv --no-warmup -v \
@@ -100,11 +104,11 @@ Três flags escrevem essa sobrescrita. `--n-cpu-moe N` a acrescenta para as prim
 | `--n-cpu-moe 20` | 20 camadas | 9.378 MiB | 42 |
 | `-ot "ffn_.*_exps=CPU"` | 40 camadas | 18.760 MiB | 82 |
 
-Os splits crescem de dois em dois por camada sobrescrita: 2 + 2 × 20 = 42, e 2 + 2 × 40 = 82. Isso combina com uma costura para entrar na CPU e outra para sair, em cada camada. O buffer de 9.378 MiB se chama `CPU_REPACK`, porque o llama.cpp copia os pesos para um layout que os kernels de CPU (as rotinas de cálculo da CPU) preferem. Com `--no-repack` o buffer virou `CPU_Mapped`, e o grafo do prompt teve 62 splits contra 42 do decode.
+Como mostra o passo 3 da figura, os splits crescem de dois em dois por camada sobrescrita: 2 + 2 × 20 = 42, e 2 + 2 × 40 = 82 (uma costura para entrar na CPU e outra para voltar). O buffer de 9.378 MiB se chama `CPU_REPACK`, porque o llama.cpp copia os pesos para um layout de memória que os kernels de CPU (as rotinas de cálculo da CPU) preferem. Com `--no-repack` o buffer virou `CPU_Mapped`, e o grafo do prompt teve 62 splits contra 42 do decode (geração de tokens um a um).
 
 ## Por que o `--n-cpu-moe` não libera nada num Mac
 
-Flags como essas existem para uma GPU discreta, uma placa de vídeo com memória própria (VRAM) separada da RAM do sistema, quando essa VRAM é menor que o modelo. O reflexo é copiar a receita para um Mac "para economizar memória". Mas um Mac tem memória unificada: CPU e GPU dividem um único pool ([aula 9.6](/pt-br/lessons/9-hardware-and-infrastructure/9.6-apple-silicon-unified-memory/)). Num Mac não há VRAM separada para economizar.
+Flags como essas existem para uma GPU discreta, uma placa de vídeo com memória própria (VRAM, RAM de vídeo) separada da RAM do sistema, quando essa VRAM é menor que o modelo. O reflexo é copiar a receita para um Mac "para economizar memória". Mas um Mac tem memória unificada: CPU e GPU dividem um único pool ([aula 9.6](/pt-br/lessons/9-hardware-and-infrastructure/9.6-apple-silicon-unified-memory/)). Num Mac não há VRAM separada para economizar.
 
 As medições mostram isso pelos dois lados:
 
@@ -121,7 +125,7 @@ Com `-ot` ou `--n-cpu-moe` e mmap ligado, o `llama_model_loader` imprime `tensor
 
 Com `-ngl 0` seria de esperar um único split, todo na CPU. O grafo do prompt teve 281 splits, e o de decode teve 1.
 
-O código do scheduler explica parte disso. Quando um peso está na memória do host (a RAM da CPU) e um backend mais rápido responde `offload_op`, a operação vai para lá. Metal e CUDA aceitam quando o batch tem pelo menos 32 linhas (`GGML_OP_OFFLOAD_MIN_BATCH`, padrão 32), uma linha por token. Um prompt chega como muitas linhas de uma vez. Um passo de decode tem uma linha e por isso fica na CPU.
+O código do scheduler explica parte disso. Quando um peso está na memória do host (a RAM da CPU) e um backend mais rápido responde `offload_op`, a operação vai para lá. Metal e CUDA aceitam quando o batch tem pelo menos 32 linhas (`GGML_OP_OFFLOAD_MIN_BATCH`, padrão 32), uma linha por token. Um prompt chega como muitas linhas de uma vez (prefill), enquanto um passo de decode tem uma linha e por isso fica na CPU.
 
 O `--no-op-offload` desliga isso. A contagem caiu para 201, não para 1, e o restante não foi rastreado.
 
@@ -129,4 +133,4 @@ O `--no-op-offload` desliga isso. A contagem caiu para 201, não para 1, e o res
 Contagens de splits, tamanhos de buffer e o formato de log `pp bs=512, tg bs=1` pertencem a um build e a uma máquina. O build 11146 imprimiu um único número de splits. Trate um log como evidência sobre a sua própria execução, não como constante.
 :::
 
-Em resumo: um grafo ggml não sabe onde vai rodar. A colocação dos pesos decide onde cada nó roda e quantas costuras ele atravessa. Leia `offloaded`, as linhas de buffer e a contagem de splits antes de ajustar qualquer coisa. A seguir, a [aula 13.2](/pt-br/lessons/13-llama-cpp-in-depth/13.2-making-your-own-gguf-convert-imatrix-quantize/) produz o seu próprio GGUF.
+Leia `offloaded`, as linhas de buffer e a contagem de splits antes de ajustar qualquer coisa. A seguir, a [aula 13.2](/pt-br/lessons/13-llama-cpp-in-depth/13.2-making-your-own-gguf-convert-imatrix-quantize/) produz o seu próprio GGUF.

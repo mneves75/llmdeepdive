@@ -34,24 +34,28 @@ citations:
     authors: "In Gim, Guojun Chen, Seung-seob Lee, Nikhil Sarda, Anurag Khandelwal, and Lin Zhong"
     year: 2024
     url: "https://arxiv.org/abs/2311.04934"
-updated: "2026-11-21"
+updated: "2026-11-26"
 ---
 
-In [lesson 31.1](/lessons/31-ai-system-design-and-caching/31.1-end-to-end-latency-budgets/), a 35% cache hit rate dropped mean latency from 4,520 ms to 2,944 ms and cut monthly spend by USD 1,575—but also produced 70 wrong answers per 10,000 requests when semantic false hits ran at 2%. Not all caches carry that risk. Production AI stacks combine three distinct caching layers—**exact**, **prefix (KV)**, and **semantic**—each operating at a different stage of the pipeline with very different correctness and invalidation guarantees.
+In [lesson 31.1](/lessons/31-ai-system-design-and-caching/31.1-end-to-end-latency-budgets/), a 35% cache hit rate dropped mean latency from 4,520 ms to 2,944 ms and cut monthly spend by USD 1,575—but also produced 70 wrong answers per 10,000 requests when semantic false hits ran at 2%. Not every cache carries that risk. Production AI stacks combine three distinct caching layers—**exact**, **prefix (key–value, or KV)**, and **semantic**—each intercepting a request at a different stage with very different correctness and invalidation guarantees.
 
 ## Three caching layers and where each sits
 
-Trace a request from ingress to GPU to see how the three layers stack:
+Step through the figure below to see where each layer intercepts a request on its path from the application edge to the Graphics Processing Unit (GPU, the specialized chip that runs model math):
 
-- **Layer 1 — Exact response cache (application edge, 5–20 ms):** Hashes the normalized request (whitespace folded, canonical parameter order) and returns a stored answer immediately. False-hit risk is zero when the cache key captures all state dependencies. Exact caches excel on repeated dashboard summaries, scheduled classifications, identical FAQ clicks, and deterministic tool lookups, often yielding 10–25% hits with zero model cost.
-- **Layer 2 — Prefix / KV cache (inference engine, cuts TTFT & input cost by 50–90%):** As introduced in [lesson 26.5](/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/) and formalized by RadixAttention in SGLang (Zheng et al., 2024) and Prompt Cache (Gim et al., 2024), inference servers retain prefilled attention key-value tensors for identical prompt prefixes across requests. Even when 100% of user questions are brand new, sharing a stable 4,000-token system prompt, tool definitions, and few-shot examples avoids re-prefilling those 4,000 tokens. Correctness risk is zero because decoding still runs freshly for every user question.
-- **Layer 3 — Semantic response cache (vector lookup before LLM, 15–35 ms):** Embeds the incoming query, searches recent cached queries by cosine similarity, and returns the cached completion if similarity exceeds a threshold $\tau$ (for example, $\tau = 0.95$). It captures paraphrases ("reset MFA device" vs "how do I reconfigure two-factor auth?") that miss an exact cache, but introduces **semantic false hits**.
+<Figure id="31-2-three-cache-layers" />
+
+Each layer fits a different slice of traffic:
+
+- **Layer 1 — Exact response cache:** Computes a **hash** (a short fixed-length fingerprint so identical inputs map to the same lookup key) of the **normalized** request (whitespace collapsed, parameters sorted). Exact caches fit repeated dashboard summaries, scheduled classifications, identical FAQ clicks, and deterministic tool lookups, often yielding 10–25% hits with zero model cost.
+- **Layer 2 — Prefix / KV cache:** As introduced in [lesson 26.5](/lessons/26-llm-apis-and-structured-outputs/26.5-prompt-engineering-hierarchy-and-caching/) and formalized by RadixAttention in SGLang (Zheng et al., 2024) and Prompt Cache (Gim et al., 2024), inference servers keep prefilled attention key–value matrices for identical leading prompts. Sharing a stable 4,000-token system prompt, tool definitions, and examples avoids re-prefilling those 4,000 tokens while still decoding freshly for every user question.
+- **Layer 3 — Semantic response cache:** Turns the query into an **embedding** (a numeric meaning vector) and compares it against cached queries by **cosine similarity** (a score from −1 to 1 measuring how closely two vectors point in the same direction), returning the stored reply when similarity clears a threshold $\tau$ (for example, $\tau = 0.95$). It catches paraphrases ("reset MFA device" vs "how do I reconfigure two-factor auth?") that miss an exact cache, at the cost of **semantic false hits**.
 
 ## Designing prompts so prefix caching actually hits
 
-Causal self-attention computes each token's key and value states as a function of every token that came earlier. If token 12 changes, tokens 13 through 8,000 all change too, invalidating the entire KV prefix.
+Causal self-attention (attention where each token can only look at itself and earlier tokens) computes every token's key and value states from all preceding tokens. If token 12 changes, tokens 13 through 8,000 all change too, invalidating the entire KV prefix.
 
-Run a quick cost example on a 6,000-token prompt where 5,000 tokens are static instructions + reference policy and 1,000 tokens are per-request user data + retrieved chunks. Suppose uncached input tokens cost USD 2.50 per million and cached prefix reads cost USD 0.25 per million (a 90% discount, typical of major 2026 provider APIs):
+Run a quick cost example on a 6,000-token prompt where 5,000 tokens are static instructions plus reference policy and 1,000 tokens are per-request user data plus retrieved passages. Suppose uncached input tokens cost USD 2.50 per million and cached prefix reads cost USD 0.25 per million (a 90% discount, typical of major 2026 provider APIs):
 
 - **Unstable prefix** (a request ID or live timestamp placed at line 1): all 6,000 tokens miss the prefix cache, costing $(6{,}000 / 10^6) \times 2.50 = \text{USD } 0.0150$ per call.
 - **Stable prefix** (static instructions + sorted tool schemas first; user ID, timestamp, and retrieved chunks last): 5,000 tokens hit at USD 0.25/M and 1,000 tokens miss at USD 2.50/M:
@@ -60,7 +64,7 @@ $$
 \text{Input Cost}_{\text{prefix}} = \frac{5{,}000}{10^6} \times 0.25 + \frac{1{,}000}{10^6} \times 2.50 = 0.00125 + 0.00250 = \text{USD } 0.00375.
 $$
 
-Ordering the prompt cleanly cuts input token cost by $75\%$—a $4\times$ reduction—while dropping prefill latency sharply and keeping 100% exact generation fidelity. Also sort JSON tool definitions deterministically and avoid mutating few-shot examples dynamically per turn so every worker emits the exact same prefix byte sequence.
+Ordering the prompt cleanly cuts input token cost by $75\%$—a $4\times$ reduction—while dropping prefill latency sharply and keeping 100% exact generation fidelity. Sort JSON (structured key-value format) tool definitions deterministically and avoid changing **few-shot examples** (sample input–output pairs inside the prompt) per turn so every **worker** (server process handling requests in parallel) emits the exact same prefix byte sequence.
 
 ## Containing semantic false hits and cache poisoning
 
@@ -74,19 +78,19 @@ To keep semantic false hits below a strict budget (such as under 0.2% of hits), 
 
 1. **Intent allowlist:** Enable semantic caching only on stateless, public or tenant-wide FAQ intents; bypass it completely for account-specific, transactional, or tool-calling turns.
 2. **Entity and negation verification:** Extract numbers, plan codes, dates, and negation tokens (`not`, `without`, `never`, `except`) from both queries and require an exact match before serving a cached hit.
-3. **Cross-encoder or NLI paraphrase check:** For high-similarity hits (say $0.90$–$0.97$), run a 15 ms lightweight natural-language-inference (NLI) equivalence check confirming both queries entail the same question.
-4. **Strict similarity calibration on held-out pairs:** Measure false-hit rate empirically across candidate thresholds $\tau \in \{0.90, 0.93, 0.96, 0.98\}$ on real production queries before turning the cache on.
+3. **Cross-encoder or NLI paraphrase check:** For high-similarity hits (say $0.90$–$0.97$), run a 15 ms lightweight **natural-language-inference (NLI)** classifier (a small model that tests whether two sentences logically mean the same thing) confirming both queries ask the same question.
+4. **Strict similarity calibration on held-out pairs:** Measure false-hit rate empirically on **held-out pairs** (test pairs set aside and never used to tune the rule) across candidate thresholds $\tau \in \{0.90, 0.93, 0.96, 0.98\}$ from real production queries before turning the cache on.
 
 :::caveat
-Never insert an unverified or flagged LLM response into a shared cache. If an attacker tricks the assistant into emitting a poisoned answer once and the gateway caches it under a popular query, every subsequent benign user receives the poisoned payload—turning a single prompt injection into persistent **cache poisoning**. Only cache responses that passed output guardrails and grounding checks.
+Never insert an unverified or flagged LLM response into a shared cache. If an attacker uses a **prompt injection** (malicious text hidden in inputs or documents to hijack the model's instructions) to trigger a poisoned answer once and the gateway caches it under a popular query, every subsequent benign user receives the poisoned reply—turning a single attack into persistent **cache poisoning**. Only cache responses that passed output guardrails and grounding checks.
 :::
 
 ## Cache keys, invalidation, and corpus epochs
 
-Separate the **scope partition** (which isolates tenants, permissions, and versions) from the **query lookup**:
+Separate the **scope partition**—which isolates each **tenant** (customer organization sharing the platform), its Access Control List (**ACL**) permissions, and model versions—from the **query lookup**:
 
 - **Shared partition key (used for both exact and semantic search):** `partition = hash(tenant_id, acl_set_hash, prompt_version, model_id, corpus_epoch)`
 - **Exact cache lookup key:** `exact_key = hash(partition, normalized_query)`
-- **Semantic cache search:** runs vector nearest-neighbor lookup over query embeddings stored inside `partition` (never hashing `normalized_query` into the partition itself, or two paraphrases could never meet in the same similarity index).
+- **Semantic cache search:** runs vector **nearest-neighbor lookup** (finding the closest stored vectors to a query vector) inside `partition`—never hashing `normalized_query` into the partition itself, or two paraphrases could never meet in the same similarity index.
 
-Incrementing `corpus_epoch` whenever a tenant's underlying documents update—or scoping `corpus_epoch` per document collection—invalidates stale RAG answers instantaneously without running expensive key-by-key scans across Redis. Keep a short time-to-live (TTL) as an **additional** upper bound on staleness alongside `corpus_epoch` (never as a replacement for it), so your cache delivers fast, cheap answers without ever leaking another customer's documents or serving yesterday's pricing policy.
+Incrementing `corpus_epoch` whenever a tenant's underlying documents update—or scoping `corpus_epoch` per document collection—invalidates stale RAG answers instantaneously without running expensive key-by-key scans across **Redis** (a fast in-memory key-value store). Keep a short **time-to-live (TTL)** (automatic expiration timer) as an **additional** upper bound on staleness alongside `corpus_epoch` (never as a replacement for it), so your cache delivers fast, cheap answers without leaking another customer's documents or serving yesterday's pricing policy.

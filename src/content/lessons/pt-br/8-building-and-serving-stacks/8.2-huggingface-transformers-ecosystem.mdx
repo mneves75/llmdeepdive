@@ -42,22 +42,24 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Um colega relata que o Qwen3.8-27B "ignora o botão de thinking": ele desliga, o modelo raciocina mesmo assim, e a flag parece decorativa. Outro relata que o mesmo script dava respostas diferentes no mês passado e hoje dá outras, sem nenhuma mudança de código. Os dois bugs são reais, e nenhum está no modelo. Os dois vivem na fina camada de encanamento entre os pesos no Hub (o site da Hugging Face que hospeda modelos) e o texto na tela.
 
-Essa camada tem quatro partes: quais bytes você baixou, como eles foram carregados, como sua conversa virou uma string e como os tokens foram amostrados. A [aula 8.1](/pt-br/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) deu o runtime; esta aula cobre tudo que está enrolado em volta dele.
+A [aula 8.1](/pt-br/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) deu o runtime; esta aula cobre as quatro partes enroladas em volta dele.
+
+<Figure id="t8-transformers-plumbing" />
 
 ## Quais bytes você realmente baixou?
 
-Um repositório do Hub como `Qwen/Qwen3.8-27B` é um repositório git com arquivos grandes. Um identificador de repositório sozinho nomeia um branch, não um snapshot. Então carregar sem fixar uma revisão significa "o que quer que main aponte quando o cache de download falhar". É por isso que o mesmo script deriva ao longo dos meses: o fornecedor publica uma correção de tokenizer ou um ajuste de config, e o seu próximo download pega a mudança.
+Um repositório do Hub como `Qwen/Qwen3.8-27B` é um **repositório git** (uma pasta de arquivos com controle de versão) com arquivos grandes. Um identificador de repositório sozinho nomeia um **branch** (um rótulo móvel que aponta para a versão mais recente), não um snapshot fixo. Então carregar sem fixar uma revisão significa "o que quer que main aponte quando o cache de download falhar". É por isso que o mesmo script deriva ao longo dos meses: o fornecedor publica uma correção de tokenizer ou um ajuste de config, e o seu próximo download pega a mudança.
 
-A correção é a mesma que você já usa para dependências. Fixe um hash de commit, registre-o ao lado dos seus resultados de avaliação e trate o diretório do modelo como um artefato com versão, exatamente como você faria com uma imagem de contêiner.
+A correção é a mesma que você já usa para dependências de software. Fixe um **hash de commit** (uma impressão digital única que identifica um snapshot exato), registre-o ao lado dos seus resultados de avaliação e trate o diretório do modelo como um artefato com versão, exatamente como faria com uma **imagem de contêiner** (um snapshot empacotado de um software e seus arquivos).
 
 ## Como o safetensors carrega 54 GB com segurança?
 
-O Qwen3.8-27B é distribuído em safetensors bf16, e o safetensors é deliberadamente sem graça. Um arquivo é um header JSON listando cada tensor com seu dtype (tipo numérico), shape e faixa de bytes, seguido de um único blob contíguo de números brutos. Carregar é um mapeamento de memória (pedir ao sistema operacional que exponha o arquivo como memória, lendo as páginas só quando são tocadas) mais fatiamento. Nada é desserializado em objetos Python, então nenhum código do arquivo chega a rodar.
+O Qwen3.8-27B é distribuído em safetensors bf16, e o safetensors é deliberadamente sem graça. Um arquivo é um **header JSON** (um índice estruturado em texto puro no início do arquivo) listando cada tensor com seu dtype (tipo numérico), shape e faixa de bytes, seguido de um único bloco contíguo de números brutos. Carregar é um mapeamento de memória (pedir ao sistema operacional que exponha o arquivo como memória, lendo as páginas só quando são tocadas) mais fatiamento. Nada é **desserializado** (reconstruído em objetos Python vivos), então nenhum código do arquivo chega a rodar.
 
 Os 54 GB de pesos em bf16 são divididos em vários arquivos chamados shards, com um arquivo de índice mapeando cada nome de tensor para o seu shard. Foi assim que a [aula 4.14](/pt-br/lessons/4-transformer/4.14-reading-real-weights/) conseguiu abrir pesos reais e encontrar `model.layers.31.mlp.gate_proj.weight` sem carregar os outros cinquenta gigabytes. Daí vêm três consequências práticas:
 
@@ -69,13 +71,11 @@ Os 54 GB de pesos em bf16 são divididos em vários arquivos chamados shards, co
 
 Agora a parte que causa o bug relatado. O Qwen3.8-27B é um modelo de chat, e modelos de chat são treinados sobre um layout de string muito específico: marcadores de papel, fronteiras de turno e os special tokens que marcam onde um bloco de thinking começa e termina. Esse layout não está embutido nos pesos e não está na config do modelo. É um template Jinja (uma linguagem de templates de texto) distribuído *junto com o tokenizer*, e `apply_chat_template` é a função que o renderiza.
 
-Você entrega ao `apply_chat_template` uma lista de dicionários com papéis e conteúdos. Ele devolve exatamente a string que o modelo foi treinado a continuar, e tokenizar essa string dá os ids para o forward pass. O modelo nunca vê um papel. Ele vê tokens.
+Você entrega ao `apply_chat_template` uma lista de **dicionários** (pares chave-valor) com o papel e o conteúdo de cada turno. Ele devolve exatamente a string que o modelo foi treinado a continuar, e tokenizar essa string dá os ids para o forward pass. O modelo nunca vê um papel. Ele vê tokens.
 
-É aí que `enable_thinking` mora. É uma variável consumida pelo template. Não é um parâmetro do modelo e não é um argumento do loop de geração. Defini-la como false faz o template renderizar um prompt cujo andaime suprime o bloco de thinking; defini-la como true (o padrão) renderiza a versão que convida a um. Pesos idênticos, forward pass idêntico, tokens de entrada diferentes. Então a sequência é:
+É aí que `enable_thinking` mora. É uma variável consumida pelo template — não um parâmetro do modelo, nem um argumento do loop de geração. Defini-la como false faz o template renderizar um **andaime** (texto fixo que envolve o prompt) que suprime o bloco de thinking; defini-la como true (o padrão) convida a um. Pesos idênticos, forward pass idêntico, tokens de entrada diferentes.
 
-1. Monte as mensagens.
-2. Chame o template com `add_generation_prompt=True` e sua escolha de thinking, e tokenize.
-3. Desempacote o encoding devolvido em `generate()`.
+As duas chamadas abaixo executam essa sequência: a primeira renderiza `messages` com o thinking desligado e converte o resultado em tensors PyTorch no device do modelo, e a segunda gera até 256 tokens amostrados com os ajustes instruct suportados.
 
 ```python
 inputs = tok.apply_chat_template(
@@ -97,7 +97,7 @@ out = model.generate(
 )
 ```
 
-Este trecho supõe que `tok` e um `model` em um único device foram carregados da mesma revisão fixada e que `messages` já está definido. No Transformers v5, `apply_chat_template(..., return_tensors="pt")` devolve um `BatchEncoding`, então passá-lo como argumento posicional `ids` falha; `**inputs` fornece tanto `input_ids` quanto `attention_mask`. `do_sample=True` também é necessário, senão temperature, top-p, top-k e min-p não têm efeito no decoding. O limite de comprimento fica explícito para que um exemplo copiado tenha uma fronteira finita.
+Este trecho supõe que `tok` e um `model` em um único device foram carregados da mesma revisão fixada e que `messages` já está definido. No Transformers v5, `apply_chat_template(..., return_tensors="pt")` devolve um `BatchEncoding` (um dicionário que guarda `input_ids` e `attention_mask`, uma lista de 1s e 0s marcando tokens reais contra preenchimento), então passá-lo como um único argumento posicional falha; `**inputs` desempacota as duas entradas pelo nome. `do_sample=True` também é necessário, senão temperature, top-p, top-k e min-p não têm efeito no decoding. O limite de comprimento fica explícito para que um exemplo copiado tenha uma fronteira finita.
 
 :::warning
 Montar a string do prompt na mão é a maneira mais comum de quebrar um modelo de chat, e nada avisa que isso aconteceu. Um prompt que é apenas *parecido* com o layout treinado ainda produz texto fluente, então nada quebra e nenhum erro aparece. O que você obtém é um modelo operando fora da distribuição em que foi instruction-tuned, com um botão de thinking que não faz nada porque nenhum template chegou a rodar. Renderize o template, depois logue a string renderizada uma vez e leia.
@@ -107,14 +107,9 @@ Montar a string do prompt na mão é a maneira mais comum de quebrar um modelo d
 
 Como o template é um arquivo, e não uma propriedade dos pesos, as pessoas também o **redistribuem e substituem**. Alguns repositórios não contêm peso nenhum, só um `chat_template.jinja` e uma nota sobre o que ele muda. O GGUF carrega o template no seu header de metadados, e conversões MLX o mantêm ao lado do tokenizer, então um único arquivo desses pode ser apontado para o mesmo modelo sob vários runtimes diferentes.
 
-O que um template trocado compra é real, mas limitado. Ele pode mudar o enquadramento do system, o scaffolding em torno de um bloco de thinking e como as definições de tools são dispostas, de modo que pode encurtar respostas de forma mensurável ou mudar o formato delas. Ele não muda o que o modelo sabe. Trate uma economia de tokens alegada como a [aula 0.8](/pt-br/lessons/0-orientation-and-foundations/0.8-how-to-read-ml-paper/) ensina a tratar qualquer número de benchmark: pergunte qual modelo, qual harness, quantas amostras e contra qual template de base. Lembre também que trocar o template afasta o modelo do layout em que ele foi ajustado. Isso é uma troca, com um custo do outro lado.
+O que um template trocado compra é real, mas limitado. Ele pode mudar as instruções iniciais de sistema, o andaime em torno de um bloco de thinking e como as definições de tools são dispostas, de modo que pode encurtar respostas de forma mensurável ou mudar o formato delas. Ele não muda o que o modelo sabe. Trate uma economia de tokens alegada como a [aula 0.8](/pt-br/lessons/0-orientation-and-foundations/0.8-how-to-read-ml-paper/) ensina a tratar qualquer número de benchmark: pergunte qual modelo, qual **harness** (o código em volta que chama o modelo e avalia ou executa a saída dele), quantas amostras e contra qual template de base. Lembre também que trocar o template afasta o modelo do layout em que ele foi ajustado. Isso é uma troca, com um custo do outro lado.
 
-O tool calling anda pelo mesmo mecanismo: o modelo emite texto estruturado e o seu harness o parseia. Renderização e parsing são onde a maioria dos bugs vive, mas não são o problema todo. Uma chamada de ferramenta em produção também exige validação semântica de argumentos, autorização, idempotência e tratamento de falhas, cobertos pela [aula 15.1](/pt-br/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) e pela [aula 16.1](/pt-br/lessons/16-agent-security-and-guardrails/16.1-threat-model-the-assistant/). O ciclo aqui tem quatro passos, e todos são texto:
-
-1. Você passa as definições de tools ao `apply_chat_template` junto com as mensagens.
-2. O template as renderiza no layout exato de special tokens que o modelo foi treinado para responder.
-3. O modelo emite uma chamada estruturada como tokens comuns.
-4. O seu harness converte esse trecho de volta em nome de função e argumentos, confere se os argumentos fazem sentido e se quem chamou pode rodar essa ferramenta, executa e anexa o resultado como mais uma mensagem.
+O tool calling anda pelo mesmo mecanismo, traçado no quadro 2 da figura acima: o modelo emite texto estruturado e o seu harness faz o **parsing** dele (lê o texto de volta em nomes de função e argumentos estruturados). Renderização e parsing são onde a maioria dos bugs vive, enquanto uma chamada de ferramenta em produção também exige validação semântica de argumentos, autorização, **idempotência** (rodar a mesma ação duas vezes produz o mesmo efeito que rodar uma vez) e tratamento de falhas, cobertos pela [aula 15.1](/pt-br/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) e pela [aula 16.1](/pt-br/lessons/16-agent-security-and-guardrails/16.1-threat-model-the-assistant/).
 
 Nada no forward pass sabe que existe uma tool. Então, quando o tool calling se comporta mal, o bug quase sempre está na renderização ou no parsing, não no modelo. A [aula 8.5](/pt-br/lessons/8-building-and-serving-stacks/8.5-sglang/) cobre a metade complementar: restringir o decode para que a chamada emitida tenha parsing garantido.
 
@@ -130,7 +125,7 @@ A interface bruta de `generate()` do Transformers na revisão citada suporta os 
 O thinking tem três controles independentes:
 
 - `enable_thinking` decide se existe um bloco de raciocínio.
-- `reasoning_effort` controla a profundidade e hoje assume `xhigh` por padrão no card oficial. Os rótulos são semântica de API e template, então inspecione o template efetivo antes de comparar runtimes.
+- `reasoning_effort` controla a profundidade e hoje assume `xhigh` por padrão no card oficial. Os rótulos são semântica de interface de programação (API) e template, então inspecione o template efetivo antes de comparar runtimes.
 - `preserve_thinking` hoje vem true e mantém os blocos de raciocínio de turnos anteriores. Isso pode ajudar um agente, mas também faz raciocínio antigo consumir tokens de prompt em cada turno. Meça tokens e tempo do job inteiro e decida deliberadamente se esse histórico pertence ao contexto.
 
 ## Por que isso ainda não é um servidor

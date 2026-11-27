@@ -8,7 +8,7 @@
  * Qwen3.8-27B numbers only.
  */
 import { videoTokens } from '~/lib/lab-math'
-import type { Figure } from './types'
+import type { Figure, FigurePigment, FigureStep, Localised } from './types'
 
 /**
  * Qwen3-VL-8B-Instruct `vision_config` and `video_preprocessor_config.json`
@@ -47,6 +47,22 @@ const recipeDetail = (index: number): { en: string; 'pt-br': string } => {
     en: `ADE20K ${row.ade.toFixed(1)} mIoU · SSv2 ${row.ssv2.toFixed(1)}%`,
     'pt-br': `ADE20K ${pt(row.ade)} mIoU · SSv2 ${pt(row.ssv2)}%`,
   }
+}
+
+const RECIPE_LABELS: readonly Localised[] = [
+  { en: 'V-JEPA 2 recipe', 'pt-br': 'Receita do V-JEPA 2' },
+  { en: '+ context loss on visible tokens', 'pt-br': '+ loss de contexto nos tokens visíveis' },
+  { en: '+ deep self-supervision', 'pt-br': '+ autossupervisão profunda' },
+  { en: '+ VisionMix-163M data', 'pt-br': '+ dados VisionMix-163M' },
+  { en: '+ image and video tokenizers', 'pt-br': '+ tokenizers de imagem e de vídeo' },
+  { en: 'scaled to ViT-G, 2B parameters', 'pt-br': 'escalado para ViT-G, 2B de parâmetros' },
+  { en: '+ high-resolution cool-down', 'pt-br': '+ cool-down em alta resolução' },
+]
+
+const recipeStep = (index: number, pigment: FigurePigment): FigureStep => {
+  const label = RECIPE_LABELS[index]
+  if (label === undefined) throw new Error(`no V-JEPA 2.1 recipe label ${index}`)
+  return { label, detail: recipeDetail(index), pigment }
 }
 
 export const TRACK_10_FIGURES = {
@@ -139,48 +155,93 @@ export const TRACK_10_FIGURES = {
 
   /**
    * I-JEPA's training step as the paper describes it (arXiv 2301.08243,
-   * section 3). The stop-gradient and the moving average sit on the target
-   * branch, and that asymmetry is the whole defence against collapse.
+   * section 3). Split into two steps so the reader sees the forward vector
+   * loss first and then the asymmetric gradient barrier that stops collapse.
    */
   'jepa-training-step': {
     lesson: '10.2-jepa-predicting-representations',
     title: { en: 'One JEPA training step', 'pt-br': 'Um passo de treino de uma JEPA' },
     caption: {
       en:
-        'The loss compares two sets of vectors, never pixels. Gradients reach the context encoder and the predictor only; the target encoder is a slowly moving average of the context encoder and receives no gradient at all.',
+        'The loss compares two sets of vectors, never pixels. Step from the forward prediction to the asymmetric weight update that keeps the encoder from collapsing.',
       'pt-br':
-        'A loss compara dois conjuntos de vetores, nunca pixels. Os gradientes chegam só ao context encoder e ao predictor; o target encoder é uma média móvel lenta do context encoder e não recebe gradiente nenhum.',
+        'A loss compara dois conjuntos de vetores, nunca pixels. Avance da previsão na passagem direta para a atualização assimétrica de pesos que impede o colapso do encoder.',
     },
-    body: {
-      kind: 'flow',
-      steps: [
-        {
-          label: { en: 'Context block, targets removed', 'pt-br': 'Bloco de contexto, sem os alvos' },
-          detail: { en: 'scale 0.85–1.0 of the image', 'pt-br': 'escala 0,85–1,0 da imagem' },
-          pigment: 'muted',
+    steps: [
+      {
+        label: { en: 'Predict hidden vectors', 'pt-br': 'Prever vetores escondidos' },
+        caption: {
+          en:
+            'The context encoder reads only visible patches. The predictor uses those vectors plus positional mask tokens to guess the hidden patch vectors, and the loss measures the distance to the target encoder’s vectors from the full image.',
+          'pt-br':
+            'O context encoder lê só os patches visíveis. O predictor usa esses vetores mais os mask tokens de posição para estimar os vetores dos patches escondidos, e a loss mede a distância até os vetores do target encoder sobre a imagem inteira.',
         },
-        {
-          label: { en: 'Context encoder (trained)', 'pt-br': 'Context encoder (treinado)' },
-          detail: { en: 'one vector per visible patch', 'pt-br': 'um vetor por patch visível' },
-          pigment: 'accent',
+        body: {
+          kind: 'flow',
+          steps: [
+            {
+              label: { en: 'Context block, targets removed', 'pt-br': 'Bloco de contexto, sem os alvos' },
+              detail: { en: 'scale 0.85–1.0 of the image', 'pt-br': 'escala 0,85–1,0 da imagem' },
+              pigment: 'muted',
+            },
+            {
+              label: { en: 'Context encoder', 'pt-br': 'Context encoder (codificador de contexto)' },
+              detail: { en: 'one vector per visible patch', 'pt-br': 'um vetor por patch visível' },
+              pigment: 'accent',
+            },
+            {
+              label: { en: 'Predictor + positional mask tokens', 'pt-br': 'Predictor + mask tokens de posição' },
+              detail: { en: 'guesses each target patch vector', 'pt-br': 'estima o vetor de cada patch alvo' },
+              pigment: 'caution',
+            },
+            {
+              label: { en: 'Vector distance loss', 'pt-br': 'Loss de distância vetorial' },
+              detail: { en: 'squared L2 in I-JEPA, L1 in V-JEPA', 'pt-br': 'L2 ao quadrado na I-JEPA, L1 na V-JEPA' },
+              pigment: 'danger',
+            },
+            {
+              label: { en: 'Target encoder', 'pt-br': 'Target encoder (codificador-alvo)' },
+              detail: { en: 'sees the whole image; supplies target vectors', 'pt-br': 'vê a imagem inteira; fornece os vetores-alvo' },
+              pigment: 'success',
+            },
+          ],
         },
-        {
-          label: { en: 'Predictor + positional mask tokens', 'pt-br': 'Predictor + mask tokens com posição' },
-          detail: { en: 'guesses each target patch vector', 'pt-br': 'estima o vetor de cada patch alvo' },
-          pigment: 'caution',
+      },
+      {
+        label: { en: 'Asymmetric update', 'pt-br': 'Atualização assimétrica' },
+        caption: {
+          en:
+            'Gradients reach only the context encoder and the predictor. A stop-gradient blocks gradients from the target encoder, which instead tracks the context encoder as a slowly moving exponential moving average (EMA).',
+          'pt-br':
+            'Os gradientes chegam só ao context encoder e ao predictor. Um stop-gradient bloqueia os gradientes para o target encoder, que em vez disso acompanha o context encoder como uma média móvel exponencial (EMA) lenta.',
         },
-        {
-          label: { en: 'Distance to the targets', 'pt-br': 'Distância até os alvos' },
-          detail: { en: 'squared L2 in I-JEPA, L1 in V-JEPA', 'pt-br': 'L2 ao quadrado na I-JEPA, L1 na V-JEPA' },
-          pigment: 'danger',
+        body: {
+          kind: 'flow',
+          steps: [
+            {
+              label: { en: 'Context encoder (trained)', 'pt-br': 'Context encoder (treinado)' },
+              detail: { en: 'updated by gradients', 'pt-br': 'atualizado por gradientes' },
+              pigment: 'accent',
+            },
+            {
+              label: { en: 'Predictor (trained)', 'pt-br': 'Predictor (treinado)' },
+              detail: { en: 'updated by gradients', 'pt-br': 'atualizado por gradientes' },
+              pigment: 'accent',
+            },
+            {
+              label: { en: 'Stop-gradient barrier', 'pt-br': 'Barreira de stop-gradient' },
+              detail: { en: 'blocks gradients to the target branch', 'pt-br': 'bloqueia gradientes para o ramo alvo' },
+              pigment: 'danger',
+            },
+            {
+              label: { en: 'Target encoder (EMA)', 'pt-br': 'Target encoder (por EMA)' },
+              detail: { en: 'no gradient; I-JEPA momentum 0.996 → 1.0', 'pt-br': 'sem gradiente; momentum 0,996 → 1,0 na I-JEPA' },
+              pigment: 'success',
+            },
+          ],
         },
-        {
-          label: { en: 'Target encoder: EMA, stop-gradient', 'pt-br': 'Target encoder: EMA e stop-gradient' },
-          detail: { en: 'sees the whole image; I-JEPA momentum 0.996 → 1.0', 'pt-br': 'vê a imagem inteira; momentum 0,996 → 1,0 na I-JEPA' },
-          pigment: 'success',
-        },
-      ],
-    },
+      },
+    ],
   },
 
   /**
@@ -232,74 +293,158 @@ export const TRACK_10_FIGURES = {
   /**
    * The point of 10.3's second half: the context loss alone buys dense
    * features and costs global accuracy, and deep self-supervision is what buys
-   * the accuracy back. A reader should see the dip, not only the end state.
+   * the accuracy back. Stepped across three frames so the reader sees the dip,
+   * the recovery, and the full Table 1 recipe in order.
    */
   'dense-recipe-ablation': {
     lesson: '10.3-v-jepa-2-world-models-that-plan',
     title: { en: 'How V-JEPA 2.1 bought dense features', 'pt-br': 'Como o V-JEPA 2.1 conquistou features densas' },
     caption: {
       en:
-        'Linear-probe segmentation (ADE20K) and attentive-probe action recognition (SSv2), one ingredient at a time, from the paper\'s Table 1; higher is better for both. The first five rows are a ViT-L. Supervising the visible tokens lifts segmentation by more than eleven points and drops SSv2 by ten; deep self-supervision restores it.',
+        'Linear-probe segmentation (ADE20K) and attentive-probe action recognition (SSv2), one ingredient at a time, from Table 1 of the V-JEPA 2.1 paper; higher is better for both. The first five stages use a ViT-L.',
       'pt-br':
-        'Segmentação com linear probe (ADE20K) e reconhecimento de ações com attentive probe (SSv2), um ingrediente por vez, segundo a Tabela 1 do artigo; nas duas, maior é melhor. As cinco primeiras linhas são um ViT-L. Supervisionar os tokens visíveis eleva a segmentação em mais de onze pontos e derruba o SSv2 em dez; a autossupervisão profunda o recupera.',
+        'Segmentação com linear probe (ADE20K) e reconhecimento de ações com attentive probe (SSv2), um ingrediente por vez, segundo a Tabela 1 do artigo do V-JEPA 2.1; nas duas, maior é melhor. As cinco primeiras etapas usam um ViT-L.',
     },
-    body: {
-      kind: 'flow',
-      steps: [
-        { label: { en: 'V-JEPA 2 recipe', 'pt-br': 'Receita do V-JEPA 2' }, detail: recipeDetail(0), pigment: 'muted' },
-        { label: { en: '+ context loss on visible tokens', 'pt-br': '+ loss de contexto nos tokens visíveis' }, detail: recipeDetail(1), pigment: 'danger' },
-        { label: { en: '+ deep self-supervision', 'pt-br': '+ autossupervisão profunda' }, detail: recipeDetail(2), pigment: 'accent' },
-        { label: { en: '+ VisionMix-163M data', 'pt-br': '+ dados VisionMix-163M' }, detail: recipeDetail(3), pigment: 'caution' },
-        { label: { en: '+ image and video tokenizers', 'pt-br': '+ tokenizers de imagem e de vídeo' }, detail: recipeDetail(4), pigment: 'caution' },
-        { label: { en: 'scaled to ViT-G, 2B parameters', 'pt-br': 'escalado para ViT-G, 2B de parâmetros' }, detail: recipeDetail(5), pigment: 'success' },
-        { label: { en: '+ high-resolution cool-down', 'pt-br': '+ cool-down em alta resolução' }, detail: recipeDetail(6), pigment: 'success' },
-      ],
-    },
+    steps: [
+      {
+        label: { en: '+ Context loss (the dip)', 'pt-br': '+ Loss de contexto (a queda)' },
+        caption: {
+          en:
+            'Supervising visible tokens lifts ADE20K segmentation by 11.6 mIoU, from 22.2 to 33.8, but drops SSv2 action recognition by 10.3 points, from 72.8% to 62.5%.',
+          'pt-br':
+            'Supervisionar os tokens visíveis eleva a segmentação no ADE20K em 11,6 mIoU, de 22,2 para 33,8, mas derruba o reconhecimento de ações no SSv2 em 10,3 pontos, de 72,8% para 62,5%.',
+        },
+        body: {
+          kind: 'flow',
+          steps: [recipeStep(0, 'muted'), recipeStep(1, 'danger')],
+        },
+      },
+      {
+        label: { en: '+ Deep self-supervision', 'pt-br': '+ Autossupervisão profunda' },
+        caption: {
+          en:
+            'Applying both losses at four encoder levels (three intermediate blocks and the output) restores SSv2 to 72.1% while pushing segmentation to 38.6 mIoU.',
+          'pt-br':
+            'Aplicar as duas losses em quatro níveis do encoder (três blocos intermediários e a saída) recupera o SSv2 para 72,1% enquanto empurra a segmentação para 38,6 mIoU.',
+        },
+        body: {
+          kind: 'flow',
+          steps: [recipeStep(0, 'muted'), recipeStep(1, 'muted'), recipeStep(2, 'accent')],
+        },
+      },
+      {
+        label: { en: 'Full 2.1 recipe', 'pt-br': 'Receita completa 2.1' },
+        caption: {
+          en:
+            'More images (VisionMix-163M), dedicated image and video tokenizers, scaling to a 2-billion-parameter ViT-G and a high-resolution cool-down bring both metrics to their final Table 1 values.',
+          'pt-br':
+            'Mais imagens (VisionMix-163M), tokenizers dedicados de imagem e vídeo, escala para um ViT-G de 2 bilhões de parâmetros e um cool-down em alta resolução levam as duas métricas aos valores finais da Tabela 1.',
+        },
+        body: {
+          kind: 'flow',
+          steps: [
+            recipeStep(0, 'muted'),
+            recipeStep(1, 'muted'),
+            recipeStep(2, 'muted'),
+            recipeStep(3, 'caution'),
+            recipeStep(4, 'caution'),
+            recipeStep(5, 'success'),
+            recipeStep(6, 'success'),
+          ],
+        },
+      },
+    ],
   },
 
   /**
-   * VL-JEPA as instantiated in arXiv 2512.10942, section 3. The decoder is the
-   * last stage and is optional: it is not trained in the main phase and runs
-   * only when a person needs text.
+   * VL-JEPA as instantiated in arXiv 2512.10942, section 3. Split into
+   * training (no tokens, no decoder) and text-generation inference (Y-encoder
+   * omitted on the generation path; offline clustering decodes at segment
+   * midpoints in the EgoExo4D evaluation).
    */
   'vl-jepa-pipeline': {
     lesson: '10.4-vl-jepa-predicting-meaning',
     title: { en: 'VL-JEPA predicts an answer embedding', 'pt-br': 'A VL-JEPA prevê um embedding de resposta' },
     caption: {
       en:
-        'Training compares the predicted embedding with the Y-encoder\'s embedding of the real answer, using a bidirectional InfoNCE loss. No token is generated during training; at inference a lightweight decoder turns the embedding into words only when a person needs them.',
+        'Training compares embeddings with bidirectional InfoNCE and generates no tokens. On the text-generation inference path, the Y-encoder is omitted (tasks like retrieval and discriminative QA still use it) and the text decoder runs selectively instead of on every frame.',
       'pt-br':
-        'O treino compara o embedding previsto com o embedding da resposta real feito pelo Y-encoder, usando uma loss InfoNCE bidirecional. Nenhum token é gerado no treino; na inferência, um decoder leve transforma o embedding em palavras só quando uma pessoa precisa delas.',
+        'O treino compara embeddings com InfoNCE bidirecional e não gera nenhum token. No caminho de geração de texto na inferência, o Y-encoder fica de fora (tarefas como busca e QA discriminativo ainda o usam) e o decoder de texto roda de forma seletiva em vez de em cada frame.',
     },
-    body: {
-      kind: 'flow',
-      steps: [
-        {
-          label: { en: 'X-encoder reads the frames', 'pt-br': 'X-encoder lê os frames' },
-          detail: { en: 'frozen V-JEPA 2 ViT-L, 304M', 'pt-br': 'V-JEPA 2 ViT-L congelado, 304M' },
-          pigment: 'accent',
+    steps: [
+      {
+        label: { en: 'Training: match embeddings', 'pt-br': 'Treino: casar embeddings' },
+        caption: {
+          en:
+            'No token is generated during training, and the text decoder is not used. Bidirectional InfoNCE pulls each predicted embedding toward its real answer embedding and pushes different pairs apart to prevent collapse.',
+          'pt-br':
+            'Nenhum token é gerado no treino, e o decoder de texto não entra nessa etapa. A InfoNCE bidirecional puxa cada embedding previsto para o embedding da resposta real e afasta pares diferentes para impedir o colapso.',
         },
-        {
-          label: { en: 'Predictor reads frames and query', 'pt-br': 'Predictor lê frames e pergunta' },
-          detail: { en: '8 Llama-3.2-1B layers, 490M trainable', 'pt-br': '8 camadas do Llama-3.2-1B, 490M treináveis' },
-          pigment: 'caution',
+        body: {
+          kind: 'flow',
+          steps: [
+            {
+              label: { en: 'X-encoder reads the frames', 'pt-br': 'X-encoder lê os frames' },
+              detail: { en: 'frozen V-JEPA 2 ViT-L, 304M', 'pt-br': 'V-JEPA 2 ViT-L congelado, 304M' },
+              pigment: 'accent',
+            },
+            {
+              label: { en: 'Predictor reads frames and query', 'pt-br': 'Predictor lê frames e pergunta' },
+              detail: { en: '8 Llama-3.2-1B layers, 490M trainable', 'pt-br': '8 camadas do Llama-3.2-1B, 490M treináveis' },
+              pigment: 'caution',
+            },
+            {
+              label: { en: 'Predicted answer embedding', 'pt-br': 'Embedding de resposta previsto' },
+              detail: { en: 'average-pooled, no tokens', 'pt-br': 'average pooling, sem tokens' },
+              pigment: 'danger',
+            },
+            {
+              label: { en: 'Bidirectional InfoNCE loss', 'pt-br': 'Loss InfoNCE bidirecional' },
+              detail: { en: 'alignment + uniformity, no EMA', 'pt-br': 'alinhamento + uniformidade, sem EMA' },
+              pigment: 'danger',
+            },
+            {
+              label: { en: 'Y-encoder embeds the real answer', 'pt-br': 'Y-encoder gera o embedding da resposta real' },
+              detail: { en: 'EmbeddingGemma-300M start', 'pt-br': 'parte do EmbeddingGemma-300M' },
+              pigment: 'success',
+            },
+          ],
         },
-        {
-          label: { en: 'One predicted answer embedding', 'pt-br': 'Um embedding de resposta previsto' },
-          detail: { en: 'average-pooled, no tokens', 'pt-br': 'average pooling, sem tokens' },
-          pigment: 'danger',
+      },
+      {
+        label: { en: 'Inference: selective decoding', 'pt-br': 'Inferência: decodificação seletiva' },
+        caption: {
+          en:
+            'One forward pass emits an answer embedding at each step. On EgoExo4D, the paper evaluates selective decoding offline by clustering each video’s embedding sequence into segments and running the Y-decoder once at each segment’s midpoint — averaging ~0.35 Hz (~2.85 s between decodes, ~2.85× fewer decodes than 1 Hz uniform at matched quality).',
+          'pt-br':
+            'Uma passagem direta emite um embedding de resposta a cada passo. No EgoExo4D, o artigo avalia a decodificação seletiva offline agrupando (clustering) a sequência de embeddings de cada vídeo em segmentos e rodando o Y-decoder uma vez no ponto médio de cada segmento — em média ~0,35 Hz (~2,85 s entre decodificações, ~2,85× menos decodificações que 1 Hz uniforme com qualidade igual).',
         },
-        {
-          label: { en: 'Y-encoder embeds the real answer', 'pt-br': 'Y-encoder gera o embedding da resposta real' },
-          detail: { en: 'EmbeddingGemma-300M start', 'pt-br': 'parte do EmbeddingGemma-300M' },
-          pigment: 'success',
+        body: {
+          kind: 'flow',
+          steps: [
+            {
+              label: { en: 'X-encoder reads the video stream', 'pt-br': 'X-encoder lê o stream de vídeo' },
+              detail: { en: 'frozen V-JEPA 2 ViT-L, 304M', 'pt-br': 'V-JEPA 2 ViT-L congelado, 304M' },
+              pigment: 'accent',
+            },
+            {
+              label: { en: 'Predictor emits embeddings', 'pt-br': 'Predictor emite embeddings' },
+              detail: { en: 'one forward pass per step', 'pt-br': 'uma passagem direta por passo' },
+              pigment: 'caution',
+            },
+            {
+              label: { en: 'Offline segment clustering', 'pt-br': 'Clustering offline em segmentos' },
+              detail: { en: 'group similar embeddings; pick midpoint', 'pt-br': 'agrupa embeddings parecidos; pega ponto médio' },
+              pigment: 'accent',
+            },
+            {
+              label: { en: 'Y-decoder decodes segment midpoints', 'pt-br': 'Y-decoder decodifica nos pontos médios' },
+              detail: { en: '~0.35 Hz avg (~2.85 s mean) vs 1 Hz on EgoExo4D', 'pt-br': 'média de ~0,35 Hz (~2,85 s) contra 1 Hz no EgoExo4D' },
+              pigment: 'success',
+            },
+          ],
         },
-        {
-          label: { en: 'Text decoder, only when needed', 'pt-br': 'Decoder de texto, só quando preciso' },
-          detail: { en: 'not used in training', 'pt-br': 'fora do treino' },
-          pigment: 'muted',
-        },
-      ],
-    },
+      },
+    ],
   },
 } as const satisfies Record<string, Figure>

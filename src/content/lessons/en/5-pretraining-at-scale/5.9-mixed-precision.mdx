@@ -42,17 +42,19 @@ citations:
     authors: "PyTorch Team"
     year: 2024
     url: "https://pytorch.org/blog/efficient-large-scale-training-with-pytorch/"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Download Qwen3.8-27B and the released safetensors are bf16: about 2 bytes per stored parameter. That fact describes the distributed checkpoint. It says nothing about the dtypes (number formats) used during training for the optimizer state, master weights, accumulation, or gradients, and the training recipe is not published. So this lesson teaches mixed-precision design as a set of explicit policies and measured safeguards. It does not reconstruct Qwen's history from the dtype of the output.
+Download Qwen3.8-27B and the released safetensors (the weight-file format on the model page) are bf16: about 2 bytes per stored parameter. That fact describes the distributed checkpoint. It says nothing about the dtypes (number formats) used during training for the optimizer state, master weights, accumulation, or gradients, and the training recipe is not published. So this lesson teaches mixed-precision design as a set of explicit policies and measured safeguards. It does not reconstruct Qwen's history from the dtype of the output.
 
 ## What does a floating-point format trade?
 
-A floating-point number works like scientific notation in base 2. The value 1.25 × 2³ has a sign (positive), an exponent (3), and a fraction (the .25). A format's bits are divided among those three parts. More exponent bits widen the **dynamic range**, the span from the smallest to the largest number the format can hold. More fraction bits sharpen the **local precision**, how finely it can distinguish two nearby numbers.
+A floating-point number works like scientific notation in base 2. The value 1.25 × 2³ has a sign (positive), an exponent (3), and a fraction (the .25). A format's bits are divided among those three parts: more exponent bits widen **dynamic range** (avoiding overflow, a number too large to store, and underflow, a number too small to keep without rounding to zero), while more fraction bits sharpen **local precision** (distinguishing two nearby numbers). Step through the four formats below to see how each spends its bit budget:
 
-- **fp16** spends five bits on the exponent and ten explicit bits on the fraction. It is precise near a given magnitude, but its range is so narrow that overflow (a number too large to store) and underflow (a number too small to store at full precision, which loses digits or rounds to zero) are routine in training.
-- **bf16** spends eight bits on the exponent, the same width as fp32, and seven explicit bits on the fraction. So it almost never overflows, and it is correspondingly coarse.
+<Figure id="t5-float-bit-budgets" />
+
+- **fp16** trades dynamic range for local precision, so overflow and underflow are routine in training without extra safeguards.
+- **bf16** keeps fp32's full exponent range so it almost never overflows, at the price of much coarser steps between nearby numbers.
 
 ## How can a small update vanish?
 
@@ -79,7 +81,7 @@ One conservative fix is a **master copy** of the weights in fp32. Updates accumu
 Now the comparison that is usually stated wrongly. Training everything in fp32, at 4 bytes each for weights, gradients, and the two moments, also costs 16 bytes per parameter. Under that conservative recipe, **mixed precision does not shrink the persistent per-parameter footprint.** What it buys is three other things:
 
 - access to the accelerator's fast reduced-precision matrix units,
-- roughly half the bandwidth on every weight and gradient it moves,
+- roughly half the memory bandwidth (bytes moved per second between chip memory and compute units) on every weight and gradient it moves,
 - activations stored at 2 bytes rather than 4, which is the memory that actually dominates a long-context step, as [lesson 5.10](/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/) works out.
 
 Numerically safe alternatives may use different state dtypes, but each needs validation against a wider-precision baseline.
@@ -94,14 +96,14 @@ The opposite blanket claims are both wrong: bf16's range does not eliminate swam
 
 ## What makes fp8 harder?
 
-**fp8** pushes further, with eight total bits in formats that trade exponent against fraction, commonly E4M3 and E5M2 (four exponent bits and three fraction bits, or five and two). Halving weight storage again would take our 54 GB to 27 GB, and supported matrix units go faster still, but casting raw values to fp8 is unsafe. Working recipes do several things:
+**fp8** pushes further, with eight total bits in formats that trade exponent against fraction, commonly E4M3 and E5M2 (four exponent bits and three fraction bits, or five and two). Halving weight storage again would take our 54 GB to 27 GB, and supported matrix units go faster still, but casting (converting) raw values to fp8 is unsafe. Working recipes do several things:
 
 - maintain scales so tensor values occupy the useful part of the representable range,
 - choose a format per operation,
 - accumulate in wider precision,
 - monitor saturation, values pinned at the format's maximum.
 
-Scaling can be per tensor, per channel, or per block. A single tensor-wide scale is cheap, but one outlier can waste most of the range. Finer scales fit varied distributions, at the price of metadata and kernel complexity. Delayed scaling reuses recent maxima to pick a scale for later steps, trading responsiveness for stability.
+Scaling can be per tensor, per channel, or per block. A single tensor-wide scale is cheap, but one outlier (an unusually huge value) can waste most of the range. Finer scales fit varied distributions, at the price of metadata and kernel (low-level GPU routine) complexity. Delayed scaling reuses recent maxima to pick a scale for later steps, trading responsiveness for stability.
 
 Distribution makes this harder in ways worth anticipating. A gradient can be finite on every rank and still overflow during the reduction that sums them. Communication may use a dtype distinct from optimizer storage. Most subtly, [lesson 5.8](/lessons/5-pretraining-at-scale/5.8-model-parallelism/) partitions one logical tensor across tensor-parallel ranks. If the recipe uses one scale for the whole tensor, those ranks must agree on it, or their partial products are not in the same units when combined. Blockwise recipes give each block its own scale and avoid that synchronization. Checkpoints need enough metadata to resume the whole precision recipe, gradient scaler included.
 

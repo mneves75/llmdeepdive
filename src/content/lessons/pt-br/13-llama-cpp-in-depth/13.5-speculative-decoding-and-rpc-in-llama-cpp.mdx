@@ -46,17 +46,19 @@ citations:
     authors: "Alexander2995"
     year: 2026
     url: "https://github.com/ggml-org/llama.cpp/discussions/29253"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 A [aula 13.4](/pt-br/lessons/13-llama-cpp-in-depth/13.4-benchmarking-with-llama-bench/) deu dois números, pp e tg, e mostrou que o decode é o lento, porque cada token lê os pesos de novo. Dois recursos do llama.cpp tocam o decode:
 
 - **Speculative decoding** (decodificação especulativa). Um modelo pequeno adivinha alguns tokens à frente, e o modelo grande os confere numa só passada, então uma leitura dos pesos do modelo grande pode confirmar vários tokens.
-- **RPC** (remote procedure call, chamada de procedimento remoto). Uma segunda máquina entra no jogo. Ela soma capacidade de memória e custa latência.
+- **RPC** (remote procedure call, chamada de procedimento remoto). Uma segunda máquina entra no jogo. Ela soma capacidade de memória e custa latência (atraso de rede).
 
-A [aula 7.5](/pt-br/lessons/7-inference-and-efficiency/7.5-beam-search-speculative-decoding-and-medusa/) é dona da teoria da especulação. Esta aula mostra o que as flags fazem na tag `b11380` e o que o protocolo RPC envia. Tudo rodou num único Mac, com o Qwen3-1.7B Q8_0 como **alvo** (o modelo cuja saída você quer) e o Qwen3-0.6B Q8_0 como **rascunho** (o modelo pequeno que adivinha). O teste de RPC usou só loopback, a máquina falando consigo mesma, então nenhuma rede foi medida.
+A [aula 7.5](/pt-br/lessons/7-inference-and-efficiency/7.5-beam-search-speculative-decoding-and-medusa/) é dona da teoria da especulação. Esta aula mostra o que as flags fazem na tag `b11380` e o que o protocolo RPC envia. Tudo rodou num único Mac, com o Qwen3-1.7B Q8_0 como **alvo** (o modelo cuja saída você quer) e o Qwen3-0.6B Q8_0 como **rascunho** (o modelo pequeno que adivinha). O teste de RPC usou só loopback, a máquina falando consigo mesma, então nenhuma rede real foi medida.
 
 ## Um modelo de rascunho pede duas flags
+
+O comando abaixo carrega tanto o modelo alvo (`-m`) quanto o modelo de rascunho (`-md`), ativa a especulação simples por rascunho (`--spec-type draft-simple`) num único slot de 4.096 tokens e expõe métricas Prometheus para você acompanhar os contadores de aceitação.
 
 ```
 llama-server -m TARGET.gguf -md DRAFT.gguf --spec-type draft-simple \
@@ -65,19 +67,19 @@ llama-server -m TARGET.gguf -md DRAFT.gguf --spec-type draft-simple \
 
 Uma primeira tentativa só com o `-md` carregou o modelo de rascunho, respondeu a uma requisição e deixou o `llamacpp:spec_decode_num_draft_tokens_total` em 0. Tanto o b11380 quanto o build 11146 do Homebrew se comportaram assim. O tipo precisa ser nomeado: `--spec-type draft-simple`.
 
-A mesma flag escolhe os outros métodos que o docs/speculative.md lista:
+A mesma flag escolhe os outros métodos que o `docs/speculative.md` lista:
 
 - `draft-eagle3`, `draft-dflash` e `draft-dspark`;
-- `draft-mtp` ("Use Multi Token Prediction (MTP) heads from the main model");
-- tipos de n-gram sem modelo, como o `ngram-simple`, que servem para reescrever código.
+- `draft-mtp` ("Use Multi Token Prediction (MTP) heads from the main model" — cabeças extras de saída embutidas no modelo alvo que preveem vários tokens futuros de uma vez);
+- tipos de n-gram sem modelo (que adivinham sequências curtas repetidas do texto já visto, como na [aula 0.2](/pt-br/lessons/0-orientation-and-foundations/0.2-history-ngram-to-gpt/)), como o `ngram-simple`, que servem para reescrever código.
 
 Só o `draft-simple` foi executado. Não foi testado se um GGUF do Qwen3.8-27B com heads de multi-token prediction carrega nesta tag, então essa afirmação fica de fora. O `convert_hf_to_gguf.py --mtp` existe para exportar tais heads.
 
-Padrões que vale conhecer: `--spec-draft-n-max 3`, `--spec-draft-n-min 0`, e o rascunho roda na GPU com `-ngld auto`. O rascunho precisa de um vocabulário compatível e custa memória ao lado do alvo.
+Padrões que vale conhecer: `--spec-draft-n-max 3`, `--spec-draft-n-min 0`, e o rascunho roda na GPU com `-ngld auto`. O rascunho precisa de um vocabulário compatível (a mesma lista de pedaços de token que o alvo) e custa memória ao lado do alvo.
 
 ## Lendo as estatísticas de aceitação
 
-Com o rascunho ativo, o `timings` da resposta ganhou `draft_n` e `draft_n_accepted`, o log imprimiu `draft acceptance` e o `/metrics` contou rascunhos e tokens aceitos por posição. Os mesmos dois modelos, dois prompts:
+Com o rascunho ativo, o `timings` (o resumo de tempos retornado na resposta JSON) ganhou `draft_n` e `draft_n_accepted`, o log imprimiu `draft acceptance` e o `/metrics` contou rascunhos e tokens aceitos por posição. Veja dois prompts no mesmo par de modelos, em que a temperatura 0 sempre escolhe o token de maior nota e a temperatura 0,8 adiciona aleatoriedade ([aula 0.3](/pt-br/lessons/0-orientation-and-foundations/0.3-probability-you-need/)):
 
 | Prompt | Rascunhados | Aceitos | Aceitação | Mean len |
 |---|---|---|---|---|
@@ -85,7 +87,9 @@ Com o rascunho ativo, o `timings` da resposta ganhou `draft_n` e `draft_n_accept
 | Poema aberto, temperatura 0 | 191 | 55 | 0,288 | 1,86 |
 | Poema aberto, temperatura 0,8 | 183 | 57 | 0,311 | 1,92 |
 
-A aceitação é aceitos dividido por rascunhados. O `mean len` é, no código-fonte, um mais os rascunhos aceitos divididos pelos passos de verificação: os tokens confirmados por passada do alvo. Pegue um passo inventado em que o rascunho propõe 3 tokens e o alvo aceita 2. A própria passada do alvo também rende um token dele, então esse passo confirma 3. Com três rascunhos o teto é 4.
+A aceitação é aceitos dividido por rascunhados. O `mean len` é, no código-fonte, um mais os rascunhos aceitos divididos pelos passos de verificação: os tokens confirmados por passada do alvo.
+
+<Figure id="t13-speculative-verify-step" />
 
 O `mean len` ignora o custo do rascunho, então limita o ganho e não é o ganho. Essas execuções não foram cronometradas, então nenhum speedup é afirmado.
 
@@ -98,13 +102,15 @@ Dois limites práticos decorrem disso:
 
 A correção é o ponto que a aula 7.5 enfatizou, e o código a sustenta. No caminho padrão, o alvo amostra cada posição com o seu próprio sampler, e um token do rascunho é aceito apenas se for igual a essa amostra. Então todo token confirmado é uma amostra do alvo.
 
-Existe uma segunda opção. A `--spec-draft-sampling probabilistic`, nova desde o build 11146, deixa o rascunho amostrar e verifica por rejeição: um token do rascunho é mantido com probabilidade min(1, p/q), em que p é a probabilidade que o alvo dá a esse token e q a que o rascunho dá. Segundo o comentário do código, isso preserva a distribuição do alvo exatamente.
+Existe uma segunda opção. A `--spec-draft-sampling probabilistic`, nova desde o build 11146, deixa o rascunho amostrar e verifica por rejeição: se o alvo considera o token rascunhado pelo menos tão provável quanto o rascunho considerou, ele fica; caso contrário, é mantido com probabilidade min(1, p/q), em que p é a probabilidade que o alvo dá a esse token e q a que o rascunho dá. Segundo o comentário do código, isso preserva a distribuição do alvo exatamente.
 
 O caminho padrão também é exato, mas não é a regra de rejeição min(1, p/q) que a aula 7.5 descreve: um token do rascunho só conta quando é igual à amostra do próprio alvo. Com temperatura acima de 0, a aceitação pode portanto ser menor que com `--spec-draft-sampling probabilistic`.
 
 ## Dividindo um modelo entre máquinas com RPC
 
-O backend RPC deixa o llama.cpp usar um dispositivo de outra máquina como se fosse local. No b11380 o binário do servidor é `ggml-rpc-server`, e não `rpc-server`. Ele faz o bind em `127.0.0.1:50052` por padrão.
+O backend RPC deixa o llama.cpp usar um dispositivo de outra máquina como se fosse local. No b11380 o binário do servidor é `ggml-rpc-server`, e não `rpc-server`. Por padrão ele faz o bind (escuta conexões de entrada) em `127.0.0.1:50052`.
+
+O primeiro comando inicia um servidor RPC na porta local `50152`. O segundo instrui o `llama-completion` a se conectar a ele (`--rpc`) e dividir as camadas do modelo igualmente (`-ts 1,1`) entre a GPU Metal local (`MTL0`) e esse dispositivo remoto (`RPC0`).
 
 ```
 ggml-rpc-server -p 50152
@@ -124,17 +130,17 @@ Com `GGML_RPC_DEBUG=1` definido no `ggml-rpc-server`, o log mostra o que cruzou 
 | `graph_compute` | 637 tensores x 296 B, cerca de 184 KiB | quando o grafo muda |
 | `graph_recompute` | alguns bytes | quando ele se repete |
 
-Em seis tokens o servidor viu duas mensagens `graph_compute` e quatro `graph_recompute`. Os pesos são a única transferência grande. Um tensor acima de 10 MiB é primeiro oferecido por hash, de modo que um servidor iniciado com `-c` pode pular a transferência num segundo carregamento. No `ggml-rpc-server`, o `-c` liga esse cache local; não é o tamanho de contexto que o `-c` define no `llama-server`.
+Em seis tokens o servidor viu duas mensagens `graph_compute` e quatro `graph_recompute`. Os pesos são a única transferência grande. Um tensor acima de 10 MiB é primeiro oferecido por hash (uma impressão digital curta dos seus bytes), de modo que um servidor iniciado com `-c` pode pular a transferência num segundo carregamento. No `ggml-rpc-server`, o `-c` liga esse cache local; não é o tamanho de contexto que o `-c` define no `llama-server`.
 
 ## O que limita o RPC: bandwidth no carregamento, idas e vindas no decode
 
-**O carregamento é um problema de bandwidth.** Todo peso atribuído a uma máquina remota precisa cruzar o enlace uma vez, a menos que o cache local dessa máquina já o tenha. Num split, isso é só a parcela remota do arquivo; como limite superior, suponha que o arquivo inteiro cruze. Na taxa de linha (a velocidade nominal do enlace), 17,1 GB (o Q4_K_M da [aula 8.7](/pt-br/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/)) levam 13,7 s em 10 GbE a 1,25 GB/s. Levam cerca de 1,7 s a 10 GB/s, a taxa de planejamento do Thunderbolt 5 da [aula 11.5](/pt-br/lessons/11-mac-studio-ultra-and-mlx/11.5-clustering-macs-mlx-distributed/) (1,1 s nos 15 GB/s informados pela Apple). Enlaces reais são mais lentos.
+<Figure id="t13-rpc-load-vs-decode" />
 
-**O decode é um problema de *latência*.** Com a camada de saída remota, um layer split move um vetor de estado oculto por token mais os logits, e os logits dominam. Na execução do Qwen3-1.7B isso é 8.192 B de estado oculto e 607.744 B de logits.
+**O carregamento é um problema de bandwidth.** Todo peso atribuído a uma máquina remota precisa cruzar o enlace uma vez, a menos que o cache local dessa máquina já o tenha. Num split, isso é só a parcela remota do arquivo; como limite superior, suponha que o arquivo inteiro cruze. Na taxa de linha (a velocidade nominal do enlace), 17,1 GB (o Q4_K_M da [aula 8.7](/pt-br/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/)) levam 13,7 s em 10 GbE (Ethernet cabeada de 10 gigabits, teto nominal de 1,25 GB/s). Levam cerca de 1,7 s a 10 GB/s, a taxa de planejamento do Thunderbolt 5 da [aula 11.5](/pt-br/lessons/11-mac-studio-ultra-and-mlx/11.5-clustering-macs-mlx-distributed/) (1,1 s nos 15 GB/s informados pela Apple). Enlaces reais são mais lentos.
 
-Para o Qwen3.8-27B, com tamanho oculto de 5.120, vocabulário de 248.320 linhas e valores fp32 (4 bytes cada), os valores derivados são 20.480 B de estado oculto e 993.280 B de logits por token, supondo que o GGUF mantenha esse tamanho de vocabulário. Os dois modelos movem cerca de 1 MB por token ou menos (para o Qwen3.8-27B, 1.013.760 B, cerca de 1,01 MB, sem contar mensagens de protocolo e de grafo). Somando todas as máquinas, cada token ainda lê cerca de 17,1 GB de pesos, e cada máquina lê só a sua parcela, da sua própria memória. Mesmo uma parcela é muito maior que o 1 MB no enlace, então é improvável que a bandwidth do enlace seja o teto. Confirmar isso exige a bandwidth e a latência reais do enlace, que não foram medidas aqui.
+**O decode é um problema de *latência*.** Para o Qwen3.8-27B, com tamanho oculto de 5.120, vocabulário de 248.320 linhas e valores fp32 (ponto flutuante de 32 bits, 4 bytes cada), os valores derivados são 20.480 B de estado oculto e 993.280 B de logits por token (1.013.760 B, cerca de 1,01 MB sem contar mensagens de protocolo e de grafo), supondo que o GGUF mantenha esse tamanho de vocabulário. Somando todas as máquinas, cada token ainda lê cerca de 17,1 GB de pesos, e cada máquina lê só a sua parcela, da sua própria memória. Mesmo uma parcela é muito maior que o 1 MB no enlace, então é improvável que a bandwidth do enlace seja o teto. Confirmar isso exige a bandwidth e a latência reais do enlace, que não foram medidas aqui.
 
-O que o enlace acrescenta é uma ida e volta, uma mensagem que sai e a resposta que volta, por salto e por mensagem. Cada uma espera o atraso da rede, por menor que seja a mensagem, como o correio da analogia. O tensor split (`-sm tensor`, marcado como experimental no README) sincroniza com mais frequência que o layer split padrão.
+O que o enlace acrescenta é uma ida e volta, uma mensagem que sai e a resposta que volta, por salto e por mensagem. Cada uma espera o atraso da rede, por menor que seja a mensagem, como o correio da analogia. O tensor split (`-sm tensor`, que fatia matrizes individuais entre máquinas em vez de colocar camadas inteiras em cada máquina, marcado como experimental no README) sincroniza com mais frequência que o layer split padrão.
 
 Um relato de usuário na discussão 29253 (dois mini PCs, 2,5 GbE, Vulkan, tensor split, Qwen3 4B Q8_0) leu 18,04 tokens/s numa máquina e 5,41 por RPC; o patch de cache de grafos do autor, ainda não incorporado, chegou a 13,21. É uma execução não revisada, então tome-a como indício.
 
@@ -145,7 +151,7 @@ O README chama o backend RPC de prova de conceito: "frágil e inseguro. Nunca ro
 :::
 
 :::caveat
-RDMA sobre Thunderbolt não foi executado. O RDMA (remote direct memory access, acesso direto à memória remota) deixa uma máquina ler ou escrever na memória de outra sem envolver o sistema operacional dessa outra máquina. O README diz que ele exige Thunderbolt 5, macOS 26.2 ou posterior e `rdma_ctl enable` pelo Recovery, e que a conexão usa o endereço Thunderbolt do par. `GGML_RPC_NO_RDMA=1` força TCP. Nenhum cluster foi testado, então toda afirmação sobre rede vem do código-fonte.
+RDMA sobre Thunderbolt não foi executado. O RDMA (remote direct memory access, acesso direto à memória remota) deixa uma máquina ler ou escrever na memória de outra sem envolver o sistema operacional dessa outra máquina. O README diz que ele exige Thunderbolt 5, macOS 26.2 ou posterior e `rdma_ctl enable` pelo Recovery, e que a conexão usa o endereço Thunderbolt do par. `GGML_RPC_NO_RDMA=1` força TCP (o transporte de rede padrão do sistema operacional). Nenhum cluster foi testado, então toda afirmação sobre rede vem do código-fonte.
 :::
 
-Para fechar a trilha: a especulação gasta compute ocioso para confirmar mais tokens por leitura de pesos, e o RPC compra capacidade com uma conta de latência. Meça a aceitação no seu próprio texto e conte as idas e vindas antes de prometer qualquer um dos dois.
+Meça a aceitação do rascunho no seu próprio texto e conte as idas e vindas da rede antes de contar com qualquer um dos dois recursos.

@@ -42,24 +42,24 @@ citations:
     authors: "Microsoft"
     year: 2024
     url: "https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-authentication"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
-The approver from [lesson 20.3](/lessons/20-human-approval-and-durable-pauses/20.3-durable-waits-and-callbacks/) sees a Slack message with the preview line and two buttons, Approve and Deny. She clicks Approve. Slack sends an HTTP request to a URL our app registered, the *Request URL*. That URL is on the public internet, so anyone can send it a request that looks like a click. Before the request may touch the approval store, four questions need answers. Did Slack send it? Is it fresh? Who clicked, and may that person approve? Has this click already been counted?
+The approver from [lesson 20.3](/lessons/20-human-approval-and-durable-pauses/20.3-durable-waits-and-callbacks/) sees a Slack message with the preview line and two buttons, Approve and Deny. She clicks Approve. Slack sends an HTTP request to a web address (URL) our app registered, the *Request URL*. That address is on the public internet, so anyone can send it a request that looks like a click. Before the request may touch the approval store, four questions need answers. Did Slack send it? Is it fresh? Who clicked, and may that person approve? Has this click already been counted?
 
 An *adapter* is the code that translates between an outside system and our own. This lesson builds the Slack adapter and tests it against forged, replayed, duplicate, late and unauthorized callbacks. Teams gets a design exercise, because it answers the first question with a different contract.
 
 ## What does Slack send when someone clicks?
 
-Slack's documentation says interaction payloads arrive "in an HTTP POST request in the form application/x-www-form-urlencoded", whose body "will contain a `payload` parameter" holding JSON. For a button in a message, the JSON has `"type": "block_actions"`, a `team` (the workspace), a `user` ("the user who interacted"), and an `actions` array. Each action has an `action_id` naming the button and a `value` that is "set by your app when you composed the blocks". Our app sets the value to the approval id, `ap-1`.
+Slack's documentation says interaction payloads (the data packages carried inside requests) arrive "in an HTTP POST request in the form application/x-www-form-urlencoded" — a web request that submits data in the same key-and-value format a web form uses — whose body "will contain a `payload` parameter" holding JSON. For a button in a message, the JSON has `"type": "block_actions"`, a `team` (the workspace), a `user` ("the user who interacted"), and an `actions` array (an ordered list). Each action has an `action_id` naming the button and a `value` that is "set by your app when you composed the blocks". Our app sets the value to the approval id, `ap-1`.
 
-The app must answer quickly. Slack says the app "must reply to the HTTP POST request with an HTTP 200 OK response", and "this must be sent within 3 seconds of receiving the payload"; otherwise the user sees an error. Three seconds is not much time for a database transaction, a directory lookup and a decision. The figure shows how the adapter splits the work so that the answer comes first.
+The app must answer quickly. Slack says the app "must reply to the HTTP POST request with an HTTP 200 OK response" (the standard web status code meaning received successfully), and "this must be sent within 3 seconds of receiving the payload"; otherwise the user sees an error. Three seconds is not much time for a database transaction, a directory lookup and a decision. The figure shows how the adapter splits the work so that the answer comes first.
 
 <Figure id="approval-callback-path" />
 
 ## Is this request really from Slack?
 
-Each Slack app has a *signing secret*, a value only Slack and the app know. For every request, Slack builds the string `v0:` + timestamp + `:` + body, computes an HMAC-SHA256 of it keyed with the secret, and sends the hex digest prefixed with `v0=` in the `X-Slack-Signature` header; the timestamp goes in `X-Slack-Request-Timestamp`. An *HMAC* is a keyed hash: without the key, nobody can produce the right digest for a body, and any change to the body changes the digest. The adapter recomputes it:
+Each Slack app has a *signing secret*, a value only Slack and the app know. For every request, Slack builds the string `v0:` + timestamp (the time as a count of seconds) + `:` + body, computes an HMAC-SHA256 of it keyed with the secret, and sends the hexadecimal digest (a string of digits 0–9 and letters a–f) prefixed with `v0=` in the `X-Slack-Signature` HTTP header (a metadata line sent ahead of the request body); the timestamp goes in `X-Slack-Request-Timestamp`. An *HMAC* (Hash-based Message Authentication Code) is a keyed hash: without the key, nobody can produce the right digest for a body, and any change to the body changes the digest. In the code below, `sign` builds that expected signature from the secret, timestamp, and raw body, and `verify` reads the two headers, checks that the timestamp is a valid number within five minutes of `now`, and compares the expected signature against the one Slack sent.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/slack.py
@@ -83,13 +83,13 @@ def verify(secret: str, headers: Mapping[str, str], body: bytes, now: datetime) 
     return hmac.compare_digest(sign(secret, timestamp, body).encode(), signature.encode("utf-8", "replace"))
 ```
 
-Each line follows Slack's documentation. The body is the raw bytes, "without headers, before it has been deserialized", because parsing and re-encoding can change bytes Slack signed. Header names are lower-cased, since "header names are meant to be case-insensitive". The timestamp must not "differ from local time by more than five minutes", which stops someone from resending a captured request an hour later. And the comparison uses an HMAC compare function instead of `==`, as Slack recommends: `==` can return as soon as one character differs, and that timing difference can leak how close a guess was. No test in this project can see that property: swap `compare_digest` for `==` and all the tests stay green, so it is something a code review checks, as 20.5 says of its own untestable guard. Slack's older *verification tokens* are deprecated; the guide recommends using "only" the signing secret.
+Each line follows Slack's documentation. The body is the raw bytes, "without headers, before it has been deserialized" (converted from raw text into program objects), because parsing and re-encoding can change bytes Slack signed. Header names are lower-cased, since "header names are meant to be case-insensitive". The timestamp must not "differ from local time by more than five minutes", which stops someone from resending a captured request an hour later. And the comparison uses an HMAC compare function instead of `==`, as Slack recommends: `==` can return as soon as one character differs, and that timing difference can leak how close a guess was. No test in this project can see that property: swap `compare_digest` for `==` and all the tests stay green, so it is something a code review checks, as 20.5 says of its own untestable guard. Slack's older *verification tokens* are deprecated (retired); the guide recommends using "only" the signing secret.
 
 The tests use a constant named `TEST_SIGNING_SECRET`, marked test-only in the file. A real secret belongs in a secret store and never in code. The tests sign the raw form-encoded bytes exactly as Slack would, so a version that verified the parsed JSON instead would fail them.
 
 ## Why answer first and decide later?
 
-The HTTP handler does four cheap things and returns:
+The HTTP handler — the function that answers incoming web requests — does four fast checks and returns: it verifies the signature (returning HTTP 401 Unauthorized on failure), validates the payload structure (returning HTTP 400 Bad Request if malformed), saves the raw body in the inbox, and returns HTTP 200.
 
 ```python
 # file: examples/agent-engineering/src/agentlab/approval/slack.py
@@ -105,7 +105,7 @@ def handle_callback(inbox: SlackInbox, secret: str, headers: Mapping[str, str], 
     return 200
 ```
 
-`parse` validates the payload against a strict Pydantic model: `action_id` must be `approve` or `deny`, and the ids must be short strings. The *inbox* is a SQLite table keyed by the SHA-256 of the body, written before the 200 goes back, so an accepted click survives a crash. A worker, `process_callbacks`, reads the inbox afterwards. This split is the *acknowledge fast, queue durable work* pattern: the slow, fallible part never races Slack's deadline.
+`parse` validates the payload against a Pydantic model (a Python schema that checks each declared field's type and length, ignoring extra fields): `action_id` must be `approve` or `deny`, and the ids must be short strings. The *inbox* is a SQLite table keyed by the SHA-256 of the body, written before the 200 goes back, so an accepted click survives a crash. A worker, `process_callbacks`, reads the inbox afterwards. This split is the *acknowledge fast, queue durable work* pattern: the slow, fallible part never races Slack's deadline.
 
 The key matters because the signature check alone cannot stop a duplicate. A request captured and resent within five minutes has a valid signature and a valid timestamp. Its body is identical, though, so its hash matches a stored key and the inbox does not queue it twice. A *different* click on the same request, such as a second approver pressing Deny, has a different body. The store from lesson 20.3 handles that one: `decide` finds the request already decided and refuses it.
 
@@ -119,11 +119,11 @@ So two layers of trust meet here. The adapter authenticates *who clicked*. The s
 
 ## Teams is a different contract
 
-A Teams bot built on Microsoft's Bot Framework receives callbacks from the Bot Connector service, and Microsoft's page on authenticating those requests (dated 2024-10-09, read 2026-10-18) describes a different mechanism. The connector sends a signed *JSON Web Token* (JWT) in the `Authorization` header with the `Bearer` scheme. The bot must check, among other requirements, that the token's issuer is `https://api.botframework.com`, that its audience equals the bot's Microsoft App ID, that it is "within its validity period" with an industry-standard clock skew of 5 minutes, that its signature uses a key from the OpenID metadata document, and that its `serviceUrl` claim matches the activity. The page asks bots to refresh their cached signing keys "at least once every 24 hours".
+A Teams bot built on Microsoft's Bot Framework receives callbacks from the Bot Connector service, and Microsoft's page on authenticating those requests (dated 2024-10-09, read 2026-10-18) describes a different mechanism. The connector sends a signed *JSON Web Token* (JWT) in the `Authorization` header with the `Bearer` scheme (meaning whoever presents the token). The bot must check, among other requirements, that the token's issuer (who created it) is `https://api.botframework.com`, that its audience (which app it is meant for) equals the bot's Microsoft App ID, that it is "within its validity period" with an industry-standard clock skew (allowed difference between server clocks) of 5 minutes, that its signature uses a key from the signing-key list referenced by the OpenID metadata document (`jwks_uri`), and that its `serviceUrl` claim matches the activity. The page asks bots to refresh their cached (locally saved) signing keys "at least once every 24 hours".
 
 None of that is Slack's HMAC, and `verify` proves nothing about a Teams request. Microsoft's page also says that a bot using the Bot Framework SDK gets these checks done for it. That matches this course's rule from [lesson 15.5](/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/): never hand-roll token validation or cryptography; use the maintained library.
 
-The design exercise is to write down what a Teams adapter keeps and what it replaces. It keeps the inbox, the directory lookup (keyed by the user id Teams supplies instead of Slack's pair), `decide` and every test about duplicates, lateness and unauthorized approvers. It replaces `verify` with the SDK's token validation, and its refusals follow Microsoft's page, which names HTTP 403 (Forbidden) as the refusal. The course ships no Teams code, and its CI makes no call to Slack or Teams. Posting the Slack message and running a real HTTP listener are also outside what the tests run, because both need a real workspace.
+The design exercise is to write down what a Teams adapter keeps and what it replaces. It keeps the inbox, the directory lookup (keyed by the user id Teams supplies instead of Slack's pair), `decide` and every test about duplicates, lateness and unauthorized approvers. It replaces `verify` with the SDK's token validation, and its refusals follow Microsoft's page, which names HTTP 403 (Forbidden) as the refusal. The course ships no Teams code, and its CI makes no call to Slack or Teams. Posting the Slack message and running a real HTTP listener (a live web server waiting for incoming requests) are also outside what the tests run, because both need a real workspace.
 
 ## Run the exercise
 

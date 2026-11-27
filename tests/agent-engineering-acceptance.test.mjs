@@ -25,7 +25,7 @@ const DIST = process.env.LLMDEEPDIVE_DIST_ROOT ?? 'dist'
 const inventory = JSON.parse(readFileSync(join(SPEC_DIR, 'inventory.json'), 'utf8'))
 const engineeringInventory = JSON.parse(readFileSync('docs/plans/ai-engineering-roadmap/inventory.json', 'utf8'))
 const NEW_TRACKS = new Set(inventory.tracks.map((track) => track.id))
-const ENGINEERING_TRACKS = new Set(engineeringInventory.tracks.map((track) => track.id))
+const ENGINEERING_TRACKS = new Set([...engineeringInventory.tracks.map((track) => track.id), '34-a-model-in-your-browser'])
 const NEW_LESSONS = new Map(inventory.lessons.map((lesson) => [lesson.id, lesson]))
 const FENCE = /^```[^\n]*\n([\s\S]*?)^```/gmu
 const HEADER = /^(?:#|\/\/) file: (\S+)\s*$/u
@@ -49,14 +49,14 @@ function corpus(locale) {
 
 const corpora = new Map(LOCALES.map((locale) => [locale, corpus(locale)]))
 
-// --- Acceptance 1: 34 tracks and 230 lessons per locale, in three parts -----
+// --- Acceptance 1: 35 tracks and 238 lessons per locale, in three parts -----
 
 for (const locale of LOCALES) {
-  test(`${locale}: 34 tracks and 230 lessons, tracks 14–25 in agents and 26–33 in engineering`, () => {
+  test(`${locale}: 35 tracks and 238 lessons, tracks 14–25 in agents and 26–34 in engineering`, () => {
     const { tracks, lessons } = corpora.get(locale)
-    assert.equal(tracks.length, 34)
-    assert.equal(lessons.length, 230)
-    assert.equal(new Set(lessons.map((item) => item.id)).size, 230, 'duplicate lesson id')
+    assert.equal(tracks.length, 35)
+    assert.equal(lessons.length, 238)
+    assert.equal(new Set(lessons.map((item) => item.id)).size, 238, 'duplicate lesson id')
     for (const track of tracks) {
       const expectedPart = NEW_TRACKS.has(track.id) ? 'agents' : ENGINEERING_TRACKS.has(track.id) ? 'engineering' : 'models'
       assert.equal(track.part, expectedPart, `${track.id} part`)
@@ -220,6 +220,12 @@ test('every `# file:` excerpt quotes a module a test imports, a fixture the proj
   assert.ok(quoted.size >= 60, `only ${quoted.size} distinct excerpt files`)
   const problems = []
   for (const path of quoted) {
+    if (path.startsWith('examples/qwen-local-lab/')) {
+      if (!existsSync(path)) { problems.push(`${path}: missing`); continue }
+      const allowedLab = /^(?:examples\/qwen-local-lab\/(?:src\/(?:app|inference-worker)\.js|scripts\/(?:build|fetch_vendor)\.py|tests\/.+))$/u
+      if (!allowedLab.test(path)) problems.push(`${path}: unexpected qwen-local-lab excerpt`)
+      continue
+    }
     const inside = path.replace(`${EXAMPLES}/`, '')
     if (!existsSync(join(EXAMPLES, inside))) { problems.push(`${path}: missing`); continue }
     if (/^tests(_[a-z]+)?\/test_[a-z0-9_]+\.py$/u.test(inside)) continue
@@ -308,12 +314,12 @@ for (const locale of LOCALES) {
     }
   })
 
-  test(`${locale}: the build holds 230 lesson pages and 34 track pages`, () => {
+  test(`${locale}: the build holds 238 lesson pages and 35 track pages`, () => {
     const base = locale === 'en' ? DIST : join(DIST, 'pt-br')
     const lessonsPages = walkFiles(resolve(base, 'lessons'), new Set(['.html'])).filter((file) => /lessons\/[^/]+\/[^/]+\/index\.html$/u.test(file))
     const trackPages = walkFiles(resolve(base, 'tracks'), new Set(['.html'])).filter((file) => /tracks\/[^/]+\/index\.html$/u.test(file))
-    assert.equal(lessonsPages.length, 230)
-    assert.equal(trackPages.length, 34)
+    assert.equal(lessonsPages.length, 238)
+    assert.equal(trackPages.length, 35)
   })
 }
 

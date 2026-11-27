@@ -38,43 +38,43 @@ citations:
     authors: "Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang e Ion Stoica"
     year: 2023
     url: "https://arxiv.org/abs/2309.06180"
-updated: "2026-11-21"
+updated: "2026-11-26"
 ---
 
-Equipes passam com frequência duas semanas cortando 20 milissegundos da busca vetorial, colocam a mudança em produção e descobrem que os usuários continuam esperando mais de quatro segundos até a resposta terminar. Sem um **orçamento de latência** ponta a ponta (uma contabilidade explícita de cada milissegundo em todas as etapas de uma requisição), o esforço de engenharia vai para o trecho mais fácil de perfilar em vez do trecho que domina o relógio. Como LLMs se dividem em duas fases de hardware distintas vistas na [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) — *prefill* limitado por computação e *decode* limitado por largura de banda de memória — um sistema de IA exige gerenciar dois relógios de latência ao mesmo tempo.
+Equipes passam com frequência duas semanas cortando 20 milissegundos da busca vetorial (localizar documentos comparando listas numéricas de significado), colocam a mudança em produção e descobrem que os usuários continuam esperando mais de quatro segundos até a resposta terminar. Sem um **orçamento de latência** ponta a ponta (uma contabilidade explícita de cada milissegundo em todas as etapas de uma requisição), o esforço de engenharia vai para o trecho mais fácil de medir em vez do trecho que domina o tempo total de relógio (do envio até o fim da resposta). Como Grandes Modelos de Linguagem (LLMs) se dividem em duas fases de hardware distintas vistas na [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) — *prefill* (leitura do prompt, limitada por computação) e *decode* (geração de tokens de saída um a um, limitada por largura de banda de memória) — um sistema de IA exige gerenciar dois relógios de latência ao mesmo tempo.
 
 ## Decompondo um turno RAG sem cache
 
-Acompanhe uma requisição RAG completa sem cache usando números concretos antes de escrever a fórmula geral:
+Acompanhe uma requisição completa de Geração Aumentada por Recuperação (RAG — buscar documentos relevantes antes de pedir ao modelo que escreva a resposta) sem cache usando números concretos antes da fórmula geral:
 
-- **Busca híbrida + rerank:** 85 ms para executar busca densa e lexical, aplicar filtros de ACL e reordenar os candidatos principais com cross-encoder.
-- **Guardrails de entrada/saída:** 45 ms para os classificadores rápidos da Camada 1 da [aula 30.4](/pt-br/lessons/30-rag-security-privacy-and-governance/30.4-jailbreaks-guardrails-and-latency-budgets/).
-- **Prefill do modelo (*Time to First Token*, TTFT):** 240 ms para o LLM ingerir o prompt e os trechos recuperados e emitir o primeiro token.
-- **Decode autorregressivo (pós-TTFT):** como o TTFT já inclui a emissão do 1º token, os $250 - 1 = 249$ tokens restantes a 60 tok/s levam $(249 / 60) \times 1{,}000 = 4{,}150\text{ ms}$.
+- **Busca híbrida + rerank:** 85 ms para executar busca densa (por significado vetorial) e lexical (por palavras-chave exatas), aplicar Listas de Controle de Acesso (ACLs, regras de permissão dizendo qual usuário pode ler cada documento) e reordenar os candidatos principais juntos com um pequeno *cross-encoder* neural.
+- **Guardrails de entrada/saída:** 45 ms para os classificadores automáticos rápidos de segurança da Camada 1 da [aula 30.4](/pt-br/lessons/30-rag-security-privacy-and-governance/30.4-jailbreaks-guardrails-and-latency-budgets/).
+- **Prefill do modelo (*Time to First Token*, TTFT):** 240 ms para o LLM ler o prompt e os trechos recuperados e emitir o primeiro token de saída.
+- **Decode autorregressivo (pós-TTFT):** geração de um token por vez, cada um alimentando o seguinte. Como o TTFT já inclui a emissão do 1º token, os $250 - 1 = 249$ tokens restantes a 60 tok/s levam $(249 / 60) \times 1{,}000 = 4{,}150\text{ ms}$.
 
 <Figure id="31-1-latency-budget-stack" />
 
-Some as três primeiras etapas para obter o **tempo até o primeiro token** ponta a ponta: $85 + 45 + 240 = 370\text{ ms}$. O usuário vê o texto começar a fluir em menos de meio segundo, o que transmite agilidade. Some a etapa de decode pós-TTFT para obter a **latência total sem cache**: $370 + 4{,}150 = 4{,}520\text{ ms}$. Em termos gerais, para latências de estágio $t_{\text{ret}}$, $t_{\text{guard}}$, $t_{\text{ttft}}$, tamanho de saída $N_{\text{out}} \ge 1$ tokens e velocidade de decode $v_{\text{dec}}$ tokens por segundo:
+Some as três primeiras etapas para obter o **tempo até o primeiro token** ponta a ponta: $85 + 45 + 240 = 370\text{ ms}$. O usuário vê o texto começar a aparecer em menos de meio segundo, o que transmite agilidade. Some a etapa de decode pós-TTFT para obter a **latência total sem cache**: $370 + 4{,}150 = 4{,}520\text{ ms}$. Em termos gerais, para latências de estágio $t_{\text{ret}}$, $t_{\text{guard}}$, $t_{\text{ttft}}$, tamanho de saída $N_{\text{out}} \ge 1$ tokens e velocidade de decode $v_{\text{dec}}$ tokens por segundo:
 
 $$
 T_{\text{uncached}} = t_{\text{ret}} + t_{\text{guard}} + t_{\text{ttft}} + \frac{\max(0, N_{\text{out}} - 1)}{v_{\text{dec}}} \times 1{,}000.
 $$
 
-Observe as proporções. Recuperação, guardrails e prefill juntos somam apenas $370 / 4{,}520 \approx 8.2\%$ do tempo total do turno, enquanto o decode consome $91.8\%$. Se um fluxo posterior espera o objeto JSON inteiro antes de agir (sem streaming), reduzir a verbosidade de saída de 250 para 120 tokens economiza mais de dois segundos inteiros — cinquenta vezes mais do que cortar a latência de busca pela metade.
+Observe as proporções na figura acima. Recuperação, guardrails e prefill juntos somam $370 / 4{,}520 \approx 8.2\%$ do tempo total do turno, enquanto o decode consome $91.8\%$. Se um programa posterior espera um objeto JSON inteiro (formato estruturado de dados em chave e valor) antes de agir — sem **streaming** (enviar cada token à tela assim que ele é produzido) — reduzir a saída de 250 para 120 tokens economiza mais de dois segundos inteiros, cinquenta vezes mais do que cortar a latência de busca pela metade.
 
 ## Latência média versus cauda p99 com cache
 
-Suponha agora que você coloque um cache à frente dessa pilha RAG com taxa de acerto $h = 35\%$ e tempo de consulta $t_{\text{cache}} = 18\text{ ms}$. Calcule a **latência média efetiva** sobre todo o tráfego:
+Suponha agora que você coloque um **cache** (armazenamento temporário rápido que guarda respostas anteriores) à frente dessa pilha RAG com taxa de acerto $h = 35\%$ e tempo de consulta $t_{\text{cache}} = 18\text{ ms}$. Calcule a **latência média efetiva** sobre todo o tráfego:
 
 $$
 T_{\text{eff}} = h \cdot t_{\text{cache}} + (1 - h) \cdot T_{\text{uncached}} = 0.35 \times 18 + 0.65 \times 4{,}520 = 2{,}944.3 \approx 2{,}944\text{ ms}.
 $$
 
-A latência média cai 35%, de 4.520 ms para 2.944 ms. Ainda assim, painéis que exibem apenas a média escondem o que o usuário sente. Todo erro de cache — 65% das requisições — continua percorrendo recuperação, guardrails, prefill e decode por 4.520 ms ou mais quando filas se acumulam. Como Dean e Barroso (2013) demonstram em *The Tail at Scale*, chamadas em leque (*fan-out*) amplificam rapidamente a variância de cauda: se uma ação dispara $k$ subchamadas independentes sem cache e cada uma tem 1% de chance de sofrer um pico p99 de 6 segundos, a probabilidade de *pelo menos uma* travar o pedido é $1 - 0.99^k$. Em um fluxo de agente com 5 passos ($k = 5$), quase 5% dos turnos caem na cauda lenta; em $k = 20$ subconsultas paralelas sem *hedging* nem timeouts da [aula 26.4](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.4-async-concurrency-rate-limits-and-batching/), mais de 18% das requisições travam na cauda.
+A latência média cai 35%, de 4.520 ms para 2.944 ms. Ainda assim, painéis que exibem apenas a média escondem a **latência de cauda** — percentis como **p95** ou **p99** (os tempos abaixo dos quais 95% ou 99% das requisições terminam, significando que os 5% ou 1% mais lentos esperam ao menos isso). Todo erro de cache — 65% das requisições — continua percorrendo recuperação, guardrails, prefill e decode por 4.520 ms ou mais quando filas se acumulam. Como Dean e Barroso (2013) demonstram em *The Tail at Scale*, **chamadas em leque (*fan-out*)** (uma ação do usuário disparando várias requisições separadas em paralelo) amplificam rapidamente a variância de cauda: se uma ação dispara $k$ subchamadas independentes sem cache e cada uma tem 1% de chance de sofrer um pico p99 de 6 segundos, a probabilidade de *pelo menos uma* travar o pedido é $1 - 0.99^k$. Em um fluxo de agente com 5 passos ($k = 5$), quase 5% dos turnos caem na cauda lenta; em $k = 20$ subconsultas paralelas sem *hedging* (disparar uma cópia reserva quando a primeira atrasa) nem *timeouts* (interromper uma chamada travada após um limite fixo) da [aula 26.4](/pt-br/lessons/26-llm-apis-and-structured-outputs/26.4-async-concurrency-rate-limits-and-batching/), mais de 18% das requisições travam na cauda.
 
 ## Quantificando falsos acertos semânticos e custo mensal
 
-Se essa taxa de acerto de 35% vier de um **cache semântico** (casando perguntas por similaridade de *embedding* em vez de igualdade exata de texto), cada acerto carrega uma probabilidade não nula $f$ de devolver uma resposta sutilmente errada ou desatualizada — um **falso acerto**. Com $h = 0.35$ e uma taxa modesta de $f = 2\%$ de falsos acertos sobre os hits, calcule os erros a cada $10{,}000$ requisições:
+Se essa taxa de acerto de 35% vier de um **cache semântico** (casando perguntas pela proximidade de seus *embeddings* — vetores numéricos de significado — em vez de igualdade exata de texto), cada acerto carrega uma probabilidade não nula $f$ de devolver uma resposta sutilmente errada ou desatualizada — um **falso acerto**. Com $h = 0.35$ e uma taxa modesta de $f = 2\%$ de falsos acertos sobre os hits, calcule os erros a cada $10{,}000$ requisições:
 
 $$
 \text{Falsos Acertos}_{10\text{k}} = h \cdot f \cdot 10{,}000 = 0.35 \times 0.02 \times 10{,}000 = 70\ \text{respostas erradas em cache}.
@@ -82,12 +82,12 @@ $$
 
 Setenta respostas erradas a cada 10.000 consultas — 7.000 respostas ruins por milhão de requisições — formam uma taxa de defeito inaceitável para assistentes financeiros, jurídicos ou médicos, ainda que "só 2%" pareça inofensivo isoladamente.
 
-Faça agora a conta mensal de custo na mesma carga:
+Faça agora a conta mensal de custo na mesma carga, comparando **pay-as-you-go (PAYG)** (pagar por requisição usada) com **capacidade reservada** (pagar uma taxa mensal fixa por capacidade dedicada):
 
 - **Volume mensal:** $1{,}000{,}000$ requisições ($1{,}000\text{k}$).
 - **Custo sem cache:** USD 4,50 por 1.000 requisições $\rightarrow 1{,}000 \times 4.50 = \text{USD } 4{,}500/\text{mês}$.
 - **Custo pay-as-you-go (PAYG) com cache:** $4{,}500 \times (1 - 0.35) = \text{USD } 2{,}925/\text{mês}$, economizando USD 1.575/mês.
-- **Comparação com capacidade reservada:** Se uma reserva de capacidade com p99 estável custa USD 2.600/mês, a capacidade reservada vence o PAYG com cache por USD 325/mês — e ainda protege o TTFT em p99 contra ruído de outros clientes em APIs compartilhadas.
+- **Comparação com capacidade reservada:** Se uma reserva de capacidade com p99 estável custa USD 2.600/mês, a capacidade reservada vence o PAYG com cache por USD 325/mês — e ainda protege o TTFT em p99 contra **ruído de vizinhos em APIs compartilhadas** (lentidões causadas por outros clientes dividindo os mesmos servidores do provedor).
 
 :::caveat
 A capacidade reservada só vence o pay-as-you-go quando a utilização permanece constante o suficiente para preencher a reserva. Se o seu 1.000.000 de requisições mensais se concentrar em apenas duas horas de pico em dias úteis enquanto noites e fins de semana ficam ociosos, reservar para o pico desperdiça dinheiro fora do horário comercial; roteamento híbrido (base reservada mais transbordo em PAYG) lida melhor com picos acentuados.

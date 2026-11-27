@@ -38,14 +38,14 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Training a 27-billion-parameter model needs far more memory than running it. Under the illustrative recipe this lesson uses, the persistent training state alone is several times what one 80 GB GPU holds. This lesson shows how a training job spreads that memory across many GPUs, and what the spreading costs.
+Training a 27-billion-parameter model needs far more memory than running it. Under the illustrative recipe this lesson uses, the persistent training state alone is several times what one 80 GB GPU (graphics processor) holds. This lesson shows how a training job spreads that memory across many GPUs, and what the spreading costs.
 
 ## How much memory does training need?
 
-Qwen3.8-27B ships as safetensors files (the weight-file format on the model page) stored in bf16, totalling about 54 GB. That is a fact about checkpoint storage. It is not a training-memory recipe, and not proof that the full serving stack fits a nominal 80 GB device: the KV cache, activations (the intermediate values each layer produces), runtime workspaces, and fragmentation also consume memory. Training adds further persistent and temporary categories, and their dtypes (number formats) must be stated rather than inferred from the released checkpoint.
+Qwen3.8-27B ships as safetensors files (the weight-file format on the model page) stored in bf16, totalling about 54 GB. That is a fact about checkpoint storage. It is not a training-memory recipe, and not proof that the full serving stack fits a nominal 80 GB device: the KV cache, activations (the intermediate values each layer produces), runtime workspaces (scratch memory reserved by the software), and fragmentation (unusable gaps between memory allocations) also consume memory. Training adds further persistent and temporary categories, and their dtypes (number formats) must be stated rather than inferred from the released checkpoint.
 
 [Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) owns this model’s serving budget on one accelerator: weights, KV cache, recurrent state and runtime reserve. Training state is a different budget, and this lesson owns the course’s illustrative breakdown of it. It uses one explicit scenario:
 
@@ -63,13 +63,11 @@ The batch the optimizer sees grows with the number of ranks. Take a toy setup: 8
 
 ## How do ZeRO's three stages cut memory?
 
-**ZeRO** removes that redundancy in three stages. Each stage shards (splits into equal slices, one per rank) one more category of state. Compute the effect on a concrete cluster: 64 ranks and the illustrative 432 GB budget above.
+**ZeRO** removes that redundancy in three stages. Each stage shards (splits into equal slices, one per rank) one more category of state. Step through a concrete 64-rank cluster on the illustrative 432 GB budget below:
 
-Stage 1 shards optimizer state only. Each rank keeps full bf16 parameters and gradients but $1/64$ of the optimizer: $324/64 = 5.06$ GB. Per-rank persistent state becomes $54+54+5.06 \approx 113$ GB. That still cannot fit on 80 GB cards.
+<Figure id="t5-zero-sharding-stages" />
 
-Stage 2 also shards gradients: $54/64 = 0.84$ GB. Now $54+0.84+5.06 \approx 59.9$ GB. This fits, barely. About 20 GB remains for activations, temporaries, fragmentation, and communication buffers, on a model with hidden size 5120 and long sequences. [Lesson 5.10](/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/) will show that this is not much.
-
-Stage 3 shards the parameters as well, so persistent state is the whole budget divided by the world size (the total number of ranks): $432/64 = 6.75$ GB per rank. The full parameters of a module exist only temporarily, materialized just before they are needed.
+The arithmetic for each step across 64 ranks (the world size, or total rank count) is direct: Stage 1 divides the 324 GB optimizer state ($324/64 = 5.06$ GB), leaving $54+54+5.06 \approx 113$ GB per rank — still too large for an 80 GB card. Stage 2 divides gradients too ($54/64 = 0.84$ GB), leaving $54+0.84+5.06 \approx 59.9$ GB and only about 20 GB for activations and buffers ([lesson 5.10](/lessons/5-pretraining-at-scale/5.10-gradient-checkpointing/) shows how quickly activations overflow that). Stage 3 divides parameters as well, cutting persistent state to $432/64 = 6.75$ GB per rank, while full module parameters exist only temporarily when needed.
 
 :::warning
 The misconception this lesson exists to kill is that serving memory predicts training memory. It does not: under the stated illustrative recipe, the ratio of persistent state is about eight to one. Worse, the intuition fails in the reassuring direction. The model loads fine, a short forward pass runs fine, and the out-of-memory failure arrives at the first optimizer step, after the job has already consumed cluster time. Compute the full budget (parameters, gradients, master weights, both moments, activations, temporaries) before requesting nodes.
@@ -89,10 +87,10 @@ Sharding lowers persistent memory but does nothing for activations. Long sequenc
 
 ## What changes for checkpoints and failures?
 
-Checkpointing becomes distributed. Gathering the full state dict (every named tensor of the model and optimizer) onto one machine may exceed host memory, so each rank writes the tensors it owns, alongside metadata that reconstructs global names and shapes. Resuming at a different world size requires a format and loader that support resharding. Saving the weights alone is not enough for exact continuation: optimizer moments, scheduler position, loss scaler, random-number state, and data-loader cursor all matter. Under the illustrative recipe, the optimizer state is the largest category in the checkpoint.
+Checkpointing becomes distributed. Gathering the full state dict (every named tensor of the model and optimizer) onto one machine may exceed host memory (the main CPU RAM of a server), so each rank writes the tensors it owns, alongside metadata that reconstructs global names and shapes. Resuming at a different world size requires a format and loader that support resharding (re-slicing saved shards for a new GPU count). Saving the weights alone is not enough for exact continuation: optimizer moments, scheduler position (where the learning rate sits, [lesson 5.11](/lessons/5-pretraining-at-scale/5.11-learning-rate-schedules/)), loss scaler (the numeric scale factor of [lesson 5.9](/lessons/5-pretraining-at-scale/5.9-mixed-precision/)), random-number state, and data-loader cursor (which training batch comes next) all matter. Under the illustrative recipe, the optimizer state is the largest category in the checkpoint.
 
-Failures must also be handled collectively. If one rank hits bad data while the others enter an all-reduce, the job hangs instead of raising a clean exception. Timeouts, coordinated error propagation, rank-aware logs, and reproducible batch identifiers are necessities, not niceties.
+Failures must also be handled collectively. If one rank hits bad data while the others enter an all-reduce, the job hangs instead of raising a clean exception. Timeouts (limits on how long a rank waits before failing), coordinated error propagation, rank-aware logs, and reproducible batch identifiers are necessities, not niceties.
 
-Network topology shapes the design too. Fast links inside a node and slower links between nodes favour hierarchical collectives, and a stage-3 job whose all-gathers cross a slow network can spend more time moving parameters than using them.
+Network topology (how fast GPUs are wired inside a server versus between servers) shapes the design too. Fast links inside a node and slower links between nodes favour hierarchical collectives, and a stage-3 job whose all-gathers cross a slow network can spend more time moving parameters than using them.
 
 The stable picture is replicated computation over different data, with increasingly sharded state behind it. Data parallelism buys throughput. ZeRO and FSDP remove redundant memory. Neither creates capacity without a cost: the price is communication volume, scheduling complexity, and much more demanding checkpoint and failure handling.

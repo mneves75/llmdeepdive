@@ -50,32 +50,34 @@ citations:
     authors: "Model Context Protocol"
     year: 2026
     url: "https://modelcontextprotocol.io/specification/2026-07-28/basic"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
 A supplier e-mail reaches the purchasing assistant with a line hidden in it, and the model, steered by that line, calls `search_purchase_orders` with `{"item_contains": "zz') OR tenant_id LIKE ('tenant-b"}`. The text is 33 characters long, within the schema's limit of 60, and it is a string, as the schema asks. Validation from [lesson 15.1](/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) passes. What stops tenant-b's orders from leaving the database? This lesson builds the server's data layer so that several independent things do, and tests each one with an attack and a harmless control case.
 
 ## Narrow tools, not a SQL console
 
-The server offers three tools: look up one order, list orders, and search item descriptions. Each one runs a fixed query written by the developer. The model chooses only which tool to call and fills in its arguments; it never writes SQL. The course calls this server *raw* because it speaks the Model Context Protocol (MCP) by hand, as the earlier lessons built it, without an MCP SDK (software development kit: a maintained library that implements the protocol). It is a learning subset, and its module docstring lists what it leaves out. The database driver and Python's standard library are still used, because the exercise is about the protocol, not about reimplementing a database client.
+The server offers three tools: look up one order, list orders, and search item descriptions. Each one runs a fixed *SQL* (Structured Query Language, the standard language for asking a relational database for rows) query written by the developer. The model chooses only which tool to call and fills in its arguments; it never writes SQL. The course calls this server *raw* because it speaks the Model Context Protocol (MCP) by hand, as the earlier lessons built it, without an MCP SDK (software development kit: a maintained library that implements the protocol). It is a learning subset, and its module *docstring* (a documentation block written directly inside the source file) lists what it leaves out. The *database driver* (a library handling the low-level protocol to talk to SQLite or Postgres) and Python's standard library are still used, because the exercise is about the protocol, not about reimplementing a database client.
 
 <Figure id="mcp-trust-boundaries" />
 
 ## Values travel as data: bound parameters
 
-Here is what the search would look like if it were written the tempting way, pasting the text into the SQL string. This vulnerable version is an illustration: it is not in the repository and the course’s CI does not run it. While this lesson was being written, it was planted into `queries.py` for one test run, and the injection test failed with PO-2001 and PO-2002, tenant-b's orders, in the result:
+Here is what the search would look like if it were written the tempting way, pasting the text directly into the SQL string. This vulnerable version is an illustration: it is not in the repository and the course’s *CI* (continuous integration, the automated checks run on code changes) does not run it. While this lesson was being written, it was planted into `queries.py` for one test run, and the injection test failed with PO-2001 and PO-2002, tenant-b's orders, in the result:
 
 ```python
 # Illustration only, never write this.
 sql = f"SELECT ... WHERE tenant_id = '{principal.tenant_id}' AND lower(item) LIKE lower('%{args.item_contains}%')"
 ```
 
-The quote and parenthesis in the model's text close the `LIKE` early, and `OR tenant_id LIKE ('tenant-b` becomes part of the query. Python's `sqlite3` documentation warns against exactly this: "beware of using Python's string operations to assemble queries, as they are vulnerable to SQL injection attacks." The fix is a *bound parameter*. The SQL text is fixed and contains a placeholder, and the value is sent to the database separately, so the database never parses it as SQL. The real query and function:
+The quote and parenthesis in the model's text close the `LIKE` early, and `OR tenant_id LIKE ('tenant-b` becomes part of the query. Python's `sqlite3` documentation warns against exactly this: "beware of using Python's string operations to assemble queries, as they are vulnerable to SQL injection attacks" (*SQL injection* is an attack where untrusted text breaks out of a data slot and alters the query itself). The fix is a *bound parameter*: the SQL text stays fixed with a *placeholder* (a marker such as `?` or `%s`), and the value travels to the database separately so the database never parses it as SQL. First, `SEARCH` fixes the query template with three `{p}` placeholder slots (tenant, pattern and row limit):
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/queries.py
 SEARCH = f"SELECT {COLUMNS} FROM purchases WHERE tenant_id = {{p}} AND lower(item) LIKE lower({{p}}) ESCAPE '\\' ORDER BY po_id LIMIT {{p}}"
 ```
+
+Next, `search_purchase_orders` escapes `LIKE`'s own special characters in the user text and hands the tenant id, search pattern and limit to `_page` as separate parameters:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/queries.py
@@ -85,11 +87,11 @@ def search_purchase_orders(db: ReadOnlyDatabase, principal: Principal, args: Sea
     return _page(db, principal, SEARCH, (principal.tenant_id, f"%{text}%"), args.limit)
 ```
 
-`{p}` is where a placeholder goes. SQLite writes placeholders as `?` and psycopg as `%s`, so each database object fills in its own symbol. Only these constant templates are ever formatted, never a value. The escaping line handles a smaller problem that parameters do not solve: inside a `LIKE` pattern, `%` means "any text" and `_` means "any one character". Unescaped, a search for `%%` would match every order. With the escapes it matches only an item that really contains two percent signs, and none does.
+`{p}` is where a placeholder goes. SQLite writes placeholders as `?` and psycopg as `%s`, so each database object fills in its own symbol. Only these constant templates are ever formatted, never a value. The *escaping* line (prefixing special symbols with a backslash so the database treats them literally) handles a smaller problem that parameters do not solve: inside a `LIKE` pattern, the *wildcards* `%` and `_` mean "any text" and "any one character". Unescaped, a search for `%%` would match every order. With the escapes it matches only an item that really contains two percent signs, and none does.
 
 ## The tenant comes from the launch, not from the model
 
-Every query's first parameter is `principal.tenant_id`. The principal is not an argument; a strict model would reject a `tenant_id` argument anyway. It is set once, when the host launches the server process, through two environment variables. The MCP specification says a stdio server should "retrieve credentials from the environment" instead of using the HTTP authorization flow, and [lesson 15.5](/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/) examines what that trusts. The server refuses to start without them:
+Every query's first parameter is `principal.tenant_id`. The principal is not an argument; a strict model would reject a `tenant_id` argument anyway. It is set once, when the host launches the server process, through two *environment variables* (key-value settings passed to a program by the launcher when it starts). The MCP specification says a stdio server should "retrieve credentials from the environment" instead of using the HTTP authorization flow, and [lesson 15.5](/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/) examines what that trusts. Below, the startup code *fails closed* (refuses to run rather than guessing): if either variable is missing, it writes the missing names to standard error and exits with code 2:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/server.py
@@ -102,7 +104,7 @@ Every query's first parameter is `principal.tenant_id`. The principal is not an 
 
 ## Bounded rows and bounded work
 
-A tool's answer goes into the model's context, so a tool that can return 100,000 rows can flood it. Every listing asks for at most 50 rows, and asks the database for one more than it will return:
+A tool's answer goes into the model's context, so a tool that can return 100,000 rows can flood it. Every listing caps the requested `limit` at `MAX_ROWS` (50) and asks the database for `limit + 1` rows. In `_page` below, the function returns at most `limit` rows and marks `truncated` as `True` only when that extra look-ahead row came back:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/queries.py
@@ -113,11 +115,11 @@ def _page(db: ReadOnlyDatabase, principal: Principal, template: str, params: tup
     return {"rows": rows[:limit], "truncated": len(rows) > limit}
 ```
 
-Time needs a bound too, because even a fixed query can be slow on a large table. The SQLite version counts work instead of seconds, which keeps the test deterministic. `set_progress_handler` calls a function every 1,000 SQLite virtual-machine instructions, and the function stops the query after 1,000 calls; Python's documentation says a non-zero return "will terminate the currently executing query". The Postgres version uses `statement_timeout`, which aborts "any statement that takes more than the specified amount of time".
+Time needs a bound too, because even a fixed query can be slow on a large table. The SQLite version counts work instead of seconds, which keeps the test *deterministic* (giving the same result on every run, unaffected by machine speed). `set_progress_handler` calls a function every 1,000 SQLite *virtual-machine instructions* (the small internal steps SQLite runs to evaluate a query), and the function stops the query after 1,000 calls; Python's documentation says a non-zero return "will terminate the currently executing query". The Postgres version uses `statement_timeout`, which aborts "any statement that takes more than the specified amount of time".
 
 ## Postgres: a second, independent wall
 
-SQLite opens the file with `mode=ro` and sets `query_only`, so this connection cannot write. It has no row-level security, though, so in SQLite the `WHERE tenant_id` filter is the only thing between tenants. The Postgres version, in `src/agentlab/tools/postgres.py`, adds walls that do not depend on the query being right. The test logs in as a *role*, Postgres's name for a database account that holds privileges, that may `SELECT` from one table and owns nothing, and the table has a *row security policy*, a filter Postgres applies to every query that role runs:
+SQLite opens the file with `mode=ro` and sets `query_only`, so this connection cannot write. It has no row-level security, though, so in SQLite the `WHERE tenant_id` filter is the only thing between tenants. The Postgres version, in `src/agentlab/tools/postgres.py`, adds walls that do not depend on the query being right. The test logs in as a *role*, Postgres's name for a database account that holds privileges, that may `SELECT` from one table and owns nothing, and the table has a *row security policy*, a filter Postgres applies to every query that role runs. The two SQL statements below turn row-level security on for `purchases` and allow `SELECT` to return a row only when its `tenant_id` matches the current transaction's `agentlab.tenant_id` setting (or no rows at all if that setting is absent):
 
 ```python
 # file: examples/agent-engineering/tests_postgres/test_tools_postgres.py
@@ -126,7 +128,7 @@ ALTER TABLE purchases ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_rows ON purchases FOR SELECT USING (tenant_id = current_setting('agentlab.tenant_id', true));
 ```
 
-Each query runs in its own read-only transaction that first sets the timeout and the tenant. Both are passed to `set_config` as bound parameters, and `true` makes them last only for this transaction:
+Each query runs in its own read-only *transaction* (a group of database statements that execute as one isolated unit) that first sets the timeout and the tenant via `set_config` with bound parameters; passing `true` limits both settings to that transaction alone. In `fetch` below, the method applies both settings, runs the query up to `max_rows`, and turns a Postgres timeout cancellation into `QueryTooExpensive`:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/postgres.py
@@ -143,13 +145,13 @@ Each query runs in its own read-only transaction that first sets the timeout and
 ```
 
 :::warning
-The PostgreSQL documentation says that superusers and roles with `BYPASSRLS` "always bypass the row security system", and that table owners normally bypass it as well. Run the server as the table's owner or as a superuser and the policy does nothing. The reader must be a separate login role with only the grants it needs.
+The PostgreSQL documentation says that *superusers* (administrator accounts with unrestricted database privileges) and roles with `BYPASSRLS` "always bypass the row security system", and that table owners normally bypass it as well. Run the server as the table's owner or as a superuser and the policy does nothing. The reader must be a separate login role with only the grants it needs.
 :::
 
 ## Run the exercise
 
-The SQLite tests are in `tests/test_tools_queries.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_tools_queries.py"`; the output ends with `Ran 10 tests` and `OK`. Each attack has a control: a search for `bolts` returns PO-1001 (tenant-b also bought bolts, as PO-2001, and does not appear); the injected text returns nothing; a `DROP TABLE` attempt leaves all six rows; PO-2001 is "not found" while PO-1001 is found; and a never-ending recursive query is stopped, after which a normal search still works.
+The SQLite tests are in `tests/test_tools_queries.py`. From `examples/agent-engineering/`, run `uv run --frozen python -m unittest discover -s tests -p "test_tools_queries.py"`; the output ends with `Ran 10 tests` and `OK`. Each attack has a control: a search for `bolts` returns PO-1001 (tenant-b also bought bolts, as PO-2001, and does not appear); the injected text returns nothing; a `DROP TABLE` attempt leaves all six rows; PO-2001 is "not found" while PO-1001 is found; and a never-ending *recursive query* (a SQL query that repeatedly feeds its own output back into itself) is stopped, after which a normal search still works.
 
 `tests/test_tools_interop.py` starts the real server process over stdio. It runs this course's client against it, and then a second client: a short script in the test file that shares no code with `agentlab.tools.client` and speaks only the wire format. Both list the same three tools, both read PO-1001, and the second also gets `isError: true` for PO-2001. `uv run --frozen python -m unittest discover -s tests -p "test_tools_interop.py"` ends with `Ran 5 tests` and `OK`.
 
-The Postgres suite needs a running Postgres and the `postgres` dependency group (see the project README). It creates its own database and a login role, both named `agentlab_test_` plus a random suffix, and drops them afterwards. Run `uv run --frozen python -m unittest discover -s tests_postgres`; it ends with `Ran 7 tests` and `OK`, or reports the class as skipped when no server answers at `AGENTLAB_PG_DSN`. One test runs a query with no tenant filter and still gets only PO-1001 to PO-1004. To see the core tests catch the bug from the start of this lesson, replace the body of `search_purchase_orders` with the pasted-string version: `test_an_injected_condition_is_data_not_sql` fails and lists PO-2001 and PO-2002. Restore the function afterwards.
+The Postgres suite needs a running Postgres and the `postgres` dependency group (see the project README). It creates its own database and a login role, both named `agentlab_test_` plus a random suffix, and drops them afterwards. Run `uv run --frozen python -m unittest discover -s tests_postgres`; it ends with `Ran 7 tests` and `OK`, or reports the class as skipped when no server answers at `AGENTLAB_PG_DSN` (Data Source Name, the connection string naming the Postgres host and database). One test runs a query with no tenant filter and still gets only PO-1001 to PO-1004. To see the core tests catch the bug from the start of this lesson, replace the body of `search_purchase_orders` with the pasted-string version: `test_an_injected_condition_is_data_not_sql` fails and lists PO-2001 and PO-2002. Restore the function afterwards.

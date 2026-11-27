@@ -38,47 +38,45 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 A procurement question arrives with a deadline. The company will serve Qwen3.8-27B, and the choice is between renting 80 GB Hopper-generation accelerators and paying substantially more for 192 GB-class Blackwell-generation ones (Hopper and Blackwell are two successive NVIDIA GPU generations). The vendor material compares them on arithmetic throughput, which [lesson 9.1](/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/) established is the currency single-stream decoding does not spend. The decision turns instead on two lines from [lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/), capacity and bandwidth, and this lesson works out both.
 
 ## What is inside an NVIDIA GPU?
 
-First, the shape of the machine, because the vocabulary recurs in every profiling report. CUDA is NVIDIA's programming platform for its GPUs. A CUDA-programmable GPU is a grid of **streaming multiprocessors** (SMs). Each SM is a scheduler over many arithmetic lanes, plus a slab of **shared memory** that the programmer manages directly and a **register file**, the fastest storage, private to each running thread.
+First, the shape of the machine, because the vocabulary recurs in every profiling report. CUDA is NVIDIA's programming platform for its GPUs. A CUDA-programmable GPU is a grid of **streaming multiprocessors** (SMs). Each SM has a **scheduler** (a control unit that assigns work to many arithmetic lanes), plus a slab of **shared memory** that the programmer manages directly and a **register file**, the fastest on-chip storage, private to each running **thread** (one parallel stream of execution).
 
 An H100 SXM part carries on the order of 130 SMs. That is a vendor figure as of Aug 2026, and it varies by SKU (the exact product variant) and binning (sorting chips by how many units passed testing).
 
-Inside each SM sit **tensor cores**: fixed-function units that take small tiles of two matrices and add their product into an accumulator. Essentially all of a transformer's arithmetic lands there.
+Inside each SM sit **tensor cores**: fixed-function units that take small tiles of two matrices and add their product into an **accumulator** (a running-sum register). Essentially all of a transformer's arithmetic lands there.
 
 Around the SMs sits the memory hierarchy that the roofline of [lesson 9.2](/lessons/9-hardware-and-infrastructure/9.2-the-roofline-model/) is drawn against, from fastest and smallest to slowest and largest:
 
-1. registers;
-2. shared memory and the L1 cache, inside each SM;
+1. registers (tiny, immediate storage next to each arithmetic lane);
+2. shared memory and the L1 cache (fast on-chip working memory), inside each SM;
 3. a shared L2 cache for the whole chip;
 4. high-bandwidth memory (HBM), stacked beside the die (the silicon chip itself).
 
-Each generation added faster low-precision paths. Hopper added a fourth generation of tensor cores with an FP8 path (8-bit floating point) and per-tensor scaling logic, which stores a scale factor per tensor so small 8-bit numbers can represent the real range. Blackwell added a fifth generation that extends this to FP4 (4-bit floating point). Runtimes such as TensorRT-LLM ([lesson 8.6](/lessons/8-building-and-serving-stacks/8.6-tensorrt-llm/)) ship kernels for these low-precision paths, and the quantization recipe you serve decides which path each layer takes.
+Each generation added faster low-precision paths. Hopper added a fourth generation of tensor cores with an FP8 path (8-bit floating point) and per-tensor scaling logic, which stores a scale factor per tensor so small 8-bit numbers can represent the real range. Blackwell added a fifth generation that extends this to FP4 (4-bit floating point). Runtimes such as TensorRT-LLM ([lesson 8.6](/lessons/8-building-and-serving-stacks/8.6-tensorrt-llm/)) ship kernels for these low-precision paths, and the **quantization recipe** (the specific rules for converting weights to fewer bits) you serve decides which path each layer takes.
 
 ## Capacity: how many conversations fit?
 
-Now the arithmetic that decides the purchase. Take the Hopper part first, reusing the budget from lesson 9.3 without re-deriving it:
+Now the arithmetic that decides the purchase. Step between the two cards below to compare lesson 9.3's 80 GB Hopper budget against a 192 GB-class Blackwell part holding the exact same 50.3 GiB of bf16 weights.
 
-- An 80 GB part reports roughly 79.6 GiB usable.
-- The bf16 weights of Qwen3.8-27B are about 54 GB, which is 50.3 GiB.
-- A runtime reserve near 6 GiB covers the driver context, activations, and fragmentation.
+<Figure id="t9-hopper-vs-blackwell" />
 
-The pool left for per-conversation state is about 23.3 GiB. At 656 MiB per 8,192-token sequence (cache plus the constant DeltaNet state), it supports about 36 concurrent conversations. It holds exactly one sequence at the full 262,144-token native context. That is a tight fit. It is why deployments on this part reach for FP8 weights or split the model across two cards, which brings in the interconnect costs of [lesson 9.9](/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/).
+On the 80 GB Hopper part, the remaining 23.3 GiB pool fits roughly 36 concurrent 8,192-token conversations (at 656 MiB each) and exactly one full 262,144-token sequence. That tight fit is why deployments on an 80 GB part reach for FP8 weights or split the model across two cards, which brings in the **interconnect** costs (the high-speed links between GPUs) of [lesson 9.9](/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/).
 
-Now the Blackwell-class part, at a vendor-reported 192 GB of HBM3e. For this worked example, assume about 178.8 GiB is available to the runtime. That figure is 192 GB converted to GiB, an illustrative assumption rather than a runtime measurement; read the real number from the runtime on the part you rent. The weights cost the same 50.3 GiB, because weights are a fixed charge that does not scale with the card. A slightly larger reserve of 8 GiB leaves
+For the Blackwell-class part, at a vendor-reported 192 GB of **HBM3e** (a faster, higher-capacity generation of stacked memory), assume about 178.8 GiB is available to the runtime. That figure is 192 GB converted to GiB, an illustrative assumption rather than a runtime measurement; read the real number from the runtime on the part you rent. With the same 50.3 GiB of weights and a slightly larger reserve of 8 GiB, what remains is
 
 $$
 178.8\ \text{GiB} - 50.3\ \text{GiB} - 8\ \text{GiB} \ =\ 120.5\ \text{GiB} \ =\ 123{,}392\ \text{MiB}
 $$
 
-for the pool. At 656 MiB per 8,192-token sequence, that is about 188 concurrent conversations. At 16,528 MiB per full-native-context sequence, it is about seven.
+for the pool — about 188 concurrent 8,192-token conversations, or about seven at full native context (16,528 MiB each).
 
-Concurrency rose roughly fivefold from a capacity increase of about 2.4 times. The leverage comes entirely from the fixed weight charge being paid once on either card, so every additional gibibyte on the larger part goes to users. Picture a 100-seat hall where a stage takes 60 seats: doubling the hall to 200 seats takes you from 40 audience seats to 140, more than three times as many. This non-linearity is the most important fact in choosing an accelerator for a model of this size, and any comparison built on arithmetic throughput hides it.
+Concurrency rose roughly fivefold from a capacity increase of about 2.4 times. Because the fixed weight charge is paid once on either card, every additional gibibyte on the larger part goes to users. Picture a 100-seat hall where a stage takes 60 seats: doubling the hall to 200 seats takes you from 40 audience seats to 140, more than three times as many. This non-linearity is the most important fact in choosing an accelerator for a model of this size, and any comparison built on arithmetic throughput hides it.
 
 ## Bandwidth: how fast does each conversation read?
 
@@ -94,17 +92,17 @@ against about 62 on the Hopper part. For a workload whose active bytes stay the 
 
 The usual wrong turn appears in the same meeting. Someone notes that the newer part supports FP4 and concludes that inference will therefore be twice as fast again, at no cost. Separate the two effects.
 
-- **Fewer bytes for decode.** A validated FP4 representation may reduce active weight traffic far below bf16. The exact reduction depends on the representation and the runtime. That can improve bandwidth-limited decode. But the pinned 17.1 GB Q4_K_M GGUF (a quantized file for the llama.cpp runtime) is not evidence for a server FP4 layout.
-- **A higher compute roof for prefill.** FP4 tensor cores also raise the flat compute roof, which speeds up prefill and time to first token. That arithmetic effect is real too, but it helps a different phase.
+- **Fewer bytes for decode.** A validated FP4 representation may reduce active weight traffic far below bf16. The exact reduction depends on the representation and the runtime. That can improve bandwidth-limited decode. But the pinned 17.1 GB Q4_K_M GGUF (a quantized file for the llama.cpp local runtime) is not evidence for a server FP4 layout.
+- **A higher compute roof for prefill.** FP4 tensor cores also raise the flat compute roof, which speeds up prefill and **time to first token** (how long a user waits before the answer starts). That arithmetic effect is real too, but it helps a different phase.
 
-Neither comes without work. The format must have a validated quantization recipe for this model. Qwen3.8-27B is also a hybrid architecture whose 48 Gated DeltaNet layers are newer than most kernel libraries. So FP4 coverage for those layers should be verified in the specific stack version, not assumed from a marketing table. Quality regression testing against the model card's own benchmark set is the minimum before a format change ships.
+Neither comes without work. The format must have a validated quantization recipe for this model. Qwen3.8-27B is also a hybrid architecture whose 48 Gated DeltaNet layers are newer than most kernel libraries. So FP4 coverage for those layers should be verified in the specific stack version, not assumed from a marketing table. Quality regression testing against the **model card's** (published specification sheet's) own benchmark set is the minimum before a format change ships.
 
 :::warning
-Every capacity, bandwidth, and SM figure in this lesson is a vendor claim, valid for the SKU named at the time it was published, and SKUs within a generation differ substantially. The 178.8 GiB available-capacity figure is this lesson's own illustrative assumption, not a vendor number. The same architecture ships in socketed modules, PCIe cards (plugged into a standard server slot), and superchip packages (an integrated CPU-and-GPU module; the number of GPUs and dies depends on the product), with different memory capacities, clocks, and power envelopes, and cloud providers further partition parts. Confirm capacity and bandwidth for the exact instance type you will rent. Then redo the budget of lesson 9.3 with those numbers, because a plan built on the flagship figure and run on the PCIe variant runs out of memory in production.
+Every capacity, bandwidth, and SM figure in this lesson is a vendor claim, valid for the SKU named at the time it was published, and SKUs within a generation differ substantially. The 178.8 GiB available-capacity figure is this lesson's own illustrative assumption, not a vendor number. The same architecture ships in **socketed modules** (chips mounted directly onto a server board), PCIe cards (plugged into a standard server slot), and superchip packages (an integrated CPU-and-GPU module; the number of GPUs and dies depends on the product), with different memory capacities, **clocks** (operating speeds), and **power envelopes** (wattage limits), and cloud providers further partition parts. Confirm capacity and bandwidth for the exact instance type you will rent. Then redo the budget of lesson 9.3 with those numbers, because a plan built on the flagship figure and run on the PCIe variant runs out of memory in production.
 :::
 
 :::caveat
-Comparing generations on peak arithmetic invites a second error. Many quoted FLOP rates assume structured sparsity (a pattern of zeroed weights the hardware can skip) or the narrowest supported number format. The headline number may therefore describe a configuration your model never runs in. Read the footnote that states the format and the sparsity assumption before putting a ratio in a business case.
+Comparing generations on peak arithmetic invites a second error. Many quoted FLOP rates assume structured sparsity (a pattern of zeroed weights the hardware can skip) or the narrowest supported number format. The headline number may therefore describe a configuration your model never runs in. Read the footnote that states the format and the sparsity assumption before putting a ratio in a **business case** (a financial justification for buying hardware).
 :::
 
 The habit worth keeping is to price a part on the two lines that decide your workload: how much pool remains after a fixed weight charge, and how many bytes per second cross from memory to the compute units. [Lesson 9.5](/lessons/9-hardware-and-infrastructure/9.5-amd-rocm-mi3xx/) takes the same two lines to a vendor whose entire pitch is the first one.

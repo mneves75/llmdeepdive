@@ -30,29 +30,24 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-You want to run Qwen3.8-27B, and the first number that greets you is 54 GB: the bf16 weight footprint the course's budget math establishes ([lessons 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) and [9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/)). No consumer GPU holds that, and even an 80 GB data-center card gives up most of its memory before a single token of cache is allocated. **Quantization** is the standard answer: store each parameter in fewer bits, plus a little scale metadata, and accept some approximation error in exchange.
+You want to run Qwen3.8-27B, and the first number that greets you is 54 GB: the bf16 weight footprint the course's budget math establishes ([lessons 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) and [9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/)). No consumer GPU holds that, and even an 80 GB data-center card gives up most of its memory before a single token of cache is allocated. **Quantization** is the standard answer: store each parameter in fewer bits, plus a little scale metadata (extra bookkeeping numbers stored alongside the weights), and accept some approximation error in exchange.
 
 ## The ladder in bytes per parameter
 
-The ladder is easiest to see as bytes per parameter:
+Step 1 below walks Qwen3.8-27B down the ladder from bf16 (a 16-bit floating-point format at 2 bytes per parameter) through int8 (8-bit whole-number integers at 1 byte) to the 13.5 GB pure int4 (4-bit integer) floor:
 
-- **bf16** (a 16-bit floating-point format) spends two bytes on each of the model's roughly 27 billion parameters: the 54 GB starting point.
-- **Int8** (8-bit integers) spends one byte. Halve it: about **27 GB**.
-- **Int4** (4-bit integers) spends half a byte. Halve again: a **13.5 GB floor**.
+<Figure id="t7-quantization-ladder" />
 
-Real files sit above that floor. At the pinned community revision, near-4-bit text-model GGUF files (GGUF is the single-file format used by llama.cpp; [lesson 7.10](/lessons/7-inference-and-efficiency/7.10-quantization-ii-gptq-awq-gguf-qat/) covers it) span **15.7–17.9 GB** (14.6–16.7 GiB, where one GiB is 2³⁰ bytes rather than 10⁹). Q4_K_M, the name of one popular 4-bit recipe, is 17.1 GB (15.93 GiB). The extra comes from group metadata and from selected tensors kept at higher precision, which ride alongside the codes.
+Real files sit above that 13.5 GB floor. At the pinned community revision, near-4-bit text-model GGUF files (GGUF is the single-file format used by llama.cpp; [lesson 7.10](/lessons/7-inference-and-efficiency/7.10-quantization-ii-gptq-awq-gguf-qat/) covers it) span **15.7–17.9 GB** (14.6–16.7 GiB, where one GiB is 2³⁰ bytes rather than 10⁹). Q4_K_M, the name of one popular 4-bit recipe, is 17.1 GB (15.93 GiB). The extra comes from group metadata and from selected tensors kept at higher precision, which ride alongside the codes.
 
 That real rate is often described as **bits per weight**, or *bpw*. An exact bpw, though, needs as its denominator the exact number of weight elements across the artifact's tensors. The marketed 27B count is rounded and includes the separate vision tower (the part of the model that reads images). A 24 GB consumer GPU is therefore a course deployment scenario for these text weights plus cache and runtime headroom, not a minimum claimed by the model card. [Lesson 7.12](/lessons/7-inference-and-efficiency/7.12-running-models-locally/) works through that scenario.
 
 ## How a weight becomes a small integer
 
-What the rungs actually do is map real values onto a discrete codebook, a short list of allowed values. A toy example with made-up numbers shows the whole mechanism. Pick a scale of 0.1, so every code stands for a multiple of 0.1, and allow signed 4-bit codes from −8 to 7.
-
-- The weight 0.234 divided by the scale is 2.34, which rounds to code 2. Reading it back gives 2 × 0.1 = 0.2, an error of 0.034. That is **rounding** error.
-- The weight 1.5 divided by the scale is 15, but the largest code is 7, so it is clipped to 7. Reading it back gives 0.7, an error of 0.8. That is **clipping** error, much larger, which is why the choice of scale matters.
+What the rungs actually do is map real values onto a discrete codebook, a short list of allowed values. Step 2 of the figure above walks through a toy example with signed (negative and positive) 4-bit codes from −8 to 7 at scale 0.1: an in-range weight (0.234) picks up small **rounding** error (0.034), while an extreme weight (1.5) hits the ceiling at 7 and picks up large **clipping** error (0.8), which is why choosing the scale matters.
 
 In general, symmetric uniform quantization turns a real value $x$ into an integer code $q$ through a scale $s$:
 
@@ -68,13 +63,13 @@ Affine variants add a zero point, an integer offset, so the represented range ne
 Saying "int8" or "int4" alone is an incomplete sentence. Ask four questions:
 
 1. What is quantized: the weights, the activations (the intermediate values computed for each input), or the KV cache?
-2. At what granularity: one scale for the whole tensor, per output channel, per group, or per token?
+2. At what granularity: one scale for the whole tensor, per output channel (one row or column of a weight matrix), per group, or per token?
 3. Is the representation symmetric?
-4. In what dtype (number format) are products accumulated?
+4. In what dtype (number format) are products accumulated (added into a running total)?
 
 A 4-bit weight format routinely multiplies against 16-bit activations and accumulates the sums in higher precision.
 
-Granularity is the central trade. One scale per tensor is nearly free in metadata, but it must span the tensor's widest magnitude. So a single outlier weight, one unusually large value, coarsens the step size for every ordinary value. Per-channel scales adapt to individual rows or columns. Groupwise quantization slices a dimension into chunks of, say, 32–128 values, each with its own scale: a better local fit, at the cost of more metadata and more complex kernels.
+Granularity is the central trade (step 3 of the figure above). One scale per tensor must span the tensor's widest magnitude, so a single outlier weight (an unusually large value) coarsens the step size for every ordinary weight. Per-channel and groupwise scales (chunks of 32–128 values) keep that damage local, at the cost of more metadata and more complex kernels.
 
 Weights and activations also behave differently. Weights are fixed and can be calibrated offline, before deployment. Activations depend on the prompt and can carry violent outliers in particular channels. SmoothQuant's contribution was a mathematically equivalent rescaling that shifts quantization difficulty from activations into weights, which eases schemes that quantize both.
 
@@ -82,7 +77,7 @@ Weights and activations also behave differently. Weights are fixed and can be ca
 
 Why does this help speed and not just disk space? Recall [lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/): decode is memory-bound, moving roughly the full weight set per generated token. Weight-only quantization cuts precisely those bytes.
 
-There is a trap here that catches many people. A runtime loads a 4-bit file, then expands every tensor back to floating point in memory before computing. The download was small, but resident memory (what the process actually holds in RAM or VRAM) and bandwidth are unchanged, and tokens per second do not move. The fix is native packed kernels, GPU routines that dequantize (expand codes back to real values) tile by tile inside the multiplication, so the compact form is what actually crosses the memory bus. Always check which path your runtime took by measuring resident memory after load, not by reading the filename.
+There is a trap here that catches many people. A runtime loads a 4-bit file, then expands every tensor back to floating point in memory before computing. The download was small, but resident memory (what the process actually holds in RAM, the main system memory, or VRAM, the GPU's own memory) and bandwidth are unchanged, and tokens per second do not move. The fix is native packed kernels, GPU routines that dequantize (expand codes back to real values) tile by tile inside the multiplication, so the compact form is what actually crosses the memory bus (the data path between memory and the processor). Always check which path your runtime took by measuring resident memory after load, not by reading the filename.
 
 ## What quantization does not fix
 

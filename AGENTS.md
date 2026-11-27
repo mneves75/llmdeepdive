@@ -8,8 +8,9 @@ A free, open-source, bilingual (EN + pt-BR) interactive course on large language
 models in three parts: how a model works, from what a parameter is through
 efficient inference (tracks 0–13), how to build agent systems around one
 (tracks 14–25), and AI engineering in production — APIs, hybrid RAG, evals,
-governance, caching, LLMOps, and multimodal/voice systems (tracks 26–33), plus a
-bilingual `/roadmap/` wayfinding route. Static site on Cloudflare Workers, MIT licensed.
+governance, caching, LLMOps, multimodal/voice systems, and running a model
+completely inside a browser tab (tracks 26–34, backed by `examples/qwen-local-lab/`),
+plus a bilingual `/roadmap/` wayfinding route. Static site on Cloudflare Workers, MIT licensed.
 
 ## Commands
 
@@ -25,16 +26,21 @@ pnpm content:stubs       # no TODO/TBD/Lorem, word floor
 pnpm content:graph       # prerequisite ids resolve, no cycles
 pnpm content:citations   # citations present or reason given
 pnpm content:assets      # every referenced asset exists
-pnpm content:figures     # every <Figure id> resolves; both locales; labels differ
+pnpm content:figures     # every <Figure id> resolves; both locales; labels differ;
+                         #   100% triage-ledger coverage across all 35 tracks (no exemptions)
 pnpm content:excerpts    # every `# file: examples/...` code block matches that file verbatim
 pnpm links               # every internal link in dist/ resolves (runs in build)
 pnpm a11y:contrast       # palette stays above accessible contrast ratios; dark grounds
                          #   and inks stay neutral, with a visible lightness ladder
 pnpm render:check        # every route in Chromium, WebKit, Firefox: 320px overflow,
                          #   duplicate ids, page errors, scroll regions, unnamed controls,
+                         #   select options clipped in their closed box,
                          #   un-underlined links in running text, inline-maths baseline,
                          #   explorer leave-mid-boot and failed-import handling
                          #   (needs `pnpm build` and `pnpm exec playwright install`)
+pnpm verify:learning     # the lesson-completion record in Chromium and WebKit: present
+                         #   only while quiz and teach-back both pass, and never
+                         #   withdrawn by a reload (needs `pnpm build`)
 pnpm budget              # per-route JS budget
 pnpm privacy             # no machine path, account subdomain or unknown email
                          #   (+ PRIVATE_REFS_NAMES for client/tooling names)
@@ -113,7 +119,9 @@ pt-BR URL. `content-parity.mjs` is the gate.
 Poster renders first; WebGL replaces it. One long-lived `Stage`, never one
 renderer per lab.
 
-The explorer's current contract is the **Signal Observatory**: every component
+The explorer opens with a four-step token walkthrough. Keep its native controls
+operable without JavaScript and label the vocabulary, vectors and distribution
+as illustrative in both locales. Below it, the **Signal Observatory** contract applies: every component
 in `COMPONENTS` has a selectable 3D port, an evidence-drawer state and a valid
 lesson link. The specimen keeps visible input→output direction and bilingual
 layer identity. Since 0.9 it is an armillary instrument on one steel axis:
@@ -137,7 +145,7 @@ that leaves the poster; no wheel or touch-scroll capture; stopped offscreen,
 when hidden, when paused (`[data-motion-toggle]`) and under reduced motion.
 It owns its own renderer — one WebGL context per page, never two. The chart has one band per course
 *part* (the track field `part`: `models`, `agents`, then `engineering`), each laid out as the
-whole sky once was, stacked vertically in one SVG (`1000 × 1800` for three parts); that is how 34 tracks fit
+whole sky once was, stacked vertically in one SVG (`1000 × 1800` for three parts); that is how 35 tracks fit
 without a second chart or a second context. A track with no lessons yet draws
 nothing. `tests/sky-layout.test.mjs` runs every geometry check against the
 published corpus and the full planned catalog in
@@ -485,7 +493,10 @@ claims. Read it before writing or revising prose.
 
 Every lesson is **concept → analogy → optional lab → teach-back → quiz**. A
 lesson completes only when the teach-back is ≥80 characters and ≥15 words *and*
-the quiz is answered correctly.
+the quiz is answered correctly. `pnpm verify:learning` drives the built lesson
+page in Chromium and WebKit to check that rule and that a reload never
+withdraws a recorded completion; the unit suite fakes the script ordering that
+makes the reload case real.
 
 **Quiz answers must not be guessable by length.** `content:parity` fails a
 locale where the correct option is uniquely the longest in more than 20% of
@@ -685,12 +696,17 @@ that keep the lessons true:
 
 ## External systems reference
 
-The published corpus is tracks 0–33 (230 lessons per locale across three parts); documentation
-must describe that shipped scope exactly. Part 3 (tracks 26–33, AI engineering
-in production) keeps its derived math in `src/lib/engineering-math.ts`, pinned
+The published corpus is tracks 0–34 (238 lessons per locale across three parts,
+with 248 zero-JS animated figures styled from `src/styles/figure.css`); documentation
+must describe that shipped scope exactly. Part 3 (tracks 26–34, AI engineering
+in production) keeps its derived math for tracks 26–33 in `src/lib/engineering-math.ts`, pinned
 against both locales and the two Part 3 labs (`rag-eval`, `ai-system-budget`) by
-`tests/engineering-math.test.mjs` and `tests/engineering-content.test.mjs`; the
-next-token `token-sampling` lab in lesson 7.4 is backed by `src/lib/sampling-math.ts`
+`tests/engineering-math.test.mjs` and `tests/engineering-content.test.mjs`; Track 34
+(`34-a-model-in-your-browser`, 8 bilingual lessons) keeps its single numeric source of
+truth for Qwen3-0.6B and `examples/qwen-local-lab/` in `src/lib/browser-lab-facts.ts`
+(structurally separate from `src/lib/model-facts.ts`), with CI's `lab` job rebuilding
+vendored engines via `fetch_vendor.py`, building `dist/index.html`, and running its Node
+and Python test suites; the next-token `token-sampling` lab in lesson 7.4 is backed by `src/lib/sampling-math.ts`
 and `tests/sampling-math.test.mjs`; the Part 3 plan and frozen inventory live in
 `docs/plans/ai-engineering-roadmap/`. Tracks 7 and 11–13 (Inference and
 Efficiency, Mac Studio Ultra and MLX, DGX and CUDA, llama.cpp in depth) pin

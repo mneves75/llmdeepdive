@@ -38,45 +38,42 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Você perfila o decode de fluxo único no Qwen3.8-27B (uma requisição, um token por vez) e o trace é quase todo buraco. A GPU faz uma rajada de trabalho, fica ociosa, faz outra rajada, fica ociosa de novo. A utilização fica baixa, o consumo de energia nunca chega perto do limite da placa, e trocar por um acelerador mais rápido quase não muda nada. Nada está quebrado. Você bateu num gargalo que nem sequer está na GPU.
+Você **perfila** o decode de fluxo único no Qwen3.8-27B (uma requisição, um token por vez) e inspeciona o **trace** (uma linha do tempo mostrando quando a CPU e a GPU estão ocupadas ou ociosas): ele é quase todo buraco. A GPU (unidade de processamento gráfico) faz uma rajada de trabalho, fica ociosa, faz outra rajada e fica ociosa de novo. A **utilização** (a fatia da capacidade do chip de fato calculando) fica baixa, o consumo de energia nunca chega perto do limite da placa, e trocar por um **acelerador** (um chip especializado em matemática de matrizes) mais rápido quase não muda nada. Nada está quebrado. Você bateu num gargalo que nem sequer está na GPU.
 
 ## Para onde vai o tempo antes de a GPU começar?
 
 A [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) estabeleceu a primeira metade da história: o decode tem intensidade aritmética péssima, ou seja, pouquíssimas operações por byte movido. Para emitir um token a máquina faz passar uma quantidade enorme de pesos pelas unidades aritméticas e realiza poucas operações sobre cada byte, então quem dita o ritmo é a banda, não a computação.
 
-Esta aula acrescenta a segunda metade. Toda operação em modo eager carrega um custo no **host** (a CPU que comanda a GPU) antes que qualquer aritmética aconteça:
+Esta aula acrescenta a segunda metade. Toda operação em modo eager carrega um custo no **host** — a unidade central de processamento (CPU) que comanda a GPU — antes de qualquer aritmética acontecer: passar pelo Python, conferir argumentos e entregar um **lançamento** (avisar o **driver**, o software de baixo nível que controla a GPU, para disparar um kernel) à placa. Percorra os três estágios abaixo para ver o que o eager paga e o que cada remédio remove.
 
-- um frame Python,
-- um dispatch pelo registro de operadores (o PyTorch procurando qual implementação rodar),
-- checagem de argumentos,
-- e, por fim, um **lançamento**: entregar um kernel (uma função que roda na GPU) ao driver.
+<Figure id="t8-launch-overhead-remedies" />
 
 ## Contando lançamentos por token
 
-Uma única camada de decoder neste modelo realiza, grosso modo, duas normalizações, as projeções e as tripas do seu token mixer, três multiplicações matriciais da FFN mais uma multiplicação de gating, e um punhado de operações elementwise e reshapes. Chame de algumas dezenas de kernels, e mais nas camadas DeltaNet, cuja convolução curta e atualização de estado recorrente são feitas, cada uma, de vários passos pequenos.
+Uma única camada de decoder neste modelo realiza, grosso modo, duas normalizações, as projeções e as tripas do seu token mixer, três multiplicações matriciais da FFN mais uma multiplicação de gating, e um punhado de **operações elementwise** (contas aplicadas número a número) e **reshapes** (mudar os rótulos de dimensão de um tensor sem mover seus valores). Chame de algumas dezenas de kernels, e mais nas camadas DeltaNet, cuja convolução curta e atualização de estado recorrente são feitas, cada uma, de vários passos pequenos.
 
-Tome trinta como média ilustrativa ao longo de 64 camadas e você está disparando da ordem de dois mil lançamentos para produzir um token. A alguns microssegundos de tempo de host por lançamento, isso são vários milissegundos por token gastos puramente em dispatch. Transforme em teto: oito milissegundos de trabalho de host por token limitam você perto de 125 tokens por segundo, independentemente do que a GPU consiga fazer.
+Tome trinta como média ilustrativa ao longo de 64 camadas e você está disparando da ordem de dois mil lançamentos para produzir um token (quadro 1). A alguns **microssegundos** (milionésimos de segundo) de tempo de host por lançamento, isso são vários **milissegundos** (milésimos de segundo) por token gastos puramente em dispatch. Transforme em teto: oito milissegundos de trabalho de host por token limitam você perto de 125 tokens por segundo, independentemente do que a GPU consiga fazer.
 
 ## Qual teto manda: banda ou lançamentos?
 
 Agora você tem dois tetos, e a versão ingênua deste argumento erra a comparação, então compare com cuidado.
 
-Em bf16, fazer passar todo o conjunto de pesos de 27 B de parâmetros a cada token coloca o teto de banda nas dezenas de tokens por segundo em um acelerador de topo. Isso fica *abaixo* do teto de lançamento. Ou seja, em bf16 com batch 1, o overhead de lançamento ainda não é a restrição que amarra (a que de fato define a sua velocidade). É um imposto de algumas dezenas de por cento montado sobre um muro de banda.
+Em bf16 (números de ponto flutuante de 16 bits), fazer passar todo o conjunto de pesos de 27 B de parâmetros a cada token coloca o teto de banda nas dezenas de tokens por segundo em um acelerador de topo. Isso fica *abaixo* do teto de lançamento. Ou seja, em bf16 com batch 1, o overhead de lançamento ainda não é a restrição que amarra (a que de fato define a sua velocidade). É um imposto de algumas dezenas de por cento montado sobre um muro de banda.
 
 Agora quantize para 4 bits ([aula 7.9](/pt-br/lessons/7-inference-and-efficiency/7.9-quantization-i-int8-int4-the-basics/)). Os bytes que você precisa mover por token caem por um fator de aproximadamente quatro, então o teto de banda sobe por um fator de aproximadamente quatro. O teto de lançamento não se move nem um pouco. O gargalo troca de mãos. É por isso que "compile isso" é conselho opcional para um modelo 27B em bf16 e conselho obrigatório para um quantizado. É também por isso que modelos pequenos rodando em placas rápidas são quase sempre **limitados por lançamento**: travados pela velocidade com que o host consegue disparar lançamentos.
 
 ## torch.compile: menos lançamentos, kernels fundidos
 
-O primeiro remédio é a compilação. O `torch.compile` faz três coisas:
+O primeiro remédio é a compilação (quadro 2). O `torch.compile` faz três coisas:
 
-1. Traça o bytecode Python do forward pass em um graph, uma lista gravada das operações e de como os dados fluem entre elas.
+1. Traça o **bytecode** Python (as instruções compactas que o Python executa internamente) do forward pass em um graph, uma lista gravada das operações e de como os dados fluem entre elas.
 2. Protege esse graph com suposições sobre os tensors que viu (dtypes, shapes, device e mais). Um **guard** é uma checagem feita antes de cada chamada; enquanto ela passa, o graph compilado é reaproveitado.
 3. Traduz o grafo em kernels gerados, código que a GPU consegue rodar.
 
-Duas coisas ficam mais baratas. Primeiro, cadeias de trabalho elementwise (o escalonamento da normalização, a multiplicação do gate SiLU, as somas residuais) fundem em kernels únicos. Isso corta tanto a contagem de lançamentos quanto as idas e vindas à memória que tornavam essas operações caras em primeiro lugar. Segundo, toda a região traçada é disparada como código compilado em vez de Python reinterpretado.
+Cadeias de trabalho elementwise (o escalonamento da normalização, a multiplicação do gate SiLU, as somas residuais) fundem em kernels únicos, cortando lançamentos e idas à memória, enquanto a região traçada roda como código compilado em vez de Python reinterpretado.
 
 Os guards também são onde a compilação dá errado. Quando um guard falha, o graph é recompilado, e o decode muda o comprimento da sequência a cada passo. Um modelo que recompila uma vez por token é dramaticamente mais lento que o eager, e um benchmark ingênuo vai fazer a compilação parecer inútil. A abordagem corrigida tem quatro passos:
 
@@ -89,12 +86,12 @@ Medir a primeira chamada depois de compilar é um erro que quase todo mundo come
 
 ## CUDA graphs: uma submissão por passo de decode
 
-O segundo remédio ataca o que sobra. Mesmo um graph bem fundido ainda dispara uma sequência de lançamentos, e essa sequência é *idêntica* a cada passo de decode. O CUDA graph capture a grava uma vez e a reproduz inteira como uma única submissão, de modo que o host emite um comando em vez de centenas.
+O segundo remédio ataca o que sobra (quadro 3). Mesmo um graph bem fundido ainda dispara uma sequência de lançamentos, e essa sequência é *idêntica* a cada passo de decode. O CUDA graph capture a grava uma vez e a reproduz inteira como uma única submissão, de modo que o host emite um comando em vez de centenas.
 
-Os requisitos são estritos e explicam boa parte do design dos serving engines. Os shapes precisam ser estáticos. Os endereços de memória precisam ser estáticos. E não pode haver sincronização com o host (a CPU esperando a GPU terminar) nem controle de fluxo dependente da CPU dentro da região capturada. O motivo é que uma reprodução não roda o seu Python de novo; ela reexecuta lançamentos gravados contra ponteiros gravados.
+Os requisitos são estritos e explicam boa parte do design dos serving engines. Os shapes precisam ser estáticos. Os endereços de memória precisam ser estáticos. E não pode haver sincronização com o host (a CPU esperando a GPU terminar) nem controle de fluxo dependente da CPU dentro da região capturada. O motivo é que uma reprodução não roda o seu Python de novo; ela reexecuta lançamentos gravados contra **ponteiros** gravados (os endereços fixos de memória onde cada tensor mora).
 
 :::insight
-A exigência de endereços estáticos é por que KV caches paginados ([aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/)) e graph capture convivem tão bem. A paginação parece memória dinâmica, mas os blocos são pré-alocados uma vez num pool fixo. A variação por passo vive numa block table que o engine escreve no lugar, num endereço fixo. O graph capturado lê sempre o mesmo buffer e encontra índices diferentes nele. Os engines igualmente capturam um punhado de buckets de batch size e completam o batch real até o mais próximo.
+A exigência de endereços estáticos é por que KV caches paginados ([aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/)) e graph capture convivem tão bem. A paginação parece memória dinâmica, mas os blocos são pré-alocados uma vez num pool fixo. A variação por passo vive numa **block table** (a tabela de consulta que mapeia posições lógicas para blocos físicos de memória) que o engine escreve no lugar, num endereço fixo. O graph capturado lê sempre o mesmo buffer e encontra índices diferentes nele. Os engines igualmente capturam um punhado de buckets de batch size e **preenchem** (completam vagas vazias com dados fictícios) o batch real até o bucket mais próximo.
 :::
 
 :::caveat
@@ -107,4 +104,4 @@ Para este modelo, ambos os remédios têm um asterisco de arquitetura híbrida q
 Nenhuma das duas técnicas muda a matemática, mas ambas podem mudar a saída. A fusão altera a ordem de acumulação, e um kernel compilado pode somar os números numa sequência diferente da do eager. Então os últimos bits de resultados em bf16 se movem, e um quase empate entre dois tokens pode se resolver para o outro lado, tanto no decoding guloso quanto no sampling, e depois disso o resto do texto pode diferir. Isso é esperado e aceitável; descobrir isso durante um incidente com cliente não é. Rode de novo o teste diferencial da [aula 8.1](/pt-br/lessons/8-building-and-serving-stacks/8.1-pytorch-the-reference-runtime/) contra o eager depois de toda mudança relacionada a compilação: logits dentro da tolerância, divergências só em quase empates e checagens de tarefa inalteradas.
 :::
 
-Guarde a contabilidade, não as flags. O eager gasta seu tempo dizendo à GPU o que fazer. A compilação reduz o quanto é preciso dizer, e o graph capture reduz a frequência com que você precisa dizer. Nenhuma das duas compra uma multiplicação matricial mais rápida. Elas compram de volta os buracos no trace, e esses buracos são a razão inteira pela qual um modelo 27B consegue deixar uma placa caríssima quase ociosa.
+Guarde a contabilidade, não as flags. Nenhuma das duas técnicas compra uma multiplicação matricial mais rápida; juntas, elas recuperam os buracos ociosos no trace que podem deixar uma placa caríssima quase parada esperando a CPU.

@@ -38,7 +38,7 @@ citations:
     authors: "Python Software Foundation"
     year: 2026
     url: "https://docs.python.org/3.13/reference/datamodel.html#object.__hash__"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
 The buyer at tenant-a asks the assistant what the company pays for M8 hex bolts. Two stored records mention them. PO-1001 belongs to tenant-a: 40 boxes at USD 12.50. PO-2001 belongs to tenant-b, another customer company: 400 boxes at USD 11.90. The words match almost perfectly, so a retriever that looks only at words could hand tenant-a's buyer the other company's price. The answer would be wrong, and it would leak another customer's data. This lesson builds ingestion and retrieval so that cannot happen, and shows what a lexical scorer actually measures.
@@ -53,7 +53,7 @@ Long text is split into *chunks*, pieces small enough to score and to fit in a c
 
 ## How does a lexical retriever score a record?
 
-A *lexical* retriever compares words. The project's tokenizer lowercases text and keeps identifiers and prices whole, so `PO-1001` and `12.50` are single tokens. Each record is then scored with BM25, the ranking function Robertson and Zaragoza (2009) derive in their account of the probabilistic relevance framework. For each query word $i$ found in a record, BM25 adds
+A *lexical* retriever compares words. The project's tokenizer splits text into word tokens, converts letters to lowercase, and keeps identifiers and prices whole, so `PO-1001` and `12.50` stay single tokens. Each record is then scored with BM25, the ranking function Robertson and Zaragoza (2009) derive in their account of the probabilistic relevance framework. For each query word $i$ found in a record, BM25 adds
 
 $$
 \frac{tf_i}{k_1\left((1 - b) + b\,\frac{dl}{avdl}\right) + tf_i} \cdot \log\left(1 + \frac{N - n_i + 0.5}{n_i + 0.5}\right)
@@ -64,20 +64,20 @@ The left factor grows with $tf_i$, how often the word occurs in the record, but 
 A worked case over tenant-a's four orders: `m8` appears in one, so its IDF is $\log(1 + 3.5/1.5) \approx 1.20$. `supplier` appears in all four, so its IDF is $\log(1 + 0.5/4.5) \approx 0.11$. A match on the item name counts about eleven times more than a match on a word every order shares.
 
 :::caveat
-The paper's own IDF (its equation 3.3) is $\log((N - n_i + 0.5)/(n_i + 0.5))$, without the 1 inside. For a word in more than half the records it goes negative, so a match would lower the score. The exercise uses the common variant that adds 1 inside the logarithm, as in the formula above, and says so in its docstring. The paper reports $0.5 < b < 0.8$ and $1.2 < k_1 < 2$ as reasonably good in many settings and notes that the best values depend on the documents and queries. The project uses $k_1 = 1.5$ and $b = 0.75$.
+The paper's own IDF (its equation 3.3) is $\log((N - n_i + 0.5)/(n_i + 0.5))$, without the 1 inside. For a word in more than half the records it goes negative, so a match would lower the score. The exercise uses the common variant that adds 1 inside the logarithm, as in the formula above, and states that choice in its built-in code note (docstring). The paper reports $0.5 < b < 0.8$ and $1.2 < k_1 < 2$ as reasonably good in many settings and notes that the best values depend on the documents and queries. The project uses $k_1 = 1.5$ and $b = 0.75$.
 :::
 
 ## Embeddings, and a toy that is not one
 
-[Lesson 1.5](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/) showed how a model represents tokens as vectors. *Dense retrieval* uses an embedding model to map whole texts to vectors and ranks records by how close their vectors are to the query's. Lewis et al. (2020) built theirs as a dense vector index of Wikipedia accessed by a pre-trained neural retriever. An embedding model can match texts that share meaning but not words.
+[Lesson 1.5](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/) showed how a model represents tokens as vectors. *Dense retrieval* uses an embedding model to map whole texts to vectors and ranks records by how close their vectors are to the query's. Lewis et al. (2020) built theirs as a dense vector index of Wikipedia accessed by a pre-trained neural retriever (a neural network trained ahead of time to turn related passages and questions into nearby vectors). An embedding model can match texts that share meaning but not words.
 
-The exercise must run offline without a model, so it ships a toy instead and labels it as one. `toy_vector` hashes each word into one of 64 slots, counts, and normalises; similarity is the cosine of two such vectors. It uses `hashlib`, because Python's documentation says the built-in `hash()` of a string is salted with a random value per process, which would scramble a stored index after a restart. The toy matches shared word forms only: `glove` misses `gloves`. And `mittens` retrieves PO-1003 at a score of 0.213, because `mittens` and `safety` hash to the same slot. That is a collision, not understanding.
+The exercise must run offline without a model, so it ships a toy instead and labels it as one. `toy_vector` runs each word through a *hash* — a fixed formula that maps any word to a slot number from 0 to 63 — counts how many words land in each slot, and *normalises* the counts so every non-empty vector has length 1 (an input with no tokens stays the zero vector). Similarity is the *cosine* (the angle-based overlap from [lesson 1.5](/lessons/1-text-to-tensors/1.5-embeddings-meaning-as-geometry/)) of two such vectors. It uses `hashlib` because Python's documentation says the built-in `hash()` of a piece of text (a string) is mixed with a fresh random secret each time the program starts, which would scramble a stored index after a restart. The toy matches shared word forms only: `glove` misses `gloves`. And `mittens` retrieves PO-1003 at a score of 0.213, because `mittens` and `safety` happen to land in the same slot. That is a hash *collision* (two unrelated words sharing one bucket by chance), not understanding.
 
 Two common refinements are not implemented here. *Hybrid* retrieval combines a lexical and a vector score. *Reranking* re-orders the top candidates with a slower, more careful scorer. Both change which relevant records come first. Neither changes the rule in the next section.
 
 ## Filter first, then rank
 
-Here is the whole decision order:
+The code below enforces the decision order in four steps: keep only records this user may read that have not expired, drop any record replaced by a newer `supersedes` entry, score only those surviving candidates with BM25 or `toy_vector`, and sort from highest score to lowest with `memory_id` breaking ties:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/memory/retrieval.py
@@ -93,9 +93,11 @@ Here is the whole decision order:
     ranked = sorted(zip(scores, candidates, strict=True), key=lambda pair: (-pair[0], pair[1].memory_id))
 ```
 
-Access, expiry and supersession come first; scoring sees only what is left. Consider the query `400 boxes of M8 hex bolts` with `k=1`. Over all six orders, PO-2001 scores highest (2.071 against 1.471 for PO-1001), because only it contains `400`. A store that ranked first and filtered afterwards would put PO-2001 in the only slot, remove it, and return nothing. Forget the filter line entirely and it returns the other company's price. Filtering first returns PO-1001.
+<Figure id="t19-filter-before-rank" />
 
-The statistics matter too. IDF counts documents, so computing it over every tenant lets other customers' data shape this user's ranking. Computing it over the visible set keeps them out. Ties are broken by `memory_id`, so two runs over the same data return the same order. The principal comes from the trusted runtime: a query that names `tenant-b PO-2001` still returns only tenant-a's records.
+Access, expiry and supersession run first so scoring sees only what is left; forget the filter line entirely and a query like `400 boxes of M8 hex bolts` returns the other company's price outright.
+
+The statistics matter too. Because IDF counts documents, computing it over the visible set keeps other customers' data from shaping this user's ranking. Ties are broken by `memory_id`, so two runs over the same data return the same order. The `principal` (the signed-in user's verified identity) comes from the trusted runtime: a query that names `tenant-b PO-2001` still returns only tenant-a's records.
 
 :::warning
 Retrieval decides what text reaches the context, not what that text is worth. A retrieved supplier message keeps `origin="external"`, and [lesson 19.5](/lessons/19-agent-memory-and-context/19.5-evaluate-memory/) places it in an untrusted part of the context. An instruction inside it is data, as [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) explains, however highly it ranks.

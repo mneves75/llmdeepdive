@@ -50,32 +50,34 @@ citations:
     authors: "Model Context Protocol"
     year: 2026
     url: "https://modelcontextprotocol.io/specification/2026-07-28/basic"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
 Um e-mail de fornecedor chega ao assistente de compras com uma linha escondida, e o modelo, conduzido por essa linha, chama `search_purchase_orders` com `{"item_contains": "zz') OR tenant_id LIKE ('tenant-b"}`. O texto tem 33 caracteres, dentro do limite de 60 do schema, e é uma string, como o schema pede. A validação da [aula 15.1](/pt-br/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/) passa. O que impede os pedidos do tenant-b de saírem do banco? Esta aula constrói a camada de dados do servidor para que várias coisas independentes impeçam, e testa cada uma com um ataque e um caso de controle inofensivo.
 
 ## Ferramentas estreitas, não um console SQL
 
-O servidor oferece três ferramentas: consultar um pedido, listar pedidos e buscar nas descrições dos itens. Cada uma roda uma consulta fixa escrita pelo desenvolvedor. O modelo só escolhe qual ferramenta chamar e preenche os argumentos; ele nunca escreve SQL. O curso chama este servidor de *feito à mão* (*raw*) porque ele fala o Model Context Protocol (MCP) manualmente, como as aulas anteriores o construíram, sem um SDK de MCP (software development kit: uma biblioteca mantida que implementa o protocolo). É um subconjunto para aprender, e a docstring do módulo lista o que ele deixa de fora. O driver do banco e a biblioteca padrão do Python continuam sendo usados, porque o exercício é sobre o protocolo, não sobre reimplementar um cliente de banco de dados.
+O servidor oferece três ferramentas: consultar um pedido, listar pedidos e buscar nas descrições dos itens. Cada uma roda uma consulta fixa em *SQL* (Structured Query Language, a linguagem padrão usada para pedir linhas a um banco de dados relacional) escrita pelo desenvolvedor. O modelo só escolhe qual ferramenta chamar e preenche os argumentos; ele nunca escreve SQL. O curso chama este servidor de *feito à mão* (*raw*) porque ele fala o Model Context Protocol (MCP) manualmente, como as aulas anteriores o construíram, sem um SDK de MCP (software development kit: uma biblioteca mantida que implementa o protocolo). É um subconjunto para aprender, e a *docstring* (o bloco de documentação escrito dentro do próprio arquivo de código) do módulo lista o que ele deixa de fora. O *driver do banco* (uma biblioteca que cuida do protocolo de baixo nível para falar com SQLite ou Postgres) e a biblioteca padrão do Python continuam sendo usados, porque o exercício é sobre o protocolo, não sobre reimplementar um cliente de banco de dados.
 
 <Figure id="mcp-trust-boundaries" />
 
 ## Valores viajam como dado: parâmetros vinculados
 
-Eis como a busca ficaria escrita do jeito tentador, colando o texto dentro da string SQL. Esta versão vulnerável é uma ilustração: não está no repositório e o CI do curso não a executa. Enquanto esta aula era escrita, ela foi plantada em `queries.py` para uma rodada de testes, e o teste de injeção falhou com PO-2001 e PO-2002, pedidos do tenant-b, no resultado:
+Eis como a busca ficaria escrita do jeito tentador, colando o texto diretamente dentro da string SQL. Esta versão vulnerável é uma ilustração: não está no repositório e o *CI* (continuous integration, as verificações automáticas rodadas a cada mudança de código) do curso não a executa. Enquanto esta aula era escrita, ela foi plantada em `queries.py` para uma rodada de testes, e o teste de injeção falhou com PO-2001 e PO-2002, pedidos do tenant-b, no resultado:
 
 ```python
 # Illustration only, never write this.
 sql = f"SELECT ... WHERE tenant_id = '{principal.tenant_id}' AND lower(item) LIKE lower('%{args.item_contains}%')"
 ```
 
-A aspa e o parêntese no texto do modelo fecham o `LIKE` antes da hora, e `OR tenant_id LIKE ('tenant-b` vira parte da consulta. A documentação do `sqlite3` do Python alerta exatamente contra isso: "beware of using Python's string operations to assemble queries, as they are vulnerable to SQL injection attacks" (cuidado ao montar consultas com as operações de string do Python, porque elas são vulneráveis a ataques de SQL injection). A correção é um *parâmetro vinculado* (*bound parameter*). O texto SQL é fixo e contém um marcador, e o valor é enviado ao banco separadamente, então o banco nunca o interpreta como SQL. A consulta e a função reais:
+A aspa e o parêntese no texto do modelo fecham o `LIKE` antes da hora, e `OR tenant_id LIKE ('tenant-b` vira parte da consulta. A documentação do `sqlite3` do Python alerta exatamente contra isso: "beware of using Python's string operations to assemble queries, as they are vulnerable to SQL injection attacks" (cuidado ao montar consultas com as operações de string do Python, porque elas são vulneráveis a ataques de *SQL injection*, em que texto não confiável escapa do espaço de dado e altera a própria consulta). A correção é um *parâmetro vinculado* (*bound parameter*): o texto SQL fica fixo com um *marcador* (como `?` ou `%s`), e o valor viaja para o banco separadamente, então o banco nunca o interpreta como SQL. Primeiro, `SEARCH` fixa o modelo da consulta com três espaços `{p}` (tenant, padrão de busca e limite de linhas):
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/queries.py
 SEARCH = f"SELECT {COLUMNS} FROM purchases WHERE tenant_id = {{p}} AND lower(item) LIKE lower({{p}}) ESCAPE '\\' ORDER BY po_id LIMIT {{p}}"
 ```
+
+Em seguida, `search_purchase_orders` escapa os caracteres especiais do próprio `LIKE` no texto enviado e passa o tenant, o padrão de busca e o limite separadamente para `_page`:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/queries.py
@@ -85,11 +87,11 @@ def search_purchase_orders(db: ReadOnlyDatabase, principal: Principal, args: Sea
     return _page(db, principal, SEARCH, (principal.tenant_id, f"%{text}%"), args.limit)
 ```
 
-`{p}` marca onde vai um marcador de parâmetro. O SQLite escreve os marcadores como `?` e o psycopg como `%s`, então cada objeto de banco preenche o próprio símbolo. Só esses modelos constantes são formatados, nunca um valor. A linha de escape trata de um problema menor que os parâmetros não resolvem: dentro de um padrão `LIKE`, `%` significa "qualquer texto" e `_` significa "qualquer caractere". Sem escape, uma busca por `%%` casaria com todos os pedidos. Com os escapes, ela só casa com um item que contenha de fato dois sinais de porcentagem, e nenhum contém.
+`{p}` marca onde vai um marcador de parâmetro. O SQLite escreve os marcadores como `?` e o psycopg como `%s`, então cada objeto de banco preenche o próprio símbolo. Só esses modelos constantes são formatados, nunca um valor. A linha de *escape* (preceder símbolos especiais com uma barra invertida para que o banco os trate como texto comum) resolve um problema menor que os parâmetros não resolvem: dentro de um padrão `LIKE`, os *coringas* `%` e `_` significam "qualquer texto" e "qualquer caractere". Sem escape, uma busca por `%%` casaria com todos os pedidos. Com os escapes, ela só casa com um item que contenha de fato dois sinais de porcentagem, e nenhum contém.
 
 ## O tenant vem do lançamento, não do modelo
 
-O primeiro parâmetro de toda consulta é `principal.tenant_id`. O principal não é um argumento; um modelo estrito rejeitaria um argumento `tenant_id` de qualquer forma. Ele é definido uma vez, quando o host lança o processo do servidor, por duas variáveis de ambiente. A especificação do MCP diz que um servidor stdio deveria "retrieve credentials from the environment" (obter as credenciais do ambiente) em vez de usar o fluxo de autorização HTTP, e a [aula 15.5](/pt-br/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/) examina em quem isso confia. O servidor se recusa a subir sem elas:
+O primeiro parâmetro de toda consulta é `principal.tenant_id`. O principal não é um argumento; um modelo estrito rejeitaria um argumento `tenant_id` de qualquer forma. Ele é definido uma vez, quando o host lança o processo do servidor, por duas *variáveis de ambiente* (pares de chave e valor entregues ao programa pelo lançador quando ele inicia). A especificação do MCP diz que um servidor stdio deveria "retrieve credentials from the environment" (obter as credenciais do ambiente) em vez de usar o fluxo de autorização HTTP, e a [aula 15.5](/pt-br/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/) examina em quem isso confia. Abaixo, o código de inicialização *falha fechado* (recusa rodar em vez de adivinhar): se faltar qualquer uma das variáveis, ele imprime os nomes ausentes na saída de erro padrão e encerra com código 2:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/server.py
@@ -102,7 +104,7 @@ O primeiro parâmetro de toda consulta é `principal.tenant_id`. O principal nã
 
 ## Linhas limitadas e trabalho limitado
 
-A resposta de uma ferramenta entra no contexto do modelo, então uma ferramenta capaz de devolver 100.000 linhas pode inundá-lo. Toda listagem pede no máximo 50 linhas, e pede ao banco uma a mais do que vai devolver:
+A resposta de uma ferramenta entra no contexto do modelo, então uma ferramenta capaz de devolver 100.000 linhas pode inundá-lo. Toda listagem limita `limit` ao teto `MAX_ROWS` (50) e pede ao banco `limit + 1` linhas. Em `_page` abaixo, a função devolve no máximo `limit` linhas e marca `truncated` como `True` apenas quando essa linha extra de antecipação veio na resposta:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/queries.py
@@ -113,11 +115,11 @@ def _page(db: ReadOnlyDatabase, principal: Principal, template: str, params: tup
     return {"rows": rows[:limit], "truncated": len(rows) > limit}
 ```
 
-O tempo também precisa de limite, porque até uma consulta fixa pode ser lenta numa tabela grande. A versão SQLite conta trabalho em vez de segundos, o que mantém o teste determinístico. `set_progress_handler` chama uma função a cada 1.000 instruções da máquina virtual do SQLite, e a função interrompe a consulta depois de 1.000 chamadas; a documentação do Python diz que um retorno diferente de zero "will terminate the currently executing query" (encerra a consulta em execução). A versão Postgres usa `statement_timeout`, que aborta "any statement that takes more than the specified amount of time" (qualquer comando que demore mais que o tempo especificado).
+O tempo também precisa de limite, porque até uma consulta fixa pode ser lenta numa tabela grande. A versão SQLite conta trabalho em vez de segundos, o que mantém o teste *determinístico* (produzindo sempre o mesmo resultado, sem depender da velocidade da máquina). `set_progress_handler` chama uma função a cada 1.000 *instruções da máquina virtual* do SQLite (os pequenos passos internos que o SQLite executa para avaliar uma consulta), e a função interrompe a consulta depois de 1.000 chamadas; a documentação do Python diz que um retorno diferente de zero "will terminate the currently executing query" (encerra a consulta em execução). A versão Postgres usa `statement_timeout`, que aborta "any statement that takes more than the specified amount of time" (qualquer comando que demore mais que o tempo especificado).
 
 ## Postgres: uma segunda barreira, independente
 
-O SQLite abre o arquivo com `mode=ro` e liga `query_only`, então esta conexão não consegue escrever. Ele não tem segurança por linha, porém, então no SQLite o filtro `WHERE tenant_id` é a única coisa entre os tenants. A versão Postgres, em `src/agentlab/tools/postgres.py`, acrescenta barreiras que não dependem de a consulta estar certa. O teste entra como um papel (*role*) que pode fazer `SELECT` em uma tabela e não é dono de nada, e a tabela tem uma *política de segurança por linha* (*row security policy*), um filtro que o Postgres aplica a toda consulta que esse papel roda:
+O SQLite abre o arquivo com `mode=ro` e liga `query_only`, então esta conexão não consegue escrever. Ele não tem segurança por linha, porém, então no SQLite o filtro `WHERE tenant_id` é a única coisa entre os tenants. A versão Postgres, em `src/agentlab/tools/postgres.py`, acrescenta barreiras que não dependem de a consulta estar certa. O teste entra como um papel (*role*, o nome que o Postgres dá a uma conta de banco com permissões) que pode fazer `SELECT` em uma tabela e não é dono de nada, e a tabela tem uma *política de segurança por linha* (*row security policy*), um filtro que o Postgres aplica a toda consulta que esse papel roda. Os dois comandos SQL abaixo ligam a segurança por linha em `purchases` e permitem que um `SELECT` devolva uma linha apenas quando o `tenant_id` dela bate com a configuração `agentlab.tenant_id` da transação atual (ou nenhuma linha se essa configuração estiver ausente):
 
 ```python
 # file: examples/agent-engineering/tests_postgres/test_tools_postgres.py
@@ -126,7 +128,7 @@ ALTER TABLE purchases ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_rows ON purchases FOR SELECT USING (tenant_id = current_setting('agentlab.tenant_id', true));
 ```
 
-Cada consulta roda na própria transação só de leitura, que primeiro define o timeout e o tenant. Os dois vão para `set_config` como parâmetros vinculados, e o `true` faz com que valham só durante esta transação:
+Cada consulta roda na própria *transação* só de leitura (um grupo de comandos de banco executados como uma unidade isolada) que primeiro define o timeout e o tenant via `set_config` com parâmetros vinculados; passar `true` limita as duas configurações só a esta transação. Em `fetch` abaixo, o método aplica as duas configurações, roda a consulta até `max_rows` e converte um cancelamento por timeout do Postgres em `QueryTooExpensive`:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/tools/postgres.py
@@ -143,13 +145,13 @@ Cada consulta roda na própria transação só de leitura, que primeiro define o
 ```
 
 :::warning
-A documentação do PostgreSQL diz que superusuários e papéis com `BYPASSRLS` "always bypass the row security system" (sempre ignoram o sistema de segurança por linha), e que os donos da tabela normalmente também o ignoram. Rode o servidor como dono da tabela ou como superusuário e a política não faz nada. O papel de leitura precisa ser um papel de login separado, só com as permissões de que precisa.
+A documentação do PostgreSQL diz que *superusuários* (contas administrativas com privilégios irrestritos no banco) e papéis com `BYPASSRLS` "always bypass the row security system" (sempre ignoram o sistema de segurança por linha), e que os donos da tabela normalmente também o ignoram. Rode o servidor como dono da tabela ou como superusuário e a política não faz nada. O papel de leitura precisa ser um papel de login separado, só com as permissões de que precisa.
 :::
 
 ## Rode o exercício
 
-Os testes com SQLite estão em `tests/test_tools_queries.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_tools_queries.py"`; a saída termina com `Ran 10 tests` e `OK`. Cada ataque tem um controle: uma busca por `bolts` devolve o PO-1001 (o tenant-b também comprou parafusos, no PO-2001, e não aparece); o texto injetado não devolve nada; uma tentativa de `DROP TABLE` deixa as seis linhas no lugar; o PO-2001 é "não encontrado" enquanto o PO-1001 é encontrado; e uma consulta recursiva sem fim é interrompida, depois do que uma busca normal ainda funciona.
+Os testes com SQLite estão em `tests/test_tools_queries.py`. A partir de `examples/agent-engineering/`, rode `uv run --frozen python -m unittest discover -s tests -p "test_tools_queries.py"`; a saída termina com `Ran 10 tests` e `OK`. Cada ataque tem um controle: uma busca por `bolts` devolve o PO-1001 (o tenant-b também comprou parafusos, no PO-2001, e não aparece); o texto injetado não devolve nada; uma tentativa de `DROP TABLE` deixa as seis linhas no lugar; o PO-2001 é "não encontrado" enquanto o PO-1001 é encontrado; e uma *consulta recursiva* sem fim (uma consulta SQL que alimenta repetidamente a própria saída de volta em si mesma) é interrompida, depois do que uma busca normal ainda funciona.
 
 `tests/test_tools_interop.py` inicia o processo real do servidor via stdio. Ele roda o cliente deste curso contra o servidor e, depois, um segundo cliente: um script curto no arquivo de teste que não compartilha código com `agentlab.tools.client` e fala só o formato das mensagens. Os dois listam as mesmas três ferramentas, os dois leem o PO-1001, e o segundo também recebe `isError: true` para o PO-2001. `uv run --frozen python -m unittest discover -s tests -p "test_tools_interop.py"` termina com `Ran 5 tests` e `OK`.
 
-A suíte do Postgres precisa de um Postgres rodando e do grupo de dependências `postgres` (veja o README do projeto). Ela cria o próprio banco e um papel de login, ambos chamados `agentlab_test_` mais um sufixo aleatório, e os apaga no fim. Rode `uv run --frozen python -m unittest discover -s tests_postgres`; ela termina com `Ran 7 tests` e `OK`, ou informa a classe como pulada quando nenhum servidor responde em `AGENTLAB_PG_DSN`. Um dos testes roda uma consulta sem filtro de tenant e mesmo assim recebe só do PO-1001 ao PO-1004. Para ver os testes principais pegarem o bug do começo desta aula, troque o corpo de `search_purchase_orders` pela versão com a string colada: `test_an_injected_condition_is_data_not_sql` falha e lista PO-2001 e PO-2002. Restaure a função depois.
+A suíte do Postgres precisa de um Postgres rodando e do grupo de dependências `postgres` (veja o README do projeto). Ela cria o próprio banco e um papel de login, ambos chamados `agentlab_test_` mais um sufixo aleatório, e os apaga no fim. Rode `uv run --frozen python -m unittest discover -s tests_postgres`; ela termina com `Ran 7 tests` e `OK`, ou informa a classe como pulada quando nenhum servidor responde em `AGENTLAB_PG_DSN` (Data Source Name, a string de conexão que informa o endereço e o banco do Postgres). Um dos testes roda uma consulta sem filtro de tenant e mesmo assim recebe só do PO-1001 ao PO-1004. Para ver os testes principais pegarem o bug do começo desta aula, troque o corpo de `search_purchase_orders` pela versão com a string colada: `test_an_injected_condition_is_data_not_sql` falha e lista PO-2001 e PO-2002. Restaure a função depois.

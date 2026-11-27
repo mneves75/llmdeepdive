@@ -38,14 +38,14 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Rent a single H100-class GPU, load Qwen3.8-27B in bf16, open one chat window, and time the output. Tokens arrive at a few dozen per second, while the card's specification sheet advertises arithmetic throughput in the petaflop range (a petaflop is a million billion floating-point operations per second). Nothing is broken and nothing is misconfigured. In this worked example the main constraint is memory bandwidth: you are paying the machine in the wrong currency. This lesson shows which currency single-chat generation actually spends, so you can tell a slow setup from a correctly working one.
+Rent a single H100-class GPU (graphics processing unit), load Qwen3.8-27B in bf16 (bfloat16, a two-byte binary floating-point format storing fractional numbers in binary scientific notation), open one chat window, and time the output. Tokens arrive at a few dozen per second, while the card's specification sheet advertises arithmetic throughput (work finished per second) in the petaflop range (a petaflop is a million billion floating-point operations per second). Nothing is broken and nothing is misconfigured. In this worked example the main constraint is memory bandwidth: you are paying the machine in the wrong currency. This lesson shows which currency single-chat generation actually spends, so you can tell a slow setup from a correctly working one.
 
 ## What does an accelerator actually sell?
 
-Every accelerator sells two things, and they are priced independently.
+Every accelerator (a processor chip built for math-heavy workloads) sells two things, and they are priced independently.
 
 - **Arithmetic**, counted in FLOP/s: floating-point operations per second. On an NVIDIA GPU most of it comes from **tensor cores**, small units specialised in matrix multiplication, spread across the chip's **streaming multiprocessors** (the GPU's independent processing blocks).
 - **Memory traffic**, counted in bytes per second and called **memory bandwidth**: how fast data moves between the GPU's **HBM** (high-bandwidth memory, the stacked memory chips where the weights live) and those compute units.
@@ -67,7 +67,7 @@ Now the worked example. [Lesson 7.3](/lessons/7-inference-and-efficiency/7.3-pre
 1. Each step advances one position per sequence, through every layer.
 2. At batch 1 (one sequence), a weight matrix's arithmetic intensity is about one operation per weight byte, because each weight read serves only one token.
 
-The bytes are concrete. Qwen3.8-27B holds roughly 27 billion parameters in bfloat16, two bytes each, which is about 54 GB of weights. But 54 GB is the full artifact sitting in memory, not the exact bytes a text decode step reads. Some tensors are read every step: every decoder projection, the gated feed-forward matrices, and the untied language-model head (the final matrix that turns the hidden state into scores over the vocabulary, stored separately from the input embedding). Others are not read in full: the input embedding is a single-row lookup, and the vision tower does not run for text-only input.
+The bytes are concrete. Qwen3.8-27B holds roughly 27 billion parameters in bfloat16, two bytes each, which is about 54 GB of weights. But 54 GB is the full **checkpoint** (the saved file of weights sitting in memory), not the exact bytes a text decode step reads. Some **tensors** (multi-dimensional grids of numbers) are read every step: every decoder projection, the gated feed-forward matrices, and the untied language-model head (the final matrix that turns the hidden state into scores over the vocabulary, stored separately from the input embedding). Others are not read in full: the input embedding is a single-row table lookup, and the vision tower (the image-reading part of the model) does not run for text-only input.
 
 So the full checkpoint gives a planning quotient, not an exact count. Divide the bytes by the bandwidth to get the time to stream them once:
 
@@ -81,7 +81,7 @@ $$
 \text{checkpoint-size rate heuristic} \approx \frac{1}{16.1\times10^{-3}\ \text{s}} \approx 62.
 $$
 
-Call it about 60 tokens per second. This is not a benchmark, and nobody here measured it. It is a conservative estimate from the checkpoint size and a vendor bandwidth claim. It ignores attention work, the growing key-value reads of [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) (the cache of past keys and values that each step re-reads), DeltaNet state updates, kernel launch overhead, and every inefficiency between peak and attained bandwidth.
+Call it about 60 tokens per second. This is not a benchmark, and nobody here measured it. It is a conservative estimate from the checkpoint size and a vendor bandwidth claim. It ignores attention work, the growing key-value reads of [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) (the cache of past keys and values that each step re-reads), DeltaNet state updates, **kernel launch overhead** (the fixed setup delay each time the CPU tells the GPU to start a kernel), and every inefficiency between peak and attained bandwidth.
 
 A measured rate can land on either side of this quotient. Checkpoint tensors that a text step does not read lower the active bytes, which pushes the rate up. Cache, state, kernels, and unattained peak bandwidth add cost, which pushes it down. The quotient is good for the order of magnitude; an exact roofline (the chart of [lesson 9.2](/lessons/9-hardware-and-infrastructure/9.2-the-roofline-model/)) uses measured active bytes per token.
 
@@ -89,32 +89,34 @@ A measured rate can land on either side of this quotient. Checkpoint tensors tha
 
 Here is the wrong turn, and it is expensive enough that people make it with purchase orders. Decode feels slow, so the team concludes the GPU has run out of arithmetic and specifies a part with more FLOPs.
 
-Run the arithmetic on the proposal instead. Under the checkpoint-size heuristic, the card performs roughly two operations per parameter (one multiply and one add, a multiply-accumulate). That is about 54 billion operations in total, against a peak of a thousand teraflops. Spread over the 16.1 ms the step takes, it works out to something like three tenths of one percent of the arithmetic the machine can deliver. The tensor cores are idle more than 99 percent of the step. Doubling them doubles the idleness.
+Run the arithmetic on the proposal instead. Under the checkpoint-size heuristic, the card performs roughly two operations per parameter (one multiply and one add, a multiply-accumulate), or about 54 billion operations across the 16.1 ms step — roughly three tenths of one percent of a thousand-teraflop peak. Doubling the tensor cores doubles their idleness.
 
 The correction is to cut bytes, not operations. Every effective decode remedy in this course does exactly that:
 
 - **Validated lower-bit weights** reduce the active bytes read per token.
 - **Batching** spreads one weight read across many sequences.
-- **Speculative decoding** checks several candidate tokens per read.
+- **Speculative decoding** (checking several draft candidate tokens in parallel) amortizes each weight read across more than one token.
 
 ## Batching: the cheapest lever
 
-Batching deserves its own line of arithmetic, because it is the cheapest lever and the most misunderstood. Decoding 32 independent sequences together still reads the weights once per step. Each byte now serves 32 tokens, so the intensity rises from about one operation per byte to about 32. In a weight-only simplified model, which counts weight bytes and ignores everything else, total throughput rises roughly 32-fold while the latency each sequence sees barely moves. Real batching gains less: every added sequence also reads its own KV cache and recurrent state each step, attention work grows with context, and scheduling has overhead, so measure the batched rate rather than multiplying.
+<Figure id="t9-two-currencies" />
 
-But 32 is still far below the balance point of 300, so the step stays bandwidth-limited; the bandwidth is just doing more useful work per read. That is why serving economics (total tokens per second per dollar) and chat latency (how fast one user sees tokens) are different problems with different answers. A system tuned for one can look broken when measured by the other.
+Step through the figure to see how the same weight stream changes bottleneck across workloads. Batching is the cheapest lever and the most misunderstood: in a weight-only simplified model, decoding 32 independent sequences together raises total throughput roughly 32-fold while the **latency** (the delay each user waits per token) barely moves. Real batching gains less: every added sequence also reads its own KV cache and recurrent state each step, attention work grows with context, and scheduling adds overhead, so measure the batched rate rather than multiplying.
+
+Because 32 operations per byte still sits far below the balance point of 300, serving economics (total tokens per second per dollar) and chat latency (how fast one user sees tokens) are different problems with different answers. A system tuned for one can look broken when measured by the other.
 
 :::warning
-The utilization percentage reported by common monitoring tools is not arithmetic efficiency. It reports the fraction of sampled intervals during which any kernel was running on the device. A decode step that spends sixteen milliseconds waiting on HBM reads therefore shows as fully utilized while the tensor cores do almost nothing. A card can sit at 100 percent utilization and 0.3 percent of peak FLOPs at the same time. Lesson 9.2 gives the chart that separates the two, and profiling tools report achieved bandwidth and achieved arithmetic as separate counters for exactly this reason.
+The utilization percentage reported by common monitoring tools is not arithmetic efficiency. It reports the fraction of sampled intervals during which any kernel was running on the device. A decode step that spends sixteen milliseconds waiting on HBM reads therefore shows as fully utilized while the tensor cores do almost nothing. A card can sit at 100 percent utilization and 0.3 percent of peak FLOPs at the same time. Lesson 9.2 gives the chart that separates the two, and **profiling tools** (software that measures where GPU time and memory traffic actually go) report achieved bandwidth and achieved arithmetic as separate counters for exactly this reason.
 :::
 
 ## Training spends the other currency
 
-Training runs the other way, which is worth holding next to [lesson 5.13](/lessons/5-pretraining-at-scale/5.13-pretraining-costs/). Pretraining cost is estimated as roughly six operations per parameter per token. That formula counts FLOPs because pretraining processes enormous batches of tokens, so each weight read serves many tokens and the work sits far on the arithmetic-heavy side of the balance point.
+Training runs the other way, as panel 3 shows alongside [lesson 5.13](/lessons/5-pretraining-at-scale/5.13-pretraining-costs/). Pretraining cost is estimated as roughly six floating-point operations per parameter per token — about two in the forward pass plus about four in the backward pass (two for activation gradients and two for weight gradients) — while large training batches keep arithmetic intensity far above the balance point.
 
 The same weights that made training a matter of buying FLOPs make single-stream serving a matter of buying bandwidth. One model runs under two different hardware limits, so the right purchase inverts depending on which phase you are paying for.
 
 :::caveat
-Both figures used here are vendor claims and should be treated as order-of-magnitude anchors, not specifications you can hold a system to. Peak HBM bandwidth is never fully attained. Quoted FLOP rates frequently assume structured sparsity or a narrower number format than you plan to use. And the 54 GB weight figure omits activations, cache, and runtime overhead. Derive an exact bound from measured active bytes on the part and runtime you actually rent, then measure throughput.
+Both figures used here are vendor claims and should be treated as order-of-magnitude anchors, not specifications you can hold a system to. Peak HBM bandwidth is never fully attained. Quoted FLOP rates frequently assume **structured sparsity** (a pattern of zeroed weights the hardware can skip) or a narrower number format than you plan to use. And the 54 GB weight figure omits **activations** (the intermediate results of each layer), cache, and runtime overhead. Derive an exact bound from measured active bytes on the part and runtime you actually rent, then measure throughput.
 :::
 
 The model to keep is a two-currency machine. For any kernel, ask how many operations it performs per byte it must move, and compare that with the machine's balance point. Before writing a line of optimization, you then know which resource you are short of. Lesson 9.2 turns that comparison into a single chart you can place every kernel on. [Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) spends the other half of the hardware budget, capacity rather than bandwidth, on the key-value cache.

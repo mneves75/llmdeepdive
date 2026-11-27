@@ -34,24 +34,24 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 ## O que a DPO tira do pipeline
 
 A [aula 6.5](/pt-br/lessons/6-post-training-and-alignment/6.5-rlhf-with-ppo/) deixou você segurando quatro modelos ao mesmo tempo e uma policy de 27B de parâmetros cujo estado de otimizador sozinho chega a centenas de gigabytes. A maioria dos times não consegue rodar isso, e muitos não precisam.
 
-A **Direct Preference Optimization** (DPO, otimização direta de preferência) parte de uma relação matemática entre a melhor policy possível sob uma penalidade de KL e a recompensa para a qual ela foi otimizada. Depois rearranja essa relação para que a policy possa ser treinada diretamente em pares de preferência. Não há reward model, nem workers de rollout amostrando respostas novas, nem cabeça de valor. O que sobra é um forward pass e uma loss.
+A **Direct Preference Optimization** (DPO, otimização direta de preferência) parte de uma relação matemática entre a melhor policy possível sob uma penalidade de KL e a recompensa para a qual ela foi otimizada. Depois rearranja essa relação para que a policy possa ser treinada diretamente em pares de preferência. Não há reward model, nem **workers de rollout** (servidores que rodam o modelo para amostrar novas respostas de prática), nem **cabeça de valor** (a camada extra que prevê a recompensa futura). O que sobra é um forward pass e uma loss.
 
 ## O que a DPO compara em cada par
 
 A DPO precisa de um número por resposta: sua **log-probabilidade**, a soma dos logs das probabilidades que o modelo dá a cada token da resposta, cada um dado o prompt e os tokens da resposta que vêm antes dele. Ela é negativa, e mais perto de zero significa que o modelo acha a resposta inteira mais provável.
 
-A DPO calcula esse número duas vezes para cada resposta. Uma vez sob a **policy** sendo treinada, e outra sob uma **referência** congelada, normalmente o checkpoint de partida. A diferença diz quanto a policy agora favorece a resposta a mais do que a referência já favorecia. A DPO quer que esse ganho seja maior para a resposta escolhida que para a rejeitada. A distância entre os dois ganhos, escalada por uma configuração $\beta$, é uma margem, e a loss é a mesma loss logística do reward model da [aula 6.4](/pt-br/lessons/6-post-training-and-alignment/6.4-reward-models-and-human-preference-data/).
+A DPO calcula esse número duas vezes para cada resposta — uma vez sob a **policy** treinável e outra sob uma **referência** congelada, normalmente o checkpoint de partida — e escala a distância entre os dois ganhos relativos por uma configuração $\beta$ antes de passar o resultado pela loss logística da [aula 6.4](/pt-br/lessons/6-post-training-and-alignment/6.4-reward-models-and-human-preference-data/).
 
-Passe um exemplo pela aritmética. Tome $\beta = 0.1$. Suponha que a resposta escolhida pontue $-42.0$ sob a policy e $-45.0$ sob a referência, um ganho relativo de $+3.0$; e que a rejeitada pontue $-50.0$ sob a policy e $-48.0$ sob a referência, uma perda relativa de $-2.0$. Então $m = 0.1 \times (3.0 - (-2.0)) = 0.5$, e a loss é $-\log\sigma(0.5)\approx 0.47$. Repare no que moveu o número: não quão provável cada resposta é, mas quanto a verossimilhança de cada uma se deslocou *em relação à referência*.
+Passe um exemplo pela aritmética com $\beta = 0.1$: a escolhida pontua $-42.0$ sob a policy e $-45.0$ sob a referência (ganho de $+3.0$); a rejeitada pontua $-50.0$ sob a policy e $-48.0$ sob a referência (perda de $-2.0$). Isso dá $m = 0.1 \times (3.0 - (-2.0)) = 0.5$ e loss $-\log\sigma(0.5)\approx 0.47$. Repare no que moveu o número: quanto a **verossimilhança** (quão provável o modelo considera a resposta) se deslocou *em relação à referência*.
 
-Em símbolos, cada exemplo contém um prompt $x$, uma resposta preferida $y^{+}$ e uma resposta rejeitada $y^{-}$. A DPO usa uma policy treinável $\pi_\theta$ e uma referência congelada $\pi_{ref}$, soma as log-probabilidades dos tokens de cada resposta condicionada ao prompt, e compara quanto a policy favorece cada resposta a mais do que a referência já favorecia:
+Em símbolos, cada exemplo contém um prompt $x$, uma resposta preferida $y^{+}$ e uma resposta rejeitada $y^{-}$. A DPO usa uma policy treinável $\pi_\theta$ e uma referência congelada $\pi_{ref}$:
 
 $$
 m=\beta\left[
@@ -61,11 +61,13 @@ m=\beta\left[
 \mathcal{L}_{\text{DPO}}=-\log\sigma(m).
 $$
 
+<Figure id="t6-dpo-pair-margin" />
+
 ## Montando um treino de DPO no Qwen3.8-27B
 
 Agora torne isso concreto no modelo deste curso. Você quer adaptar o estilo do instruct mode do Qwen3.8-27B para um produto de suporte, e tem 8.000 pares de preferência. Montar o treino significa responder a quatro perguntas, nesta ordem.
 
-**Primeira: de onde vem o modelo de referência?** Carregar ingenuamente dois checkpoints de 27B em bf16 não é um plano para uma placa. Combine DPO com o LoRA da [aula 6.3](/pt-br/lessons/6-post-training-and-alignment/6.3-lora-qlora-and-peft/). Treine adapters sobre um backbone de poucos bits e obtenha a log-probabilidade de referência rodando o mesmo backbone com os adapters desativados. Isso remove a segunda cópia dos pesos, mas não prova que o treino cabe numa GPU dada. Ativações, metadados de quantization, comprimento da sequência, micro-batch e buffers do backend ainda decidem quanta memória ele precisa.
+**Primeira: de onde vem o modelo de referência?** Carregar ingenuamente dois checkpoints de 27B em bf16 não é um plano para uma placa. Combine DPO com o LoRA da [aula 6.3](/pt-br/lessons/6-post-training-and-alignment/6.3-lora-qlora-and-peft/). Treine adapters sobre um backbone de poucos bits e obtenha a log-probabilidade de referência rodando o mesmo backbone com os adapters desativados. Isso remove a segunda cópia dos pesos, mas não prova que o treino cabe numa GPU dada. Ativações, **metadados de quantization** (números de escala extras guardados junto dos pesos comprimidos), comprimento da sequência, micro-batch e **buffers do backend** (espaços temporários na memória da GPU) ainda decidem quanta memória ele precisa.
 
 **Segunda: que modo você está treinando?** O Qwen3.8-27B vem com thinking mode ligado por padrão e instruct mode atrás de enable_thinking em False. Os dois renderizam a mesma conversa em sequências de tokens diferentes. Log-probabilidades são calculadas sobre tokens, então um par coletado num modo e pontuado no outro não é meramente ruidoso: é outro objetivo. Escolha um modo, renderize tanto a resposta escolhida quanto a rejeitada por aquele exato ramo do template, e registre qual ramo o dataset usou.
 
@@ -77,7 +79,7 @@ Agora torne isso concreto no modelo deste curso. Você quer adaptar o estilo do 
 
 A distinção "em relação à referência" prepara o desvio clássico. Times logam a log-probabilidade bruta das respostas escolhidas sob a policy e a veem cair durante o treino. Concluem que o treino está quebrado: o modelo está ficando pior em produzir as respostas que dissemos preferir.
 
-Olhe as duas séries e o pânico se dissolve. É perfeitamente normal a log-probabilidade da escolhida escorregar de $-42$ para $-44$ enquanto a da rejeitada desaba de $-50$ para $-60$. A margem passou de 8 para 16, que é exatamente o que o objetivo otimiza. A DPO nunca prometeu elevar a verossimilhança absoluta da resposta escolhida. Ela prometeu tornar a resposta escolhida mais característica da nova policy do que a rejeitada é. Se você quer um piso de verossimilhança absoluta, precisa também de um termo supervisionado, que é o projeto que o ORPO adota na [aula 6.7](/pt-br/lessons/6-post-training-and-alignment/6.7-orpo-kto-simpo-and-the-alignment-zoo/).
+Olhe as duas séries — etapa 2 da figura acima — e o pânico se dissolve. A log-probabilidade da escolhida pode deslizar de $-42$ para $-44$ enquanto a da rejeitada desaba de $-50$ para $-60$, dobrando a margem de 8 para 16. A DPO nunca prometeu elevar a verossimilhança absoluta da resposta escolhida; ela prometeu tornar a resposta escolhida mais característica da nova policy do que a rejeitada é. Se você quer um piso de verossimilhança absoluta, precisa também de um termo supervisionado, que é o projeto que o ORPO adota na [aula 6.7](/pt-br/lessons/6-post-training-and-alignment/6.7-orpo-kto-simpo-and-the-alignment-zoo/).
 
 O que você deveria acompanhar:
 
@@ -98,6 +100,6 @@ Remover o reward model não remove as preferências. Toda fraqueza que a aula 6.
 
 A DPO padrão também é offline: ela não coleta julgamentos novos conforme a policy se move. Se o treino empurra o modelo para comportamento que o dataset nunca cobriu, não existe feedback nenhum lá. Variantes iterativas regeneram candidatos e coletam pares novos. Isso restaura um laço de produção de dados mesmo evitando a maquinaria do PPO.
 
-Os detalhes mecânicos merecem o mesmo cuidado que a matemática. O padding precisa ser mascarado. Os tokens de prompt precisam ser excluídos de forma consistente dos dois lados. O truncamento nunca pode apagar a evidência que determinou o rótulo: uma resposta rejeitada cortada antes do seu erro é uma resposta rejeitada sem motivo visível para ter sido rejeitada. E as convenções de $\beta$ diferem entre bibliotecas, então um valor copiado da config de outra pessoa pode significar outra coisa na sua.
+Os detalhes mecânicos merecem o mesmo cuidado que a matemática. O **padding** (tokens de enchimento inseridos para que as sequências de um batch tenham o mesmo comprimento) precisa ser mascarado. Os tokens de prompt precisam ser excluídos de forma consistente dos dois lados. O **truncamento** (cortar uma resposta que ultrapassa o comprimento máximo) nunca pode apagar a evidência que determinou o rótulo: uma resposta rejeitada cortada antes do seu erro é uma resposta rejeitada sem motivo visível para ter sido rejeitada. E as convenções de $\beta$ diferem entre bibliotecas, então um valor copiado da config de outra pessoa pode significar outra coisa na sua.
 
 O modelo durável é modelagem pareada de policy. A DPO torna a resposta desejada mais característica da nova policy em relação a uma linha de base fixa, e a resposta rejeitada menos. Ela troca um jurado escalar aprendido e um otimizador online por uma loss offline elegante. Os julgamentos humanos, a escolha da referência, o ramo do template e a avaliação continuam sendo a especificação de verdade.

@@ -42,23 +42,23 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Você tem um acelerador de 80 GB e um requisito de produto: servir o Qwen3.8-27B ao maior número de conversas simultâneas que a placa permitir, cada uma com janela de 8.192 tokens. Alguém subtrai 54 dos pesos de 80, divide o restante pelos 64 KiB por token da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) (o tamanho do cache de key-value que cada token acrescenta) e reporta 48 usuários. O resultado calculado é 36. A estimativa ingênua fica um terço acima, e o jeito como ela falha é um crash por falta de memória sob carga. Esta aula faz o orçamento linha a linha, porque toda aula posterior que precifica serving se apoia nele.
+Você tem um acelerador de 80 GB e um requisito de produto: servir o Qwen3.8-27B ao maior número de conversas simultâneas que a placa permitir, cada uma com janela de 8.192 tokens. Alguém subtrai 54 dos pesos de 80, divide o restante pelos 64 KiB por token da [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) (o tamanho do cache de key-value que cada token acrescenta) e reporta 48 usuários. O resultado calculado é 36. A estimativa ingênua fica um terço acima, e o jeito como ela falha é um **crash por falta de memória** (o programa interrompe abruptamente porque pede mais memória do que o hardware tem) sob carga. Esta aula faz o orçamento linha a linha, porque toda aula posterior que precifica serving se apoia nele.
 
 ## Quanto da placa você consegue de fato usar?
 
-Comece pela capacidade utilizável, e não pela capacidade de folheto. Uma peça vendida como 80 GB carrega HBM (sua memória de alta banda) da classe 80 GiB. Ela reporta aproximadamente 79,6 GiB ao runtime depois que ECC (correção de erros) e regiões reservadas de firmware são descontadas. Então o número que você consegue de fato alocar é menor que o número na caixa.
+Comece pela capacidade utilizável, e não pela capacidade de folheto. Uma peça vendida como 80 GB carrega HBM (sua memória de alta banda) da classe 80 GiB. Ela reporta aproximadamente 79,6 GiB ao **runtime** (a camada de software que carrega e executa o modelo na GPU) depois que ECC (correção de erros) e regiões reservadas de **firmware** (software de controle de baixo nível embutido no chip) são descontadas. Então o número que você consegue de fato alocar é menor que o número na caixa.
 
-A segunda armadilha são as unidades. Um GB é um bilhão de bytes; um GiB (gibibyte) é 1.024 × 1.024 × 1.024 bytes, cerca de 7 por cento a mais. Fabricantes citam pesos em GB e runtimes reportam memória em GiB, e misturar os dois distorce um orçamento nesses 7 por cento sem nenhuma mensagem de erro. A única defesa é fazer o orçamento inteiro numa única família de unidades: converta tudo para gibibytes e permaneça ali. Os pesos em bf16, cerca de 54 GB pelo número canônico, são 50,3 GiB.
+A segunda armadilha são as unidades. Um GB é um bilhão de bytes; um GiB (gibibyte) é 1.024 × 1.024 × 1.024 bytes, cerca de 7 por cento a mais. Fabricantes citam pesos em GB e runtimes reportam memória em GiB, e misturar os dois distorce um orçamento nesses 7 por cento sem nenhuma mensagem de erro. A única defesa é fazer o orçamento inteiro numa única família de unidades: converta tudo para gibibytes e permaneça ali. Os pesos em bf16 (dois bytes por número), cerca de 54 GB pelo número canônico, são 50,3 GiB.
 
 Em seguida vem uma linha que a subtração ingênua omite por completo: a **reserva de runtime**. Várias coisas consomem memória antes que exista um único token de cache:
 
 - o contexto do driver, a contabilidade do lado da GPU que todo processo precisa;
 - buffers de ativação para o maior batch que você pretende rodar (ativações são os resultados intermediários de cada camada);
-- workspace temporário para os kernels de attention e de feed-forward;
-- a fragmentação do alocador: memória livre partida em blocos pequenos ou espalhados demais para atender à alocação que está sendo pedida.
+- **workspace** temporário (memória de rascunho) para os kernels de attention e de feed-forward;
+- a fragmentação do **alocador**: memória livre partida pelo gerenciador de memória em blocos pequenos ou espalhados demais para atender à alocação que está sendo pedida.
 
 Juntas, elas ocupam vários gibibytes. Seis gibibytes é um número ilustrativo e nada generoso. Frameworks de serving codificam a mesma ideia como uma fração de utilização, retendo por padrão cerca de um décimo do dispositivo. O que sobra é o **pool**, a memória que fica para o estado de cada conversa:
 
@@ -76,7 +76,7 @@ $$
 8{,}192\ \text{tokens} \times 64\ \text{KiB} \ =\ 524{,}288\ \text{KiB} \ =\ 512\ \text{MiB}
 $$
 
-de keys e values. Mas as 48 camadas de Gated DeltaNet também custam memória. Na referência do Transformers, cada uma mantém um estado matricial de 3 MiB em float32, totalizando 144 MiB sem o pequeno estado de convolução.
+de keys e values. Mas as 48 camadas de Gated DeltaNet também custam memória. Na referência do Transformers (a implementação padrão da biblioteca Hugging Face Transformers), cada uma mantém um estado matricial de 3 MiB em **float32** (quatro bytes por número), totalizando 144 MiB sem o pequeno **estado de convolução** (um buffer pequeno que guarda os últimos tokens para um filtro curto de janela deslizante).
 
 Esse estado pertence à sequência, não ao modelo: cada conversa simultânea carrega sua própria cópia, do mesmo jeito que cada arquivo aberto carrega sua própria posição de leitura enquanto o conteúdo do arquivo é compartilhado. Então o custo real por sequência é 512 mais 144, ou 656 MiB, e o pool comporta
 
@@ -109,11 +109,11 @@ e cinco conversas em contexto nativo completo em vez de uma. Isso é um ganho de
 Deixe o estado DeltaNet de fora e o orçamento prevê 46 sequências em bf16 em vez de 36, cerca de 28 por cento a mais. Em FP8, prevê 193 sequências em vez de 124, cerca de 56 por cento a mais. O estado é constante, então, conforme cada termo variável encolhe, a fatia do estado no orçamento cresce. Muitas cópias de 144 MiB fixos viram uma linha relevante do orçamento.
 
 :::warning
-O erro mais caro é reservar o contexto máximo para toda requisição. A alocação paginada, apresentada na [aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/), entrega blocos de cache sob demanda, de modo que uma conversa de 300 tokens ocupa 300 tokens de memória de KV. É isso que transforma o pool teórico em 36 usuários simultâneos de 8K neste orçamento calculado. Admita requisições contra a ocupação medida, não contra limites declarados.
+O erro mais caro é reservar o contexto máximo para toda requisição. A alocação paginada, apresentada na [aula 7.8](/pt-br/lessons/7-inference-and-efficiency/7.8-pagedattention-and-continuous-batching/), entrega blocos de cache sob demanda, de modo que uma conversa de 300 tokens ocupa 300 tokens de memória de KV. É isso que transforma o pool teórico em 36 usuários simultâneos de 8K neste orçamento calculado. Admita requisições contra a **ocupação** medida (o quão cheio o pool realmente está), não contra limites declarados.
 :::
 
 :::caveat
-Todo número aqui é uma estimativa ilustrativa de planejamento, não uma especificação de deploy. Os 144 MiB de estado matricial seguem a referência em float32 e excluem o pequeno estado de convolução curta; outro runtime pode escolher outro dtype para o estado. A reserva de seis gibibytes e o overhead do cache quantizado também dependem da stack exata. Derive o orçamento e depois verifique carregando o modelo e lendo o alocador.
+Todo número aqui é uma estimativa ilustrativa de planejamento, não uma especificação de deploy. Os 144 MiB de estado matricial seguem a referência em float32 e excluem o pequeno estado de convolução curta; outro runtime pode escolher outro **dtype** (tipo de dado — quantos bits guardam cada número) para o estado. A reserva de seis gibibytes e o overhead do cache quantizado também dependem da stack exata. Derive o orçamento e depois verifique carregando o modelo e lendo o alocador.
 :::
 
 Leve dois hábitos desta aula. Orce numa única família de unidades, e precifique uma sequência por completo em vez de precificar apenas o cache dela. A [aula 9.4](/pt-br/lessons/9-hardware-and-infrastructure/9.4-nvidia-cuda-hopper-blackwell/) muda a linha de capacidade mudando o silício, e a [aula 9.10](/pt-br/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) transforma esses números de ocupação em custo por token.

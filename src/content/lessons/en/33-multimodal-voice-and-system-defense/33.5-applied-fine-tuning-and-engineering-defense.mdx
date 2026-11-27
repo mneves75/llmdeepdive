@@ -34,69 +34,71 @@ citations:
     authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares, Jiri De Jonghe (Anthropic)"
     year: 2026
     url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Across Part 3, you learned how to call LLMs reliably, retrieve text and visual pages, measure quality honestly, lock down tenant security, budget latency and unit economics, run LLMOps rollouts, and build sub-500 ms voice systems. Two real-world realities separate engineers who know those concepts individually from senior AI engineers who own production systems: **serving customized fine-tuned models without exploding GPU bills**, and **defending a complete system under live incidents, 100x growth, and aggressive cost pressure**.
+Across Part 3, you learned how to call LLMs reliably, retrieve text and visual pages, measure quality honestly, isolate customer data, budget latency and unit economics, run LLMOps rollouts, and build sub-500 ms voice systems. Two real-world challenges separate engineers who know those pieces separately from senior AI engineers who own live systems: **serving customized fine-tuned models without exploding graphics processing unit (GPU) bills**, and **defending a complete system under live incidents, 100x growth, and tight budget cuts**.
 
-This closing lesson covers multi-adapter serving with S-LoRA, a four-incident debugging playbook, and the architecture defense framework that extends [lesson 25.5](/lessons/25-agent-capstone-and-portfolio/25.5-defend-and-publish-deliberately/) to full Part 3 production systems.
+This closing lesson covers multi-adapter serving with S-LoRA, a four-incident debugging playbook, and the architecture defense sequence that extends [lesson 25.5](/lessons/25-agent-capstone-and-portfolio/25.5-defend-and-publish-deliberately/) to full Part 3 production systems.
 
 ## Multi-adapter serving: S-LoRA worked memory math
 
-In [lesson 28.1](/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/), you saw when fine-tuning wins over prompting or RAG—for example locking in a tight domain style, specialized extraction syntax, or a compact distilled classifier. Once fine-tuning works for one enterprise customer, sales immediately asks for a custom model for 100 tenants.
+In [lesson 28.1](/lessons/28-production-rag-architectures/28.1-rag-vs-long-context-vs-fine-tuning/), you saw when **fine-tuning** (updating a model's weights on specialized examples) beats prompting or RAG—for example locking in a strict house style, custom extraction format, or compact distilled classifier. Once fine-tuning works for one customer, sales asks for custom models across 100 **tenants** (separate customer organizations sharing one platform).
 
-Look at the memory wall if you merge each tenant's LoRA weights into a separate full copy of a 54 GB base model (bf16):
+Look at the memory wall if you merge each tenant's **Low-Rank Adaptation (LoRA)** weights (a tiny pair of add-on matrices, $A$ and $B$, that adjust a large model without changing its main weights) into a separate full copy of a 54 GB base model in 16-bit floats (bf16):
 
 $$
 M_{\text{merged}} = 100 \times 54\ \text{GB} = 5{,}400\ \text{GB}
 $$
 
-You would need roughly 68 dedicated 80 GB GPUs sitting idle just to hold the weights in VRAM before serving a single token.
+You would need about 68 dedicated 80 GB GPUs sitting idle just to hold the weights in **Video RAM (VRAM, fast on-chip GPU memory)** before serving a single token.
 
-**S-LoRA** (Sheng et al., 2023) breaks that wall by separating the shared frozen base model from the tiny low-rank adapter matrices ($A$ and $B$). Suppose each tenant's rank-$r = 16$ LoRA adapter occupies **60 MB** in bf16. Keep **one** 54 GB base model pinned in GPU memory and hold all 100 adapters in a **Unified Paging** memory pool (the same paged-memory idea as PagedAttention, extended to variable-rank adapter slices alongside KV-cache pages, paging cold adapters seamlessly from host CPU RAM):
+**S-LoRA** (Sheng et al., 2023) breaks that wall by keeping **one** frozen 54 GB base model pinned in GPU VRAM and storing each tenant's rank-$r = 16$ adapter (a narrow 16-column add-on weighing **60 MB** in bf16) in a **Unified Paging** pool—storing variable-sized adapter slices in fixed memory pages beside the attention KV cache, and loading cold adapters on demand from the server's main CPU RAM:
 
 $$
 M_{\text{S-LoRA}} = 54\ \text{GB} + 100 \times 0.06\ \text{GB} = 54 + 6 = 60\ \text{GB}
 $$
 
-Total weight memory drops **90x**, from 5,400 GB down to 60 GB—fitting comfortably on a single 80 GB-class GPU while custom batched kernels compute the shared base projection once for the mixed batch and apply each request's individual $A, B$ adapter deltas in parallel. Combined with tenant-scoped adapter routing ([lesson 32.5](/lessons/32-llmops-and-managed-platforms/32.5-enterprise-tenancy-residency-and-portability/)), one serving deployment supports hundreds of isolated tenant customizations.
+Total weight memory drops **90x**, from 5,400 GB down to 60 GB—fitting on a single 80 GB-class GPU. As the figure below shows, Step 1 plots that 90x memory gap across 1 to 100 tenants, and Step 2 traces how one GPU processes a mixed batch and applies each request's tenant-scoped adapter ([lesson 32.5](/lessons/32-llmops-and-managed-platforms/32.5-enterprise-tenancy-residency-and-portability/)) in parallel.
+
+<Figure id="33-5-slora-multi-adapter" />
 
 ## Production incident debugging playbook
 
-When a production AI system breaks at 2 a.m., guessing wastes hours. Match the symptom to a disciplined trace-first triage path across the four canonical AI incidents:
+When a production AI system breaks at 2 a.m., guessing wastes hours. Match each symptom to a trace-first triage path using **OpenTelemetry (OTel) spans** (standardized timing logs attached to one request `trace_id` and deployment tag `release_id`) across four canonical incidents:
 
 | Incident symptom | First telemetry to inspect | Most common root causes | Immediate containment |
 | --- | --- | --- | --- |
-| **Sudden RAG groundedness drop** (HTTP 200) | OTel `release_id`, retrieval chunk count, rerank score distribution | Embedding/index version skew, PDF parser regression, broken ACL pre-filter | Atomic rollback to prior immutable manifest ([lesson 32.3](/lessons/32-llmops-and-managed-platforms/32.3-shadow-canary-and-incident-rollbacks/)) |
-| **Runaway agent loop / 3x token bill** | Spans per `trace_id`, `execute_tool` error rates, `output_tokens` | Tool returning ambiguous errors causing endless retries, missing step/budget cap | Trip circuit breaker / lower max-step ceiling, isolate offending route |
-| **p95 tail latency spike** | Split OTel child spans: retrieval vs guardrail vs TTFT vs decode vs 429 retries | Provider rate-limit backoff, unindexed metadata filter, verbose prompt (`finish_reason=length`) | Shed non-critical retries, overflow to secondary model/PAYG, cap `max_output_tokens` |
+| **Sudden RAG groundedness drop** (HTTP 200, meaning the web request succeeded even though answers degraded) | OTel `release_id`, retrieval chunk count, rerank score distribution | Embedding/index version skew, PDF parser regression, broken Access Control List (ACL) permission filter | Atomic rollback to prior immutable manifest (version-locked prompt, model, and index bundle, [lesson 32.3](/lessons/32-llmops-and-managed-platforms/32.3-shadow-canary-and-incident-rollbacks/)) |
+| **Runaway agent loop / 3x token bill** | Spans per `trace_id`, `execute_tool` error rates, `output_tokens` | Tool returning ambiguous errors causing endless retries, missing step or budget cap | Trip **circuit breaker** (automatic shutoff switch), lower max-step ceiling, isolate offending route |
+| **p95 tail latency spike** (response time exceeded by the slowest 5% of requests) | Split OTel child spans: retrieval vs guardrail vs TTFT vs decode vs HTTP 429 ("too many requests") retries | Provider rate-limit backoff, unindexed metadata filter, verbose prompt (`finish_reason=length`, meaning output hit its token ceiling) | Shed non-critical retries, overflow to secondary model or pay-as-you-go (PAYG), cap `max_output_tokens` (hard reply length ceiling) |
 | **Fine-tuned adapter regression** | Offline vs live eval delta by `adapter_id`, schema parse failures | Catastrophic forgetting on edge classes, base checkpoint upgraded under old adapter | Pin adapter to exact base revision; route back to prior adapter or base+prompt manifest |
 
-Every resolved incident ends with one mandatory step from Anthropic's evaluation guidance: **convert the failed production trace (redacted of PII) into a permanent deterministic test case** in your offline CI eval suite so that exact defect can never ship twice.
+Every resolved incident ends with one mandatory step from Anthropic's evaluation guidance: **convert the failed production trace (stripped of Personally Identifiable Information, or PII) into a permanent deterministic test case** in your offline continuous-integration (CI) eval suite so that exact defect can never ship twice.
 
 ## Structured architecture whiteboarding
 
-Whether presenting to a principal engineering review board or defending a portfolio project, clear architects follow the same five-step sequence in order—never starting with a framework name:
+Whether presenting to a principal engineering review board or defending a portfolio project, clear architects follow five steps in order—never opening with a framework name:
 
-1. **Constraints and SLAs first**: state traffic volume (daily/monthly requests, peak-to-average ratio), hard latency budget (for example < 2 s for text RAG, < 500 ms for voice from [lesson 33.4](/lessons/33-multimodal-voice-and-system-defense/33.4-realtime-voice-agents-and-barge-in/)), accuracy floor, and unit-cost ceiling.
-2. **Data, privacy, and residency boundary**: name what data is sensitive (PII, multi-tenant ACLs, EU/regional residency), where redaction runs, and how tenant isolation wraps indexes, caches, and adapters.
-3. **Core modality and retrieval pipeline**: justify why plain-text hybrid RAG, visual document RAG ([lesson 33.1](/lessons/33-multimodal-voice-and-system-defense/33.1-visual-document-rag-and-cross-modal-search/)), diffusion/flow-matching async jobs ([lesson 33.2](/lessons/33-multimodal-voice-and-system-defense/33.2-diffusion-and-flow-matching-generation/)), or streaming speech-to-speech fits the workload—explicitly comparing against the simpler baseline.
-4. **Evaluation, observability, and rollout gates**: specify your error taxonomy, retrieval/generation metrics, OpenTelemetry `gen_ai.*` spans tied to coupled manifests, shadow/canary windows, and automated rollback triggers.
+1. **Constraints and Service Level Agreements (SLAs) first**: state traffic volume (daily and monthly requests, peak-to-average ratio), hard latency budget (for example < 2 s for text RAG, < 500 ms for voice from [lesson 33.4](/lessons/33-multimodal-voice-and-system-defense/33.4-realtime-voice-agents-and-barge-in/)), accuracy floor, and unit-cost ceiling.
+2. **Data, privacy, and residency boundary**: name what data is sensitive (PII, multi-tenant ACLs, EU or regional data residency), where redaction runs, and how tenant isolation wraps indexes, caches, and adapters.
+3. **Core modality and retrieval pipeline**: justify why plain-text hybrid RAG, visual document RAG ([lesson 33.1](/lessons/33-multimodal-voice-and-system-defense/33.1-visual-document-rag-and-cross-modal-search/)), diffusion or flow-matching async jobs ([lesson 33.2](/lessons/33-multimodal-voice-and-system-defense/33.2-diffusion-and-flow-matching-generation/)), or streaming speech-to-speech fits the workload—explicitly comparing against the simpler baseline.
+4. **Evaluation, observability, and rollout gates**: specify your error taxonomy, retrieval and generation metrics, OpenTelemetry `gen_ai.*` spans tied to coupled manifests, **shadow/canary windows** (testing silently on copied traffic or on a small live slice before full rollout), and automated rollback triggers.
 5. **Failure modes and unit economics**: show the monthly bill arithmetic ([lesson 31.5](/lessons/31-ai-system-design-and-caching/31.5-production-system-design-case-studies/) and track 32) and name the top three ways the system degrades safely when a provider or database fails.
 
 ## Defending 100x scale and 50% cost-cut stress tests
 
-Senior design reviews always end with two deliberate shocks. Prepare concrete arithmetic rather than hand-waving:
+Senior design reviews end with two deliberate shocks. Answer with concrete arithmetic rather than hand-waving:
 
-- **Shock 1 — "Traffic grows 100x next quarter"**: state *what breaks first* with numbers. Direct API rate limits (RPM/TPM) saturate first, forcing provisioned throughput reservations plus multi-region/multi-provider spillover. Next, single-node HNSW vector RAM hits its ceiling, requiring scalar/binary quantization and tenant-keyed index sharding. Meanwhile, the fixed-cost crossover flips: at 100x volume, high-utilization provisioned capacity or self-hosted S-LoRA clusters often beat PAYG by 40–60%.
-- **Shock 2 — "Cut inference cost by 50% this month"**: prioritize zero-regret levers in strict order—(1) route 60–75% of routine requests to a smaller, cheaper model in a cascade, (2) maximize prompt-prefix caching and tenant-scoped exact caching, (3) tighten context top-k and cap `max_output_tokens` on verbose routes, and (4) distill a small fine-tuned LoRA model for high-volume structured extraction. Just as important, state **what you refuse to cut**: tenant ACL pre-filters, constrained schema validation, and the held-out evaluation gate proving groundedness did not silently collapse.
+- **Shock 1 — "Traffic grows 100x next quarter"**: state *what breaks first* with numbers. Direct API rate limits—requests per minute (RPM) and tokens per minute (TPM)—saturate first, requiring reserved provisioned capacity plus multi-region or multi-provider spillover. Next, single-node **Hierarchical Navigable Small World (HNSW)** vector-index RAM hits its ceiling, requiring scalar or binary quantization and tenant-keyed **sharding** (splitting one large index across multiple machines). At 100x volume, high-utilization provisioned capacity or self-hosted S-LoRA clusters often beat PAYG by 40–60%.
+- **Shock 2 — "Cut inference cost by 50% this month"**: prioritize safe levers in strict order—(1) route 60–75% of routine requests to a smaller, cheaper model in a **cascade** (calling the big model only on hard cases), (2) maximize prompt-prefix caching and tenant-scoped exact caching, (3) tighten context `top-k` and cap `max_output_tokens` on verbose routes, and (4) distill a small fine-tuned LoRA model for high-volume structured extraction. Just as important, state **what you refuse to cut**: tenant ACL pre-filters, constrained schema validation, and the held-out evaluation gate proving groundedness did not drop silently.
 
 :::warning
-Never answer a 50% cost-cut challenge by removing guardrails, turning off tenant cache keys, or deleting offline evals. Those "savings" hide catastrophic security or compliance liabilities behind a smaller token invoice.
+Never answer a 50% cost-cut challenge by removing guardrails, turning off tenant cache keys, or deleting offline evals. Those "savings" hide serious security or compliance liabilities behind a smaller token invoice.
 :::
 
 :::caveat
-Every architectural decision carries a shelf life. Frontier model prices, multimodal context windows, and managed platform capabilities will keep shifting after 2026. The durable skill you built across all 34 tracks is not memorizing today's vendor SKU—it is deriving latency budgets, memory ceilings, retrieval metrics, statistical rollout windows, and unit economics from first principles whenever the next generation of models arrives.
+Every architectural decision carries a shelf life. Frontier model prices, multimodal context windows, and managed platform offerings will keep shifting after 2026. The durable skill you built across all 34 tracks is not memorizing today's vendor product tier (SKU)—it is deriving latency budgets, memory ceilings, retrieval metrics, statistical rollout windows, and unit economics from first principles whenever the next generation of models arrives.
 :::
 
 With lesson 33.5 complete, you have finished Part 3—AI Engineering in Production—and the full 34-track curriculum of `llmdeepdive.com`, from a single parameter and BPE merge up through transformer internals, autonomous agents, and production multimodal AI systems.

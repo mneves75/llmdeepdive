@@ -46,7 +46,7 @@ citations:
     authors: "Shuai Bai et al. (Qwen Team)"
     year: 2025
     url: "https://arxiv.org/abs/2511.21631"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Every vision-language model (VLM) in this course so far answers the way a language model does. [Lesson 10.1](/lessons/10-video-and-world-models/10.1-how-video-models-see-time/)'s Qwen3-VL turns a video into visual tokens, places them in a sequence with the question, and then generates the answer one token at a time. It was trained, as [lesson 5.1](/lessons/5-pretraining-at-scale/5.1-pretraining-objectives/) described, with cross-entropy on the next token: a loss that rewards putting high probability on the correct next token.
@@ -58,9 +58,9 @@ The JEPAs of [lesson 10.2](/lessons/10-video-and-world-models/10.2-jepa-predicti
 The paper names the parts after JEPA's own vocabulary, and builds each one from an existing model.
 
 - **X-encoder** — maps the visual input to embeddings. A frozen V-JEPA 2 ViT-L (a large Vision Transformer) of 304 million parameters, with frames at 256×256.
-- **Predictor** — reads the visual embeddings together with the text query and predicts the answer's embedding. It is initialised from the last 8 transformer layers of Llama-3.2-1B, giving 490 million trainable parameters. Its **causal mask is disabled** ([lesson 4.4](/lessons/4-transformer/4.4-causal-masking/)), so vision and query tokens attend to each other in both directions. Its outputs are average-pooled, averaged across positions into one vector.
-- **Y-encoder** — embeds the real answer text as the prediction target. It is initialised from EmbeddingGemma-300M and trained with a learning-rate multiplier of 0.05, so its learning rate is one-twentieth of the base rate.
-- **Y-decoder** — turns a predicted embedding back into text. It takes no part in the main training and runs at inference only when a person needs words.
+- **Predictor** — reads the visual embeddings together with the text query and predicts the answer's embedding. It is initialised from (started with the already-trained weights of) the last 8 transformer layers of Llama-3.2-1B, giving 490 million trainable parameters. Its **causal mask** (the rule that stops a token from reading later tokens, [lesson 4.4](/lessons/4-transformer/4.4-causal-masking/)) **is disabled**, so vision and query tokens attend to each other in both directions. Its outputs are average-pooled, averaged across positions into one vector.
+- **Y-encoder** — embeds the real answer text as the prediction target. It is initialised from EmbeddingGemma-300M and trained with a learning-rate multiplier of 0.05, so its learning rate (the size of each weight update) is one-twentieth of the base rate.
+- **Y-decoder** — turns a predicted embedding back into text. It takes no part in the main training and runs at inference (when the finished model answers real requests) only when a person needs words.
 
 The whole system has 1.6 billion parameters. The change from a classical model fits in one line. A token-generative model minimises a distance in data space, VL-JEPA in embedding space:
 
@@ -68,7 +68,7 @@ $$
 \mathcal{L}_{\text{VLM}} = D(\hat{Y}, Y) \qquad \mathcal{L}_{\text{VL-JEPA}} = D(\hat{S}_Y, S_Y)
 $$
 
-On the left, $D$ compares the predicted answer tokens $\hat{Y}$ with the real ones $Y$. On the right, it compares the predicted embedding $\hat{S}_Y$ with the Y-encoder's embedding $S_Y$ of the real answer.
+On the left, $D$ compares the predicted answer tokens $\hat{Y}$ with the real ones $Y$. On the right, it compares the predicted embedding $\hat{S}_Y$ with the Y-encoder's embedding $S_Y$ of the real answer. Step through the figure below to compare how those parts wire together during training versus selective-decoding inference.
 
 <Figure id="vl-jepa-pipeline" />
 
@@ -76,18 +76,18 @@ On the left, $D$ compares the predicted answer tokens $\hat{Y}$ with the real on
 
 Lesson 10.2's collapse problem returns, because the Y-encoder is trained too: if it mapped every answer to the same point, the predictor could match it perfectly. VL-JEPA does *not* use the moving-average target of the V-JEPA papers. It trains predictor and Y-encoder jointly with a **bidirectional InfoNCE** loss, the contrastive loss CLIP (an image–text embedding model) made standard.
 
-Picture a batch of four made-up question–answer pairs. InfoNCE asks each prediction to sit closer to its own answer's embedding than to the other three answers, and, being bidirectional, asks each answer to sit closer to its own prediction than to the other three predictions. The loss splits into two terms:
+Picture a batch (a group of training examples processed together) of four made-up question–answer pairs. InfoNCE asks each prediction to sit closer to its own answer's embedding than to the other three answers, and, being bidirectional, asks each answer to sit closer to its own prediction than to the other three predictions. The loss splits into two terms:
 
 - an **alignment** term, which pulls each prediction toward its own target;
 - a **uniformity** term, which pushes the embeddings in a batch apart.
 
-The second term is what rules out collapse, because identical embeddings would violate it. The paper's ablation found InfoNCE generally better than cosine, L1 or L2 losses (cosine won on VQA, visual question answering). It also notes that only InfoNCE carries its own anti-collapse term, so only it works with an unfrozen Y-encoder.
+The second term is what rules out collapse, because identical embeddings would violate it. The paper's ablation found InfoNCE generally better than cosine similarity, L1 or L2 vector-distance losses (cosine won on VQA, visual question answering). It also notes that only InfoNCE carries its own anti-collapse term, so only it works with an unfrozen (still being updated during training) Y-encoder.
 
 ## Why predict an embedding, and how the paper tested it
 
-The paper's argument is about the shape of the target. Ask "What will happen if I flip this light switch down?" and both "the lamp is turned off" and "room will go dark" are right. As token sequences they share no tokens, so a cross-entropy loss treats them as two separate targets the model must spread probability over. A good text encoder puts them close together, so the predictor needs to hit one region of embedding space instead of several disjoint ones. That is an argument about learning difficulty, and the experiment below tests it.
+The paper's argument is about the shape of the target. Ask "What will happen if I flip this light switch down?" and both "the lamp is turned off" and "room will go dark" are right. As token sequences they share no tokens, so a cross-entropy loss treats them as two separate targets the model must spread probability over. A good text encoder puts them close together, so the predictor needs to hit one region of embedding space instead of several separate, non-overlapping ones. That is an argument about learning difficulty, and the experiment below tests it.
 
-The paper trains two models with the same frozen encoder, data, batch size, iterations and schedule, but the predictors differ in size and origin (a 0.5B slice of Llama-3.2-1B with the causal mask removed versus the full 1B next-token model), so this is a matched-data-and-schedule comparison with architectural differences, not an objective-only causal ablation:
+The paper trains two models with the same frozen encoder, data, batch size, iterations and learning-rate schedule (the plan for raising and lowering the step size over training), but the predictors differ in size and origin (a 0.5B slice of Llama-3.2-1B with the causal mask removed versus the full 1B next-token model), so this is a matched-data-and-schedule comparison with architectural differences, not an objective-only causal ablation:
 
 - the same frozen Perception Encoder (a ViT-L/14 at 336 pixels, 16 frames per video, no tiling of frames into crops);
 - the same data mixture, batch size 128, the same iterations and learning-rate schedule.
@@ -103,30 +103,30 @@ Two scores measure the result. Captioning is measured by CIDEr, which scores how
 | 15 million | VL-JEPA | 14.8 | 41.0% |
 | 15 million | Token-generative VLM | 7.1 | 27.2% |
 
-At the start the two are level, with the baseline slightly ahead on captioning. By 5 million samples VL-JEPA has reached 14.7 CIDEr and 35.3%, and the gap then holds. This is the strongest evidence in the paper, because it isolates the variable.
+At the start the two are level, with the baseline slightly ahead on captioning. By 5 million samples VL-JEPA has reached 14.7 CIDEr and 35.3%, and the gap then holds. This is the strongest evidence in the paper, because it matches the encoder, data and schedule as closely as the two architectures allow.
 
-It is also small: a 1-billion-parameter language model, zero-shot captioning and classification, one data mixture. The paper describes VL-JEPA as using roughly half the trainable parameters of the baseline.
+It is also small: a 1-billion-parameter language model, zero-shot (without task-specific training) captioning and classification, one data mixture. The paper describes VL-JEPA as using roughly half the trainable parameters of the baseline.
 
 ## Selective decoding
 
-VL-JEPA predicts an answer embedding in a single forward pass, one run through the network. So a video stream yields a continuous **stream of meanings**, available at every step without generating a word. The paper proposes smoothing that stream and decoding only when it shifts.
+VL-JEPA predicts an answer embedding in a single forward pass, one run through the network. So a video stream (ongoing footage arriving frame by frame) yields a continuous **stream of meanings**, available at every step without generating a word. The paper proposes smoothing that stream and decoding only when it shifts.
 
-Its experiment tests the idea offline. It clusters each video's embedding sequence into segments of similar meaning and decodes once per segment, at its midpoint. Average pooling of the embeddings helped both this and uniform decoding.
+Its experiment tests the idea offline (on already-recorded videos rather than live footage). It groups (clusters) each video's embedding sequence into segments of similar meaning and decodes once per segment, at its midpoint. Average pooling of the embeddings helped both this and uniform decoding.
 
-The test set was 218 EgoExo4D videos of procedural activity, averaging 6 minutes and about 143 annotated actions each. Selective decoding at about 0.35 Hz — one decode every 2.85 seconds — matched the quality of uniform decoding at 1 Hz, once per second: about **2.85 times fewer decoding operations**. A token-generative model has no cheap way to know whether its answer has changed short of generating it.
+The test set was 218 EgoExo4D videos of procedural activity, averaging 6 minutes and about 143 annotated actions each. Decoding at each offline-clustered segment's midpoint averaged about 0.35 Hz (hertz, times per second — averaging about 2.85 seconds between decodes, not a fixed 2.85-second interval and not an online shift detector) and matched the quality of uniform decoding at 1 Hz, once per second: about **2.85 times fewer decoding operations**. A token-generative model has no cheap way to know whether its answer has changed short of generating it.
 
 ## One space, several tasks
 
 The same embedding space serves tasks that classical VLMs and CLIP-style models split between them.
 
-- **Retrieval and classification** work by comparing a video's predicted embedding with embeddings of candidate texts. After its first, caption-only training stage, the model the paper calls VL-JEPA-BASE beats CLIP, SigLIP2 and Perception Encoder on two averages: zero-shot accuracy over 8 video classification datasets, and recall@1 (the top-ranked result is the right one) over 8 text-to-video retrieval datasets.
+- **Retrieval (finding the matching video or caption in a collection) and classification** work by comparing a video's predicted embedding with embeddings of candidate texts. After its first, caption-only training stage, the model the paper calls VL-JEPA-BASE beats CLIP, SigLIP2 and Perception Encoder on two averages: zero-shot accuracy over 8 video classification datasets, and recall@1 (the top-ranked result is the right one) over 8 text-to-video retrieval datasets.
 - **Question answering** comes after supervised fine-tuning (SFT, [lesson 6.2](/lessons/6-post-training-and-alignment/6.2-supervised-fine-tuning-and-instruction-data/)). VL-JEPA-SFT answers **discriminatively**: it encodes each candidate answer with the Y-encoder and picks the one nearest its prediction. On GQA, TallyQA, POPE and POPEv2 it is comparable to InstructBLIP and Qwen-VL.
 
 Note the format: choosing among given answers is not the same task as writing one freely.
 
 ## Closing the track: two ways to predict
 
-This track began with a vision-language model that turns a minute of video into 11,520 tokens and generates its answer word by word. It ends with models that never generate during training at all. It is tempting to frame them as rivals. The evidence is narrower than that, in both directions.
+This track began with a vision-language model that turns a minute of video into 11,520 tokens and generates its answer word by word (an autoregressive model, feeding each generated token back in). It ends with models that never generate during training at all. It is tempting to frame them as rivals. The evidence is narrower than that, in both directions.
 
 | | Autoregressive language and vision-language models | Embedding-prediction models (JEPA family) |
 | --- | --- | --- |
@@ -134,7 +134,7 @@ This track began with a vision-language model that turns a minute of video into 
 | What comes out | Text, directly | Vectors; text or actions need a decoder or a planner |
 | Collapse | Not a risk: the targets are fixed tokens | A central risk, handled by EMA (exponential moving average) and stop-gradient or by contrastive terms |
 | Measured strengths in this track | Long-video needle-in-a-haystack retrieval up to 256K tokens, on Qwen3-VL-235B-A22B (10.1) | Frozen-probe motion understanding; zero-shot short-horizon robot planning, 16 seconds per action against a video generator's 4 minutes; more sample-efficient captioning in one controlled small-scale study; fewer decodes when streaming |
-| Main limitation seen in this track | Cost grows with every token: one minute of video is 11,520 tokens of prefill and cache (10.1) | No direct text or action output; reasoning, tool use and agentic behaviours still need broader evaluation — the VL-JEPA authors' own list |
+| Main limitation seen in this track | Cost grows with every token: one minute of video is 11,520 tokens of prefill and cache (10.1) | No direct text or action output; reasoning, tool use and agentic behaviours (planning and acting across multiple steps) still need broader evaluation — the VL-JEPA authors' own list |
 
 :::insight
 The two families are less separate than the framing suggests. V-JEPA 2 is aligned with a language model to answer video questions. VL-JEPA's predictor is made of Llama layers. Qwen3-VL's vision encoder starts from SigLIP-2, which the V-JEPA 2 paper classes with image–text contrastive models, not pixel generators. What actually differs is where the loss is computed — on tokens, or on representations — and each choice buys something specific.

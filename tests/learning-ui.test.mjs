@@ -144,6 +144,7 @@ function quizHarness({ answers, correct, stored = null, setItem }) {
       correct: JSON.stringify(correct),
       right: 'Correct',
       wrong: 'Not yet',
+      missing: 'Answer every question before checking.',
       summary: '{n} of {m} correct.',
       passed: 'Correct.',
       unsaved: 'Correct, but this device could not save it.',
@@ -188,13 +189,16 @@ test('a correct quiz that cannot be saved does not complete the lesson', () => {
   assert.deepEqual(quiz.events.at(-1)?.detail, { lessonKey: 'en:lesson', valid: false })
 })
 
-test('checking a quiz with nothing chosen writes nothing and revokes nothing', () => {
-  const quiz = quizHarness({ answers: [null, null], correct: [0, 2], stored: 'true' })
-  quiz.check()
+test('checking an incomplete quiz asks for the missing answers without grading or revoking progress', () => {
+  for (const answers of [[null, null], [0, null]]) {
+    const quiz = quizHarness({ answers, correct: [0, 2], stored: 'true' })
+    quiz.check()
 
-  assert.deepEqual(quiz.writes, [])
-  assert.deepEqual(quiz.events, [])
-  assert.equal(quiz.status.textContent, '0 of 2 correct.')
+    assert.deepEqual(quiz.writes, [])
+    assert.deepEqual(quiz.events, [])
+    assert.deepEqual(quiz.fieldsets.map((f) => f.verdict.textContent), ['', ''])
+    assert.equal(quiz.status.textContent, 'Answer every question before checking.')
+  }
 })
 
 test('quiz explanations stay hidden until their own question is answered right', () => {
@@ -273,6 +277,7 @@ test('the lesson records completion for track pages and withdraws it', () => {
 function searchHarness() {
   class FakeHTMLElement {}
   const listeners = new Map()
+  const frames = []
   const document = {
     activeElement: null,
     querySelector: () => null,
@@ -281,12 +286,30 @@ function searchHarness() {
   class Focusable extends FakeHTMLElement {
     focus() { document.activeElement = this }
   }
+  class FakeAnchor extends Focusable {
+    rowBounds = { top: 100, bottom: 140 }
+    titleBounds = { top: 108, bottom: 130 }
+    getBoundingClientRect() { return this.rowBounds }
+    querySelector(selector) {
+      return selector === '.search__title' ? { getBoundingClientRect: () => this.titleBounds } : null
+    }
+    focus() {
+      super.focus()
+      listeners.get('list:focusin')?.({ target: this })
+    }
+  }
   const input = new Focusable()
   input.addEventListener = () => {}
-  const links = Array.from({ length: 8 }, () => new Focusable())
-  const list = { innerHTML: '', querySelectorAll: () => links, querySelector: () => links[0] ?? null }
-  const status = { textContent: '' }
+  const links = Array.from({ length: 8 }, () => new FakeAnchor())
   const listenerOn = (prefix) => ({ addEventListener: (type, listener) => listeners.set(`${prefix}:${type}`, listener) })
+  const list = {
+    ...listenerOn('list'),
+    scrollTop: 100,
+    getBoundingClientRect: () => ({ top: 100, bottom: 200 }),
+    querySelectorAll: () => links,
+    querySelector: () => links[0] ?? null,
+  }
+  const status = { textContent: '' }
   const dialog = {
     dataset: { empty: 'No results.', hint: 'Type to search', countOne: '1 result', countOther: '{n} results' },
     open: true,
@@ -307,11 +330,13 @@ function searchHarness() {
 
   execute(componentScript('src/components/Search.astro'), {
     HTMLElement: FakeHTMLElement,
+    HTMLAnchorElement: FakeAnchor,
     document,
     location: { href: 'https://example.test/', origin: 'https://example.test' },
+    requestAnimationFrame: (callback) => frames.push(callback),
     window: { clearTimeout: () => {}, setTimeout: () => 1 },
   })
-  return { listeners, document, input, links, dialog, opener }
+  return { listeners, document, input, links, list, dialog, opener, frames }
 }
 
 test('ArrowUp from the search input focuses the last result', () => {
@@ -328,7 +353,7 @@ test('Enter in the search field moves to the first result and keeps the dialog o
   const { listeners, document, input, links, dialog, opener } = searchHarness()
   document.activeElement = input
   const submit = listeners.get('form:submit')
-  assert.ok(submit, 'the form must handle submit: its only button would otherwise close the dialog')
+  assert.ok(submit, 'Enter must be handled before the dialog form can submit')
   let prevented = false
   submit({ preventDefault: () => { prevented = true } })
   assert.equal(prevented, true)
@@ -338,6 +363,28 @@ test('Enter in the search field moves to the first result and keeps the dialog o
   listeners.get('close:click')()
   assert.equal(dialog.closed, true)
   assert.equal(document.activeElement, opener)
+})
+
+test('the search result title returns into view after native focus scrolling', () => {
+  const { frames, input, links, list } = searchHarness()
+  const result = links[1]
+  result.focus()
+  result.rowBounds = { top: 80, bottom: 260 }
+  result.titleBounds = { top: 88, bottom: 112 }
+  assert.equal(list.scrollTop, 100)
+  frames.shift()()
+  assert.equal(list.scrollTop, 80)
+
+  result.focus()
+  result.rowBounds = { top: 180, bottom: 360 }
+  result.titleBounds = { top: 188, bottom: 212 }
+  frames.shift()()
+  assert.equal(list.scrollTop, 160)
+
+  result.focus()
+  input.focus()
+  frames.shift()()
+  assert.equal(list.scrollTop, 160)
 })
 
 test('scroll wrappers are named focusable regions only while they overflow', () => {
@@ -360,7 +407,7 @@ test('scroll wrappers are named focusable regions only while they overflow', () 
     observe() {}
   }
   const document = {
-    querySelectorAll: (selector) => selector === '.math-scroll, .table-scroll, .fig-scroll' ? [wide, narrow] : [],
+    querySelectorAll: (selector) => selector === '.katex, .table-scroll, .fig-scroll' ? [wide, narrow] : [],
     addEventListener: () => {},
   }
 

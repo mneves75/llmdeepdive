@@ -42,22 +42,22 @@ citations:
     authors: "Taku Kudo and John Richardson"
     year: 2018
     url: "https://arxiv.org/abs/1808.06226"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Open the pinned Qwen tokenizer and config, and two related numbers appear. The tokenizer’s model vocabulary plus its added tokens use IDs from 0 through 248,076. The embedding and output matrices, meanwhile, allocate **248,320 rows**. That leaves 243 rows the pinned tokenizer never emits.
+Open the pinned Qwen tokenizer and config (its model configuration file), and two related numbers appear. The tokenizer’s model vocabulary plus its added tokens use IDs from 0 through 248,076. The embedding and output matrices, meanwhile, allocate **248,320 rows**. That leaves 243 rows the pinned tokenizer never emits.
 
 The files establish those counts; they do not say why the team chose the larger allocation. Keep the two questions apart. Tokenizer design is a linguistic decision, matrix alignment is an engineering constraint, and a plausible explanation should not be written up as history. This lesson covers both halves, then what has to be settled before a tokenizer is frozen for good.
 
 ## How does a tokenizer learn its pieces?
 
-A language model never receives raw text. The tokenizer maps text to integer IDs, and the embedding table maps those IDs to 5120-dimensional vectors. Training a tokenizer means choosing a representative sample from the governed corpus of [lesson 5.2](/lessons/5-pretraining-at-scale/5.2-data-pipeline/), with the mixture caps already applied, and learning from it a fixed-size inventory of subword pieces. Three families do this:
+A language model never receives raw text. The tokenizer maps text to integer IDs, and the embedding table maps those IDs to 5120-dimensional vectors. Training a tokenizer means choosing a representative sample from the governed corpus of [lesson 5.2](/lessons/5-pretraining-at-scale/5.2-data-pipeline/), with the mixture caps already applied, and learning from it a fixed-size inventory of subword pieces (fragments between single letters and full words). Three families do this:
 
-- **Byte-level** schemes start from bytes, so any input is representable.
+- **Byte-level** schemes start from bytes (the raw 8-bit units computers store text in), so any input is representable.
 - **BPE** (byte-pair encoding) repeatedly merges the most frequent adjacent pair of pieces, producing an ordered merge list.
-- **Unigram** starts from many candidate pieces and prunes those that contribute least to a probabilistic objective.
+- **Unigram** starts from many candidate pieces and prunes those that contribute least to a probabilistic objective (how well the vocabulary explains the sample text).
 
-SentencePiece, a widely used library, can train on raw sentences and treats whitespace as an explicit symbol. All of these are compromises between tiny universal units (bytes or letters) and an impossible dictionary of every full word.
+SentencePiece, a widely used software library, can train on raw sentences and treats whitespace (spaces and line breaks) as an explicit symbol. All of these are compromises between tiny universal units (bytes or letters) and an impossible dictionary of every full word.
 
 ## What does a bigger vocabulary buy, and what does it cost?
 
@@ -81,21 +81,19 @@ The most common misconception is that a bigger vocabulary is always better becau
 
 ## Why might the row count be 248,320?
 
-Now look at an engineering property of the allocated row count, without assigning intent. **Tensor parallelism** splits one weight matrix across several GPUs, each called a rank, so that each holds a slice ([lesson 5.8](/lessons/5-pretraining-at-scale/5.8-model-parallelism/) covers it). It can split a vocabulary dimension evenly only when the row count is divisible by the number of ranks, the parallel degree. The shipped value factors as:
+Now look at an engineering property of the allocated row count, without assigning intent. **Tensor parallelism** splits one weight matrix across several GPUs (graphics processors), each called a rank, so that each holds a slice ([lesson 5.8](/lessons/5-pretraining-at-scale/5.8-model-parallelism/) covers it). It can split a vocabulary dimension evenly only when the row count is divisible by the number of ranks, the parallel degree. Compare the shipped row count against a round-looking 250,000:
 
 $$
-248{,}320 = 512\times 485 = 2^{9}\times 5\times 97.
+248{,}320 = 512\times 485 = 2^{9}\times 5\times 97,
 $$
 
-It divides cleanly by 2, 4, 8, 16, 32, 64, 128, 256, and 512. So any power-of-two tensor-parallel degree through 512 gets an equal slice: at degree 8, each rank owns 31,040 rows; at degree 32, 7,760; at degree 64, 3,880. By contrast, a round-looking 250,000 divides only through degree 16 among those powers of two:
-
 $$
-250{,}000 = 2^{4}\times 5^{6} = 16\times 15{,}625,
+250{,}000 = 2^{4}\times 5^{6} = 16\times 15{,}625.
 $$
 
-which divides by 16 and then stops. At tensor-parallel degree 32 you would get 7,812.5 rows per rank, which is impossible. The framework would either pad the matrix without telling you or fail loudly at launch.
+<Figure id="t5-vocab-alignment" />
 
-So the tokenizer's learned inventory is padded up to a row count divisible by every power of two up to 512, and the surplus rows are never emitted. They cost a few million parameters and buy freedom in every future parallel layout. Frameworks can pad incompatible dimensions themselves, so divisibility is a real implementation benefit. The public files do **not** say that this benefit caused Qwen to select 248,320; that causal account remains an inference.
+As the two frames show, 248,320 divides cleanly by every power of two through 512, whereas 250,000 stops at degree 16 and forces a training framework (the software running distributed training) to pad silently or fail at launch. The surplus rows cost a few million parameters and buy freedom in future parallel layouts — though frameworks can pad incompatible dimensions themselves, and the public files do **not** say that this divisibility caused Qwen to select 248,320. That causal account remains an inference.
 
 ## Can you trim the unused rows?
 
@@ -103,15 +101,15 @@ So the tokenizer's learned inventory is padded up to a row count divisible by ev
 A shipped config reports the matrix allocation, not necessarily the number of IDs its tokenizer emits. For this pinned artifact, the observed figures are 248,077 used IDs and 248,320 rows. Always inspect both files before interpreting the difference.
 :::
 
-The classic wrong turn follows immediately: treating the unused tail rows as safe to remove. Trimming the matrix would change the checkpoint's shapes and may remove useful divisibility, while saving only 243 × 5120 × 2 matrices × 2 bf16 bytes, about 5 MB. The token mapping itself must also stay unchanged. The safe conclusion is contractual: load the matrix and tokenizer shapes the checkpoint publishes, and do not invent or delete rows in a trained artifact.
+The classic wrong turn follows immediately: treating the unused tail rows as safe to remove. Trimming the matrix would change the checkpoint's (saved model file's) shapes and may remove useful divisibility, while saving only 243 × 5120 × 2 matrices × 2 bf16 bytes, about 5 MB. The token mapping itself must also stay unchanged. The safe conclusion is contractual: load the matrix and tokenizer shapes the checkpoint publishes, and do not invent or delete rows in a trained artifact.
 
 ## What must be settled before the tokenizer is frozen?
 
 Everything else about tokenizer training follows from one fact: the artifact is permanent. Once a model trains on it, every embedding row means "the token with this ID", forever.
 
 - **Reserve special tokens before freezing IDs**: padding, sequence boundaries, chat-role markers, thinking-mode markers, FIM markers. Appending one later means resizing the embeddings and training a cold row from scratch. Inserting one in the middle shifts every ID after it and corrupts every association the model learned.
-- **Decide normalization deliberately.** Unicode can spell visually identical text several ways. Case folding or accent stripping shrinks a vocabulary, at the cost of distinctions your product may need.
-- **Evaluate on held-out samples.** Report fertility by language and domain rather than one global mean, plus round-trip correctness (decoding the IDs gives back the normalized text, which is the original text whenever normalization changed nothing), worst-case expansion on adversarial input, and encoding throughput.
-- **Inspect real examples by hand**, because Portuguese morphology, combining accents, emoji sequences, CJK text, right-to-left scripts, indentation, and long digit strings each break in their own way.
+- **Decide normalization deliberately.** Unicode (the international standard that assigns a code to every character and emoji) can spell visually identical text several ways. Case folding (turning uppercase and lowercase into one form) or accent stripping shrinks a vocabulary, at the cost of distinctions your product may need.
+- **Evaluate on held-out samples.** Report fertility by language and domain rather than one global mean, plus round-trip correctness (decoding the IDs gives back the normalized text, which is the original text whenever normalization changed nothing), worst-case expansion on adversarial input, and encoding throughput (tokens processed per second).
+- **Inspect real examples by hand**, because Portuguese morphology, combining accents, emoji sequences, CJK (Chinese, Japanese, and Korean) text, right-to-left scripts, indentation, and long digit strings each break in their own way.
 
-Then freeze and hash the files. Store the training-code version, normalization rules, sample manifest, vocabulary, merges, special-token table, and evaluation report. Test that every data worker produces byte-identical IDs for a golden set, a fixed list of inputs with known correct outputs. A tokenizer-version mismatch that nobody notices will let a run train happily on meaningless input while the loss stays finite and plausible. It is the most expensive silent failure in this track.
+Then freeze and hash the files (compute cryptographic fingerprints so any accidental edit is detected). Store the training-code version, normalization rules, sample manifest, vocabulary, merges, special-token table, and evaluation report. Test that every data worker (parallel process preparing training batches) produces byte-identical IDs for a golden set, a fixed list of inputs with known correct outputs. A tokenizer-version mismatch that nobody notices will let a run train happily on meaningless input while the loss stays finite and plausible. It is the most expensive silent failure in this track.

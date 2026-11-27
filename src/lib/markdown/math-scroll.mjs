@@ -1,8 +1,7 @@
 /**
- * Makes display maths a bounded, keyboard-reachable scroll region.
+ * Makes inline and display maths a bounded, keyboard-reachable scroll region.
  *
- * rehype-katex's MathML-only output is a `.katex` span containing a
- * `<math display="block">`. MathML keeps the equation semantically intact, but
+ * rehype-katex wraps MathML in a `.katex` span. The equation stays intact, but
  * a long expression also keeps its intrinsic width and can widen the entire
  * lesson on a narrow viewport. The existing span is the right overflow owner;
  * this plugin gives it the class and semantics that CSS alone cannot add.
@@ -37,13 +36,13 @@ export function rehypeMathScroll() {
 
     visit(tree, 'element', (node) => {
       const className = classesOf(node)
-      if (!className.includes('katex') || !hasDisplayMath(node)) return
+      if (!className.includes('katex')) return
 
       node.properties = {
         ...node.properties,
-        className: className.includes('math-scroll')
-          ? className
-          : [...className, 'math-scroll'],
+        className: hasDisplayMath(node) && !className.includes('math-scroll')
+          ? [...className, 'math-scroll']
+          : className,
         tabindex: '0',
         role: 'region',
         'aria-label': LABEL[locale],

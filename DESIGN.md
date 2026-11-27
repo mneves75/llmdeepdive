@@ -1,6 +1,6 @@
 ---
 name: llmdeepdive
-description: A printed star atlas of how language models work, in a desk edition and a field edition.
+description: A bilingual learning workspace for language models, with an interactive opening experiment and a star atlas for exploring the curriculum.
 colors:
   plate: "light-dark(#ffffff, #121212)"
   plate-raised: "light-dark(#f2f5fb, #1c1c1c)"
@@ -29,11 +29,11 @@ colors:
 typography:
   display:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
-    fontSize: "clamp(2.75rem, min(4.8vw, 8.6vh), 5rem)"
+    fontSize: "clamp(2.5rem, 5.8vw, 6rem)"
     fontWeight: 860
-    lineHeight: 0.94
-    letterSpacing: "-0.035em"
-    fontVariation: "'wdth' 92"
+    lineHeight: 0.99
+    letterSpacing: "-0.055em"
+    fontVariation: "'wdth' 89"
   numeral:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
     fontSize: "clamp(4rem, 3rem + 5vw, 7.5rem)"
@@ -50,11 +50,11 @@ typography:
     fontVariation: "'wdth' 118"
   lesson-title:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
-    fontSize: "clamp(2.1rem, 1.4rem + 2.6vw, 3.5rem)"
+    fontSize: "clamp(2.5rem, 1.7rem + 3.35vw, 5.4rem)"
     fontWeight: 760
-    lineHeight: 1.02
+    lineHeight: 0.99
     letterSpacing: "-0.03em"
-    fontVariation: "'wdth' 96"
+    fontVariation: "'wdth' 90"
   title:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
     fontSize: "1.5rem"
@@ -63,9 +63,9 @@ typography:
     letterSpacing: "-0.03em"
   plate-name:
     fontFamily: "Mona Sans Variable, Avenir Next, Segoe UI, system-ui, sans-serif"
-    fontWeight: 640
-    letterSpacing: "0.14em"
-    fontVariation: "'wdth' 125"
+    fontWeight: 760
+    letterSpacing: "-0.03em"
+    fontVariation: "'wdth' 100"
   body:
     fontFamily: "Avenir Next, Segoe UI, system-ui, -apple-system, Roboto, Arial, sans-serif"
     fontSize: "1rem"
@@ -106,8 +106,8 @@ spacing:
   3xl: "96px"
 components:
   button-primary:
-    backgroundColor: "{colors.ink}"
-    textColor: "{colors.plate}"
+    backgroundColor: "{colors.reticle}"
+    textColor: "{colors.chart-blue-ink}"
     typography: "{typography.label}"
     rounded: "{rounded.sm}"
     padding: "0.7rem 1.05rem"
@@ -145,10 +145,9 @@ components:
     rounded: "{rounded.md}"
     padding: "24px 24px 16px"
   lab-panel:
-    backgroundColor: "{colors.plate-raised}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.md}"
-    padding: "32px"
+    backgroundColor: "{colors.night}"
+    textColor: "{colors.ink-on-night}"
+    padding: "clamp(1rem, 3.5vw, 2rem)"
   night-plate:
     backgroundColor: "{colors.night}"
     textColor: "{colors.ink-on-night}"
@@ -168,10 +167,21 @@ components:
 
 ## Overview
 
-**Creative North Star: "The Two-Edition Star Atlas"**
+**Learning starts with a model prediction**
 
-The curriculum is a sky you learn to read. Every lesson is a star, every track
-a constellation, the course order is the line joining them, and the place you
+The home page pairs a small worked example with the first action a learner
+can take. A temperature control changes the distribution over three
+illustrative next-token candidates. The same sampling function serves the
+example and the lesson lab. The default distribution and explanation work
+without JavaScript. Entry cards take learners directly to the first track of
+each part. A returning learner can reopen their last lesson.
+
+The worked example follows the [IES learning practice guide](https://ies.ed.gov/ncee/WWC/PracticeGuide/1).
+Bilingual navigation and a usable HTML baseline follow the inclusion
+principles of the [Charter for Public Digital Learning Platforms](https://www.unesco.org/en/articles/unesco-unicef-and-itu-launch-charter-public-digital-learning-platforms).
+
+The optional curriculum map shows each lesson as a star and each track as
+a constellation. The course order is the line joining them, and the place you
 stopped carries a crimson reticle. The site is printed as an atlas in two
 editions with the same meanings: the desk edition is black stars on a white
 plate, the field edition is white stars on a night plate. A third surface, the
@@ -337,13 +347,11 @@ fallback face.
 - **Headline** (760, `clamp(2rem, 1.2rem + 3vw, 3.75rem)`, width 118%): home
   section headings. Lesson part headings are the same voice at
   `clamp(1.5rem, 1.2rem + 1.6vw, 2.75rem)`.
-- **Lesson title** (760, `clamp(2.1rem, 1.4rem + 2.6vw, 3.5rem)`, 1.02, width
-  96%): a lesson's h1.
+- **Lesson title** (760, width 90%, line height 0.99) scales up to `5.4rem`.
 - **Title** (760, `1.5rem`, 1.1): loop steps, explorer port names; next-lesson
   titles use 640 at `1.1875rem`.
-- **Plate name** (640, width 125%, `0.14em`, uppercase): a track's name, like a
-  constellation name on an atlas plate. Below `30rem` it drops to width 100%
-  and `0.05em`. Sky-chart names use their own setting: width 118%, `0.06em`,
+- **Plate name** (760, normal width, tight tracking) preserves the track title's
+  authored casing. Sky-chart names use their own setting: width 118%, `0.06em`,
   `clamp(0.56rem, 1.1cqi, 0.78rem)`.
 - **Body** (400, `1rem`, 1.58): interface copy.
 - **Reading** (400, `clamp(1.0625rem, 0.95rem + 0.45vw, 1.2rem)`, 1.7): lesson
@@ -355,9 +363,8 @@ fallback face.
 
 ### Named Rules
 
-**The Width Axis Rule.** Width carries motion: the home headline unfolds from
-75% to 92%, buttons widen to 106% on hover, a next-lesson title to 108%.
-Nothing else animates letter shapes.
+**Motion and type.** Navigation and action labels hold their width as the
+pointer moves between them. The arrow inside a button can move independently.
 
 **The Data Precedes Only With Data Rule.** Nothing sits above a heading unless
 it carries data the heading lacks: a lesson's position numeral or a track's
@@ -367,26 +374,24 @@ number. No kickers, no eyebrows, and no monospace labels above headings.
 
 The shell is fluid to `92rem` with a side gutter of `clamp(1rem, 3vw, 2rem)`.
 Sections are separated by a hairline rule and `6rem` of padding (`4rem` below
-`42rem`). The masthead is `4rem` tall, sticky, on an 88% plate with a 14px
-backdrop blur; anchors land below it through `scroll-padding-top`.
+`42rem`). The desktop masthead places navigation between the wordmark and
+tools on an opaque surface. Anchor offsets follow its height.
 
-- **Home:** the hero is a two-column grid (`0.78fr` copy, `1.22fr` sky) that
-  stacks below `70rem`. The atlas is taller than the copy, so the grid aligns to
-  the top and the copy is sticky below the masthead; stacked, the sky caps at
-  `46rem` wide. The catalog and the tracks index group tracks under a heading
+- **Home:** the introduction and the temperature experiment share a grid that
+  stacks below `53rem`. The three study entry cards follow. The home and
+  tracks index tuck the atlas inside native disclosures. The catalog and the
+  tracks index group tracks under a heading
   per course part. The five-step loop runs across in five columns, three
   below `70rem`, and down the page below `50rem`. The catalog is ruled rows:
   a `13rem` constellation figure, the text, and an `11rem` facts column; below
   `50rem` the figure narrows to `5.5rem`.
-- **Lesson:** at `80rem` and wider, three columns: a `17rem` syllabus, a
-  reading column up to `46rem`, and a `13rem` sticky step list. From `58rem`
-  the syllabus becomes a drawer. Below `58rem` the step list becomes the one
-  sticky horizontal strip, masked at its trailing edge, with the syllabus
-  button. Below `50rem` the masthead scrolls away.
-- **Explorer:** a component index above, the stage (`2fr`) beside the
-  evidence drawer (`minmax(18rem, 0.72fr)`), and five reading lenses below.
-  Below `1180px` they stack; below `42rem` the index becomes one swipeable,
-  snap-aligned row.
+- **Lesson.** The opening band pairs the lesson title with its position on the
+  track chart. Below it, wide screens place the syllabus and section links on
+  either side of the reading column. Below `80rem` the syllabus opens as a
+  drawer. Below `58rem` the section links become a single sticky strip.
+- **Explorer.** On a wide screen the port index, instrument and evidence sit
+  side by side. The index moves above the instrument as space narrows. On a
+  phone the ports form a horizontal strip and the evidence follows the stage.
 - **Mobile:** at `28rem` the wordmark shrinks before the page may scroll
   sideways; `320px` with a wide fallback face is the budget.
 
@@ -395,8 +400,8 @@ backdrop blur; anchors land below it through `scroll-padding-top`.
 The system is flat. Depth comes from the plates: white desk plate, raised
 plate for hover and panels, and the night plate set into the page. Rules and
 neatlines separate; nothing has a shadow at rest. Two shadows exist, for
-surfaces that truly float. The masthead and the narrow lesson strip use a
-backdrop blur instead of a shadow.
+surfaces that truly float. The masthead has a solid background and a single
+lower rule.
 
 ### Shadow Vocabulary
 
@@ -433,11 +438,10 @@ Rectangular plates with a shallow radius; the arrow is type and leans toward
 where the action goes.
 
 - **Shape:** `4px` radius, at least `2.875rem` high, label weight 640.
-- **Primary:** a celestial-ink plate with plate-coloured text.
+- **Primary:** a crimson plate with contrasting text.
 - **Secondary:** transparent, with a strong rule border and ink text.
 - **Inverse:** on a night plate, a night-ink label on an `ink-on-night` plate.
-- **Hover:** the border turns ink, the label widens to 106%, the arrow moves
-  `0.25rem` toward its target; primary blends 14% chart blue into the ink.
+- **Hover:** the border turns ink and the arrow moves toward its target.
   **Active:** down `1px`. **Focus:** `2px` crimson outline, offset `3px`.
 
 ### Star mark and reticle
@@ -465,8 +469,8 @@ where the action goes.
   token colour holds 4.5:1 on it (`tests/rendered-html.test.mjs`).
 - **Night plate:** the analogy is read on the field edition inside the page,
   `12px` radius, with night inks.
-- **Lab panel:** raised plate, strong rule, `8px` radius, `2rem` padding;
-  results in display weight 760 at `1.5rem`, the lead result in chart blue.
+- **Lab panel.** Controls and live results share a dark workbench. The lead
+  measurement uses warm gold and tabular numerals.
 
 ### Inputs / Fields
 
@@ -479,8 +483,8 @@ the border verdict red with a red message below.
 ### Navigation
 
 - **Masthead:** wordmark, section links, then the progress count, language
-  link, search trigger and theme toggle. The current section gets a `2px`
-  crimson rule that grows from its centre. Page to page the masthead holds
+  link, search trigger and theme toggle. An ink tab identifies the current
+  section, and a lighter tab rises under the pointer. Page to page the masthead holds
   still while the old page drops out and the new one fades in.
 - **Theme toggle:** three icon radios in a field-rule frame; the chosen one is
   an ink plate with plate-coloured icon.
@@ -551,6 +555,10 @@ with `2.75rem` targets; a star flies between pages as a named view transition.
 
 ### Signal Observatory (signature)
 
+The explorer starts with a worked phrase. Readers advance through its representations
+at their own pace before opening the corresponding machinery. The selected stage
+and its output stay legible with animation disabled.
+
 The explorer's 3D specimen: one decoder block built as an armillary
 instrument on a single axis, input at the bottom and output at the top,
 always. Eight decks stand on a plinth under a crown: embedding, RMSNorm,
@@ -576,13 +584,11 @@ self-attention, residual add, RMSNorm, feed-forward, residual add, LM head.
 
 ### Mark and social cards
 
-The wordmark is a chart-blue ring with four ticks and a crimson four-point
-star; the favicon draws the same mark on a night tile (`7px` corner) with an
-`ink-on-night` ring and the field-edition crimson star. Social
-cards (`src/lib/og-render.ts`, 1200 × 630) are the field edition: a night
-plate, Mona Sans static cuts, a data line in the tier pigment (track, lesson,
-tier), the headline, and a ruled footer with the four tiers as rings, the
-page's own filled.
+The wordmark pairs two weights of Mona Sans with a crimson instrument tile.
+The dial turns on hover or keyboard focus. The favicon keeps its high-contrast
+night tile for small browser tabs. Social cards (1200 × 630) place the current
+tier in the left margin and the upper row of four rings. The largest type is
+reserved for the actual title.
 
 ### Motion
 
@@ -594,8 +600,9 @@ On navigation the old page drops out at once (no animation, opacity 0), and
 so does any named element with no partner on the new page. The new page
 fades in over 260ms while named elements (the masthead, a track's chart, a
 lesson's star, the syllabus) travel to their new place over 520ms, so two
-pages' text never overlaps. Sections fade
-up into view only where scroll-driven animation exists. Under reduced motion
+pages' text never overlaps. A deep link lands directly on the chosen lesson
+heading, which briefly takes the reticle colour. Sections settle into view
+where scroll-driven animation exists. Under reduced motion
 every duration is zero, the comet and breathing stop, and the 3D sky settles
 straight onto its dome.
 

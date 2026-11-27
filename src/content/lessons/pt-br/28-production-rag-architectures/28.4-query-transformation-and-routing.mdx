@@ -38,24 +38,24 @@ citations:
     authors: "Akari Asai et al."
     year: 2023
     url: "https://arxiv.org/abs/2310.11511"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Mesmo um índice híbrido afiado com reranker cross-encoder falha quando a mensagem bruta do usuário é uma má consulta de busca. Usuários reais escrevem pronomes ligados a três turnos atrás, empilham duas perguntas contrastantes na mesma frase ou fazem perguntas coloquiais que quase não compartilham palavras com a documentação formal. Enviar esse texto cru direto para a busca contamina todas as etapas seguintes, inclusive a montagem de contexto da [aula 28.2](/pt-br/lessons/28-production-rag-architectures/28.2-baseline-rag-and-context-assembly/). A *transformação de consultas* e o *roteamento de recuperação* inserem uma etapa rápida de planejamento antes da busca para que o recuperador receba consultas limpas, autocontidas e direcionadas à fonte certa.
+Mesmo um índice híbrido afiado com reranker cross-encoder falha quando a mensagem bruta do usuário é uma má consulta de busca. Usuários reais escrevem pronomes ligados a três turnos atrás, empilham duas perguntas contrastantes na mesma frase ou fazem perguntas coloquiais que quase não compartilham palavras com a documentação formal. Enviar essa *string* (pedaço de texto) crua direto para a busca contamina todas as etapas seguintes, inclusive a montagem de contexto da [aula 28.2](/pt-br/lessons/28-production-rag-architectures/28.2-baseline-rag-and-context-assembly/). A *transformação de consultas* e o *roteamento de recuperação* inserem uma etapa rápida de planejamento antes da busca para que o recuperador receba consultas limpas, autocontidas e direcionadas à fonte certa.
 
 ## Reescrita de correferência e decomposição paralela
 
 Comece com duas falhas cotidianas de chat e calcule o custo exato de latência.
 
-Primeiro, observe uma conversa de dois turnos:
+Primeiro, observe uma conversa de dois turnos com *correferência* (um pronome que retoma um turno anterior):
 - Turno 1: `"Qual é a nossa janela de reembolso na UE?"`
 - Turno 2: `"E isso vale para cartões-presente digitais?"`
 
-Se o backend gerar o embedding do Turno 2 literalmente, `"isso"` não aponta para nada no banco vetorial. A busca retorna FAQs genéricas de cartão-presente e perde completamente a cláusula de reembolso europeu. Um *reescritor de consultas* leve (em geral um modelo pequeno e rápido) lê os turnos recentes e emite uma string autocontida: `"política de janela de reembolso na UE para compras de cartão-presente digital"`.
+Se o *backend* (o código no servidor que processa a requisição) gerar o embedding do Turno 2 literalmente, `"isso"` não aponta para nada no banco vetorial (o banco que guarda os embeddings dos documentos). A busca retorna perguntas frequentes (FAQs) genéricas de cartão-presente e perde completamente a cláusula de reembolso europeu. Um *reescritor de consultas* leve (em geral um modelo pequeno e rápido) lê os turnos recentes e emite uma string autocontida: `"política de janela de reembolso na UE para compras de cartão-presente digital"`.
 
-Segundo, considere uma pergunta composta: `"Compare nossas regras de retenção de logs SOC 2 de 2024 e 2026."` Um único vetor médio mistura os dois anos e costuma preencher todas as 6 vagas com documentos de 2026, deixando 2024 de fora. A *decomposição de consultas* divide o pedido em duas subconsultas independentes—`"regras de retenção de logs SOC 2 2024"` e `"regras de retenção de logs SOC 2 2026"`—executa ambas em paralelo e funde as duas listas com Reciprocal Rank Fusion antes do reranking.
+Segundo, considere uma pergunta composta: `"Compare nossas regras de retenção de logs SOC 2 de 2024 e 2026."` (SOC 2 é um padrão comum de auditoria de segurança.) Um único vetor médio mistura os dois anos e costuma preencher todas as 6 vagas com documentos de 2026, deixando 2024 de fora. A *decomposição de consultas* divide o pedido em duas subconsultas independentes—`"regras de retenção de logs SOC 2 2024"` e `"regras de retenção de logs SOC 2 2026"`—executa ambas em paralelo (ao mesmo tempo) e funde as duas listas com Reciprocal Rank Fusion (combinação de rankings da [aula 27.5](/pt-br/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/)) antes do reranking.
 
-Confira a aritmética de latência com cuidado. Suponha que a chamada rápida de reescrita/decomposição leve $180\ \text{ms}$ e cada busca híbrida leve $35\ \text{ms}$. Rodar as duas buscas em série custa:
+Confira a aritmética de latência com cuidado. Suponha que a chamada rápida de reescrita/decomposição leve $180\ \text{ms}$ e cada busca híbrida leve $35\ \text{ms}$. Rodar as duas buscas em série (uma após a outra) custa:
 
 $$
 T_{\text{serial}} = 180 + 35 + 35 = 250\ \text{ms}.
@@ -71,29 +71,31 @@ Orce sempre esses $180\ \text{ms}$ extras de forma explícita: pule a reescrita 
 
 ## HyDE: Hypothetical Document Embeddings
 
-Perguntas curtas de usuários e parágrafos longos de referência ocupam regiões ligeiramente diferentes do espaço de embeddings—perguntas usam forma interrogativa (`"como evitar picos de memória?"`) enquanto respostas usam prosa declarativa (`"configure max_tokens e blocos paginados de KV"`). Gao et al. (2022) propuseram o *Hypothetical Document Embeddings* (*HyDE*) para reduzir essa assimetria sem treinar um recuperador dedicado.
+Perguntas curtas de usuários e parágrafos longos de referência ocupam regiões ligeiramente diferentes do *espaço de embeddings* (o mapa geométrico onde textos parecidos ficam próximos)—perguntas usam forma interrogativa (`"como evitar picos de memória?"`) enquanto respostas usam prosa declarativa (`"configure max_tokens e blocos paginados de KV"`). Gao et al. (2022) propuseram o *Hypothetical Document Embeddings* (*HyDE*) para reduzir essa assimetria sem treinar um recuperador dedicado.
 
-Em vez de vetorizar a pergunta bruta, o HyDE pede a um modelo de linguagem que rascunhe uma passagem hipotética com *formato de resposta*, gera o embedding desse texto sintético e busca no corpus real os documentos mais próximos dele. O texto sintético é descartado logo após a busca; apenas documentos reais recuperados entram no prompt final de geração.
+Em vez de vetorizar a pergunta bruta, o HyDE pede a um modelo de linguagem que rascunhe uma passagem sintética (gerada pelo próprio modelo) com *formato de resposta*, usa o embedding desse rascunho para localizar documentos reais próximos e descarta o rascunho antes da geração final.
 
-O HyDE brilha em consultas conceituais com descompasso de vocabulário, onde a linguagem técnica geral converge bem com o corpus. Ele falha de forma severa quando a consulta contém identificadores privados, códigos internos de erro (`ERR-7042`), códigos de produto ou recursos recém-lançados ausentes do pré-treino. Nesses casos, a passagem hipotética inventa detalhes plausíveis mas falsos, deslocando o vetor da consulta para longe do trecho exato. Uma regra segura de produção é reservar o HyDE para perguntas conceituais e manter BM25 mais busca densa na consulta original rodando junto, para que identificadores literais nunca sejam apagados.
+O HyDE funciona melhor em consultas conceituais com descompasso de vocabulário, onde a linguagem técnica geral converge bem com o corpus. Ele falha de forma severa quando a consulta contém identificadores privados, códigos internos de erro (`ERR-7042`), códigos internos de produto (SKUs) ou recursos recém-lançados ausentes do pré-treino (o treinamento amplo inicial do modelo). Nesses casos, a passagem hipotética inventa detalhes plausíveis mas falsos, deslocando o vetor da consulta para longe do trecho exato. Uma regra segura de produção é reservar o HyDE para perguntas conceituais e manter BM25 mais busca densa na consulta original rodando junto, para que identificadores literais nunca sejam apagados.
 
 ## Roteamento de recuperação entre fontes heterogêneas
 
 Nem toda pergunta pertence ao mesmo índice vetorial—e algumas nem precisam de busca. Um *roteador de recuperação* classifica a requisição antes de consultar qualquer banco e a envia ao backend adequado:
 
 - **Rota sem recuperação:** saudações, reformatação pura de texto ou continuações já cobertas pelas passagens no contexto ativo pulam a busca por completo, poupando latência e evitando que trechos irrelevantes poluam a resposta.
-- **Rota estruturada:** agregações quantitativas (`"total de faturas acima de USD 10.000 no 3º trimestre"`) pertencem a SQL ou a uma API tipada, nunca a uma busca vetorial top-6 incapaz de somar linhas de uma tabela.
-- **Rota semântica com escopo:** perguntas sobre políticas e documentação levam filtros de metadados extraídos (linha de produto, jurisdição, data de vigência) direto para a busca híbrida filtrada.
+- **Rota estruturada:** agregações quantitativas (`"total de faturas acima de USD 10.000 no 3º trimestre"`) pertencem a SQL (linguagem de consulta a tabelas estruturadas) ou a uma API tipada (interface de software com campos rígidos de entrada e saída), nunca a uma busca vetorial top-6 incapaz de somar linhas de uma tabela.
+- **Rota semântica com escopo:** perguntas sobre políticas e documentação levam filtros de metadados extraídos (etiquetas estruturadas como linha de produto, jurisdição ou data de vigência) direto para a busca híbrida filtrada.
 - **Rota multifonte:** pedidos complexos disparam em paralelo contra APIs estruturadas e índices de documentos, reunindo ambas as saídas em blocos de contexto rotulados.
 
 ## Recuperação adaptativa: Corrective RAG e Self-RAG
 
-Pipelines estáticos buscam uma vez e torcem para dar certo. Dois padrões influentes tornam a recuperação *adaptativa* ao inspecionar a qualidade das evidências antes de gerar a resposta final:
+Pipelines estáticos buscam uma vez e torcem para dar certo. O fluxo em etapas abaixo compara os três padrões de resgate de consulta—reescrita paralela, HyDE e recuperação corretiva limitada—mostrando onde entra cada etapa extra de modelo:
 
-No *Corrective RAG* (Yan et al., 2024), um avaliador leve de relevância pontua os trechos recuperados frente à consulta antes da geração. Quando as notas são altas, o pipeline filtra frases ruidosas e segue adiante. Quando as notas são baixas ou ambíguas, ele descarta o conjunto fraco e aciona um ciclo corretivo—reescrevendo a consulta, relaxando filtros ou recorrendo a uma fonte secundária—limitado a no máximo uma tentativa extra para proteger a latência de cauda.
+<Figure id="28-4-query-transform-pipeline" />
 
-No *Self-RAG* (Asai et al., 2023), o próprio modelo decide sob demanda se precisa buscar para um segmento, critica se cada passagem trazida é relevante e verifica se a afirmação redigida tem suporte no texto. Em APIs de produção sem tokens de reflexão treinados sob medida, as equipes implementam o mesmo fluxo explicitamente como transições de estado pequenas e limitadas: decidir se busca, pontuar os trechos devolvidos, permitir no máximo uma reescrita corretiva em recall fraco e entregar evidências verificadas—ou um sinal explícito de ausência de evidência—ao gerador.
+Dois padrões de pesquisa tornam a recuperação *adaptativa* ao inspecionar a qualidade das evidências antes de gerar a resposta final. No *Corrective RAG* (Yan et al., 2024), um avaliador leve de relevância encaminha os trechos recuperados por três ramos: conjuntos confiáveis são refinados e mantidos, conjuntos fracos são descartados para uma busca reserva e conjuntos ambíguos combinam as duas fontes; pipelines de produção costumam limitar esse ciclo corretivo a uma única repetição (quadro 3 acima) para proteger a latência de cauda (os poucos por cento mais lentos das requisições).
+
+No *Self-RAG* (Asai et al., 2023), o próprio modelo decide sob demanda se precisa buscar para um segmento, critica se cada passagem trazida é relevante e verifica se a afirmação redigida tem suporte no texto. Em APIs de produção sem tokens de reflexão treinados sob medida, as equipes implementam o mesmo fluxo explicitamente como transições de estado pequenas e limitadas (regras passo a passo que decidem a próxima ação do programa): decidir se busca, pontuar os trechos devolvidos, permitir no máximo uma reescrita corretiva em recall fraco e entregar evidências verificadas—ou um sinal explícito de ausência de evidência—ao gerador.
 
 :::warning
-Cada salto extra de LLM antes da busca acrescenta latência e superfície de falha. Limite laços corretivos a uma única repetição e registre métricas de recuperação antes e depois de cada transformação; um reescritor sem medição costuma quebrar consultas por correspondência exata mesmo parecendo inteligente em demonstrações.
+Cada salto extra de LLM antes da busca acrescenta latência e superfície de falha. Limite ciclos corretivos a uma única repetição e registre métricas de recuperação antes e depois de cada transformação; um reescritor sem medição costuma quebrar consultas por correspondência exata mesmo parecendo inteligente em demonstrações.
 :::

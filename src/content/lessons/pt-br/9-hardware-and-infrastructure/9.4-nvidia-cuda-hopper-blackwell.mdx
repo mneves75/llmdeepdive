@@ -38,47 +38,45 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Uma pergunta de compra chega com prazo. A empresa vai servir o Qwen3.8-27B, e a escolha é entre alugar aceleradores de geração Hopper com 80 GB ou pagar substancialmente mais por peças de geração Blackwell da classe 192 GB (Hopper e Blackwell são duas gerações sucessivas de GPUs da NVIDIA). O material do fabricante compara os dois por throughput aritmético, que a [aula 9.1](/pt-br/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/) estabeleceu ser a moeda que o decode de fluxo único não gasta. A decisão gira, em vez disso, em torno de duas linhas da [aula 9.3](/pt-br/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/), capacidade e bandwidth, e esta aula desenvolve as duas.
 
 ## O que há dentro de uma GPU NVIDIA?
 
-Primeiro, o formato da máquina, porque o vocabulário reaparece em todo relatório de profiling. CUDA é a plataforma de programação da NVIDIA para suas GPUs. Uma GPU programável em CUDA é uma malha de **streaming multiprocessors** (SMs). Cada SM é um escalonador sobre muitas vias aritméticas, mais um bloco de **memória compartilhada** que o programador gerencia diretamente e um **banco de registradores**, o armazenamento mais rápido, privado de cada thread em execução.
+Primeiro, o formato da máquina, porque o vocabulário reaparece em todo relatório de profiling. CUDA é a plataforma de programação da NVIDIA para suas GPUs. Uma GPU programável em CUDA é uma malha de **streaming multiprocessors** (SMs). Cada SM tem um **escalonador** (a unidade de controle que distribui trabalho entre muitas vias aritméticas), mais um bloco de **memória compartilhada** que o programador gerencia diretamente e um **banco de registradores**, o armazenamento mais rápido dentro do chip, privado de cada **thread** em execução (um fluxo paralelo de execução).
 
 Uma peça H100 SXM carrega da ordem de 130 SMs. É um número de fabricante em agosto de 2026, e ele varia por SKU (a variante exata do produto) e por binning (a separação dos chips pelo número de unidades que passaram nos testes).
 
-Dentro de cada SM ficam os **tensor cores**: unidades de função fixa que recebem pequenos tiles de duas matrizes e somam o produto delas num acumulador. Essencialmente toda a aritmética de um transformer cai ali.
+Dentro de cada SM ficam os **tensor cores**: unidades de função fixa que recebem pequenos tiles de duas matrizes e somam o produto delas num **acumulador** (um registrador de soma corrente). Essencialmente toda a aritmética de um transformer cai ali.
 
 Em torno dos SMs fica a hierarquia de memória contra a qual o roofline da [aula 9.2](/pt-br/lessons/9-hardware-and-infrastructure/9.2-the-roofline-model/) é desenhado, da mais rápida e menor à mais lenta e maior:
 
-1. registradores;
-2. memória compartilhada e cache L1, dentro de cada SM;
+1. registradores (armazenamento minúsculo e imediato ao lado de cada via aritmética);
+2. memória compartilhada e cache L1 (memória de trabalho rápida no chip), dentro de cada SM;
 3. uma cache L2 compartilhada pelo chip inteiro;
 4. memória de alta banda (HBM), empilhada ao lado do die (o próprio chip de silício).
 
-Cada geração acrescentou caminhos mais rápidos de baixa precisão. A Hopper acrescentou uma quarta geração de tensor cores com um caminho de FP8 (ponto flutuante de 8 bits) e lógica de escala por tensor, que guarda um fator de escala por tensor para que números pequenos de 8 bits representem a faixa real de valores. A Blackwell acrescentou uma quinta geração que estende isso ao FP4 (ponto flutuante de 4 bits). Runtimes como o TensorRT-LLM ([aula 8.6](/pt-br/lessons/8-building-and-serving-stacks/8.6-tensorrt-llm/)) trazem kernels para esses caminhos de baixa precisão, e a receita de quantização que você serve decide qual caminho cada camada toma.
+Cada geração acrescentou caminhos mais rápidos de baixa precisão. A Hopper acrescentou uma quarta geração de tensor cores com um caminho de FP8 (ponto flutuante de 8 bits) e lógica de escala por tensor, que guarda um fator de escala por tensor para que números pequenos de 8 bits representem a faixa real de valores. A Blackwell acrescentou uma quinta geração que estende isso ao FP4 (ponto flutuante de 4 bits). Runtimes como o TensorRT-LLM ([aula 8.6](/pt-br/lessons/8-building-and-serving-stacks/8.6-tensorrt-llm/)) trazem kernels para esses caminhos de baixa precisão, e a **receita de quantização** (as regras específicas para converter pesos para menos bits) que você serve decide qual caminho cada camada toma.
 
 ## Capacidade: quantas conversas cabem?
 
-Agora a aritmética que decide a compra. Pegue primeiro a peça Hopper, reaproveitando o orçamento da aula 9.3 sem rederivá-lo:
+Agora a aritmética que decide a compra. Alterne entre as duas placas abaixo para comparar o orçamento Hopper de 80 GB da aula 9.3 com uma peça classe Blackwell de 192 GB carregando exatamente os mesmos 50,3 GiB de pesos em bf16.
 
-- Uma peça de 80 GB reporta aproximadamente 79,6 GiB utilizáveis.
-- Os pesos em bf16 do Qwen3.8-27B são cerca de 54 GB, que são 50,3 GiB.
-- Uma reserva de runtime perto de 6 GiB cobre o contexto do driver, as ativações e a fragmentação.
+<Figure id="t9-hopper-vs-blackwell" />
 
-O pool que sobra para o estado de cada conversa fica em cerca de 23,3 GiB. A 656 MiB por sequência de 8.192 tokens (cache mais o estado constante do DeltaNet), ele sustenta cerca de 36 conversas concorrentes. Ele comporta exatamente uma sequência no contexto nativo completo de 262.144 tokens. É um encaixe apertado. É por isso que implantações nessa peça recorrem a pesos em FP8 ou dividem o modelo entre duas placas, o que traz os custos de interconnect da [aula 9.9](/pt-br/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/).
+Na peça Hopper de 80 GB, o pool restante de 23,3 GiB comporta aproximadamente 36 conversas concorrentes de 8.192 tokens (a 656 MiB cada) e exatamente uma sequência completa de 262.144 tokens. Esse encaixe apertado explica por que implantações em 80 GB recorrem a pesos em FP8 ou dividem o modelo entre duas placas, o que traz os custos de **interconnect** (as ligações de alta velocidade entre GPUs) da [aula 9.9](/pt-br/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/).
 
-Agora a peça classe Blackwell, com 192 GB de HBM3e informados pelo fabricante. Para este exemplo trabalhado, assuma que cerca de 178,8 GiB ficam disponíveis para o runtime. Esse número é 192 GB convertido para GiB, uma hipótese ilustrativa e não uma medição de runtime; leia o número real no runtime da peça que você alugar. Os pesos custam os mesmos 50,3 GiB, porque pesos são um encargo fixo que não escala com a placa. Uma reserva ligeiramente maior, de 8 GiB, deixa
+Para a peça classe Blackwell, com 192 GB de **HBM3e** (uma geração mais rápida e de maior capacidade de memória empilhada) informados pelo fabricante, assuma que cerca de 178,8 GiB ficam disponíveis para o runtime. Esse número é 192 GB convertido para GiB, uma hipótese ilustrativa e não uma medição de runtime; leia o número real no runtime da peça que você alugar. Com os mesmos 50,3 GiB de pesos e uma reserva ligeiramente maior, de 8 GiB, sobra
 
 $$
 178.8\ \text{GiB} - 50.3\ \text{GiB} - 8\ \text{GiB} \ =\ 120.5\ \text{GiB} \ =\ 123{,}392\ \text{MiB}
 $$
 
-para o pool. A 656 MiB por sequência de 8.192 tokens, isso dá cerca de 188 conversas concorrentes. A 16.528 MiB por sequência em contexto nativo completo, dá cerca de sete.
+para o pool — cerca de 188 conversas concorrentes de 8.192 tokens, ou cerca de sete em contexto nativo completo (16.528 MiB cada).
 
-A concorrência subiu aproximadamente cinco vezes a partir de um aumento de capacidade de cerca de 2,4 vezes. A alavancagem vem inteiramente de o encargo fixo dos pesos ser pago uma única vez em qualquer das placas, então cada gibibyte adicional na peça maior vai para usuários. Imagine um auditório de 100 lugares em que o palco ocupa 60: dobrar o auditório para 200 lugares leva você de 40 lugares de plateia para 140, mais de três vezes. Essa não linearidade é o fato mais importante na escolha de um acelerador para um modelo desse porte, e qualquer comparação construída sobre throughput aritmético a esconde.
+A concorrência subiu aproximadamente cinco vezes a partir de um aumento de capacidade de cerca de 2,4 vezes. Como o encargo fixo dos pesos é pago uma única vez em qualquer das placas, cada gibibyte adicional na peça maior vai para usuários. Imagine um auditório de 100 lugares em que o palco ocupa 60: dobrar o auditório para 200 lugares leva você de 40 lugares de plateia para 140, mais de três vezes. Essa não linearidade é o fato mais importante na escolha de um acelerador para um modelo desse porte, e qualquer comparação construída sobre throughput aritmético a esconde.
 
 ## Bandwidth: quão rápido cada conversa lê?
 
@@ -94,17 +92,17 @@ contra cerca de 62 na peça Hopper. Para uma carga cujos bytes ativos continuam 
 
 O desvio errado de sempre aparece na mesma reunião. Alguém nota que a peça mais nova suporta FP4 e conclui que a inferência será, portanto, duas vezes mais rápida de novo, sem custo nenhum. Separe os dois efeitos.
 
-- **Menos bytes para o decode.** Uma representação FP4 validada pode reduzir o tráfego ativo de pesos muito abaixo de bf16. A redução exata depende da representação e do runtime. Isso pode melhorar o decode limitado por bandwidth. Mas o GGUF Q4_K_M fixado de 17,1 GB (um arquivo quantizado para o runtime llama.cpp) não é evidência para um layout FP4 de servidor.
-- **Um teto de compute mais alto para o prefill.** Tensor cores FP4 também elevam o teto plano de compute, o que acelera o prefill e o time to first token. Esse efeito aritmético também é real, mas ajuda uma fase diferente.
+- **Menos bytes para o decode.** Uma representação FP4 validada pode reduzir o tráfego ativo de pesos muito abaixo de bf16. A redução exata depende da representação e do runtime. Isso pode melhorar o decode limitado por bandwidth. Mas o GGUF Q4_K_M fixado de 17,1 GB (um arquivo quantizado para o runtime local llama.cpp) não é evidência para um layout FP4 de servidor.
+- **Um teto de compute mais alto para o prefill.** Tensor cores FP4 também elevam o teto plano de compute, o que acelera o prefill e o **time to first token** (quanto tempo o usuário espera até a resposta começar). Esse efeito aritmético também é real, mas ajuda uma fase diferente.
 
-Nenhum dos dois vem sem trabalho. O formato precisa ter uma receita de quantização validada para este modelo. O Qwen3.8-27B também é uma arquitetura híbrida cujas 48 camadas de Gated DeltaNet são mais novas que a maioria das bibliotecas de kernel. Então a cobertura de FP4 para essas camadas deve ser verificada na versão específica da stack, e não presumida de uma tabela de marketing. Testes de regressão de qualidade contra o próprio conjunto de benchmarks do model card são o mínimo antes de uma mudança de formato ir para produção.
+Nenhum dos dois vem sem trabalho. O formato precisa ter uma receita de quantização validada para este modelo. O Qwen3.8-27B também é uma arquitetura híbrida cujas 48 camadas de Gated DeltaNet são mais novas que a maioria das bibliotecas de kernel. Então a cobertura de FP4 para essas camadas deve ser verificada na versão específica da stack, e não presumida de uma tabela de marketing. Testes de regressão de qualidade contra o próprio conjunto de benchmarks do **model card** (a ficha técnica publicada com o modelo) são o mínimo antes de uma mudança de formato ir para produção.
 
 :::warning
-Todo número de capacidade, bandwidth e SM nesta aula é uma alegação do fabricante, válida para o SKU nomeado no momento em que foi publicada, e SKUs dentro de uma geração diferem substancialmente. Os 178,8 GiB de capacidade disponível são uma hipótese ilustrativa desta própria aula, não um número do fabricante. A mesma arquitetura é vendida em módulos soquetados, placas PCIe (encaixadas num slot padrão de servidor) e pacotes superchip (um módulo que integra CPU e GPU; o número de GPUs e de dies depende do produto), com capacidades de memória, clocks e envelopes de potência diferentes, e provedores de nuvem ainda particionam as peças. Confirme capacidade e bandwidth para o tipo exato de instância que você vai alugar. Depois refaça o orçamento da aula 9.3 com esses números, porque um plano construído sobre o número do topo de linha e executado na variante PCIe fica sem memória em produção.
+Todo número de capacidade, bandwidth e SM nesta aula é uma alegação do fabricante, válida para o SKU nomeado no momento em que foi publicada, e SKUs dentro de uma geração diferem substancialmente. Os 178,8 GiB de capacidade disponível são uma hipótese ilustrativa desta própria aula, não um número do fabricante. A mesma arquitetura é vendida em **módulos soquetados** (chips montados direto na placa do servidor), placas PCIe (encaixadas num slot padrão de servidor) e pacotes superchip (um módulo que integra CPU e GPU; o número de GPUs e de dies depende do produto), com capacidades de memória, **clocks** (velocidades de operação) e **envelopes de potência** (limites de consumo elétrico) diferentes, e provedores de nuvem ainda particionam as peças. Confirme capacidade e bandwidth para o tipo exato de instância que você vai alugar. Depois refaça o orçamento da aula 9.3 com esses números, porque um plano construído sobre o número do topo de linha e executado na variante PCIe fica sem memória em produção.
 :::
 
 :::caveat
-Comparar gerações por aritmética de pico convida a um segundo erro. Muitas taxas de FLOP citadas assumem esparsidade estruturada (um padrão de pesos zerados que o hardware consegue pular) ou o formato numérico mais estreito suportado. O número de manchete pode, portanto, descrever uma configuração na qual seu modelo nunca roda. Leia a nota de rodapé que declara o formato e a hipótese de esparsidade antes de colocar uma razão num business case.
+Comparar gerações por aritmética de pico convida a um segundo erro. Muitas taxas de FLOP citadas assumem esparsidade estruturada (um padrão de pesos zerados que o hardware consegue pular) ou o formato numérico mais estreito suportado. O número de manchete pode, portanto, descrever uma configuração na qual seu modelo nunca roda. Leia a nota de rodapé que declara o formato e a hipótese de esparsidade antes de colocar uma razão num **business case** (uma justificativa financeira de compra).
 :::
 
 O hábito que vale manter é precificar uma peça pelas duas linhas que decidem a sua carga de trabalho: quanto pool sobra depois de um encargo fixo de pesos, e quantos bytes por segundo atravessam da memória para as unidades de compute. A [aula 9.5](/pt-br/lessons/9-hardware-and-infrastructure/9.5-amd-rocm-mi3xx/) leva essas mesmas duas linhas a um fabricante cuja proposta inteira é a primeira delas.

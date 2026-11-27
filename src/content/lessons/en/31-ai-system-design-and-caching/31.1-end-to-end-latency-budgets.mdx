@@ -38,43 +38,43 @@ citations:
     authors: "Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica"
     year: 2023
     url: "https://arxiv.org/abs/2309.06180"
-updated: "2026-11-21"
+updated: "2026-11-26"
 ---
 
-Teams routinely spend two weeks trimming 20 milliseconds off vector search, ship the optimization, and discover that end users still wait more than four seconds for an answer to finish. Without an end-to-end **latency budget** (an explicit accounting of every millisecond across every stage of a request), engineering effort gravitates toward the easiest stage to profile rather than the stage dominating wall-clock time. Because Large Language Models split into two distinct hardware phases from [lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/)—compute-bound prefill and memory-bandwidth-bound decode—an AI system has two separate latency clocks to manage at once.
+Teams routinely spend two weeks trimming 20 milliseconds off vector search (finding documents by comparing numeric meaning lists), ship the change, and discover that users still wait more than four seconds for an answer to finish. Without an end-to-end **latency budget** (an explicit accounting of every millisecond across every stage of a request), engineering effort gravitates toward the easiest stage to measure rather than the stage dominating wall-clock time (total elapsed time on a regular clock from start to finish). Because Large Language Models (LLMs) split into two hardware phases from [lesson 7.3](/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/)—compute-bound **prefill** (reading the prompt) and memory-bandwidth-bound **decode** (generating output tokens one at a time)—an AI system has two separate latency clocks to manage at once.
 
 ## Decomposing a single uncached RAG turn
 
-Walk through one complete, uncached RAG request with concrete numbers before writing the general formula:
+Walk through one complete, uncached Retrieval-Augmented Generation (RAG — looking up relevant documents before asking the model to write an answer) request with concrete numbers before writing the general formula:
 
-- **Hybrid retrieval + rerank:** 85 ms to run dense + lexical search, filter ACLs, and cross-encode the top candidates.
-- **Input/output guardrails:** 45 ms for the fast Tier 1 classifiers from [lesson 30.4](/lessons/30-rag-security-privacy-and-governance/30.4-jailbreaks-guardrails-and-latency-budgets/).
-- **Model prefill (Time to First Token, TTFT):** 240 ms for the LLM to ingest the prompt and retrieved context and emit the first token.
-- **Autoregressive decode (post-TTFT):** because TTFT already includes emitting token 1, the remaining $250 - 1 = 249$ output tokens at 60 tok/s take $(249 / 60) \times 1{,}000 = 4{,}150\text{ ms}$.
+- **Hybrid retrieval + rerank:** 85 ms to run dense (meaning-based vector) and lexical (exact-keyword) search, apply Access Control Lists (ACLs, permission rules saying which user may read which document), and re-score the top candidates together with a small neural cross-encoder.
+- **Input/output guardrails:** 45 ms for the fast Tier 1 automated safety classifiers from [lesson 30.4](/lessons/30-rag-security-privacy-and-governance/30.4-jailbreaks-guardrails-and-latency-budgets/).
+- **Model prefill (Time to First Token, TTFT):** 240 ms for the LLM to read the prompt plus retrieved passages and emit the first output token.
+- **Autoregressive decode (post-TTFT):** generating one token at a time, each feeding into the next. Because TTFT already includes emitting token 1, the remaining $250 - 1 = 249$ output tokens at 60 tok/s take $(249 / 60) \times 1{,}000 = 4{,}150\text{ ms}$.
 
 <Figure id="31-1-latency-budget-stack" />
 
-Add the first three stages to get end-to-end **time to first token**: $85 + 45 + 240 = 370\text{ ms}$. Users see text begin streaming in under half a second, which feels responsive. Add the post-TTFT decode stage to get **total uncached latency**: $370 + 4{,}150 = 4{,}520\text{ ms}$. In general, for stage latencies $t_{\text{ret}}$, $t_{\text{guard}}$, $t_{\text{ttft}}$, output length $N_{\text{out}} \ge 1$ tokens, and decode speed $v_{\text{dec}}$ tokens per second:
+Add the first three stages to get end-to-end **time to first token**: $85 + 45 + 240 = 370\text{ ms}$. Users see text begin appearing in under half a second, which feels responsive. Add the post-TTFT decode stage to get **total uncached latency**: $370 + 4{,}150 = 4{,}520\text{ ms}$. In general, for stage latencies $t_{\text{ret}}$, $t_{\text{guard}}$, $t_{\text{ttft}}$, output length $N_{\text{out}} \ge 1$ tokens, and decode speed $v_{\text{dec}}$ tokens per second:
 
 $$
 T_{\text{uncached}} = t_{\text{ret}} + t_{\text{guard}} + t_{\text{ttft}} + \frac{\max(0, N_{\text{out}} - 1)}{v_{\text{dec}}} \times 1{,}000.
 $$
 
-Look closely at the proportions. Retrieval plus guardrails plus prefill account for just $370 / 4{,}520 \approx 8.2\%$ of total turn time, while decode consumes $91.8\%$. If a downstream workflow waits for the full JSON object before acting (no streaming), cutting output verbosity from 250 tokens to 120 tokens saves over two full seconds—fifty times more than halving retrieval latency.
+Look closely at the proportions in the figure above. Retrieval, guardrails, and prefill together account for $370 / 4{,}520 \approx 8.2\%$ of total turn time, while decode consumes $91.8\%$. If a downstream program waits for a full JSON object (a structured key-value data format) before acting—without **streaming** (sending each token to the caller as soon as it is generated)—cutting output length from 250 tokens to 120 tokens saves over two full seconds, fifty times more than halving retrieval latency.
 
 ## Mean latency vs. p99 tail latency under caching
 
-Suppose you place a cache in front of this RAG stack that hits on $h = 35\%$ of incoming queries and responds in $t_{\text{cache}} = 18\text{ ms}$. Compute the **mean effective latency** across all traffic:
+Suppose you place a **cache** (fast temporary storage holding previous answers) in front of this RAG stack that hits on $h = 35\%$ of incoming queries and responds in $t_{\text{cache}} = 18\text{ ms}$. Compute the **mean effective latency** across all traffic:
 
 $$
 T_{\text{eff}} = h \cdot t_{\text{cache}} + (1 - h) \cdot T_{\text{uncached}} = 0.35 \times 18 + 0.65 \times 4{,}520 = 2{,}944.3 \approx 2{,}944\text{ ms}.
 $$
 
-Average latency drops by 35%, from 4,520 ms down to 2,944 ms. Yet dashboards that plot only the mean hide what real users feel. Every cache miss—65% of all traffic—still traverses retrieval, guardrails, prefill, and decode for 4,520 ms or longer when queues build up. As Dean and Barroso (2013) show in *The Tail at Scale*, fan-out calls amplify tail variance rapidly: if one user action triggers $k$ independent uncached sub-calls and each sub-call has a 1% chance of exceeding a 6-second p99 spike, the chance that *at least one* sub-call stalls the request is $1 - 0.99^k$. For a 5-step agent workflow ($k = 5$), nearly 5% of turns hit a slow tail; for $k = 20$ parallel sub-queries without hedging or timeouts from [lesson 26.4](/lessons/26-llm-apis-and-structured-outputs/26.4-async-concurrency-rate-limits-and-batching/), over 18% of requests suffer a tail stall.
+Average latency drops by 35%, from 4,520 ms down to 2,944 ms. Yet dashboards that plot only the mean hide **tail latency**—specifically percentiles such as **p95** or **p99** (the durations that 95% or 99% of requests finish under, meaning the slowest 5% or 1% wait at least that long). Every cache miss—65% of all traffic—still traverses retrieval, guardrails, prefill, and decode for 4,520 ms or longer when queues build up. As Dean and Barroso (2013) show in *The Tail at Scale*, **fan-out calls** (one user action splitting into several separate backend requests) amplify tail variance rapidly: if one action triggers $k$ independent uncached sub-calls and each has a 1% chance of exceeding a 6-second p99 spike, the chance that *at least one* sub-call stalls the request is $1 - 0.99^k$. For a 5-step agent workflow ($k = 5$), nearly 5% of turns hit a slow tail; for $k = 20$ parallel sub-queries without **hedging** (sending a backup duplicate request when the first lags) or **timeouts** (cutting off a stalled request after a fixed limit) from [lesson 26.4](/lessons/26-llm-apis-and-structured-outputs/26.4-async-concurrency-rate-limits-and-batching/), over 18% of requests suffer a tail stall.
 
 ## Quantifying semantic cache false hits and monthly economics
 
-If that 35% hit rate comes from a **semantic cache** (matching queries by embedding similarity rather than exact string equality), every hit carries a non-zero probability $f$ of returning a subtly wrong or stale answer—a **false hit**. With $h = 0.35$ and a modest $f = 2\%$ false-hit rate on cache hits, calculate the defect rate per $10{,}000$ requests:
+If that 35% hit rate comes from a **semantic cache** (matching queries by similarity of their **embeddings**—numeric meaning vectors—rather than exact string equality), every hit carries a non-zero probability $f$ of returning a subtly wrong or stale answer—a **false hit**. With $h = 0.35$ and a modest $f = 2\%$ false-hit rate on cache hits, calculate the defect rate per $10{,}000$ requests:
 
 $$
 \text{False Hits}_{10\text{k}} = h \cdot f \cdot 10{,}000 = 0.35 \times 0.02 \times 10{,}000 = 70\ \text{false cached answers}.
@@ -82,12 +82,12 @@ $$
 
 Seventy wrong answers out of every 10,000 queries—7,000 bad answers per million requests—is an unacceptable error rate for billing, legal, or medical assistants, even though "only 2%" sounds harmless in isolation.
 
-Now run the monthly spend math on the exact same workload:
+Now run the monthly spend math on the exact same workload, comparing **pay-as-you-go (PAYG)** (paying per request used) against **provisioned throughput** (paying a fixed monthly fee to reserve dedicated serving capacity):
 
 - **Monthly traffic:** $1{,}000{,}000$ requests ($1{,}000\text{k}$).
 - **Uncached cost:** USD 4.50 per 1,000 requests $\rightarrow 1{,}000 \times 4.50 = \text{USD } 4{,}500/\text{month}$.
 - **Cached pay-as-you-go (PAYG) cost:** $4{,}500 \times (1 - 0.35) = \text{USD } 2{,}925/\text{month}$, saving USD 1,575/month.
-- **Provisioned throughput comparison:** If reserved capacity delivering steady p99 latency costs USD 2,600/month, provisioned throughput beats cached PAYG by USD 325/month—and also shields p99 TTFT from shared-API neighbor noise.
+- **Provisioned throughput comparison:** If reserved capacity delivering steady p99 latency costs USD 2,600/month, provisioned throughput beats cached PAYG by USD 325/month—and also shields p99 TTFT from **shared-API neighbor noise** (slowdowns caused by other customers sharing the same cloud provider servers).
 
 :::caveat
 Provisioned throughput only beats pay-as-you-go when traffic utilization stays steady enough to fill the reservation. If your 1,000,000 monthly requests arrive almost entirely inside two weekday peak hours while nights and weekends sit idle, reserving for peak load wastes capacity during off-peak hours; hybrid routing (provisioned baseline plus PAYG overflow) handles spiky workloads cleanly.

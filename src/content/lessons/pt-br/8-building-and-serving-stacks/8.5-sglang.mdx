@@ -42,10 +42,10 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Seu tráfego não é o que a [aula 8.4](/pt-br/lessons/8-building-and-serving-stacks/8.4-vllm/) supôs. Em vez de usuários independentes fazendo perguntas independentes, você está rodando um agente. Uma tarefa se abre em quarenta chamadas ao modelo. Cada chamada começa com o mesmo system prompt, os mesmos schemas de tools e os mesmos exemplos few-shot (pares de pergunta e resposta que mostram ao modelo o formato esperado): cerca de três mil tokens de preâmbulo idêntico. As chamadas só diferem no último parágrafo, e toda chamada precisa devolver um objeto JSON que o seu código vai parsear. Num engine de propósito geral essa carga desperdiça memória e compute sem nenhum erro para avisar, e entender por quê é a razão inteira de o SGLang existir.
+Seu tráfego não é o que a [aula 8.4](/pt-br/lessons/8-building-and-serving-stacks/8.4-vllm/) supôs. Em vez de usuários independentes fazendo perguntas independentes, você está rodando um **agente** (um programa que chama um modelo de linguagem em loop para concluir uma tarefa de vários passos). Uma tarefa se abre em quarenta chamadas ao modelo. Cada chamada começa com o mesmo system prompt, os mesmos **schemas de tools** (descrições legíveis por máquina das funções que o modelo pode chamar) e os mesmos exemplos few-shot (pares de pergunta e resposta que mostram ao modelo o formato esperado): cerca de três mil tokens de preâmbulo idêntico. As chamadas só diferem no último parágrafo, e toda chamada precisa devolver um **objeto JSON** (um formato de texto estruturado em pares chave-valor) que o seu código vai **parsear** (ler de volta em dados do programa). Num engine de propósito geral essa carga desperdiça memória e **compute** (trabalho de processador) sem nenhum erro para avisar, e entender por quê é a razão inteira de o SGLang existir.
 
 ## Quanto custa um preâmbulo repetido?
 
@@ -63,38 +63,32 @@ O compute é igualmente ruim. O prefill, a fase que processa o prompt antes do p
 
 O RadixAttention é a correção, e o desenho dele decorre do que o cache de fato é. Blocos de KV são função dos ids de token que os produziram e das posições deles. Então duas sequências que começam com o mesmo trecho de tokens têm blocos idênticos para esse trecho.
 
-O SGLang organiza, portanto, o pool de blocos como uma **radix tree** indexada por ids de token. Uma radix tree é uma árvore em que cada caminho a partir da raiz soletra uma sequência, de modo que sequências com o mesmo começo compartilham o mesmo caminho. (Se você já viu uma trie para autocompletar palavras, é a mesma ideia, com ids de token no lugar de letras.) Três regras fazem isso funcionar:
+O SGLang organiza o pool de blocos como uma **radix tree** indexada por ids de token — uma árvore em que cada caminho a partir da raiz soletra uma sequência, de modo que sequências com o mesmo começo compartilham o mesmo caminho (como uma trie para autocompletar palavras, usando ids de token em vez de letras). Percorra os três quadros abaixo para ver o reuso de prefixo, como uma abertura volátil o destrói e como o decoding restrito mascara tokens ilegais.
 
-1. Uma requisição que chega percorre a árvore desde a raiz e reaproveita cada bloco ao longo do caminho casado mais longo.
-2. Ela aloca blocos novos apenas para o sufixo em que diverge.
-3. A eviction é least-recently-used (LRU) sobre a árvore: quando a memória aperta, saem primeiro os blocos tocados há mais tempo. Prefixos quentes, como o seu system prompt, permanecem residentes enquanto conversas avulsas envelhecem e saem.
+<Figure id="t8-sglang-radix-and-grammar" />
 
-No nosso exemplo, o preâmbulo é armazenado uma vez, com cerca de 188 MiB, e passa por prefill uma vez. Isso recupera cerca de sete gibibytes de pool e trinta e nove quarenta avos do custo de prefill do preâmbulo.
+No quadro 1, uma requisição que chega percorre a árvore desde a raiz, reaproveita cada bloco ao longo do caminho casado mais longo e aloca blocos novos apenas onde diverge; quando a memória aperta, o **despejo** least-recently-used (LRU, removendo as entradas mais antigas sem uso) tira conversas avulsas primeiro enquanto prefixos quentes permanecem residentes. No nosso exemplo de 40 chamadas, guardar e fazer prefill do preâmbulo uma vez recupera cerca de sete gibibytes de pool e trinta e nove quarenta avos do trabalho de prefill do preâmbulo.
 
 :::warning
-Times muitas vezes ligam o compartilhamento de prefixo, não medem melhoria nenhuma e concluem que o recurso não funciona. Quase sempre o prompt começa com algo volátil: um timestamp, um id de requisição ou de trace, uma saudação por usuário, uma lista de tools serializada em ordem diferente a cada vez, ou um bloco de documentos recuperados cuja ordenação não é estável. O casamento é exato e ancorado na posição um, então um único token diferente no topo colapsa o prefixo compartilhado a zero. Reestruture o prompt para que tudo estável venha primeiro e tudo variável venha por último. Depois meça a taxa de acerto de cache que o engine reporta, em vez de inferi-la a partir da latência.
+Times muitas vezes ligam o compartilhamento de prefixo, não medem melhoria nenhuma e concluem que o recurso não funciona. Quase sempre o prompt começa com algo volátil (quadro 2): um timestamp, um id de requisição ou de trace, uma saudação por usuário, uma lista de tools serializada em ordem diferente a cada vez, ou um bloco de documentos recuperados cuja ordenação não é estável. O casamento é exato e ancorado na posição um, então um único token diferente no topo colapsa o prefixo compartilhado a zero. Reestruture o prompt para que tudo estável venha primeiro e tudo variável venha por último. Depois meça a taxa de acerto de cache que o engine reporta, em vez de inferi-la a partir da latência.
 :::
 
 ## Escalonar um programa, não uma pilha de requisições
 
-A segunda coisa que o SGLang trata como cidadã de primeira classe é que suas quarenta chamadas são um *programa*, não quarenta requisições sem relação. Elas têm dependências. Elas se ramificam e se juntam. Algumas são ramos especulativos que você vai descartar.
+A segunda coisa que o SGLang trata como cidadã de primeira classe é que suas quarenta chamadas são um *programa*, não quarenta requisições sem relação. Elas têm dependências. Elas **se ramificam e se juntam** (dividem uma tarefa em ramos paralelos e combinam os resultados). Algumas são ramos especulativos que você vai descartar.
 
-Quando o runtime conhece a estrutura do programa, ele pode escalonar com esse conhecimento. Pode manter o prefixo de um ramo fixado na memória enquanto os filhos dele rodam, agrupar os irmãos em batch e ordenar o trabalho de modo que um pai compartilhado seja computado uma vez antes da bifurcação, em vez de quarenta vezes depois dela. Um engine que só enxerga requisições HTTP independentes consegue recuperar parte disso a posteriori, pelo casamento de prefixo, mas não consegue planejar isso com antecedência.
+Quando o runtime conhece a estrutura do programa, ele pode escalonar com esse conhecimento. Pode manter o prefixo de um ramo fixado na memória enquanto os filhos dele rodam, agrupar os irmãos em batch e ordenar o trabalho de modo que um pai compartilhado seja computado uma vez antes da bifurcação, em vez de quarenta vezes depois dela. Um engine que só enxerga **requisições HTTP** independentes (requisições web comuns enviadas uma de cada vez) consegue recuperar parte disso a posteriori, pelo casamento de prefixo, mas não consegue planejar isso com antecedência.
 
 ## Como o decoding restrito garante o formato do JSON
 
-A saída estruturada é a terceira peça, e ela impõe o formato JSON no sampler em vez de torcer para o prompt ser obedecido. A [aula 7.4](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/) descreveu o sampling como sortear o próximo token a partir da distribuição de probabilidade do modelo sobre o vocabulário. O decoding restrito acrescenta um passo antes desse sorteio:
-
-1. O seu schema JSON ou gramática é compilado numa máquina de estados, que acompanha o que pode legalmente vir a seguir.
-2. A cada passo, o engine mascara os logits (as pontuações brutas) de todo token que não pode legalmente seguir o texto até ali, zerando a probabilidade deles.
-3. O sampling então acontece sobre os tokens que restaram.
+A saída estruturada é a terceira peça (quadro 3), e ela impõe o formato JSON no sampler em vez de torcer para o prompt ser obedecido. A [aula 7.4](/pt-br/lessons/7-inference-and-efficiency/7.4-sampling/) descreveu o sampling como sortear o próximo token a partir da distribuição de probabilidade do modelo sobre o vocabulário. O decoding restrito compila o seu schema JSON ou **gramática** (regras formais que definem a estrutura válida do texto) numa **máquina de estados** (uma tabela de regras que acompanha quais tokens podem vir a seguir) e mascara os logits não permitidos para probabilidade zero antes de cada sorteio.
 
 Assim o modelo não consegue emitir um pedido de desculpas em prosa antes da chave de abertura, não consegue fechar um array que não abriu e não consegue inventar um nome de campo fora do schema. Isso vale porque esses tokens tiveram a probabilidade zerada, não porque o prompt pediu com educação. A garantia cobre só os tokens de fato emitidos, e só os recursos de schema que o compilador de gramática do engine suporta.
 
 Duas notas práticas. Compilar uma gramática custa tempo real, então reaproveite e faça cache de schemas em vez de construir um por requisição. E a restrição se aplica apenas ao formato.
 
 :::caveat
-Válido pelo schema não é correto. Um decode restrito produzirá alegremente um objeto perfeitamente formado cujos campos estão errados, inventados ou contraditórios. Ele vai até parecer mais confiante que texto livre, porque o sinal usual de um modelo confuso, divagar, foi mascarado. Mantenha a validação semântica a jusante. O decoding restrito também não promete um objeto terminado. Uma requisição que atinge o limite de tokens, é cancelada ou estoura o tempo para no meio do objeto, e uma palavra-chave de schema que o compilador de gramática não suporta pode ser descartada em vez de imposta. Então, antes de qualquer ferramenta rodar, confira que a geração terminou normalmente (uma parada, não um limite de comprimento), faça o parsing da saída inteira, valide-a contra o schema de novo e só então confira o significado e as permissões, como faz a [aula 15.1](/pt-br/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/). O decoding restrito torna erros de parsing mais raros; ele não remove nem esses erros nem alucinação.
+Válido pelo schema não é correto. Um decode restrito produzirá alegremente um objeto perfeitamente formado cujos campos estão errados, inventados ou contraditórios. Ele vai até parecer mais confiante que texto livre, porque o sinal usual de um modelo confuso, divagar, foi mascarado. Mantenha a **validação semântica** (conferir se os valores fazem sentido no mundo real, não apenas na sintaxe) **a jusante** (mais adiante no pipeline do seu programa). O decoding restrito também não promete um objeto terminado. Uma requisição que atinge o limite de tokens, é cancelada ou estoura o tempo para no meio do objeto, e uma palavra-chave de schema que o compilador de gramática não suporta pode ser descartada em vez de imposta. Então, antes de qualquer ferramenta rodar, confira que a geração terminou normalmente (uma parada, não um limite de comprimento), faça o parsing da saída inteira, valide-a contra o schema de novo e só então confira o significado e as permissões, como faz a [aula 15.1](/pt-br/lessons/15-tool-contracts-and-mcp/15.1-from-model-output-to-a-tool-request/). O decoding restrito torna erros de parsing mais raros; ele não remove nem esses erros nem alucinação.
 :::
 
 ## Compartilhar um prefixo num modelo híbrido
@@ -107,7 +101,7 @@ A arquitetura híbrida complica o compartilhamento de prefixo, e este é o ponto
 
 Esse checkpoint não é pequeno. A implementação de referência armazena cerca de 144 MiB por sequência quando esse estado está em fp32, a mesma ordem dos 188 MiB de KV compartilhado deste exemplo, não um acréscimo desprezível. Um runtime de serving pode usar outro dtype ou layout de estado, portanto inspecione a alocação realizada.
 
-Fazer checkpoint do estado é um mecanismo diferente de compartilhar blocos. Se um dado release o implementa é uma questão por versão a verificar, não a supor. As alternativas são cair em recomputação completa sem aviso nenhum ou, pior, reaproveitar blocos contra um estado desatualizado. O SGLang publica uma página oficial de cookbook para exatamente este modelo. Essa página é o ponto de partida certo porque fixa as versões e configurações que os mantenedores exercitaram.
+Fazer checkpoint do estado é um mecanismo diferente de compartilhar blocos. Se um dado release o implementa é uma questão por versão a verificar, não a supor. As alternativas são cair em recomputação completa sem aviso nenhum ou, pior, reaproveitar blocos contra um estado desatualizado. O SGLang publica uma página oficial de **cookbook** (um guia mantido de receitas prontas) para exatamente este modelo. Essa página é o ponto de partida certo porque fixa as versões e configurações que os mantenedores exercitaram.
 
 ## Quem pode compartilhar um prefixo?
 

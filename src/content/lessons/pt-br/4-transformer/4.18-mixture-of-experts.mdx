@@ -58,7 +58,7 @@ citations:
     authors: "Hugging Face"
     year: 2026
     url: "https://huggingface.co/spaces/huggingface/moe-blogpost"
-updated: "2026-11-06"
+updated: "2026-11-26"
 ---
 
 ## A FFN que todo token paga
@@ -131,7 +131,7 @@ Duas escolhas mudam quem faz a seleção. O **token choice**, padrão, deixa cad
 
 O softmax dá aos pesos do top-k uma soma abaixo de 1, e a soma muda de token para token. Deixe como está e o tamanho da saída da camada acompanha o humor do router. A correção padrão é a **renormalização**: dividir os pesos escolhidos pela soma deles, para que somem 1.
 
-Renormalizar conserta a soma, não a magnitude. Tome k experts com peso igual e saídas não correlacionadas de mesmo RMS (root mean square, uma medida do tamanho típico de um vetor). A soma ponderada tem RMS $1/\sqrt{k}$ da de um expert, porque contribuições independentes somam em quadratura, não linearmente. Com $k = 8$ isso é um fator de 2,83.
+Renormalizar conserta a soma, não a magnitude. Tome k experts com peso igual e saídas não correlacionadas de mesmo RMS (root mean square, uma medida do tamanho típico de um vetor). A soma ponderada tem RMS $1/\sqrt{k}$ da de um expert, porque contribuições independentes somam em quadratura (seus quadrados se somam em vez dos tamanhos brutos), não linearmente. Com $k = 8$ isso é um fator de 2,83.
 
 Por isso as implementações multiplicam a saída roteada por um **fator de escala roteado**, muitas vezes perto de $\sqrt{k}$. O DeepSeek-V3 usa 2,5 com $k = 8$; o Kimi K2 usava 2,827 $\approx \sqrt{8}$; o Kimi K3 renormaliza sem fator extra com $k = 16$, como o handbook lê a config dele. O valor não está assentado entre os modelos publicados, e ele muda a fatia do ramo roteado contra qualquer expert compartilhado, o que também importa na próxima seção.
 
@@ -141,7 +141,7 @@ $\sqrt{k}$ restaura o RMS apenas sob as premissas acima: pesos iguais, RMS iguai
 
 ## Por que o router roda em fp32
 
-A saída de um router é uma ordenação, e o bf16 (brain float 16, o formato de 16 bits que a maior parte do treino usa) guarda cerca de oito bits de significando. Dois logits que diferem no terceiro decimal podem arredondar para o mesmo número em bf16. O top-k então precisa desempatar, e o PyTorch não promete qual expert vence. O token chega a um expert que o router em precisão cheia não teria escolhido, e nada na loss diz isso.
+A saída de um router é uma ordenação, e o bf16 (brain float 16, o formato de 16 bits que a maior parte do treino usa) guarda cerca de oito bits de significando (os dígitos que guardam precisão). Dois logits que diferem no terceiro decimal podem arredondar para o mesmo número em bf16. O top-k então precisa desempatar, e o PyTorch não promete qual expert vence. O token chega a um expert que o router em precisão cheia não teria escolhido, e nada na loss diz isso.
 
 O histórico aqui é sobre estabilidade, não acurácia. O handbook relata que um router em bf16 divergiu nos Switch Transformers enquanto um router em fp32 treinava na velocidade do bf16, e que o **z-loss** do ST-MoE — uma penalidade sobre o logsumexp dos logits, o log da soma das exponenciais — manteve todas as execuções estáveis. Na data em que isto é escrito, cinco dos dez MoEs abertos que o handbook tabula rodam a multiplicação do router em bf16 no *código de inferência*, enquanto a precisão de treino raramente é reportada.
 
@@ -149,19 +149,19 @@ A regra prática é estreita e defensável: mantenha a aritmética do router em 
 
 ## Quantos experts, qual largura, e quem vê todo token
 
-Com o orçamento de parâmetros fixo, mais experts significa experts mais estreitos. A **granularidade** descreve essa divisão: um MoE com 16 experts de largura $d/2$ e top-4 tem os mesmos parâmetros armazenados e o mesmo compute ativo que um com 8 experts de largura $d$ e top-2. O handbook relata uma ablação de 18 camadas em que a loss continuou melhorando conforme os experts ficavam mais finos, até 128 experts de um quarto de largura com top-8, e parou de melhorar além disso. Experts mais finos também significam multiplicações de matrizes menores, que usam a GPU com menos eficiência, então o ponto em que a qualidade para de melhorar é onde o experimento deve parar.
+Com o orçamento de parâmetros fixo, mais experts significa experts mais estreitos. A **granularidade** descreve essa divisão: um MoE com 16 experts de largura $d/2$ e top-4 tem os mesmos parâmetros armazenados e o mesmo compute ativo que um com 8 experts de largura $d$ e top-2. O handbook relata uma **ablação** (um experimento controlado variando uma escolha de projeto) de 18 camadas em que a loss continuou melhorando conforme os experts ficavam mais finos, até 128 experts de um quarto de largura com top-8, e parou de melhorar além disso. Experts mais finos também significam multiplicações de matrizes menores, que usam a GPU com menos eficiência, então o ponto em que a qualidade para de melhorar é onde o experimento deve parar.
 
 Três variações são comuns o bastante para o curso nomeá-las:
 
 - **Um expert compartilhado** é uma FFN fora do router que processa todo token. O DeepSeekMoE o introduziu para que padrões comuns não precisem ser duplicados entre experts roteados. Se os pesos roteados são renormalizados para um fator de escala $s$, o expert compartilhado fica com $1/(1+s)$ da saída de cada token — 28,6% com $s = 2.5$. O ganho medido é pequeno e inconsistente: o handbook relata 0,01–0,02 de loss menor em dois modelos, e nada ou um pouco pior em outros dois.
-- **Latent MoE** projeta cada token para uma largura menor $\ell$ antes do despacho e de volta depois dos experts. Cada cópia na rede encolhe de $d$ para $\ell$, o que compra $d/\ell$ vezes mais experts e um top-k proporcionalmente maior com o mesmo tráfego. o handbook relata a ablação de 73B-A8B da NVIDIA marcando 4,6 pontos a mais no MMLU-Pro com o mesmo tamanho; o custo são duas projeções extras por token, e o Kimi K3 precisou de uma normalização antes da projeção de volta para se manter estável.
+- **Latent MoE** projeta cada token para uma largura menor $\ell$ antes do despacho e de volta depois dos experts. Cada cópia na rede encolhe de $d$ para $\ell$, o que compra $d/\ell$ vezes mais experts e um top-k proporcionalmente maior com o mesmo tráfego. O handbook relata a ablação de 73B-A8B da NVIDIA marcando 4,6 pontos a mais no MMLU-Pro com o mesmo tamanho; o custo são duas projeções extras por token, e o Kimi K3 precisou de uma normalização antes da projeção de volta para se manter estável.
 - **Compute variável** deixa o número de experts, ou a largura deles, diferir por token enquanto a média fica fixa. O LongCat-Flash seleciona 12 entre 512 experts comuns mais 256 caminhos identidade que não computam nada, mirando uma média de 8 experts comuns por token. É um projeto real, não o padrão: as multiplicações agrupadas do Megatron assumem uma única largura de expert.
 
 Todo expert até aqui usa a mesma ativação de uma FFN densa, com um acréscimo que vale conhecer. A saída de um expert pode crescer sem limite enquanto a loss fica plana — o handbook relata um expert chegando a 5.700 vezes a norma mediana da camada — então alguns modelos limitam a ativação (DeepSeek-V4.1-Flash em 10, Step 3.5 Flash em 7) ou trocam por uma variante suavemente limitada (o SiTU-GLU do Kimi K3). Limitar não removeu todo pico de loss nos estudos que o handbook cita; ele limita um caminho de crescimento conhecido.
 
 ## Onde as camadas MoE ficam
 
-Um modelo não precisa pôr um MoE em toda camada, e cada camada MoE custa dois **all-to-all** — um coletivo que manda cada token às GPUs que guardam seus experts e traz os resultados de volta. Três arranjos estão em produção:
+Um modelo não precisa pôr um MoE em toda camada, e cada camada MoE custa dois **all-to-all** — um coletivo (troca coordenada em rede) que manda cada token às GPUs que guardam seus experts e traz os resultados de volta. Três arranjos estão em produção:
 
 - **MoE em toda camada**, como no Qwen3 e no gpt-oss: mais capacidade e mais trocas.
 - **Camadas densas iniciais**, como no DeepSeek-V3 (as três primeiras) e no Kimi K3 (a primeira): poucas camadas mantêm o bloco denso mais barato, o que remove as primeiras trocas.

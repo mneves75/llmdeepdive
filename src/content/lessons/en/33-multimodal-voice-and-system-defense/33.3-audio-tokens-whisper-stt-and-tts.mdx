@@ -34,52 +34,50 @@ citations:
     authors: "Alexandre Défossez, Jade Copet, Gabriel Synnaeve, Yossi Adi"
     year: 2022
     url: "https://arxiv.org/abs/2210.13438"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-Text already arrives as discrete characters that BPE ([lesson 1.2](/lessons/1-text-to-tensors/1.2-tokenization-i/)) packs into a few hundred tokens per paragraph. Audio arrives as a continuous pressure wave sampled thousands of times every second. One second of 16 kHz speech holds 16,000 floating-point numbers; a 30-second voice memo holds 480,000 samples. Feeding 480,000 raw samples into a Transformer block ([lesson 4.11](/lessons/4-transformer/4.11-full-transformer-block/)) would blow past every memory and attention budget immediately.
+Text arrives as discrete characters that Byte Pair Encoding (BPE, the subword tokenizer from [lesson 1.2](/lessons/1-text-to-tensors/1.2-tokenization-i/)) packs into a few hundred tokens per paragraph. Audio arrives as a continuous pressure wave measured thousands of times per second. One second of 16 kHz speech (16,000 measurements per second, where Hz means cycles or samples per second) holds 16,000 decimal (floating-point) numbers; a 30-second voice memo holds 480,000 samples. Feeding 480,000 raw samples into a Transformer block ([lesson 4.11](/lessons/4-transformer/4.11-full-transformer-block/)) would blow past every memory and attention budget immediately.
 
-Production voice systems solve that length gap in two distinct ways: **continuous spectrograms** for transcription encoders like Whisper, and **discrete neural audio codec tokens** like EnCodec for audio language models and low-latency speech synthesis.
+Production voice systems close that length gap in two ways: **continuous spectrograms** for transcription encoders like Whisper, and **discrete neural audio codec tokens** like EnCodec for audio language models and low-latency speech synthesis.
 
 ## Spectrograms and how Whisper transcribes speech
 
-A **log-Mel spectrogram** turns a 1D audio waveform into a compact 2D time-frequency grid. Slice the 16 kHz audio into overlapping 25 ms windows stepping forward every 10 ms (100 frames per second), take a Fourier transform on each slice, group frequencies onto 80 perceptual **Mel bands** (finer resolution at low pitches where human hearing is sharpest, coarser at high pitches), and take the logarithm of energy.
+A **log-Mel spectrogram** turns a 1D sound wave into a compact 2D grid of time versus pitch. Slice 16 kHz audio into overlapping 25 ms windows stepping forward every 10 ms (100 frames per second), run a **Fourier transform** (a math tool that measures how much energy sits at each pitch) on each slice, group frequencies into 80 perceptual **Mel bands** (finer detail at low pitches where human hearing is sharpest, coarser at high pitches), and take the logarithm of energy to match how human ears judge loudness.
 
-**Whisper** (Radford et al., 2022) builds a standard encoder-decoder Transformer on top of that representation:
+**Whisper** (Radford et al., 2022) builds an **encoder-decoder Transformer** (a two-part network where the encoder summarizes the audio and the decoder writes text while consulting those summaries) on top of that grid. As Step 1 of the figure below shows, two sliding convolutional filter layers (the second stepping by 2, or stride 2) compress a fixed 30-second, 3,000-frame spectrogram down to 1,500 encoder states at 50 Hz. Special prefix tokens tell the decoder the language (`<|en|>`, `<|pt|>`), the task (`<|transcribe|>` or `<|translate|>`), and whether to emit timestamps, and the decoder then cross-attends over those 1,500 audio states to emit BPE text tokens one by one.
 
-- **Fixed 30-second input window**: 30 seconds at 100 frames/second equals 3,000 spectrogram frames. Two convolutional stem layers (the second with stride 2) downsample this to 1,500 encoder tokens (50 frames/second).
-- **Multitask prefix tokens**: special control tokens fed to the decoder tell Whisper the language (`<|en|>`, `<|pt|>`), the task (`<|transcribe|>` or `<|translate|>`), and whether to emit timestamp tokens.
-- **Autoregressive text decoding**: the decoder cross-attends over the 1,500 audio states and emits BPE text tokens one by one.
-
-That design explains two operational facts every voice engineer hits in production. First, Whisper is **chunk-oriented**, not natively streaming—feeding tiny 200 ms slices destroys acoustic context, so real-time STT wrappers maintain a sliding audio buffer with Voice Activity Detection (VAD) and confirm words once they stabilize. Second, because Whisper was trained on 680,000 hours of weakly supervised web transcripts, feeding it pure silence or HVAC hum triggers **silence hallucinations** (such as "Thanks for watching" or repeated punctuation). Always gate Whisper behind a VAD filter and suppress no-speech segments.
+That chunked design causes two production issues every Speech-to-Text (STT) engineer meets. First, Whisper is **chunk-oriented**, not natively streaming—sending tiny 200 ms slices destroys acoustic context, so real-time wrappers keep a sliding audio buffer (a rolling window of recent sound) behind **Voice Activity Detection (VAD)** and lock in words once they stabilize. Second, because Whisper was trained on 680,000 hours of **weakly supervised** web transcripts (noisy online captions rather than hand-checked scripts), pure silence or air-conditioning hum triggers **silence hallucinations** (such as "Thanks for watching" or repeated punctuation). Always place a VAD filter before Whisper and suppress no-speech segments.
 
 ## Worked example: EnCodec and Residual Vector Quantization
 
-Whisper turns audio into *text*. What if you want a language model to *output* expressive speech directly—or understand tone, laughter, and interruptions without throwing them away during transcription? You need **discrete audio tokens**: integer IDs drawn from a finite vocabulary, just like text tokens.
+Whisper turns audio into *text*. What if you want a language model to *speak* directly—or hear tone, laughter, and interruptions without losing them during transcription? You need **discrete audio tokens**: integer IDs drawn from a fixed lookup table, just like text tokens.
 
-**EnCodec** (Défossez et al., 2022) converts raw 24 kHz audio into discrete tokens using a strided convolutional encoder followed by **Residual Vector Quantization (RVQ)**. Follow the numbers step by step:
+**EnCodec** (Défossez et al., 2022) turns raw 24 kHz audio into discrete tokens using a downsampling convolutional encoder followed by **Residual Vector Quantization (RVQ)** (Steps 2 and 3 of the figure below). Follow the exact arithmetic:
 
-1. **Temporal compression**: the encoder downsamples 24,000 samples/second by a factor of 320, producing:
+1. **Temporal compression**: the encoder downsamples 24,000 samples/second by 320, producing:
 
 $$
 f_{\text{frames}} = \frac{24{,}000}{320} = 75\ \text{frames/second}
 $$
 
-2. **Residual quantization across $K$ codebooks**: each continuous frame vector $z$ is matched to its nearest entry in codebook 1 (holding $V = 1{,}024$ learned centroids), yielding token ID $c_1$. Subtract that centroid to get the leftover **residual error** $r_1 = z - e(c_1)$. Match $r_1$ against codebook 2 to get token ID $c_2$, subtract again, and repeat for $K = 8$ stacked codebooks.
+2. **Residual quantization across $K$ codebooks**: each continuous frame vector $z$ is matched to its nearest template vector (centroid) in codebook 1 (holding $V = 1{,}024$ learned centroids), producing token ID $c_1$. Subtracting that centroid leaves the **residual error** $r_1 = z - e(c_1)$, which codebook 2 matches to produce $c_2$, repeating across $K = 8$ stacked codebooks.
 
-3. **Token rate and bitrate**: each codebook index among $V = 1{,}024$ entries takes $\log_2(1{,}024) = 10$ bits. Across $K = 8$ codebooks at 75 frames/second:
+3. **Token rate and bitrate**: picking one entry among $V = 1{,}024$ requires $\log_2(1{,}024) = 10$ bits. Across $K = 8$ codebooks at 75 frames/second, the token rate and bitrate (bits per second, bps, or kilobits per second, kbps) are:
 
 $$
 R_{\text{tokens}} = 75 \times 8 = 600\ \text{tokens/second}, \qquad \text{Bitrate} = 600 \times 10 = 6{,}000\ \text{bps} = 6.0\ \text{kbps}
 $$
 
-Notice the elegance of RVQ: codebook 1 captures coarse speech content and pitch (the semantic backbone), while codebooks 2 through 8 layer on timbre, room acoustics, and crisp consonants. Dropping the upper codebooks smoothly trades audio fidelity for lower bitrate without retraining the codec.
+Codebook 1 captures coarse speech content and pitch, while codebooks 2 through 8 layer on **timbre** (tone color), room acoustics, and crisp consonants. As Step 3 of the figure shows, dropping upper codebooks trades audio fidelity for lower bitrate smoothly without retraining the codec.
+
+<Figure id="33-3-audio-codecs-and-rvq" />
 
 ## Modern neural TTS: streaming audio without robotic pauses
 
-Classical **Text-to-Speech (TTS)** glued together pronunciation dictionaries, phoneme aligners, and separate vocoders. Modern neural TTS uses the exact building blocks above—either an autoregressive Transformer predicting semantic and RVQ acoustic tokens from text, or a Flow Matching acoustic model (lesson 33.2) predicting Mel spectrograms, followed by a neural codec decoder or vocoder turning tokens back into a 24 kHz waveform.
+Classical **Text-to-Speech (TTS)** stitched together pronunciation dictionaries, timing aligners for speech sounds (phonemes), and separate **vocoders** (waveform generators). Modern neural TTS reuses the building blocks above: either an autoregressive Transformer predicts semantic and RVQ acoustic tokens from text, or a Flow Matching acoustic model ([lesson 33.2](/lessons/33-multimodal-voice-and-system-defense/33.2-diffusion-and-flow-matching-generation/)) predicts Mel spectrograms, and a neural codec decoder or vocoder turns those features back into a 24 kHz sound wave.
 
-For interactive voice apps, the metric that matters is **time to first audio byte (TTFA)**, not total clip generation time. Streaming TTS splits incoming LLM text at short clause boundaries (first 6–12 tokens or first punctuation mark), synthesizes the first 150–250 ms audio chunk immediately, and streams subsequent PCM/Opus frames while the LLM is still decoding the rest of the sentence.
+For live voice apps, the key metric is **time to first audio byte (TTFA)**, not total clip generation time. Streaming TTS splits incoming LLM text at short clause boundaries (first 6–12 tokens or first punctuation mark), synthesizes the opening 150–250 ms audio chunk right away, and streams the remaining raw (PCM) or compressed (Opus) audio frames while the LLM is still decoding the rest of the sentence.
 
 :::warning
 Neural TTS models capable of zero-shot voice cloning (mimicking any speaker from a 5-second reference clip) introduce immediate impersonation and consent risks. Lock voice-cloning endpoints behind explicit speaker consent verification, restrict production bots to approved licensed voice IDs, and log audio synthesis provenance for abuse audits.
@@ -87,13 +85,13 @@ Neural TTS models capable of zero-shot voice cloning (mimicking any speaker from
 
 ## Picking the right audio representation
 
-Match the audio layer to what your application actually needs:
+Match the audio layer to what your application needs:
 
-- **Whisper / Conformer STT** for accurate transcripts, meeting search, subtitles, and structured extraction where text accuracy and timestamps matter more than tone or sub-second turn-taking.
-- **Discrete neural audio tokens (EnCodec / Mimi-style codecs)** when building speech-to-speech agents or expressive TTS that must preserve prosody, emotion, overlaps, and low-latency streaming without an intermediate text bottleneck.
+- **Whisper / Conformer STT** for accurate transcripts, meeting search, subtitles, and structured extraction where exact text and timestamps matter more than tone or sub-second turn-taking.
+- **Discrete neural audio tokens (EnCodec / Mimi-style codecs)** when building speech-to-speech agents or expressive TTS that must preserve **prosody** (rhythm, stress, and pitch melody), emotion, overlaps, and low-latency streaming without a text detour.
 
 :::caveat
-Audio token rates are far denser than text: English speech runs roughly 2.5–3 words/second (~4 text tokens/second), whereas an 8-codebook 75 Hz codec emits 600 audio tokens/second (150x denser). Native speech models manage this with lower frame rates (12.5–25 Hz) and parallel codebook prediction heads so a 2-minute call does not exhaust the KV cache.
+Audio token streams are far denser than text: English speech runs roughly 2.5–3 words/second (~4 text tokens/second), whereas an 8-codebook 75 Hz codec emits 600 audio tokens/second (150x denser). Native speech models keep a 2-minute call from exhausting the **KV cache** (memory storing past attention states) by using lower frame rates (12.5–25 Hz) and parallel codebook prediction heads.
 :::
 
 Now that you understand how speech becomes tokens and waveforms, lesson 33.4 puts all the pieces into a live phone or browser conversation—breaking down the exact millisecond budget that separates a sluggish 1,170 ms bot from a natural sub-500 ms realtime voice agent.

@@ -38,10 +38,10 @@ citations:
     authors: "Model Context Protocol project"
     year: 2026
     url: "https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-So far one agent read the supplier's message and drafted the invoice. Split that job in three. A *mail reader* reads supplier messages and reports which order and total a message is about. An *invoice drafter* drafts invoices. A *records clerk* updates an order's status when goods arrive. The mail reader reads attacker-written text all day, so it is the role most likely to be steered. Suppose it is steered completely and emits a perfectly shaped request. The next block is an illustration of that request's fields, not code the course's CI runs; the test below builds the same request in Python:
+So far one agent read the supplier's message and drafted the invoice. Split that job in three. A *mail reader* reads supplier messages and reports which order and total a message is about. An *invoice drafter* drafts invoices. A *records clerk* updates an order's status when goods arrive. The mail reader reads attacker-written text all day, so it is the role most likely to be steered. Suppose it is steered completely and emits a perfectly shaped request. The JSON data block below illustrates that request's fields (it is not code the course's automated test runner, CI, executes; the test below builds the same request in Python):
 
 ```json
 {"tool": "write_purchase_record", "arguments": {"po_id": "PO-1003", "status": "received"}}
@@ -51,7 +51,7 @@ PO-1003 is a real open order of the run's own tenant. Marking it received would 
 
 ## Least privilege, one grant per role
 
-Saltzer and Schroeder's principle of *least privilege* says every program "should operate using the least set of privileges necessary to complete the job", and that this "limits the damage that can result from an accident or error". OWASP's prompt-injection entry gives the same advice for models: "restrict the model's access privileges to the minimum necessary for its intended operations." For the three roles that means three grants:
+Saltzer and Schroeder's principle of *least privilege* says every program "should operate using the least set of privileges necessary to complete the job", and that this "limits the damage that can result from an accident or error". The Open Worldwide Application Security Project (OWASP) prompt-injection entry gives the same advice for models: "restrict the model's access privileges to the minimum necessary for its intended operations." The mapping below assigns each role only the exact tools its job requires, and nothing else:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/security/privilege.py
@@ -62,15 +62,17 @@ ROLE_GRANTS: dict[str, frozenset[str]] = {
 }
 ```
 
-The gate from [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) checks the grant before anything else, so the mail reader's perfect request is refused with "write_purchase_record is not granted to this agent". The shape never mattered. The same request from the records clerk is allowed: that is the positive control, and without it a gate that refused everything would also pass the test.
+<Figure id="t16-least-privilege-boundaries" />
 
-It helps to list what a fully fooled mail reader can still do with this grant. It can read its own tenant's orders, which it needs for its job, and it can report a wrong order or total. It cannot read another tenant's orders, because the tenant check still runs, and it cannot write anything. That short list is the point of least privilege: the damage from a successful attack is bounded by the grant, not by how convincing the attack was.
+The gate from [lesson 16.2](/lessons/16-agent-security-and-guardrails/16.2-indirect-prompt-injection/) checks the grant before anything else, so the mail reader's perfect request is refused with "write_purchase_record is not granted to this agent". The shape never mattered. The same request from the records clerk is allowed: that is the *positive control* (a test case that should succeed, proving the gate does not refuse everything).
+
+With the split shown in step 1 of the figure, a fully fooled mail reader can still read its own tenant's orders and report a wrong order or total, but it cannot read another tenant's orders (the tenant check still runs) and cannot write anything. The damage from a successful attack is bounded by the grant, not by how convincing the attack was.
 
 This is the difference between *validation* and *authorization*. Validation asks whether a request is well formed; the project's core tests already show a perfectly shaped request for another tenant's invoice validating. Authorization asks whether this caller may do this thing to this object. A model that has read the tool's schema can always produce a valid request, so validity can never be the permission.
 
 ## Typed fields between roles
 
-How does the drafter learn which invoice to draft? Not from the mail reader's free text, which could carry the attacker's sentences onward. The mail reader's only output is a record with two fields:
+How does the drafter learn which invoice to draft? Not from the mail reader's free text, which could carry the attacker's sentences onward. The strict record definition below restricts the mail reader's output to just two validated fields—a purchase-order code like `PO-1002` and a positive total with up to two decimal places:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/security/privilege.py
@@ -81,11 +83,11 @@ class ExtractedInvoice(Record):
     total: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
 ```
 
-The record is strict and forbids unknown fields, so a reply that adds `"payee": "Supplier Omega"` or `"approved": true` fails to parse. The attacker's favourite fields have nowhere to land. This is *typed extraction*. It has a limit worth stating plainly: a type validates structure, not meaning. The mail reader can still report the wrong total, so the drafter's gate still compares the total with the purchase record. Types narrow what can be passed on; checks against trusted sources decide whether it is true.
+The record forbids unknown fields, so a reply that adds `"payee": "Supplier Omega"` or `"approved": true` fails to parse (read and validate into fields). The attacker's favourite fields have nowhere to land. This is *typed extraction*. It has a limit worth stating plainly: a type validates structure, not meaning. The mail reader can still report the wrong total, so the drafter's gate still compares the total with the purchase record. Types narrow what can be passed on; checks against trusted sources decide whether it is true.
 
 ## Secrets the agent never sees
 
-The back office needs a key. The tempting design puts it where the agent can use it: in the prompt, in an environment variable a tool can read, or as a tool argument. Then a steered agent can print it or send it elsewhere. A *credential broker* holds the secret and attaches it itself, only for calls on its list:
+The back office needs an API key (a secret password string for a software service). The tempting design puts it where the agent can use it: in the prompt, in an *environment variable* (a named setting stored by the operating system for running programs) that a tool can read, or as a tool argument. Then a steered agent can print it or send it elsewhere. A *credential broker* holds the secret instead. The class below stores the secret and a fixed map from tool name to web address; when called, it checks that route, attaches the secret in an HTTP `Authorization` header (metadata sent alongside a network request), and replaces the secret with `"[redacted]"` if the service echoes it back:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/security/privilege.py
@@ -107,15 +109,15 @@ class CredentialBroker:
         return json.loads(text.replace(self.secret, "[redacted]")) if self.secret in text else reply
 ```
 
-Three properties matter. The agent never holds the key, so no prompt can extract it. The destination is fixed per tool, so the model cannot choose where the key goes. And a reply that echoes the key, in a debug field or an error, is redacted before it reaches the model. The `repr=False` fields keep the secret out of logs and test failure messages, the same choice `OpenAICompatibleModel` makes for its API key.
+Step 2 of the figure traces that path: the agent never holds the key, cannot pick where the key is sent, and never receives an echoed copy in a debug field or error reply. Setting `repr=False` on `secret` and `transport` also keeps the secret out of program logs (recorded event files) and test failure messages, the same choice `OpenAICompatibleModel` makes for its API key.
 
 :::note
-The MCP security guide forbids the related anti-pattern *token passthrough*: a server forwarding a client's token to a downstream API. Its rule is that MCP servers "MUST NOT accept any tokens that were not explicitly issued for the MCP server." It also recommends minimal, incrementally raised scopes instead of one broad token. [Lesson 15.5](/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/) covers those authorization boundaries.
+The Model Context Protocol (MCP) security guide forbids the related anti-pattern *token passthrough*: a server forwarding a client's login token straight to a downstream API (another service behind it). Its rule is that MCP servers "MUST NOT accept any tokens that were not explicitly issued for the MCP server." It also recommends minimal, incrementally raised *scopes* (narrow permissions attached to a token) instead of one broad token. [Lesson 15.5](/lessons/15-tool-contracts-and-mcp/15.5-transport-and-authorization-boundaries/) covers those authorization boundaries.
 :::
 
 ## Show outside text as inert text
 
-The last asset in lesson 16.1's table is the reviewer's screen. The assistant's reply often repeats parts of the supplier's message, so it is outside text too. If the reviewer's screen renders HTML or Markdown, the reply can carry markup that runs, or an image whose address carries data to the attacker's server the moment the page loads. `render_untrusted` removes every link and image target, then escapes the rest:
+The last asset in lesson 16.1's table is the reviewer's screen. The assistant's reply often repeats parts of the supplier's message, so it is outside text too. If the reviewer's screen renders HTML (the formatting language web browsers display) or Markdown (a plain-text shorthand that converts into HTML, including image tags), the reply can carry markup that runs, or an image whose web address carries data to the attacker's server the moment the page loads. As step 3 of the figure shows, `render_untrusted` below strips every Markdown link or image target and bare web address first, then escapes any remaining HTML characters (replacing `<`, `>`, `&`, and quotes with harmless text codes):
 
 ```python
 # file: examples/agent-engineering/src/agentlab/security/privilege.py

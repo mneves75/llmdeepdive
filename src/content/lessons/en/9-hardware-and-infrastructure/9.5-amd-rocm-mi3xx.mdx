@@ -38,16 +38,16 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-[Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) ended with an uncomfortable result. On an 80 GB accelerator, Qwen3.8-27B at its full 262,144-token native context fits exactly once: one conversation, one card, no second user. Serving even a handful of long-context sessions on that hardware means splitting the model across devices. That brings an **all-reduce** (a step where every device sends its partial result and every device receives the combined sum) twice in every one of the 64 layers, plus an interconnect budget nobody planned for. AMD's Instinct line answers that specific problem with a specific number. This lesson works through it, including what it does not solve.
+[Lesson 9.3](/lessons/9-hardware-and-infrastructure/9.3-kv-cache-sizing-and-memory-budgets/) ended with an uncomfortable result. On an 80 GB accelerator, Qwen3.8-27B at its full 262,144-token native context fits exactly once: one conversation, one card, no second user. Serving even a handful of long-context sessions on that hardware means splitting the model across devices. That brings an **all-reduce** (a step where every device sends its partial result and every device receives the combined sum) twice in every one of the 64 layers, plus an **interconnect** budget (the high-speed links joining GPUs) nobody planned for. AMD's Instinct line answers that specific problem with a specific number. This lesson works through it, including what it does not solve.
 
 ## What the MI300X class offers
 
 The MI300X-class part carries a vendor-reported 192 GB of HBM3 (stacked high-bandwidth memory) at a vendor-reported peak near 5.3 TB/s. It is built from **chiplets**, several smaller dies packaged together, with several hundred compute units, AMD's counterpart of NVIDIA's streaming multiprocessors. These figures are as of Aug 2026, and SKUs (product variants) within a family differ.
 
-Programming it goes through **ROCm**, AMD's software platform, rather than CUDA. Kernels are written in **HIP**, a C++ dialect close to CUDA's. The major serving stacks maintain AMD build paths, documented alongside their CUDA ones.
+Programming it goes through **ROCm**, AMD's software platform, rather than CUDA. Kernels are written in **HIP**, a variant of the C++ programming language close to CUDA's. The major serving stacks maintain AMD **build paths** (configurations for compiling and installing the software), documented alongside their CUDA ones.
 
 ## How much fits on one device?
 
@@ -65,7 +65,7 @@ $$
 
 against exactly one on the 80 GB part. At an 8,192-token window, 656 MiB per sequence, the same pool serves about 208 concurrent conversations against about 36.
 
-That is the entire pitch, and it is a strong one. A workload that needed **tensor parallelism** (splitting every weight matrix across devices), a topology decision, a collective-communication library, and a debugging story now runs as a single process on a single device. Operational simplicity is a real engineering asset, and it rarely appears on a spec sheet.
+That is the entire pitch, and it is a strong one. A workload that needed **tensor parallelism** (splitting every weight matrix across devices), a **topology decision** (choosing how multiple GPUs are wired together), a **collective-communication library** (software that coordinates data exchanges across GPUs), and a multi-card debugging story now runs as a **single process** (one running program) on a single device. Operational simplicity is a real engineering asset, and it rarely appears on a spec sheet.
 
 ## Does capacity make each user faster?
 
@@ -79,19 +79,14 @@ which is a checkpoint-size heuristic from a vendor bandwidth claim, not a measur
 
 ## Sharding buys bandwidth as well as room
 
-The correction goes further, and it turns the usual view of **sharding** (splitting a model across devices) around. Split Qwen3.8-27B across two 80 GB parts in tensor parallel, and each device holds, and therefore reads, only about 27 GB of weights per decode step. At 3.35 TB/s that is a checkpoint-size quotient near 8.1 milliseconds, or about 124 tokens per second as a heuristic before the communication steps. [Lesson 9.9](/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) charges the per-token all-reduces this ignores and lands nearer 107.
+The correction goes further, and it turns the usual view of **sharding** (splitting a model across devices) around. Sharding is more than a way to fit a model that does not fit: it is also a way to buy combined bandwidth for a single stream, paid for by an all-reduce over the 5,120-dimensional residual stream (the vector each token carries from layer to layer) after every attention and feed-forward block. Step between the two panels to see the trade-off.
 
-So sharding is more than a way to fit a model that does not fit. It is also a way to buy combined bandwidth for a single stream. The price is an all-reduce over the 5,120-dimensional residual stream (the vector each token carries from layer to layer) after every attention and feed-forward block: twice per layer, across 64 layers. Lesson 9.9 prices that properly, and it eats into the theoretical gain.
+<Figure id="t9-single-vs-sharded" />
 
-The fair summary has two sides:
-
-- A single large-memory device can win on concurrency and deployment simplicity. Whether it also wins on cost per served token depends on prices and utilization, the inputs of [lesson 9.10](/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/).
-- A tightly interconnected pair can win on the latency a single impatient user perceives.
-
-Which of those your product sells, checked by a benchmark of both options on your own workload, decides the purchase.
+Whether one large-memory device also wins on cost per served token depends on prices and utilization, the inputs of [lesson 9.10](/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/), while [lesson 9.9](/lessons/9-hardware-and-infrastructure/9.9-interconnects-and-clusters/) prices the communication steps directly. Which goal your product sells — concurrency and operational simplicity versus single-user latency — checked by a benchmark of both options on your own workload, decides the purchase.
 
 :::warning
-The expensive mistake here is the reflex to treat accelerators as interchangeable once the arithmetic matches. Support for a model architecture is a property of a specific stack version, not of a vendor. Qwen3.8-27B belongs to the Qwen3.8 family the Qwen team announced in Aug 2026, and its 48 Gated DeltaNet layers rely on fused kernels (several operations combined into one GPU function) that are newer than most of the ecosystem. Quantization formats, attention kernels, graph capture, and compiler backends all reach non-CUDA targets on their own schedules. Before committing, verify three things against the exact ROCm release, the exact serving-framework release, and the exact quantization recipe you intend to ship: that the model loads, that the hybrid layers use fused rather than fallback kernels (slower generic versions), and that output quality matches the reference. Treat any claim of support that is not attached to a version number as unverified.
+The expensive mistake here is the reflex to treat accelerators as interchangeable once the arithmetic matches. Support for a model architecture is a property of a specific stack version, not of a vendor. Qwen3.8-27B belongs to the Qwen3.8 family the Qwen team announced in Aug 2026, and its 48 Gated DeltaNet layers rely on fused kernels (several operations combined into one GPU function) that are newer than most of the ecosystem. Quantization formats, attention kernels, **graph capture** (recording a sequence of GPU operations once to replay them with less launch overhead), and **compiler backends** (software that translates model operations into chip-specific machine code) all reach non-CUDA targets on their own schedules. Before committing, verify three things against the exact ROCm **release** (numbered software version), the exact serving-framework release, and the exact quantization recipe you intend to ship: that the model loads, that the hybrid layers use fused rather than fallback kernels (slower generic versions), and that output quality matches the reference. Treat any claim of support that is not attached to a version number as unverified.
 :::
 
 ## Checking support before the purchase
@@ -103,7 +98,7 @@ That verification is cheap and should happen before the commercial conversation:
 3. Confirm the reported free memory matches the budget above.
 4. Re-test with the quantization you actually plan to run.
 
-Failures at this stage are usually performance regressions with no error message, not crashes: a fallback kernel runs where a fused one should. So compare the achieved decode rate with the checkpoint heuristic above as one diagnostic. A gap alone does not prove a missing kernel.
+Failures at this stage are usually performance **regressions** (drops in speed) with no error message, not crashes: a fallback kernel runs where a fused one should. So compare the achieved decode rate with the checkpoint heuristic above as one diagnostic. A gap alone does not prove a missing kernel.
 
 :::caveat
 Every hardware figure here is vendor-reported as of Aug 2026 and describes a family rather than a part. Capacity, bandwidth, and compute-unit counts differ across MI3xx SKUs and across the platforms that host them, and cloud instance types may expose partitioned devices. Re-derive the budget with the numbers reported by the runtime on the instance you rent, and treat the tokens-per-second quotients in this lesson as order-of-magnitude heuristics, not hard bounds.

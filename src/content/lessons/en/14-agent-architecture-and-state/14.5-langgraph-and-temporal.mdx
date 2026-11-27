@@ -58,14 +58,14 @@ citations:
     authors: "Temporal Technologies"
     year: 2026
     url: "https://github.com/temporalio/sdk-python/blob/1.34.0/temporalio/worker/_worker.py"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-You have built the purchasing run by hand: a transition table, SQLite checkpoints with compare-and-swap, and an outbox with idempotency keys. Two widely used frameworks package these ideas. Each answers the question of [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) in its own way: after a crash, what runs again? This lesson rebuilds the run in LangGraph 1.2.12 and in Temporal's Python SDK 1.34.0, the versions the exercise project pins. Each part ends with a test that shows exactly what repeats.
+You have built the purchasing run by hand: a transition table, SQLite checkpoints with compare-and-swap, and an outbox with idempotency keys. Two widely used frameworks (prebuilt software toolkits that handle common plumbing such as checkpoints and retries) package these ideas. Each answers the question of [lesson 14.4](/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) in its own way: after a crash, what runs again? This lesson rebuilds the run in LangGraph 1.2.12 and in Temporal's Python SDK (Software Development Kit, a library for calling a service from Python) 1.34.0, the exact versions the exercise project pins (locks so behaviour does not silently shift). Each part ends with a test that shows exactly what repeats.
 
 ## The same run as a LangGraph graph
 
-LangGraph builds a run as a `StateGraph`: nodes are Python functions that return updates to a shared state, and edges say which node runs next. A *conditional edge* calls a routing function to choose among several nodes. That is the branch and loop of [lesson 14.2](/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/). Here is the wiring from the project's `frameworks.py`:
+LangGraph builds a run as a `StateGraph`: nodes are Python functions that return updates to a shared state, and *edges* (arrows connecting nodes) say which node runs next. A *conditional edge* calls a routing function (a small function that reads the current state and returns the name of the next node) to choose among several nodes. That is the branch and loop of [lesson 14.2](/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/). The code below from `frameworks.py` registers four nodes (`receive`, `check`, `ask_supplier`, `complete`), wires them with fixed edges plus a conditional branch after `check` that either loops through `ask_supplier` or goes to `complete`, and compiles the graph with `SqliteSaver` so checkpoints write to SQLite:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/frameworks.py
@@ -82,13 +82,13 @@ LangGraph builds a run as a `StateGraph`: nodes are Python functions that return
     return builder.compile(checkpointer=SqliteSaver(conn))
 ```
 
-The `checkpointer` is what makes the run durable. `SqliteSaver`, from the `langgraph-checkpoint-sqlite` package, writes checkpoints to a SQLite file. Each run is a *thread*, named by the `thread_id` in the config, and checkpoints are stored per thread.
+The `checkpointer` is what makes the run durable. `SqliteSaver`, from the `langgraph-checkpoint-sqlite` package (an installable library), writes checkpoints to a SQLite file. Each run is a *thread*, named by the `thread_id` in the config, and checkpoints are stored per thread.
 
 ## What does a LangGraph restart repeat?
 
 LangGraph's documentation says it "creates a checkpoint at each super-step boundary". A *super-step* is one tick of the graph, in which every node scheduled for that tick runs. Nodes that run one after another fall in separate super-steps. The documentation adds that "you can only resume execution from a checkpoint". So a node that crashes halfway through runs again from its start.
 
-The exercise proves it. The `check` node crashes on its first call. The test then opens a new graph object over the same file, as a restarted process would, and calls `invoke(None, config)` to resume the thread:
+The exercise proves it. In the test below, the `check` node crashes on its first call; the test then opens a new graph object over the same SQLite file (as a restarted process would) and calls `invoke(None, config)` to resume the thread, asserting at the end that the run reached `completed`, `receive` ran once, and `check` ran twice:
 
 ```python
 # file: examples/agent-engineering/tests_frameworks/test_state_frameworks.py
@@ -103,21 +103,21 @@ The exercise proves it. The `check` node crashes on its first call. The test the
         self.assertEqual(check.calls, 2)  # interrupted mid-step: runs again
 ```
 
-`receive` ran once and `check` ran twice. If `check` had created an invoice before crashing, the invoice would be created twice. A framework checkpoint does not change that. Side effects inside a node still need lesson 14.4's key.
+If `check` had created an invoice before crashing, the invoice would be created twice. A framework checkpoint does not change that. Side effects inside a node still need lesson 14.4's key.
 
-The test passes `durability="sync"`. LangGraph offers three durability modes. With `"sync"`, it persists each checkpoint "synchronously before the next step starts". With `"async"`, it persists "while the next step executes", and the documentation warns it "does not write checkpoints if the process crashes during execution". In the pinned source, `"async"` is the default. Choose `"sync"` when a crash must never lose a finished step.
+The test passes `durability="sync"`. LangGraph offers three durability modes. With `"sync"`, it persists each checkpoint "synchronously before the next step starts" (waiting for the disk write to finish before moving on). With `"async"`, it persists "while the next step executes" (writing in the background), and the documentation warns it "does not write checkpoints if the process crashes during execution". In the pinned source, `"async"` is the default. Choose `"sync"` when a crash must never lose a finished step.
 
 ## The step budget is recursion_limit
 
 LangGraph counts super-steps and raises `GraphRecursionError` when a run exceeds its `recursion_limit`. The exercise sets the limit to 8 in the config. A supplier who never answers then loops `check → ask_supplier → check` until the error stops it. A supplier who answers finishes in three super-steps.
 
-Why set it explicitly? The Graph API page says the default is 1,000 steps since version 1.0.6. The source at tag 1.2.12 sets `DEFAULT_RECURSION_LIMIT` to `10007`, from the environment variable `LANGGRAPH_DEFAULT_RECURSION_LIMIT`. A loop measured against the installed package stopped at 10,007 steps. When documentation and source disagree, the code you run wins, and a budget you set yourself avoids the question entirely.
+Why set it explicitly? The Graph API page says the default is 1,000 steps since version 1.0.6. The source at tag 1.2.12 sets `DEFAULT_RECURSION_LIMIT` to `10007`, read from the environment variable (a named setting passed by the operating system) `LANGGRAPH_DEFAULT_RECURSION_LIMIT`. A loop measured against the installed package stopped at 10,007 steps. When documentation and source disagree, the code you run wins, and a budget you set yourself avoids the question entirely.
 
 ## The same run as a Temporal workflow
 
-Temporal splits a run in two. A *workflow* is the orchestration code. An *activity* is a function that touches the world: an API call, a database write, a model call. The Temporal server records an *event history* for each workflow, a log of what the workflow asked for and what came back. If a worker dies, another worker rebuilds the workflow by *replaying* that history: it runs the workflow code again from the top, and each activity already recorded as completed returns its stored result without running again.
+Temporal splits a run in two. A *workflow* is the orchestration code (the code that decides which step runs next without talking to external services directly). An *activity* is a function that touches the world: an API call, a database write, a model call. The Temporal server records an *event history* for each workflow, a log of what the workflow asked for and what came back. If a worker dies, another worker rebuilds the workflow by *replaying* that history: it runs the workflow code again from the top, and each activity already recorded as completed returns its stored result without running again.
 
-Replay works only if the workflow code makes "the same Workflow API calls in the same sequence, given the same input". So workflow code may not read the clock, pick random numbers or do I/O directly. Those belong in activities, or in SDK calls whose results are stored in the history. Here is the project's workflow and invoice activity:
+Replay works only if the workflow code makes "the same Workflow API calls in the same sequence, given the same input". So workflow code may not read the clock, pick random numbers or do I/O (input/output — reading or writing files, networks or databases) directly. Those belong in activities, or in SDK calls whose results are stored in the history. In the code below, the `create_invoice` activity builds a stable idempotency key from Temporal's workflow run id and activity id before calling the invoice service, while `InvoiceWorkflow.run` checks the purchase order, waits three days on a durable timer, and then runs `create_invoice` with up to five automatic retries:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/state/frameworks.py
@@ -151,18 +151,20 @@ class InvoiceWorkflow:
 
 ## What does a Temporal restart repeat, and what proves completion?
 
-The test starts the workflow on a first worker and waits until the history shows the timer started. Then it shuts that worker down. A second worker takes over, and the test waits for the result. Temporal's time-skipping test environment fast-forwards the three days. Its SDK downloads the test server on first use, so the first run needs network access. The accounts system loses the reply to the first `create_invoice` attempt.
+The test starts the workflow on a first worker and waits until the history shows the timer started. Then it shuts that worker down, starts a second worker, and lets Temporal's time-skipping test environment fast-forward the three days (its SDK downloads the test server on first use, so the first run needs network access). The accounts system loses the reply to the first `create_invoice` attempt.
 
-The assertions show what happened. `check_purchase` ran once: it completed before the restart, and replay returned its recorded result. `create_invoice` ran twice, because the timeout failed the first attempt and Temporal retried it. Temporal's documentation warns that an activity "may be executed multiple times", even though it "will be observed as completed exactly once". The accounts system still holds one invoice, thanks to the key. The history holds `TimerFired` at least three days after `TimerStarted`, and it ends with `WorkflowExecutionCompleted`. It holds no `ActivityTaskFailed` event for the retried attempt.
+Temporal's documentation warns that an activity "may be executed multiple times", even though it "will be observed as completed exactly once". In the test, the history records `TimerFired` at least three days after `TimerStarted` and ends with `WorkflowExecutionCompleted`, with no `ActivityTaskFailed` event for the retried attempt. Step through both frameworks' crash timelines below to compare what skipped and what repeated.
+
+<Figure id="t14-langgraph-vs-temporal" />
 
 So two records answer "did it complete?". The history proves the workflow finished and saw one result. Only the accounts system's record under the key proves one invoice exists.
 
 :::note
-The workers set `max_cached_workflows=0`. A nonzero value makes a worker cache workflows and use "sticky task queues", which route a workflow's next task back to the worker that ran it last. In our trials with the cache on, the handover to the second worker stalled until the test timed out after 30 seconds. With the cache off, every task replays from history on whichever worker picks it up, which is the behaviour this exercise exists to show.
+The workers set `max_cached_workflows=0`. A nonzero value makes a worker cache (keep in memory) workflows and use "sticky task queues", which route a workflow's next task back to the worker that ran it last. In our trials with the cache on, the handover to the second worker stalled until the test timed out after 30 seconds. With the cache off, every task replays from history on whichever worker picks it up, which is the behaviour this exercise exists to show.
 :::
 
 ## Run the exercise
 
-The code is in `src/agentlab/state/frameworks.py` and the tests in `tests_frameworks/test_state_frameworks.py`. They need the optional `frameworks` dependency group. From `examples/agent-engineering/`, run `uv sync --frozen --group frameworks`, then `uv run --frozen python -m unittest discover -s tests_frameworks -p "test_state_frameworks.py"`.
+The code is in `src/agentlab/state/frameworks.py` and the tests in `tests_frameworks/test_state_frameworks.py`. They need the optional `frameworks` dependency group (extra libraries not installed by default). From `examples/agent-engineering/`, run `uv sync --frozen --group frameworks`, then `uv run --frozen python -m unittest discover -s tests_frameworks -p "test_state_frameworks.py"`.
 
-Expected output ends with `Ran 4 tests` and `OK`. A traceback ending in `OutcomeUnknown: reply lost` appears above it. That is the SDK logging the first attempt's injected failure, and it is part of the test. To see the key matter, add `info.attempt` to the operation part of the key in `create_invoice`, so that each attempt gets a different key. The Temporal test then fails with `'AP-0002' != 'AP-0001'`: a second invoice now exists. Choose LangGraph when you want a graph of model and tool steps inside one process. Choose Temporal when a run must wait days, survive worker restarts and retry activities under a server's control. Either way, the key on the external write is your code's job.
+Expected output ends with `Ran 4 tests` and `OK`. A traceback (the stack of error lines Python prints when something fails) ending in `OutcomeUnknown: reply lost` appears above it. That is the SDK logging the first attempt's injected failure, and it is part of the test. To see the key matter, add `info.attempt` to the operation part of the key in `create_invoice`, so that each attempt gets a different key. The Temporal test then fails with `'AP-0002' != 'AP-0001'`: a second invoice now exists. Choose LangGraph when you want a graph of model and tool steps inside one process. Choose Temporal when a run must wait days, survive worker restarts and retry activities under a server's control. Either way, the key on the external write is your code's job.

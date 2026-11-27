@@ -302,7 +302,7 @@ export const ROADMAP_LEVELS: readonly RoadmapLevel[] = [
       'pt-br': ['Sequência estruturada de arquitetura: restrições → baseline → gargalos → modos de falha', 'Playbooks de triagem rápida para incidentes de RAG, agentes, latência e fine-tuning', 'Defesa quantificada respondendo a desafios de 100x de tráfego e corte de 50% no custo'],
     },
     capstone: { en: 'Complete a three-round defense: incident debugging, system design and project teardown.', 'pt-br': 'Concluir uma defesa em três rodadas: depuração de incidente, design de sistema e teardown de projeto.' },
-    lessonIds: ['33.5-applied-fine-tuning-and-engineering-defense', '31.5-production-system-design-case-studies', '32.3-shadow-canary-and-incident-rollbacks', '25.5-defend-and-publish-deliberately'],
+    lessonIds: ['33.5-applied-fine-tuning-and-engineering-defense', '31.5-production-system-design-case-studies', '32.3-shadow-canary-and-incident-rollbacks', '25.5-defend-and-publish-deliberately', '34.1-what-runs-where', '34.4-streaming-and-verifying-weights', '34.6-keeping-it-local-and-stoppable', '34.8-measuring-browser-inference'],
   },
 ] as const
 

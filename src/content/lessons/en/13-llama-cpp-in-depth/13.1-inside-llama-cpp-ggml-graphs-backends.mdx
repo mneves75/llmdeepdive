@@ -42,50 +42,54 @@ citations:
     authors: "Georgi Gerganov and contributors"
     year: 2023
     url: "https://github.com/ggml-org/llama.cpp/blob/b11380/common/common.h"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-[Lesson 8.7](/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/) left you with a file and the command `llama-server -m model.gguf -ngl 99`. On a machine with both a CPU and a GPU, that command decides which processor computes each piece of the model. Get the placement wrong and you either run out of GPU memory or leave the GPU idle. This lesson asks what the command does to each tensor, and how to check it.
+[Lesson 8.7](/lessons/8-building-and-serving-stacks/8.7-llama-cpp-and-gguf/) left you with a model file and the command `llama-server -m model.gguf -ngl 99`. On a machine with both a CPU (central processing unit, the general-purpose processor) and a GPU (graphics processing unit, the processor built for parallel math), that command decides which processor computes each piece of the model. Get the placement wrong and you either run out of GPU memory or leave the GPU idle. This lesson asks what that flag — a command-line option starting with `-` or `--` — does to each weight tensor (grid of numbers), and how to check it.
 
-The answer sits in the **load log**, the lines llama.cpp prints while it loads a model, if you know how to read it. All logs below come from llama.cpp tag `b11380` on an Apple M5 Pro with 64 GB. Homebrew's build 11146 printed the same buffers for the `--n-cpu-moe 20` run.
+The answer sits in the **load log**, the lines llama.cpp prints while it loads a model, if you know how to read it. All logs below come from llama.cpp tag `b11380` on an Apple M5 Pro with 64 GB of memory. Homebrew's build 11146 printed the same buffers for the `--n-cpu-moe 20` run.
 
 ## What llama.cpp builds before it computes
 
-ggml is the tensor library under llama.cpp. A tensor here is a multi-dimensional array of numbers. A ggml tensor carries four things:
+ggml is the tensor library under llama.cpp. A tensor here is a multi-dimensional array (a nested table of numbers, such as a list, a matrix, or a 3D grid). A ggml tensor carries four things:
 
-- its shape and its byte strides (how many bytes to step to reach the next element along each dimension);
+- its shape and its byte strides (how many bytes — 8-bit units of computer memory — to step to reach the next element along each dimension);
 - the operation that produces it;
-- pointers to its source tensors;
+- pointers (memory addresses) to its source tensors;
 - the **buffer** that holds its data, a block of memory that belongs to one device.
 
-The header says that defining a function "does not involve any actual computation". You build a graph, and a separate call runs it. A Makefile works the same way: it describes targets and what each depends on, and only `make` runs anything. The comparison stops at that idea: a ggml graph holds tensor operations, not files.
+The library header (the source-code file that declares how ggml works) says that defining a function "does not involve any actual computation". You first build a **graph** — a map of connected operations, where each operation is a **node** — and a separate call runs it. A Makefile (a build-recipe file programmers use to list output files and what each depends on, while only running the `make` tool executes the steps) works the same way. The comparison stops at that idea: a ggml graph holds tensor operations, not files.
 
-llama.cpp builds such a graph for each **batch**, the group of tokens it processes in one call. When the shape repeats, it reuses the graph, and the log line `graphs reused` counts that.
+llama.cpp builds such a graph for each **batch**, the group of tokens it processes in one call. When the batch shape repeats, it reuses the graph, and the log line `graphs reused` counts that.
 
 ## Who runs each node: backends and the scheduler
 
-A **backend** is a way to run graph nodes on one kind of hardware: CPU, Metal (Apple's GPU interface), CUDA (NVIDIA's), Vulkan (a GPU interface across vendors), RPC (which sends work to another machine, as [lesson 13.5](/lessons/13-llama-cpp-in-depth/13.5-speculative-decoding-and-rpc-in-llama-cpp/) shows) and others. A **scheduler** decides which backend runs which node.
+A **backend** is a software driver that runs graph nodes on one kind of hardware: CPU, Metal (Apple's GPU interface), CUDA (NVIDIA's GPU interface), Vulkan (a GPU interface across vendors), RPC (which sends work to another machine, as [lesson 13.5](/lessons/13-llama-cpp-in-depth/13.5-speculative-decoding-and-rpc-in-llama-cpp/) shows) and others. A **scheduler** decides which backend runs which node.
 
 The comment in `ggml-backend.h` names two rules:
 
 1. The backend must support the operation.
 2. An operation "will be assigned preferably to run on the same backend as the buffer" that holds its weights.
 
-The scheduler then cuts the graph into **splits**, one per run of consecutive nodes on the same backend, and copies tensors across each seam between splits. Take a made-up graph of six nodes whose weights sit on GPU, GPU, CPU, CPU, GPU, GPU. That gives three splits and two seams, and each seam copies the tensor that crosses it. So weights decide placement, and every seam costs a copy.
+The scheduler then cuts the graph into **splits** — consecutive runs of nodes on the same backend — and copies tensors across each **seam** where hardware switches. Weights decide placement, and every seam costs a copy.
+
+<Figure id="t13-graph-splits-and-placement" />
 
 ## Which layers `-ngl` puts on the GPU
 
-`-ngl` sets how many layers get their weights on the GPU. At b11380 it defaults to `auto`, and `--fit` is on, so the server first estimates memory and adjusts the values you left unset. On the 35B file further down, the log says `projected to use 26808 MiB of device memory vs. 53020 MiB of free device memory`, so nothing changed. The `-ngl 99` of lesson 8.7 is a manual override of that default.
+`-ngl` sets how many layers get their weights on the GPU. At b11380 it defaults to `auto`, and `--fit` is on, so the server first estimates free memory and adjusts any values you left unset. On the 35B file further down, the log says `projected to use 26808 MiB of device memory vs. 53020 MiB of free device memory`, so nothing changed. The `-ngl 99` of lesson 8.7 is a manual override of that default.
 
-Try a number. The Qwen3-1.7B Q8_0 file has 28 layers, and `-ngl 10` printed `offloaded 10/29 layers to GPU`. The 29th "layer" is the output projection, which the loader counts last. The loader finds the first GPU layer as the total layer count plus one minus `-ngl`: 28 + 1 − 10 = 19. The debug log agreed. It put layers 0 to 18 on the CPU and 19 to 28 on `MTL0`, the first Metal device. So the **last** layers go to the GPU, not the first. The KV cache (the stored keys and values of past tokens, from [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)) follows its layer: 152 MiB on the CPU, 72 MiB on Metal.
+Try a number, as shown in step 2 of the figure above. The Qwen3-1.7B Q8_0 file has 28 layers, and `-ngl 10` printed `offloaded 10/29 layers to GPU`. The 29th "layer" is the output projection (the final matrix that turns the last layer's numbers into vocabulary scores), which the loader counts last. The loader finds the first GPU layer as the total layer count plus one minus `-ngl`: 28 + 1 − 10 = 19. The debug log agreed. It put layers 0 to 18 on the CPU and 19 to 28 on `MTL0`, the first Metal device. So the **last** layers go to the GPU, not the first. The KV cache (the stored keys and values of past tokens, from [lesson 7.2](/lessons/7-inference-and-efficiency/7.2-the-kv-cache/)) follows its layer: 152 MiB on the CPU, 72 MiB on Metal.
 
-The loading mode follows the same logic. According to the README, `-lm auto` maps the file with mmap (the operating system maps the file into virtual memory, and its pages are loaded on demand or prefetched) unless a device cannot. The `Mapped` in `MTL0_Mapped` marks a buffer backed by that mapping. `--load-mode none` reads the weights into allocated memory instead. The loader warning shown further down recommends it when you override tensors to the CPU. Neither mode was timed.
+The loading mode follows the same logic. According to the README, `-lm auto` maps the file with mmap (the operating system treats the file on disk as part of virtual memory, loading small blocks called pages on demand or ahead of time) unless a device cannot. The `Mapped` in `MTL0_Mapped` marks a buffer backed by that mapping. `--load-mode none` reads the weights into allocated RAM (main memory reserved up front) instead. The loader warning shown further down recommends it when you override tensors to the CPU. Neither mode was timed.
 
 After any change, compare three things in the log: the `offloaded` line, the buffer sizes and the split count.
 
 ## Experts: `--n-cpu-moe` and `-ot`
 
-A mixture-of-experts (MoE) model replaces some or all of its dense feed-forward blocks with a router and several expert blocks, and runs only a few experts per token ([lesson 4.9](/lessons/4-transformer/4.9-feed-forward-block/)). Such a model keeps most of its bytes in the expert matrices, named `blk.N.ffn_up_exps.weight`, `ffn_gate_exps` and `ffn_down_exps`. `llama-gguf` confirmed those names in the Qwen3.6-35B-A3B Q4_K_XL file. Qwen3.8-27B is dense, so this model only serves as a public MoE example. The `common.h` pattern that selects those names is `\.ffn_(up|down|gate|gate_up)_(ch|)exps`.
+A mixture-of-experts (MoE) model replaces some or all of its dense feed-forward blocks with a router and several expert blocks, and runs only a few experts per token ([lesson 4.9](/lessons/4-transformer/4.9-feed-forward-block/)). Such a model keeps most of its bytes in the expert matrices, named `blk.N.ffn_up_exps.weight`, `ffn_gate_exps` and `ffn_down_exps`. `llama-gguf` confirmed those names in the Qwen3.6-35B-A3B Q4_K_XL file. Qwen3.8-27B is dense, so this model only serves as a public MoE example. The `common.h` text-matching pattern (regular expression) that selects those names is `\.ffn_(up|down|gate|gate_up)_(ch|)exps`.
+
+The command below runs a two-token generation on the MoE file with verbose logging (`-v`) while forcing the expert weights of the first 20 layers onto the CPU (`--n-cpu-moe 20`), so the load log prints every buffer and split count.
 
 ```
 llama-completion -m MODEL.gguf -c 4096 -n 2 -p "Hello" -no-cnv --no-warmup -v \
@@ -100,11 +104,11 @@ Three flags write that override. `--n-cpu-moe N` adds it for the first N layers,
 | `--n-cpu-moe 20` | 20 layers | 9,378 MiB | 42 |
 | `-ot "ffn_.*_exps=CPU"` | 40 layers | 18,760 MiB | 82 |
 
-Splits grow by two per overridden layer: 2 + 2 × 20 = 42, and 2 + 2 × 40 = 82. That fits one seam into the CPU and one back out for each layer. The 9,378 MiB buffer is named `CPU_REPACK`, because llama.cpp copies the weights into a layout the CPU kernels (the CPU's compute routines) prefer. With `--no-repack` the buffer became `CPU_Mapped`, and the prompt graph had 62 splits against 42 for decode.
+As step 3 of the figure shows, splits grow by two per overridden layer: 2 + 2 × 20 = 42, and 2 + 2 × 40 = 82 (one seam into the CPU and one back out). The 9,378 MiB buffer is named `CPU_REPACK`, because llama.cpp copies the weights into a memory layout the CPU kernels (the CPU's compute routines) prefer. With `--no-repack` the buffer became `CPU_Mapped`, and the prompt graph had 62 splits against 42 for decode (generating tokens one at a time).
 
 ## Why `--n-cpu-moe` frees nothing on a Mac
 
-Flags like these exist for a discrete GPU, a graphics card with its own memory (VRAM) separate from system RAM, when that VRAM is smaller than the model. The reflex is to copy the recipe to a Mac "to save memory". But a Mac has unified memory: the CPU and GPU share one pool ([lesson 9.6](/lessons/9-hardware-and-infrastructure/9.6-apple-silicon-unified-memory/)). There is no separate VRAM on a Mac to save.
+Flags like these exist for a discrete GPU, a graphics card with its own memory (VRAM, video RAM) separate from system RAM, when that VRAM is smaller than the model. The reflex is to copy the recipe to a Mac "to save memory". But a Mac has unified memory: the CPU and GPU share one pool ([lesson 9.6](/lessons/9-hardware-and-infrastructure/9.6-apple-silicon-unified-memory/)). There is no separate VRAM on a Mac to save.
 
 The measurements show it from both sides:
 
@@ -121,7 +125,7 @@ With `-ot` or `--n-cpu-moe` and mmap on, `llama_model_loader` prints `tensor ove
 
 At `-ngl 0` you would expect one split, all on the CPU. The prompt graph had 281 splits, and the decode graph had 1.
 
-The scheduler code explains part of this. When a weight sits in host memory (the CPU's RAM) and a faster backend reports `offload_op`, the operation moves there. Metal and CUDA accept when the batch has at least 32 rows (`GGML_OP_OFFLOAD_MIN_BATCH`, default 32), one row per token. A prompt arrives as many rows at once. A decode step has one row, so it stays on the CPU.
+The scheduler code explains part of this. When a weight sits in host memory (the CPU's RAM) and a faster backend reports `offload_op`, the operation moves there. Metal and CUDA accept when the batch has at least 32 rows (`GGML_OP_OFFLOAD_MIN_BATCH`, default 32), one row per token. A prompt arrives as many rows at once (prefill), whereas a decode step has one row and stays on the CPU.
 
 `--no-op-offload` turns this off. It lowered the count to 201, not to 1, and the rest was not traced.
 
@@ -129,4 +133,4 @@ The scheduler code explains part of this. When a weight sits in host memory (the
 Split counts, buffer sizes and the `pp bs=512, tg bs=1` log format belong to one build and one machine. Build 11146 printed a single split number. Treat a log as evidence about your own run, not as a constant.
 :::
 
-To sum up: a ggml graph does not know where it will run. The placement of the weights decides where each node runs and how many seams it crosses. Read `offloaded`, the buffer lines and the split count before you tune anything. Next, [lesson 13.2](/lessons/13-llama-cpp-in-depth/13.2-making-your-own-gguf-convert-imatrix-quantize/) produces your own GGUF.
+Read `offloaded`, the buffer lines and the split count before you tune anything. Next, [lesson 13.2](/lessons/13-llama-cpp-in-depth/13.2-making-your-own-gguf-convert-imatrix-quantize/) produces your own GGUF.

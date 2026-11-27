@@ -34,51 +34,46 @@ citations:
     authors: "Vladimir Karpukhin, Barlas Oğuz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, Wen-tau Yih"
     year: 2020
     url: "https://arxiv.org/abs/2004.04906"
-updated: "2026-11-21"
+updated: "2026-11-26"
 ---
 
-Mesmo depois de um parsing limpo de layout como em [Ingestão de Documentos e Por Que PDFs Quebram RAG](/pt-br/lessons/27-retrieval-and-hybrid-search/27.1-document-ingestion-and-layout-parsing/), você não pode transformar um manual de 80 páginas num único vetor e esperar que a busca localize o parágrafo certo. É preciso fatiar os documentos em **chunks**—as unidades atômicas gravadas no índice de busca. Escolha chunks grandes demais e os embeddings se borram entre assuntos diferentes; escolha pequenos demais e a resposta perde as exceções que tornam uma regra verdadeira.
+Mesmo depois de um parsing limpo de layout como em [Ingestão de Documentos e Por Que PDFs Quebram RAG](/pt-br/lessons/27-retrieval-and-hybrid-search/27.1-document-ingestion-and-layout-parsing/), você não pode transformar um manual de 80 páginas num único vetor (uma lista de números resumindo o assunto) e esperar que a busca localize o parágrafo certo. É preciso fatiar os documentos em **chunks**—as menores unidades indivisíveis gravadas no índice de busca. Escolha chunks grandes demais e os embeddings se borram entre assuntos diferentes; escolha pequenos demais e a resposta perde as exceções que tornam uma regra verdadeira.
 
 ## A tensão entre precisão de busca e contexto
 
-Todo chunk atende a dois clientes com interesses opostos:
+Todo chunk atende a dois componentes com objetivos opostos num sistema de *Retrieval-Augmented Generation* (RAG):
 
-- **O recuperador** prefere chunks curtos e focados (cerca de 150 a 400 tokens). Um único vetor de embedding representa a média temática do trecho inteiro; misture cinco políticas distintas num bloco de 2.000 tokens e o vetor cai no meio do caminho entre elas, sem casar bem com nenhuma.
-- **O LLM gerador** precisa de texto vizinho suficiente para resolver pronomes, exceções e unidades. Um chunk dizendo `"A taxa é isenta se o pedido chegar em até 14 dias"` induz erro grave se a frase anterior dizia `"Válido apenas para contratos corporativos fora da UE."`
+- **O recuperador** (o componente de busca que seleciona trechos candidatos) prefere chunks curtos e focados (cerca de 150 a 400 tokens). Um único vetor de embedding representa a média temática do trecho inteiro; misture cinco políticas distintas num bloco de 2.000 tokens e o vetor cai no meio do caminho entre elas, sem casar bem com nenhuma.
+- **O LLM gerador** (o grande modelo de linguagem que redige a resposta a partir dos trechos recuperados) precisa de texto vizinho suficiente para resolver pronomes, exceções e unidades. Um chunk dizendo `"A taxa é isenta se o pedido chegar em até 14 dias"` induz erro grave se a frase anterior dizia `"Válido apenas para contratos corporativos fora da UE."`
 
 Escolher a estratégia de chunking é equilibrar essas duas forças para o perfil real dos seus documentos.
 
 ## Aritmética de sobreposição e custo de armazenamento
 
-Antes de recorrer a algoritmos sofisticados, faça a conta real do fatiamento fixo com sobreposição (*overlap*). Suponha uma seção parseada de comprimento $L = 2{,}400$ tokens dividida em chunks de $C = 400$ tokens com sobreposição de $O = 80$ tokens (20%) para evitar que um fato na borda fique partido ao meio.
+Antes de recorrer a algoritmos complexos, faça a conta real do fatiamento fixo com sobreposição (*overlap*, repetir alguns tokens do fim de cada chunk no início do próximo para que fatos perto de um corte apareçam inteiros em pelo menos uma janela). Suponha uma seção parseada de comprimento $L = 2{,}400$ tokens dividida em chunks de $C = 400$ tokens. Cada novo chunk avança por um **passo** (*stride*) de `C - O` tokens. Percorra os três níveis abaixo—`O = 0`, `O = 80` (20%) e `O = 200` (50%)—para ver como as janelas se deslocam e por que o volume de tokens indexados cresce depressa.
 
-Cada novo chunk avança por um **passo** (*stride*) de `C - O = 400 - 80 = 320` tokens:
+<Figure id="27-2-sliding-chunk-overlap" />
 
-- Chunk 1 cobre os tokens `1..400`.
-- Chunk 2 cobre os tokens `321..720`.
-- Chunk 7 cobre os tokens `1.921..2.320`.
-- Chunk 8 cobre os tokens `2.241..2.400` (160 tokens).
+Com 20% de sobreposição ($O = 80$, passo `320`), a seção gera `8` chunks e `7 × 400 + 160 = 2.960` tokens indexados—`560` tokens extras, ou `23,3%` mais cálculo de embedding do que a seção bruta de `2.400` tokens, enquanto o armazenamento de vetores de largura fixa sobe de 6 vetores sem sobreposição para 8 vetores. Subir a sobreposição para 50% (`O = 200`, passo `200`) produz $\lceil (2{,}400 - 200) / (400 - 200) \rceil = \lceil 2{,}200 / 200 \rceil = 11$ chunks e `11 × 400 = 4.400` tokens indexados—quase dobrando tanto o cálculo de embedding quanto a quantidade de vetores armazenados.
 
-Isso gera `8` chunks e `7 × 400 + 160 = 2.960` tokens indexados—`560` tokens extras, ou `23,3%` mais custo de cálculo de embedding do que a seção bruta de `2.400` tokens (enquanto o armazenamento de vetores de largura fixa escala com o número de chunks, subindo de 6 vetores sem sobreposição para 8 vetores). Suba a sobreposição para 50% (`O = 200`, passo `200`) e a fórmula $\lceil (2{,}400 - 200) / (400 - 200) \rceil = \lceil 2{,}200 / 200 \rceil = 11$ produz `11` chunks e `11 × 400 = 4.400` tokens indexados—quase dobrando tanto o custo de embedding quanto a quantidade de vetores armazenados.
-
-Em geral, para qualquer documento de tamanho $L > O$, chunk $C > O$ e sobreposição $O$:
+Em geral, para qualquer documento de tamanho $L > O$, chunk $C > O$ e sobreposição $O$ (onde $\lceil \cdot \rceil$ indica a função teto, arredondando para o inteiro seguinte):
 
 $$N_{\text{chunks}} = \left\lceil \frac{L - O}{C - O} \right\rceil$$
 
-Confira no exemplo: $\lceil (2{,}400 - 80) / (400 - 80) \rceil = \lceil 2{,}320 / 320 \rceil = \lceil 7.25 \rceil = 8$. A maioria dos pipelines em produção mantém a sobreposição entre 10% e 20% apenas ao dividir prosa corrida, e a reduz perto de 0% quando corta em fronteiras estruturais limpas.
+Confira no caso de 20%: $\lceil (2{,}400 - 80) / (400 - 80) \rceil = \lceil 2{,}320 / 320 \rceil = \lceil 7.25 \rceil = 8$. A maioria dos pipelines em produção mantém a sobreposição entre 10% e 20% apenas ao dividir prosa corrida, e a reduz perto de 0% quando corta em fronteiras estruturais limpas.
 
 ## Cinco estratégias de chunking comparadas
 
-Comece pela estratégia mais simples que respeita a estrutura do acervo e meça o recall antes de adicionar complexidade:
+Comece pela estratégia mais simples que respeita a estrutura do acervo e meça o recall de busca (a fração dos trechos relevantes encontrados) antes de adicionar complexidade:
 
-- **Janelas fixas de tokens.** Rápidas e determinísticas (Karpukhin et al. 2020 usaram passagens de 100 palavras da Wikipédia no *Dense Passage Retrieval*), mas cegas a frases, tabelas e código—um corte seco parte uma consulta SQL ou objeto JSON ao meio.
-- **Divisão recursiva sensível à estrutura.** Tente cortar primeiro em títulos de seção (`## `); se um bloco ainda passar do limite de tokens, desça para subtítulos, depois parágrafos (`\n\n`), frases e só por último tokens crus. Mantenha tabelas Markdown e blocos de código inteiros sempre que couberem no teto de segurança.
-- **Divisão guiada por documento e AST.** Em código-fonte, use a Árvore Sintática Abstrata (AST, *Abstract Syntax Tree*) para preservar funções e classes inteiras; em contratos jurídicos, corte por cláusulas numeradas; em HTML, por contêineres semânticos (`<section>`, `<article>`).
-- **Chunking semântico.** Gere embeddings de frases consecutivas e abra um novo chunk sempre que a similaridade de cosseno entre frases vizinhas cair abaixo de um limiar. Ajuda em transcrições corridas sem títulos, mas acrescenta chamadas de embedding na ingestão e raramente supera a divisão estrutural quando já existem títulos e parágrafos.
-- **Chunking pai-filho (*small-to-big*).** Divida o documento em seções **pai** maiores (por exemplo, 800 tokens) e chunks **filho** menores (por exemplo, 200 tokens) ligados por `parent_id`. Indexe e busque os filhos nítidos, depois remova duplicatas e envie os pais completos ao LLM.
+- **Janelas fixas de tokens.** Rápidas e determinísticas (Karpukhin et al. 2020 usaram passagens de 100 palavras da Wikipédia no *Dense Passage Retrieval*), mas cegas a frases, tabelas e código—um corte seco parte uma consulta de banco de dados (SQL) ou bloco estruturado de dados (JSON) ao meio.
+- **Divisão recursiva sensível à estrutura.** Tente cortar primeiro em títulos de seção (`## ` em Markdown, formato de texto simples); se um bloco ainda passar do limite de tokens, desça para subtítulos, depois parágrafos (`\n\n`), frases e só por último tokens crus. Mantenha tabelas Markdown e blocos de código delimitados (código cercado por três crases) inteiros sempre que couberem no teto de segurança.
+- **Divisão guiada por documento e AST.** Em código-fonte, use a Árvore Sintática Abstrata (AST, *Abstract Syntax Tree*, um mapa em árvore das funções e classes do programa) para preservar funções e classes inteiras; em contratos jurídicos, corte por cláusulas numeradas; em páginas HTML, por etiquetas semânticas de seção (`<section>`, `<article>`).
+- **Chunking semântico.** Gere embeddings de frases consecutivas e abra um novo chunk sempre que a similaridade de cosseno (uma medida de proximidade direcional vista na próxima aula) entre frases vizinhas cair abaixo de um limiar. Ajuda em transcrições corridas sem títulos, mas acrescenta chamadas de embedding na ingestão e raramente supera a divisão estrutural quando já existem títulos e parágrafos.
+- **Chunking pai-filho (*small-to-big*).** Divida o documento em seções **pai** maiores (por exemplo, 800 tokens) e chunks **filho** menores (por exemplo, 200 tokens) ligados por um rótulo `parent_id`. Indexe e busque os filhos nítidos, depois remova duplicatas (quando dois filhos encontrados pertencem ao mesmo pai) e envie os pais completos ao LLM.
 
 :::insight
-O chunking pai-filho resolve de frente o conflito entre busca e geração: o recuperador trabalha com precisão de 200 tokens enquanto o LLM recebe 800 tokens de contexto, sem diluir os vetores.
+O chunking pai-filho resolve de frente o conflito entre busca e geração: o recuperador trabalha com precisão de 200 tokens enquanto o LLM recebe 800 tokens de contexto, sem borrar os vetores de busca.
 :::
 
 ## Cabeçalhos contextuais: nunca indexe um chunk órfão
@@ -87,9 +82,9 @@ Mesmo um corte limpo de parágrafo perde o escopo global. Veja este trecho real 
 
 > `"Ela deve ser rotacionada a cada 90 dias e guardada apenas no módulo de hardware."`
 
-O que é `"Ela"`? Um certificado TLS, uma senha de banco ou uma chave de assinatura? Um usuário buscando `"prazo de rotação chave de assinatura"` pode nem encontrar esse chunk porque `"chave de assinatura"` apareceu três parágrafos acima, no título.
+O que é `"Ela"`? Uma credencial de criptografia web TLS (*Transport Layer Security*), uma senha de banco ou uma chave de assinatura? Um usuário buscando `"prazo de rotação chave de assinatura"` pode nem encontrar esse chunk porque `"chave de assinatura"` apareceu três parágrafos acima, no título.
 
-Corrija isso de forma barata na ingestão prefixando uma trilha estrutural curta em cada chunk antes de gerar o embedding:
+Corrija isso de forma barata na ingestão prefixando uma trilha estrutural curta (o nome do documento e da seção) em cada chunk antes de gerar o embedding. No exemplo abaixo, a primeira linha devolve o título do documento e da seção para que o pronome `"Ela"` na segunda linha fique sem ambiguidade tanto para a busca quanto para o LLM:
 
 ```text
 [Documento: Política de Segurança v4 | Seção: 3.2 Chaves de Assinatura de API]
@@ -97,5 +92,5 @@ Ela deve ser rotacionada a cada 90 dias e guardada apenas no módulo de hardware
 ```
 
 :::note
-Meça sempre alterações de chunking num conjunto offline de avaliação antes de publicar. Um cabeçalho contextual de 15 tokens custa quase nada, não exige chamadas extras de LLM e muitas vezes eleva o recall mais do que trocar bibliotecas de fatiamento.
+Meça sempre alterações de chunking num conjunto offline de avaliação (uma bateria salva de perguntas de teste e trechos corretos conhecidos) antes de publicar. Um cabeçalho contextual de 15 tokens custa quase nada, não exige chamadas extras de LLM e muitas vezes eleva o recall mais do que trocar bibliotecas de fatiamento.
 :::

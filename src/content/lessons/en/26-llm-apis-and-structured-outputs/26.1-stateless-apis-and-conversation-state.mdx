@@ -20,7 +20,7 @@ quiz:
   - question: "Your backend switches from sending an explicit messages array to using a provider's server-managed thread ID. What architectural responsibility changes and what remains?"
     options: ["The server now eliminates quadratic token growth automatically because stored turns never consume prefill compute again", "The client can stop validating assistant outputs because server-side thread objects enforce schema compliance across turns", "The provider stores and replays the transcript for you, but you still pay context growth and lose easy cross-provider replay", "The server guarantees identical answers across model versions because thread IDs freeze both weights and sampling seeds"]
     correctIndex: 2
-    explanation: "Server-managed thread or response IDs move transcript storage onto the vendor so your wire payload is smaller, yet the model still processes the accumulated context on every turn and your state becomes tied to that vendor's API. Client-owned message logs stay portable, inspectable, and trivial to replay against another model."
+    explanation: "Server-managed thread or response IDs move transcript storage onto the vendor so your wire payload is smaller, yet the model still processes the accumulated context on every turn and your state becomes tied to that vendor's API. Client-owned message logs stay portable, inspectable, and easy to replay against another model."
   - question: "A long troubleshooting chat approaches the model's context limit at turn 25. Which history-trimming policy best preserves both task continuity and prefix cache hits?"
     options: ["Delete the oldest single message on every turn so the context stays exactly at the token ceiling", "Keep the static system prompt untouched, retain the recent window, and roll older turns into periodic summaries", "Rewrite the system prompt on every turn to embed the latest user facts before sending the remaining chat messages", "Strip all assistant turns from the messages array and send only the chronological sequence of user messages"]
     correctIndex: 1
@@ -34,24 +34,24 @@ citations:
     authors: "OpenAI"
     year: 2025
     url: "https://platform.openai.com/docs/guides/conversation-state"
-updated: "2026-11-20"
+updated: "2026-11-26"
 ---
 
-When a developer builds their first chatbot, the most surprising bug arrives on turn two: the model has no idea what was said ten seconds ago. That is not a quirk of one vendor SDK. Hypertext Transfer Protocol (HTTP) inference endpoints are stateless by design, meaning each `POST` request carries no memory of any previous call. To hold a conversation, your application stores the transcript and sends the relevant history back on every request, paying for those tokens again unless a cache hits.
+When someone builds their first chatbot, the most surprising bug arrives on turn two: the model has no idea what was said ten seconds ago. That is not a quirk of one provider's software development kit (SDK, the helper code library a vendor ships for calling its service). LLM inference **endpoints** (server addresses that accept automated requests) over **Hypertext Transfer Protocol (HTTP)**—the standard web rulebook browsers and apps use to exchange data—are **stateless** by design, meaning each `POST` request (a call that sends data to a server) carries no memory of any earlier call. To hold a conversation, your application stores the transcript and sends the relevant history back on every request, paying for those tokens again unless a cache hits.
 
 ## Why LLM HTTP endpoints are stateless
 
-In [What Actually Happens When You Hit Send](/lessons/7-inference-and-efficiency/7.1-what-actually-happens-when-you-hit-send/), you saw that a transformer runs a forward pass over a sequence of token IDs and predicts the next token from that sequence alone. Model weights stay frozen between requests; the engine does not write your user's name into its parameters. As RFC 9110 describes for stateless HTTP interactions, keeping requests self-contained lets a load balancer route turn 1 to GPU cluster A and turn 2 to GPU cluster B without migrating gigabytes of session memory across machines.
+In [What Actually Happens When You Hit Send](/lessons/7-inference-and-efficiency/7.1-what-actually-happens-when-you-hit-send/), you saw that a transformer runs a forward pass over a sequence of token IDs and predicts the next token from that sequence alone. Model weights stay frozen between requests; the engine does not write your user's name into its parameters. As RFC 9110 describes for stateless HTTP interactions, keeping each request self-contained lets a **load balancer** (a traffic router that distributes incoming calls across machines) send turn 1 to **graphics processing unit (GPU)** cluster A and turn 2 to GPU cluster B without moving gigabytes of session memory across datacenter computers.
 
-The practical consequence is a clean ownership boundary. Your database or in-memory session store (built with the standard Python lists and dictionaries from [Python, NumPy, and PyTorch](/lessons/0-orientation-and-foundations/0.7-python-numpy-pytorch/)) holds the ordered list of messages. Each message has a `role`—typically `system` or `developer`, `user`, `assistant`, or `tool`—and `content`. When the user submits turn $t$, your backend appends the new user message, serializes the array into JSON, sends it over HTTPS, and appends the returned assistant message once the call succeeds.
+The practical result is a clear ownership boundary. Your database or in-memory session store—built from the lists and dictionaries in [Python, NumPy, and PyTorch](/lessons/0-orientation-and-foundations/0.7-python-numpy-pytorch/)—holds the ordered list of messages. Each message has a `role` (typically `system` or `developer`, `user`, `assistant`, or `tool`) and `content`. When the user submits turn $t$, your **backend** (the server-side program behind the user interface) appends the new user message, **serializes** the list into **JSON** (JavaScript Object Notation, a plain-text format of labeled keys and values), sends it over **HTTPS** (encrypted HTTP), and saves the returned assistant message once the call succeeds.
 
 <Figure id="26-1-stateless-request-cycle" />
 
-Because your application controls the array, you also gain deterministic debugging. If turn 7 produces a bad answer, you can save the exact JSON array sent on turn 7 and replay it locally against a newer prompt or model without reconstructing server-side state.
+Because your application owns that message list, debugging stays reproducible. If turn 7 produces a bad answer, you can save the exact JSON list sent on turn 7 and **replay** (re-run) it locally against a newer prompt or model without guessing what hidden state lived on a remote server.
 
 ## Quadratic token growth in multi-turn chat
 
-Resending the transcript feels harmless on turn 2, yet costs compound faster than most teams expect. Walk through a concrete 10-turn support conversation before looking at the general equation.
+Resending the transcript feels harmless on turn 2, yet costs grow faster than most teams expect. Walk through a concrete 10-turn support conversation before looking at the general equation.
 
 Suppose the static system prompt is `400` tokens, each user message averages `100` tokens, and each assistant reply averages `200` tokens. Every completed turn adds `100 + 200 = 300` tokens to the history.
 
@@ -62,11 +62,11 @@ Suppose the static system prompt is `400` tokens, each user message averages `10
 
 Add all ten requests together: `500 + 800 + 1,100 + ... + 3,200 = 18,500` input tokens billed across the conversation, even though the final transcript at the end of turn 10 contains only `3,400` tokens total (`3,200` input plus the final `200`-token reply). At a rate of `USD 3.00` per million uncached input tokens, ten turns cost `USD 0.0555`; stretch the same chat to 50 turns and total uncached input balloons to `392,500` tokens (`USD 1.18` for one session).
 
-In general, for $N$ turns with system prompt length $s$, user message length $u$, and assistant reply length $a$, the cumulative input tokens sent across all turns follow an arithmetic series:
+In general, for $N$ turns with system prompt length $s$, user message length $u$, and assistant reply length $a$, each turn adds a fixed step, so cumulative input tokens follow an arithmetic series:
 
 $$T_{\text{in}}(N) = N \cdot (s + u) + (u + a)\frac{N(N - 1)}{2}$$
 
-Plugging in $s = 400$, $u = 100$, $a = 200$, and $N = 10$ gives $10 \cdot 500 + 300 \cdot 45 = 5{,}000 + 13{,}500 = 18{,}500$. Notice the $N(N - 1)/2$ term: doubling the number of turns roughly quadruples the uncached input tokens billed. Prefix caching—covered in detail later in this track—discounts the repeated prefix, yet even a 90% cache discount still hits the model's context window ceiling if history grows forever.
+Plugging in $s = 400$, $u = 100$, $a = 200$, and $N = 10$ gives $10 \cdot 500 + 300 \cdot 45 = 5{,}000 + 13{,}500 = 18{,}500$. The first term counts the system prompt and each new user message; the $N(N - 1)/2$ term counts every earlier turn resent again and again, so doubling the turns roughly quadruples uncached input tokens. Prefix caching—covered later in this track—discounts the repeated prefix, yet even a 90% cache discount still hits the model's context window ceiling if history grows forever.
 
 :::insight
 Count cumulative input tokens, not just final context length, when sizing an interactive product. A 30-turn agent loop that appends 1,500 tokens of tool output per step can send over 650,000 cumulative input tokens in one session.
@@ -74,25 +74,25 @@ Count cumulative input tokens, not just final context length, when sizing an int
 
 ## Client-managed logs versus server-managed threads
 
-Several providers now offer stateful endpoints—such as thread objects or `previous_response_id` chaining—where you send only the new user message and a server-side identifier. Underneath the wire format, the transformer still reads the accumulated conversation tokens on every turn. The trade-off is operational, not mathematical:
+Several providers now offer stateful endpoints—such as thread objects or `previous_response_id` chaining—where you send only the new user message and a server-side identifier. Underneath that **wire format** (the exact bytes sent over the network), the transformer still reads the accumulated conversation tokens on every turn. The trade-off is operational, not mathematical:
 
-- **Client-managed message arrays** keep one source of truth in your own database, support instant failover to another provider or open-weight model, and make editing or redacting a past turn straightforward.
-- **Server-managed state APIs** shrink upload bandwidth on mobile clients and offload transcript persistence, but they couple your conversation history to one vendor's storage lifecycle, retention rules, and deletion endpoints.
+- **Client-managed message arrays** keep one source of truth in your own database, support instant **failover** (switching to a backup provider or open-weight model during an outage), and make editing or **redacting** (scrubbing sensitive data from) a past turn straightforward.
+- **Server-managed state APIs** shrink **upload bandwidth** (the data a phone or browser must transmit) and offload transcript storage, but they tie your conversation history to one vendor's storage lifecycle, retention rules, and deletion endpoints.
 
-If you need multi-provider portability, strict data-residency control, or offline evaluation replay, keep the canonical transcript in your own store and treat the API as a pure function from messages to completion.
+If you need multi-provider portability, strict data-residency control, or offline evaluation replay, keep the canonical transcript in your own store and treat the API as a **pure function** (an operation whose output depends only on the messages you pass in, with no hidden memory).
 
 ## Bounding conversation state without losing the plot
 
-Because every context window is finite and long transcripts degrade attention focus and inflate cost, production chat systems enforce an explicit state policy instead of blindly appending forever.
+Because every context window is finite and long transcripts dilute attention focus while inflating cost, production chat systems enforce an explicit state policy instead of appending forever.
 
 1. **Token-budgeted sliding window.** Keep the system prompt fixed, then pack turns from newest to oldest until reaching a hard budget (for example, 8,000 tokens). Always trim at full user–assistant turn boundaries so you never leave an orphaned tool response without its matching tool call.
 2. **Periodic rolling summary.** Once older turns exceed a threshold (say every 8 turns), run a dedicated summarization call that condenses turns 1 through 8 into a compact structured note—facts established, decisions taken, open constraints—and replace those raw turns in one batch. Updating the summary in batches rather than on every turn keeps the prefix stable for caching.
-3. **Artifact compaction.** Tool outputs (large JSON payloads, search dumps, stack traces) often account for 80% of transcript tokens. Store the raw payload in object storage under an ID, keep only the extracted fields in the active message array, and re-fetch by ID if the user asks for details later.
+3. **Artifact compaction.** Tool outputs—large JSON **payloads** (the data carried inside a message), search dumps, or **stack traces** (crash reports printed by programs)—often account for 80% of transcript tokens. Store the raw payload in **object storage** (cloud file storage built for large blobs) under an ID, keep only the extracted fields in the active message array, and re-fetch by ID if the user asks for details later.
 
 :::warning
-Never mutate an earlier assistant message silently in your audit log when compacting context. Keep an immutable raw transcript table for debugging and compliance, and build the model's prompt view as a derived projection of that log.
+Never overwrite an earlier assistant message in your **audit log** (the permanent compliance record) when compacting context. Keep an **immutable** (never-edited) raw transcript table for debugging and compliance, and build the model's prompt view as a **derived projection** (a trimmed working copy generated from that log).
 :::
 
 ## Designing idempotent turn persistence
 
-Network drops happen between the server finishing generation and your client saving the response. Give each user submission a client-generated `turn_id` (a unique identifier) and persist the user message before calling the LLM. If the HTTP call times out or disconnects before you record the assistant reply, your retry logic can inspect whether a reply already exists for that `turn_id` rather than duplicating the user turn twice in `messages[]`. Clean message alternation (`user` → `assistant` → `user`) prevents subtle formatting confusion and keeps your stored state trustworthy across retries.
+Network drops happen between the server finishing generation and your client saving the response. Give each user submission a client-generated `turn_id` (a unique identifier) and save the user message before calling the LLM. If the HTTP call hits a **timeout** (gives up after waiting too long) or disconnects before you record the assistant reply, your retry code checks whether a reply already exists for that `turn_id` instead of duplicating the user turn twice in `messages[]` (your stored message list). Making turn storage **idempotent** (safe to repeat without creating duplicates) preserves clean message alternation (`user` → `assistant` → `user`) and keeps stored state trustworthy across retries.

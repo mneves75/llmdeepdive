@@ -15,6 +15,8 @@ function run(block) {
   const root = mkdtempSync(join(tmpdir(), 'llmdeepdive-excerpts-'))
   mkdirSync(join(root, 'examples/agent-engineering/src'), { recursive: true })
   writeFileSync(join(root, 'examples/agent-engineering/src/demo.py'), 'def add(a, b):\n    """Sum."""\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n')
+  mkdirSync(join(root, 'examples/qwen-local-lab/src'), { recursive: true })
+  writeFileSync(join(root, 'examples/qwen-local-lab/src/demo.js'), 'const CONTEXT_SIZE = 2048;\n')
   const lessons = join(root, 'src/content/lessons/en/14-track')
   mkdirSync(lessons, { recursive: true })
   writeFileSync(join(lessons, '14.1-test.mdx'), `---\nid: "14.1-test"\n---\nText.\n\n${block}\n`)
@@ -30,6 +32,8 @@ function run(block) {
 test('an exact contiguous excerpt passes', () => {
   const result = run('```python\n# file: examples/agent-engineering/src/demo.py\ndef add(a, b):\n    """Sum."""\n    return a + b\n```')
   assert.equal(result.status, 0, result.stderr)
+  const labResult = run('```js\n// file: examples/qwen-local-lab/src/demo.js\nconst CONTEXT_SIZE = 2048;\n```')
+  assert.equal(labResult.status, 0, labResult.stderr)
 })
 
 test('an excerpt that drifted from its file fails', () => {

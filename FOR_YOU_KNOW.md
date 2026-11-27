@@ -4,11 +4,13 @@ Think of the site as two machines bolted together: a publishing system and a
 learning instrument.
 
 Astro is the publishing press. It reads bilingual lesson and track files from
-`src/content/`, checks that English and pt-BR stay in lockstep, then prints 238
-static pages. Those pages are deliberately identical for every visitor: no
-account data or learner prose is baked into HTML. `src/pages/` chooses a route,
-`src/layouts/` supplies the shared frame, and `src/components/` supplies the
-interactive pieces.
+`src/content/`, checks that English and pt-BR stay in lockstep, then prints 556
+static pages (238 bilingual lessons across 35 tracks, plus track indexes,
+roadmap, explorer, and localized 404s). Those pages are deliberately identical
+for every visitor: no account data or learner prose is baked into HTML. `src/pages/`
+chooses a route, `src/layouts/` supplies the shared frame, and `src/components/`
+supplies the interactive pieces (including 248 zero-JS animated bilingual figures
+styled from `src/styles/figure.css`).
 
 The learning instrument runs inside the browser. Search downloads Pagefind only
 when opened. Theme and lesson progress use local storage. A teach-back is like a
@@ -30,9 +32,10 @@ by the home chart, each track page, each lesson's "you are here" plate and the
 track page and in the lesson, opening a lesson flies its constellation into
 the lesson header — pure CSS. Lesson pages add the track's syllabus and a step
 list, so a learner always knows where they are and what comes next.
-The Anatomy Explorer is the literal core sample: a server-rendered component
-selector and evidence drawer wrapped around an optional Three.js Signal
-Observatory.
+The Anatomy Explorer starts with one incomplete sentence. Step through its token IDs,
+compare the final token in two contexts, then read a next-token distribution.
+All four steps work without JavaScript. Below them, the component selector and
+evidence drawer connect the example to the optional Three.js Signal Observatory.
 
 ## Why the explorer has two layers
 

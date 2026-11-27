@@ -34,7 +34,7 @@ citations:
     authors: "Mikaela Grace, Jeremy Hadfield, Rodrigo Olivares and Jiri De Jonghe, Anthropic"
     year: 2026
     url: "https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Duas execuções do assistente de compras criam o mesmo rascunho correto de fatura. A primeira lê o pedido, consulta o PO-1002, lê a mensagem do fornecedor, cria o rascunho, pede aprovação, recebe a aprovação e envia. A segunda lê a mensagem do fornecedor antes de consultar o pedido. Um teste que compara cada execução com uma sequência de referência gravada aprova a primeira e reprova a segunda. Nada na segunda é inseguro. Enquanto isso, uma terceira execução que envia a fatura um passo antes de a aprovação chegar contém todos os passos esperados, e uma verificação que só pergunta "cada passo aconteceu?" a aprova. Esta aula julga a ordem de uma execução pelas regras que a tornam segura, e por nada além delas.
@@ -43,11 +43,11 @@ Duas execuções do assistente de compras criam o mesmo rascunho correto de fatu
 
 Uma *trajetória* é a sequência de ações que uma execução tomou. Um *caminho de referência* (*golden path*) é uma trajetória gravada como a resposta certa. Comparar contra ele trata toda diferença como erro. O guia de 2026 da Anthropic sobre avaliação de agentes relata a mesma experiência: conferir se um agente seguiu uma sequência exata de chamadas de ferramenta foi "too rigid" e "results in overly brittle tests", rígido demais e frágil, e muitas vezes é melhor "grade what the agent produced, not the path it took", julgar o que o agente produziu, não o caminho que tomou.
 
-A verificação de resultado da [aula 23.1](/pt-br/lessons/23-agent-evaluation-and-ci/23.1-define-success-and-capture-traces/) faz isso. Mas algumas regras são sobre ordem, e o estado final não consegue mostrá-las. Uma fatura enviada antes da aprovação fica idêntica, no back office, a uma enviada depois. Então a ordem ganha sua própria verificação, escrita como o menor conjunto de regras de que a segurança precisa.
+A verificação de resultado da [aula 23.1](/pt-br/lessons/23-agent-evaluation-and-ci/23.1-define-success-and-capture-traces/) faz isso. Algumas regras, porém, são sobre ordem, e o estado final não consegue mostrá-las. Uma fatura enviada antes da aprovação fica idêntica, no back office, a uma enviada depois. Então a ordem ganha sua própria verificação, escrita como o menor conjunto de regras de que a segurança precisa.
 
 ## A política como relações
 
-Uma *ordem parcial* diz o que precisa vir antes de quê e deixa todo o resto livre. A [aula 14.2](/pt-br/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) desenhou a execução como um grafo de estados; aqui a mesma ideia é aplicada às ações de um trace já terminado. A política tem cinco partes:
+Uma *ordem parcial* diz o que precisa vir antes de quê e deixa todo o resto livre. A [aula 14.2](/pt-br/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) desenhou a execução como um grafo (uma rede de estados ligados por setas); aqui a mesma ideia é aplicada às ações de um trace já terminado. A política tem cinco partes:
 
 - **Ações permitidas:** `read_request`, `lookup_po`, `read_supplier_message`, `draft_invoice`, `request_approval`, `approval_granted`, `send_invoice`. Qualquer outra é *desconhecida* (`unknown`).
 - **Ações obrigatórias:** todas, menos `read_supplier_message`, que é opcional.
@@ -55,13 +55,15 @@ Uma *ordem parcial* diz o que precisa vir antes de quê e deixa todo o resto liv
 - **Efeitos de uma vez só:** `send_invoice` no máximo uma vez, porque um segundo envio é uma segunda fatura.
 - **Anulações:** um novo `draft_invoice` anula um `request_approval` e um `approval_granted` anteriores. A aprovação estava presa ao rascunho anterior, como explica a [aula 20.2](/pt-br/lessons/20-human-approval-and-durable-pauses/20.2-bind-approval-to-one-operation/), e um rascunho alterado é outra operação.
 
-Com essas regras, tanto `read_request, lookup_po, read_supplier_message, …` quanto `read_request, read_supplier_message, lookup_po, …` passam. Enviar antes de `approval_granted` falha com uma violação de ordem, mesmo com todos os passos presentes. O mesmo vale para refazer o rascunho depois da aprovação e então enviar: o novo rascunho anulou a aprovação, então no momento do envio não existe aprovação que conte.
+Avance pelos três traces abaixo sob essa política para ver por que uma reordenação segura passa enquanto enviar cedo ou enviar após uma aprovação anulada falha:
 
-O verificador de trajetória desta página roda exatamente esta política no seu navegador. Os exemplos prontos são os cinco traces que esta aula usa: o caminho seguro A, o caminho seguro B em outra ordem, um envio antes da aprovação, um rascunho refeito depois da aprovação e um envio duplo. Edite uma linha e veja qual relação quebra.
+<Figure id="t23-partial-order-paths" />
+
+O verificador de trajetória desta página roda exatamente esta política no seu navegador. Os exemplos prontos (*presets*, traces preenchidos de antemão) são os cinco traces que esta aula usa: o caminho seguro A, o caminho seguro B em outra ordem, um envio antes da aprovação, um rascunho refeito depois da aprovação e um envio duplo. Edite uma linha e veja qual relação quebra.
 
 ## O verificador, linha por linha
 
-O verificador em Python do exercício é a mesma política e o mesmo algoritmo do laboratório no navegador, então o laboratório e o código que você roda não podem discordar:
+O verificador em Python do exercício usa a mesma política e o mesmo algoritmo (procedimento passo a passo) do laboratório no navegador, então o laboratório e o código que você roda não podem discordar. Ao percorrer o trace uma ação de cada vez, `check_trace` registra qualquer ação desconhecida, qualquer ação de uma vez só repetida e qualquer passo cujo pré-requisito não esteja válido naquele momento, e termina marcando as ações obrigatórias que nunca rodaram:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/evals/trajectory.py
@@ -90,7 +92,7 @@ def check_trace(trace: Sequence[str], policy: dict[str, tuple]) -> list[Violatio
     return violations
 ```
 
-Dois conjuntos fazem trabalhos diferentes. `happened` guarda toda ação que já rodou: responde "este efeito já foi feito?" para as ações de uma vez só e "isto aconteceu alguma vez?" para as obrigatórias. `seen` guarda as ações que ainda contam: um novo rascunho tira a aprovação dele. A ordem dos passos dentro do laço também importa. A verificação de ordem roda antes da anulação, e a anulação roda antes de a ação ser acrescentada, então um novo rascunho é julgado contra o estado antigo e só depois anula o que veio antes dele.
+Dois conjuntos (coleções que guardam cada nome de ação distinto uma única vez, sem duplicatas) fazem trabalhos diferentes. `happened` guarda toda ação que já rodou: responde "este efeito já foi feito?" para as ações de uma vez só e "isto aconteceu alguma vez?" para as obrigatórias. `seen` guarda as ações que ainda contam: um novo rascunho tira a aprovação dele. A ordem das checagens dentro do laço (o bloco que se repete para cada ação do trace) também importa. A verificação de ordem roda antes da anulação, e a anulação roda antes de a ação ser acrescentada, então um novo rascunho é julgado contra o estado antigo e só depois anula o que veio antes dele.
 
 Uma execução que para depois de `approval_granted` relata uma violação, `missing send_invoice`. É uma execução incompleta, não uma insegura, e manter os dois tipos separados deixa um relatório dizer qual dos dois aconteceu.
 
@@ -103,7 +105,7 @@ A *distância de edição* (distância de Levenshtein) conta as inserções, rem
 Nenhuma das verificações substitui a outra. Uma execução pode enviar a fatura certa antes da aprovação: a verificação de resultado vê uma fatura correta e a aprova, e a verificação de trajetória a reprova. Uma execução pode respeitar todas as relações e criar um rascunho de USD 11.340,00 para o favorecido do atacante: a verificação de trajetória a aprova, e a de resultado a reprova. Um caso só passa quando as duas passam.
 
 :::caveat
-O verificador enxerga nomes de ações, não argumentos. Se o `approval_granted` de um trace veio de um callback forjado, todas as relações continuam valendo. Provar que uma aprovação é legítima cabe ao sistema de aprovação da trilha 20; a verificação de trace só prova que os passos foram dados numa ordem segura.
+O verificador enxerga nomes de ações, não argumentos. Se o `approval_granted` de um trace veio de um callback forjado (uma mensagem automática devolvida por um sistema externo de aprovação), todas as relações continuam valendo. Provar que uma aprovação é legítima cabe ao sistema de aprovação da trilha 20; a verificação de trace só prova que os passos foram dados numa ordem segura.
 :::
 
 ## Rode o exercício

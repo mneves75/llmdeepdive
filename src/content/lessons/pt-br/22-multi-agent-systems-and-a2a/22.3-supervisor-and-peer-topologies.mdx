@@ -38,24 +38,24 @@ citations:
     authors: "Jeremy Hadfield, Barry Zhang, Kenneth Lien, Florian Scholz, Jeremy Fox e Daniel Ford, Anthropic"
     year: 2025
     url: "https://www.anthropic.com/engineering/multi-agent-research-system"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 Quatro filhos rodam ao mesmo tempo numa execução de compras. O primeiro reserva o número de fatura INV-0001. O segundo descobre que o registro do PO-1003 não existe e lança um erro. O terceiro ainda espera um portal de fornecedor lento para o PO-1004. Em que estado a execução está agora, quem decide isso e o que acontece com o INV-0001?
 
-Sem um dono, a resposta é "o que aconteceu por último". Esta aula dá a cada pergunta uma resposta definida, em código que os testes rodam de forma determinística: sem sleeps, sem threads de verdade disputando e com cada intercalação escrita passo a passo.
+Sem um dono, a resposta é "o que aconteceu por último". Esta aula dá a cada pergunta uma resposta definida, em código que os testes rodam de forma *determinística* (produzindo exatamente o mesmo resultado em toda execução): sem pausas cronometradas (`sleeps`), sem *threads* reais (fluxos paralelos de execução dentro de um programa) disputando de modo imprevisível e com cada *intercalação* (a ordem exata em que passos simultâneos acontecem) escrita passo a passo.
 
 ## Quem é dono da execução?
 
 Uma *topologia* é o formato de quem fala com quem. Numa topologia de *supervisor*, um coordenador distribui o trabalho, recolhe os resultados e decide o estado final da execução. A arquitetura orchestrator-workers da [aula 22.1](/pt-br/lessons/22-multi-agent-systems-and-a2a/22.1-decide-whether-to-divide-work/) é uma delas. Numa topologia de *pares* (*peers*), os agentes trabalham lado a lado, lendo e escrevendo estado compartilhado ou esperando a saída uns dos outros, e nenhum agente decide por todos.
 
-Nenhuma é mais segura por padrão. Um supervisor é um lugar só para cancelamento e limpeza, e também um lugar só que pode travar: o sistema de pesquisa da Anthropic roda os subagentes de forma síncrona, o que "simplifies coordination, but creates bottlenecks" (simplifica a coordenação, mas cria gargalos). Pares evitam esse gargalo, mas precisam proteger sozinhos o estado compartilhado e as esperas. O resto da aula trata primeiro dos problemas dos pares, depois dos do supervisor.
+Nenhuma é mais segura por padrão. Um supervisor é um lugar só para cancelamento e limpeza, e também um lugar só que pode travar: o sistema de pesquisa da Anthropic roda os subagentes de forma *síncrona* (esperando cada lote terminar antes de avançar), o que "simplifies coordination, but creates bottlenecks" (simplifica a coordenação, mas cria gargalos). Pares evitam esse gargalo, mas precisam proteger sozinhos o estado compartilhado e as esperas. O resto da aula trata primeiro dos problemas dos pares, depois dos do supervisor.
 
 ## Pares que dividem estado perdem atualizações
 
-Dois workers acrescentam, cada um, uma referência de evidência ao mesmo `RunState`. Cada um lê a execução, acrescenta a sua referência e grava a execução de volta. Se os dois leem antes de qualquer um gravar, a segunda gravação substitui a primeira, e a evidência do primeiro worker some sem erro nenhum. Berenson e colegas chamam isso de *lost update* (atualização perdida), que "occurs when transaction T1 reads a data item and then T2 updates the data item (possibly based on a previous read), then T1 (based on its earlier read value) updates the data item and commits" (ocorre quando a transação T1 lê um item, T2 atualiza o item, e então T1, com base no valor que leu antes, atualiza o item e confirma). O teste `test_a_plain_shared_dict_loses_an_update` mostra isso num dicionário comum.
+Dois workers acrescentam, cada um, uma referência de evidência ao mesmo `RunState`. Cada um lê a execução, acrescenta a sua referência e grava a execução de volta. Se os dois leem antes de qualquer um gravar, a segunda gravação substitui a primeira, e a evidência do primeiro worker some sem erro nenhum. Berenson e colegas chamam isso de *lost update* (atualização perdida), que "occurs when transaction T1 reads a data item and then T2 updates the data item (possibly based on a previous read), then T1 (based on its earlier read value) updates the data item and commits" (ocorre quando a *transação* — uma unidade tudo-ou-nada de leitura e escrita num banco de dados — T1 lê um item, T2 atualiza o item, e então T1, com base no valor que leu antes, atualiza o item e confirma). O teste `test_a_plain_shared_dict_loses_an_update` mostra isso num *dicionário* comum do Python (uma tabela de chave e valor).
 
-A correção é o save com compare-and-swap (comparar e trocar) da [aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): uma escrita diz qual versão leu, e o store a recusa com `StaleWrite` se alguém gravou depois. Recusar é metade da resposta. O worker precisa então ler de novo e tentar outra vez, um número limitado de vezes:
+A correção é o save com *compare-and-swap* (comparar e trocar) da [aula 14.3](/pt-br/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): uma escrita diz qual versão leu, e o store a recusa com `StaleWrite` se alguém gravou depois. Recusar é metade da resposta. A função abaixo tenta até `attempts` vezes: carrega a execução mais recente, acrescenta a nova evidência, tenta salvar contra a versão que leu e, se receber `StaleWrite`, lê de novo em vez de sobrescrever:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/multiagent/topology.py
@@ -78,19 +78,19 @@ def add_evidence(store: CheckpointStore, run_id: str, ref: EvidenceRef, *, attem
     raise Contention(f"{run_id}: lost the write race {attempts} times")
 ```
 
-`between` é um gancho que roda depois da leitura e antes da escrita, para que um teste possa pôr a gravação de outro par exatamente ali. Com ele, `test_add_evidence_rereads_after_a_conflict_and_keeps_both` termina com as duas referências na execução. Se outro escritor ganha toda vez, o laço desiste com `Contention` depois das tentativas, em vez de girar para sempre, e quem chamou decide o que fazer.
+`between` é um *gancho* de teste (uma função encaixada entre dois passos) que roda depois da leitura e antes da escrita, para que um teste possa pôr a gravação de outro par exatamente ali. Com ele, `test_add_evidence_rereads_after_a_conflict_and_keeps_both` termina com as duas referências na execução. Se outro escritor ganha toda vez, o laço desiste com `Contention` depois das tentativas, em vez de girar para sempre, e quem chamou decide o que fazer.
 
 ## Pares que esperam uns pelos outros
 
 Suponha que o pesquisador espera o revisor dizer qual formato de relatório quer, o revisor espera o relatório do programador e o programador espera o que o pesquisador achou. Cada um espera por outro, então nenhum começa. Isso é um *deadlock* (impasse).
 
-Desenhe uma seta de cada par para cada par que ele espera e você tem um *grafo de espera*. Um deadlock é um ciclo nesse grafo. `plan_peers` percorre o grafo antes de alguém começar. Se o percurso volta a um par que ainda está no caminho atual, ele lança `DeadlockRefused` com o ciclo, aqui pesquisador, revisor, programador. Caso contrário, devolve uma ordem em que cada par começa depois dos pares que espera. Um par esperando alguém que ninguém inicia também é erro.
+Desenhe uma seta de cada par para cada par que ele espera e você tem um *grafo de espera* (um diagrama de nós ligados por setas com direção). Um deadlock é um *ciclo* (um laço fechado de setas) nesse grafo. `plan_peers` percorre o grafo antes de alguém começar. Se o percurso volta a um par que ainda está no caminho atual, ele lança `DeadlockRefused` com o ciclo, aqui pesquisador, revisor, programador. Caso contrário, devolve uma ordem em que cada par começa depois dos pares que espera. Um par esperando alguém que ninguém inicia também é erro.
 
-Essa regra é mais estreita que "nada de laços". A [aula 14.2](/pt-br/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) mostrou que a máquina de estados da própria execução pode ter laços, limitados por um orçamento de passos. O que precisa continuar acíclico é o conjunto de esperas entre pares, porque um ciclo ali bloqueia todos os pares dele, e um orçamento de passos só encerraria a execução depois de desperdiçá-la.
+Essa regra é mais estreita que "nada de laços". A [aula 14.2](/pt-br/lessons/14-agent-architecture-and-state/14.2-states-dags-branches-and-loops/) mostrou que a máquina de estados da própria execução pode ter laços, limitados por um orçamento de passos. O que precisa continuar *acíclico* (sem laços fechados) é o conjunto de esperas entre pares, porque um ciclo ali bloqueia todos os pares dele, e um orçamento de passos só encerraria a execução depois de desperdiçá-la.
 
 ## Fan-out e fan-in de um supervisor
 
-*Fan-out* é iniciar vários filhos de uma vez; *fan-in* é juntar os resultados deles num único desfecho. O supervisor marca cada filho como obrigatório ou opcional e lhe dá um `undo` opcional, uma *compensação*: uma ação que reverte o que o filho fez, como liberar um número de fatura reservado.
+*Fan-out* é iniciar vários filhos de uma vez; *fan-in* é juntar os resultados deles num único desfecho. O supervisor marca cada filho como obrigatório ou opcional e lhe dá um `undo` opcional, uma *compensação*: uma ação que reverte o que o filho fez, como liberar um número de fatura reservado. No `asyncio` do Python (uma biblioteca de multitarefa cooperativa em que funções pausam em `await` enquanto esperam entrada ou respostas de rede), o laço abaixo inicia cada tarefa filha, recolhe a que terminar primeiro e cancela todas as restantes assim que algum filho obrigatório lança um erro:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/multiagent/topology.py
@@ -121,14 +121,18 @@ async def supervise(children: list[Child], *, cleanup_attempts: int = 2) -> FanI
             pending = set()
 ```
 
-A execução termina num de três estados definidos. *Completed*: todos os filhos deram certo. *Partial*: só filhos opcionais falharam; os erros deles ficam registrados e os outros resultados são mantidos. *Failed*: um filho obrigatório falhou. Aí o supervisor cancela os filhos ainda rodando e espera que terminem a limpeza. A documentação do Python descreve o que cancelar faz: "asyncio.CancelledError will be raised in the task at the next opportunity" (o CancelledError será lançado na tarefa na próxima oportunidade), e recomenda que corrotinas "use try/finally blocks to robustly perform clean-up logic" (usem blocos try/finally para fazer a limpeza de forma robusta). No caso do começo, o filho do PO-1004 é cancelado dentro da espera, e o bloco `finally` dele libera o lock.
+Percorra os três estados finais definidos abaixo — `completed`, `partial` e o caso `failed` do começo com cancelamento e undo:
+
+<Figure id="t22-supervisor-fan-in" />
+
+Quando um filho obrigatório falha, a documentação do Python descreve o que cancelar as tarefas restantes faz: "asyncio.CancelledError will be raised in the task at the next opportunity" (o `CancelledError` será lançado na tarefa na próxima oportunidade), e recomenda que *corrotinas* (funções `async` pausáveis) "use try/finally blocks to robustly perform clean-up logic" (usem blocos `try/finally` para fazer a limpeza de forma robusta). No caso do começo, cancelar o filho do PO-1004 dentro da espera dispara o bloco `finally` dele para que libere seu *lock* (posse exclusiva sobre um recurso compartilhado).
 
 ## A limpeza também tem limite
 
-Depois de uma falha obrigatória, todo filho terminado que tem `undo` é compensado: o INV-0001 é liberado. O histórico da execução continua registrando que a reserva aconteceu, porque escondê-la faria a auditoria mentir. Uma compensação também pode falhar, por exemplo quando o serviço de numeração está fora do ar. Ela tem um número fixo de tentativas (`cleanup_attempts`, duas por padrão). Um filho cujo undo continuou falhando vai para `cleanup_pending` em vez de ser tentado para sempre. Essa lista é trabalho para uma pessoa ou um reconciliador, a tarefa que a [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) deu à reconciliação de desfechos desconhecidos.
+Depois de uma falha obrigatória, todo filho terminado que tem `undo` é compensado: o INV-0001 é liberado, enquanto o histórico da execução continua registrando que a reserva aconteceu para que a auditoria continue fiel. Como uma compensação também pode falhar (por exemplo quando o serviço de numeração está fora do ar), `_undo` dá a ela um número fixo de tentativas (`cleanup_attempts`, duas por padrão). Qualquer filho cujo undo continue falhando vai para `cleanup_pending` em vez de tentar para sempre. Essa lista é trabalho para uma pessoa ou um *reconciliador* (um verificador em segundo plano que resolve estados inacabados), a tarefa que a [aula 14.4](/pt-br/lessons/14-agent-architecture-and-state/14.4-replay-and-side-effects/) deu à reconciliação de desfechos desconhecidos.
 
 :::caveat
-O cancelamento no asyncio é cooperativo. Um filho que captura `CancelledError` e continua rodando faria `supervise` esperar por ele, como diz a docstring da função; código de produção também põe um prazo no cancelamento. E undo só reverte o que é reversível: um e-mail enviado continua enviado.
+O cancelamento no asyncio é cooperativo. Um filho que captura `CancelledError` e continua rodando faria `supervise` esperar por ele, como diz a *docstring* (nota de documentação embutida) da função; código de produção também põe um prazo no cancelamento. E undo só reverte o que é reversível: um e-mail enviado continua enviado.
 :::
 
 ## Rode o exercício

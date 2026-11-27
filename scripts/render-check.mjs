@@ -12,7 +12,10 @@
  * region semantics disagree with whether they overflow, then checks that inline
  * maths sits exactly where unstyled maths would. On /explore/ it leaves the
  * page while the 3D stage is still loading, which must not be reported as a
- * failure, and breaks the stage chunk, which must be.
+ * failure, and breaks the stage chunk, which must be. Figure motion must replay
+ * on every step change within 1.5s, end fully opaque, follow the page on a
+ * single-panel grid, and stay off under reduced motion and in print. A closed
+ * select must show every option label whole at 320px.
  *
  * The site uses system fonts only, so layout depends on what a visitor has
  * installed: CI's Linux fonts overflowed a pt-BR heading that condensed Avenir
@@ -24,40 +27,17 @@
  * a check never seen red is not a check. `RENDER_BROWSERS=chromium` narrows
  * the engines for a quick local run.
  */
-import { createReadStream, existsSync, statSync } from 'node:fs'
-import { createServer } from 'node:http'
-import { extname, join, normalize, relative, sep } from 'node:path'
+import { relative, sep } from 'node:path'
 import { chromium, firefox, webkit } from 'playwright'
 import { DIST_ROOT, walkFiles } from './content-utils.mjs'
+import { serveDist } from './serve-dist.mjs'
 
 const ENGINES = { chromium, webkit, firefox }
 const BASELINE_ROUTES = [
   '/lessons/0-orientation-and-foundations/0.5-matrix-multiplication-transformation/',
   '/pt-br/lessons/7-inference-and-efficiency/7.7-flashattention-and-io-awareness/',
 ]
-const TYPES = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
-  '.json': 'application/json', '.txt': 'text/plain', '.xml': 'application/xml', '.wasm': 'application/wasm',
-  '.pf_meta': 'application/octet-stream', '.pf_index': 'application/octet-stream', '.pf_fragment': 'application/octet-stream',
-}
 const selfTest = process.argv.includes('--self-test')
-
-function serveDist() {
-  const server = createServer((request, response) => {
-    const path = decodeURIComponent(new URL(request.url ?? '/', 'http://local').pathname)
-    let file = normalize(join(DIST_ROOT, path))
-    if (!file.startsWith(DIST_ROOT + sep) && file !== DIST_ROOT) {
-      response.writeHead(403).end()
-      return
-    }
-    if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html')
-    const found = existsSync(file) && statSync(file).isFile()
-    if (!found) file = join(DIST_ROOT, '404.html')
-    response.writeHead(found ? 200 : 404, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' })
-    createReadStream(file).pipe(response)
-  })
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
-}
 
 function routes() {
   return walkFiles(DIST_ROOT, new Set(['.html']))
@@ -87,7 +67,7 @@ async function layoutFailures(page) {
     const ids = [...document.querySelectorAll('[id]')].map((element) => element.id)
     const duplicates = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))]
     if (duplicates.length) failures.push(`duplicate ids: ${duplicates.slice(0, 5).join(', ')}`)
-    const wrong = [...document.querySelectorAll('.math-scroll, .table-scroll')]
+    const wrong = [...document.querySelectorAll('.katex, .table-scroll')]
       .filter((region) => (region.scrollWidth > region.clientWidth + 1) !== (region.getAttribute('role') === 'region'))
     if (wrong.length) failures.push(`${wrong.length} scroll wrapper(s) with region semantics that disagree with their overflow`)
     // Text an accessible name or a sentence is made of: rendered (checkVisibility
@@ -104,15 +84,22 @@ async function layoutFailures(page) {
     // WCAG 4.1.2: a narrow layout once hid the syllabus button's only text and
     // left an unnamed icon. Charts are aria-hidden duplicates of the lesson
     // lists, so their links are outside the accessibility tree and need no name.
-    const shown = (element) =>
-      element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden' && !element.closest('[aria-hidden="true"], [inert]')
+    const shown = (element) => {
+      if (!element.checkVisibility({ visibilityProperty: true }) || element.closest('[aria-hidden="true"], [inert]')) return false
+      // Some WebKit builds retain layout boxes in a closed details panel.
+      // Only the first summary and its descendants are exposed.
+      for (let panel = element.closest('details:not([open])'); panel; panel = panel.parentElement?.closest('details:not([open])')) {
+        if (!panel.querySelector(':scope > summary')?.contains(element)) return false
+      }
+      return element.getClientRects().length > 0
+    }
     const nameOf = (element) =>
       (element.getAttribute('aria-label') ??
         (element.getAttribute('aria-labelledby') ?? '').split(/\s+/u).map((id) => document.getElementById(id)?.textContent ?? '').join(' ')).trim() ||
       textNodes(element).map((node) => node.textContent).join('').trim() ||
       [...element.querySelectorAll('img[alt]')].filter((image) => !image.closest('[aria-hidden="true"]')).map((image) => image.alt).join(' ').trim() ||
       (element.getAttribute('title') ?? '').trim()
-    for (const element of [...document.querySelectorAll('button, a[href], [role="button"]')].filter((control) => shown(control) && !nameOf(control)).slice(0, 5)) {
+    for (const element of [...document.querySelectorAll('button, a[href], [role="button"]')].filter((control) => shown(control) && !nameOf(control))) {
       failures.push(`unnamed control: ${element.outerHTML.slice(0, 80)}`)
     }
     // WCAG 1.4.1: a link inside running text must not differ by colour alone.
@@ -132,6 +119,25 @@ async function layoutFailures(page) {
     const unmarked = [...document.querySelectorAll('main a[href]')]
       .filter((link) => shown(link) && getComputedStyle(link).display === 'inline' && !getComputedStyle(link).textDecorationLine.includes('underline') && inText(link))
     for (const link of unmarked.slice(0, 5)) failures.push(`link in running text without an underline: ${link.textContent.trim().slice(0, 30)}`)
+    // A closed <select> shows its option in a box that does not wrap and has
+    // no overflow of its own: a label wider than the box is cut silently, with
+    // the page still fitting 320px. Lab labels clipped like that in 0.19.
+    // Measure each option in a probe carrying the select's font against the
+    // box minus padding (the custom arrow sits inside the end padding).
+    const probe = document.createElement('span')
+    probe.style.cssText = 'position: absolute; visibility: hidden; white-space: pre; inset-block-start: 0; inset-inline-start: 0'
+    document.body.append(probe)
+    for (const select of [...document.querySelectorAll('select')].filter((control) => shown(control) && !control.multiple && control.size <= 1)) {
+      const style = getComputedStyle(select)
+      for (const property of ['fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'fontStretch', 'letterSpacing', 'fontVariantNumeric', 'fontFeatureSettings']) probe.style[property] = style[property]
+      const box = select.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight)
+      for (const option of select.options) {
+        probe.textContent = option.text
+        const width = probe.getBoundingClientRect().width
+        if (width > box + 0.5) failures.push(`select option clipped (${Math.round(width)}px in ${Math.round(box)}px): ${option.text.slice(0, 40)}`)
+      }
+    }
+    probe.remove()
     return failures
   })
 }
@@ -181,6 +187,8 @@ async function openExplorer(browser, base, handleChunk) {
   await page.route(STAGE_CHUNK, handleChunk)
   const requested = page.waitForRequest(STAGE_CHUNK, { timeout: 15_000 }).then(() => 'loading', () => 'neither')
   await page.goto(base + '/explore/', { waitUntil: 'load' })
+  // On phones, the worked example precedes the lazy-loaded instrument.
+  await page.locator('[data-stage-canvas]').evaluate((canvas) => canvas.parentElement.scrollIntoView({ block: 'center' }))
   const noWebgl = page.waitForSelector('[data-nowebgl]:not([hidden])', { timeout: 15_000 }).then(() => 'no-webgl', () => 'neither')
   return { page, logged, outcome: await Promise.race([requested, noWebgl]) }
 }
@@ -387,10 +395,13 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
           // Each planted control and link must be reported on its own.
           const planted = document.createElement('div')
           planted.innerHTML = [
+            '<details><summary>Closed example</summary><button data-planted="closed-panel"><svg></svg></button></details>',
+            '<details open><summary>Open example</summary><button data-planted="open-panel"><svg></svg></button></details>',
             '<button data-planted="icon"><svg width="16" height="16" aria-hidden="true"></svg></button>',
             '<button data-planted="hidden-glyph"><span aria-hidden="true">×</span></button>',
             '<p>Read <a href="#" style="text-decoration: none">planted direct link</a> first.</p>',
             '<p>Read <em><a href="#" style="text-decoration: none">planted wrapped link</a></em> first.</p>',
+            '<select aria-label="Planted" style="inline-size: 6rem"><option>planted option label far too long to fit</option></select>',
           ].join('')
           document.querySelector('main')?.append(planted)
         })
@@ -412,8 +423,321 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
     failures.push(...explorer.failures)
     if (explorer.covered) explorerEngines.push(name)
     failures.push(...await mechanicsAndStripFailures(browser, name, base))
+    failures.push(...await learningStudioFailures(browser, name, base))
+    failures.push(...await figureMotionFailures(browser, name, base))
   } finally {
     await browser.close()
+  }
+  return failures
+}
+
+// Figure motion. A stepped figure replays a short animation on the document
+// clock whenever a step is picked; a single-panel grid fades its rows in on a
+// view timeline. Two defects here were invisible to every other gate: print
+// captured a first frame at opacity 0, and grid rows bound by view() to their
+// own scroll box sat at half opacity for good.
+const MOTION_ROUTES = {
+  flow: '/lessons/1-text-to-tensors/1.3-bpe-step-by-step/',
+  stack: '/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/',
+  grid: '/lessons/4-transformer/4.4-causal-masking/',
+  plot: '/lessons/0-orientation-and-foundations/0.3-probability-you-need/',
+  singleGrid: '/lessons/27-retrieval-and-hybrid-search/27.5-bm25-hybrid-search-and-rrf/',
+}
+const MOTION_DEFECTS = {
+  flow: '.fig-flow__step { animation: none !important; }',
+  stack: '.fig-stack__bar { animation-duration: 3s !important; }',
+  grid: '.fig-grid tbody tr { opacity: 0.5 !important; }',
+  plot: '.fig-plot__svg { animation: none !important; }',
+  singleGrid: '.fig-grid tbody tr { animation-timeline: view() !important; }',
+  reduced: '@media (prefers-reduced-motion: reduce) { .fig-flow__step { animation: fig-step 1s both !important; } }',
+  print: '@media print { .fig-flow__step { animation: fig-step 1s both !important; } .figure .figure__frame .figure__panel:nth-child(2) { display: none !important; } }',
+}
+const STAGE = '.fig-flow__step, .fig-grid tbody tr, .fig-stack__bar, .fig-plot__svg'
+const MAX_STEP_MOTION_MS = 1500
+const scrollLinkedEngines = []
+
+function readStage(frame, selector) {
+  const shown = [...frame.querySelectorAll('.figure__panel')].filter((panel) => getComputedStyle(panel).display !== 'none')
+  const stage = shown.flatMap((panel) => [...panel.querySelectorAll(selector)])
+  const animations = stage.flatMap((element) => element.getAnimations())
+  return {
+    running: animations.filter((animation) => animation.playState === 'running' && animation.timeline === document.timeline).length,
+    longest: Math.max(0, ...animations.map((animation) => Number(animation.effect?.getComputedTiming().endTime) || 0)),
+    faded: stage.filter((element) => getComputedStyle(element).opacity !== '1').length,
+  }
+}
+
+const allAnimations = (page) => page.evaluate((selector) => [...document.querySelectorAll(selector)].flatMap((element) => element.getAnimations()).length, STAGE)
+
+async function figureMotionFailures(browser, name, base) {
+  const failures = []
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  try {
+    for (const kind of ['flow', 'stack', 'grid', 'plot']) {
+      const route = MOTION_ROUTES[kind]
+      await page.goto(base + route, { waitUntil: 'load' })
+      if (selfTest) await injectStyle(page, MOTION_DEFECTS[kind])
+      const frame = page.locator('.figure__frame[data-stepped]').filter({ has: page.locator(`.fig-${kind}`) }).first()
+      await frame.scrollIntoViewIfNeeded()
+      await frame.locator('.figure__step-label').nth(1).click()
+      const played = await frame.evaluate(readStage, STAGE)
+      if (played.running === 0) failures.push(`${name} ${route}: a stepped ${kind} did not replay on a step change`)
+      if (played.longest > MAX_STEP_MOTION_MS) failures.push(`${name} ${route}: stepped ${kind} motion lasts ${Math.round(played.longest)}ms, over ${MAX_STEP_MOTION_MS}ms`)
+      await page.waitForTimeout(Math.min(played.longest, 3000) + 250)
+      const settled = await frame.evaluate(readStage, STAGE)
+      if (settled.faded) failures.push(`${name} ${route}: a stepped ${kind} ended with ${settled.faded} element(s) not fully opaque`)
+      // Clicking the already-selected step must not retrigger motion.
+      await frame.locator('.figure__step-label').nth(1).click()
+      const reclicked = await frame.evaluate(readStage, STAGE)
+      if (reclicked.running > 0) failures.push(`${name} ${route}: re-clicking active step in ${kind} retriggered motion`)
+    }
+
+    const route = MOTION_ROUTES.singleGrid
+    await page.goto(base + route, { waitUntil: 'load' })
+    if (await page.evaluate(() => CSS.supports('animation-timeline', 'view()'))) scrollLinkedEngines.push(name)
+    if (selfTest) await injectStyle(page, MOTION_DEFECTS.singleGrid)
+    const grid = page.locator('.figure__frame:not([data-stepped])').filter({ has: page.locator('.fig-grid') }).first()
+    await grid.evaluate((element) => element.scrollIntoView({ block: 'center' }))
+    await page.waitForTimeout(300)
+    await settle(page)
+    const faded = await grid.evaluate((element) => [...element.querySelectorAll('.fig-grid tbody tr')].filter((row) => getComputedStyle(row).opacity !== '1').length)
+    if (faded) failures.push(`${name} ${route}: a single-panel grid in view has ${faded} row(s) not fully opaque`)
+  } catch (error) {
+    failures.push(`${name} figure motion: ${error.message}`)
+  } finally {
+    await page.close()
+  }
+
+  const reduced = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' })
+  try {
+    await reduced.goto(base + MOTION_ROUTES.flow, { waitUntil: 'load' })
+    if (selfTest) await injectStyle(reduced, MOTION_DEFECTS.reduced)
+    await reduced.locator('.figure__frame[data-stepped] .figure__step-label').nth(1).click()
+    const count = await allAnimations(reduced)
+    if (count) failures.push(`${name} ${MOTION_ROUTES.flow} @reduced-motion: figure animations run (${count})`)
+  } catch (error) {
+    failures.push(`${name} figure motion @reduced-motion: ${error.message}`)
+  } finally {
+    await reduced.close()
+  }
+
+  const print = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  try {
+    await print.emulateMedia({ media: 'print' })
+    await print.goto(base + MOTION_ROUTES.flow, { waitUntil: 'load' })
+    if (selfTest) await injectStyle(print, MOTION_DEFECTS.print)
+    await settle(print)
+    const count = await allAnimations(print)
+    if (count) failures.push(`${name} ${MOTION_ROUTES.flow} @print: figure animations run (${count})`)
+    const hidden = await print.evaluate(() => [...document.querySelectorAll('.figure__panel')].filter((panel) => getComputedStyle(panel).display === 'none').length)
+    if (hidden) failures.push(`${name} ${MOTION_ROUTES.flow} @print: steps hidden (${hidden})`)
+    await print.goto(base + MOTION_ROUTES.plot, { waitUntil: 'load' })
+    await settle(print)
+    const hiddenTables = await print.evaluate(() => [...document.querySelectorAll('.fig-plot__data table')].filter((table) => table.getBoundingClientRect().height === 0).length)
+    if (hiddenTables) failures.push(`${name} ${MOTION_ROUTES.plot} @print: plot data tables hidden (${hiddenTables})`)
+  } catch (error) {
+    failures.push(`${name} figure motion @print: ${error.message}`)
+  } finally {
+    await print.close()
+  }
+  return failures
+}
+
+async function learningStudioFailures(browser, name, base) {
+  const failures = []
+  const delayed = await browser.newPage()
+  let resumeScripts
+  const held = new Promise((resolve) => { resumeScripts = resolve })
+  try {
+    await delayed.route('**/_astro/*.js', async (route) => {
+      await held
+      await route.continue().catch(() => {})
+    })
+    const requested = delayed.waitForRequest('**/_astro/*.js')
+    await delayed.goto(base + '/explore/', { waitUntil: 'commit' })
+    await requested
+    await delayed.waitForFunction(() => document.readyState !== 'loading')
+    const link = delayed.locator('a[data-component]').nth(4)
+    await link.focus()
+    if (!await link.evaluate((el) => el === document.activeElement)) throw new Error('static link did not receive focus')
+    const component = await link.getAttribute('data-component')
+    resumeScripts()
+    const upgraded = delayed.locator(`button[data-component="${component}"]:focus`)
+    await upgraded.waitFor({ timeout: 15_000 })
+    await delayed.keyboard.press('Space')
+    if (await upgraded.getAttribute('aria-current') !== 'true') throw new Error('focused port did not activate')
+  } catch (error) {
+    failures.push(`${name} /explore/: keyboard focus during enhancement: ${error.message}`)
+  } finally {
+    resumeScripts()
+    await delayed.close()
+  }
+  const viewport = { width: 390, height: 844 }
+  for (const prefix of ['', '/pt-br']) {
+    const page = await browser.newPage({ viewport, reducedMotion: 'reduce' })
+    try {
+      await page.goto(`${base}${prefix}/`)
+      const topLink = page.locator('footer a[href="#site-start"]')
+      await topLink.focus()
+      await topLink.press('Enter')
+      await page.waitForFunction(() => document.activeElement === document.body && window.scrollY < 2)
+      const indexModule = /\/pagefind\/pagefind\.js(?:\?|$)/u
+      const fragments = /\.pf_fragment$/u
+      const failRequest = (route) => route.abort()
+      const searchInput = page.locator('[data-search-input]')
+      const searchResults = page.locator('[data-search-results] a')
+      const unavailable = prefix ? 'A busca está indisponível. Tente novamente.' : 'Search is unavailable. Try again.'
+      const waitForSearchStatus = (message) => page.waitForFunction(
+        (text) => document.querySelector('[data-search-status]')?.textContent === text,
+        message,
+      )
+      await page.route(indexModule, failRequest)
+      await page.locator('[data-search-open]').click()
+      await waitForSearchStatus(unavailable)
+      await page.unroute(indexModule, failRequest)
+      await searchInput.fill('token')
+      await searchResults.first().waitFor()
+      await page.route(fragments, failRequest)
+      await searchInput.fill(prefix ? 'atenção' : 'attention')
+      await waitForSearchStatus(unavailable)
+      if (await searchResults.count()) throw new Error('failed search keeps results from the previous query')
+      await page.unroute(fragments, failRequest)
+      await searchInput.press('Enter')
+      await searchResults.first().waitFor()
+      await searchInput.fill('zzqvx')
+      await waitForSearchStatus(prefix ? 'Nada encontrado.' : 'No results.')
+      await page.keyboard.press('Escape')
+      if (!await page.locator('[data-search-open]').evaluate((button) => document.activeElement === button)) throw new Error('closing search did not return focus')
+      for (const size of [{ width: 568, height: 320 }, { width: 320, height: 256 }]) {
+        await page.setViewportSize(size)
+        await page.locator('[data-search-open]').click()
+        await page.locator('[data-search-input]').fill(prefix ? 'atenção' : 'attention')
+        for (const [index, key] of ['Enter', 'ArrowDown'].entries()) {
+          await page.keyboard.press(key)
+          await page.locator('[data-search-results] a:focus').waitFor()
+          await settle(page)
+          const visible = await page.locator('[data-search-results] a').nth(index).evaluate((result) => {
+            const title = result.querySelector('.search__title')?.getBoundingClientRect()
+            const region = result.closest('[data-search-results]')?.getBoundingClientRect()
+            return result === document.activeElement && title && region &&
+              title.top >= region.top - 1 && title.bottom <= region.bottom + 1
+          })
+          if (!visible) throw new Error(`search result title clipped after ${key} at ${size.width}×${size.height}`)
+        }
+        await page.keyboard.press('Escape')
+      }
+      await page.setViewportSize(viewport)
+      const experiment = page.locator('[data-sampling-preview]')
+      const lead = experiment.locator('[data-preview-probability]').first()
+      const cold = await lead.textContent()
+      const slider = experiment.getByRole('slider')
+      await slider.press('End')
+      const warm = await lead.textContent()
+      if (!cold || !warm || Number.parseFloat(cold) <= Number.parseFloat(warm)) throw new Error('warmer temperature must flatten the distribution')
+      if (!(await slider.getAttribute('aria-valuetext'))?.includes(warm)) throw new Error('temperature control did not announce the changed probability')
+      await slider.press('Home')
+      if (await lead.textContent() !== cold) throw new Error('temperature did not restore the worked example')
+      const home = `${base}${prefix}/`
+      const paths = page.locator('[data-study-path]')
+      const destinations = await paths.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
+      if (destinations.length !== 3 || new Set(destinations).size !== 3) throw new Error('expected three distinct study paths')
+      await experiment.getByRole('link').click()
+      await page.locator('[data-lab-id="token-sampling"]').waitFor()
+      if (!page.url().endsWith('#lab-heading')) throw new Error('sampling link did not open the lab section')
+      // The lab is server-rendered. Its visit is recorded by a deferred module.
+      await page.waitForLoadState('load')
+      const labPath = new URL(page.url()).pathname
+      await page.goto(home)
+      await page.locator('[data-continue-link]').click()
+      await page.locator('[data-lesson-progress]').waitFor()
+      if (new URL(page.url()).pathname !== labPath) throw new Error('continue did not reopen the last lesson')
+      for (const [index, href] of destinations.entries()) {
+        if (!href?.startsWith(`${prefix}/tracks/`)) throw new Error(`unlocalized track: ${href}`)
+        await page.goto(home)
+        await paths.nth(index).click()
+        await page.locator('#track-outline').waitFor()
+        if (new URL(page.url()).pathname !== href) throw new Error(`path opened the wrong track: ${href}`)
+        await page.locator('.track__actions a.button').click()
+        await page.locator('[data-lesson-progress]').waitFor()
+        await page.locator('[data-lesson-steps] a[href="#concept-heading"]').click()
+        if (!page.url().endsWith('#concept-heading')) throw new Error('lesson outline failed to jump to the concept')
+        if (index === 0) {
+          for (const heading of ['#analogy-heading', '#sources-heading', '#analogy-heading', '#concept-heading', '#sources-heading']) {
+            await page.locator(`[data-rail-link][href="${heading}"]`).press('Enter')
+            await page.locator(`[data-rail-link][href="${heading}"][aria-current="true"]`).waitFor()
+          }
+          await topLink.press('Enter')
+          await page.waitForFunction(() => window.scrollY < 2 && !document.querySelector('[data-rail-link][aria-current]'))
+        }
+      }
+      await page.goto(`${base}${prefix}/tracks/`)
+      await page.locator('.tracks__jump a[href="#part-engineering"]').click()
+      if (!page.url().endsWith('#part-engineering')) throw new Error('track index did not jump to engineering')
+      await page.locator('.tracks__sky summary').click()
+      if (await page.locator('.tracks__sky').getAttribute('open') === null) throw new Error('course map did not open')
+      await page.goto(`${base}${prefix}/roadmap/`)
+      await page.locator('[data-roadmap-start]').first().click()
+      await page.locator('[data-lesson-progress]').waitFor()
+      await page.goto(`${base}${prefix}/explore/`)
+      const journey = page.locator('[data-token-journey]')
+      const steps = journey.getByRole('radio')
+      if (await steps.count() !== 4 || !await steps.first().isChecked()) throw new Error('token journey did not start at the prompt')
+      const visibleStep = journey.locator('[data-token-step]:visible')
+      for (const [index, stage] of ['prompt', 'tokens', 'context', 'output'].entries()) {
+        if (index > 0) await steps.nth(index - 1).press('ArrowRight')
+        await visibleStep.and(journey.locator(`[data-token-step="${stage}"]`)).waitFor()
+        if (await visibleStep.count() !== 1) throw new Error(`token journey did not show just the ${stage} stage`)
+        if (await visibleStep.locator('[data-token-motion]').first().evaluate((element) => getComputedStyle(element).animationName) !== 'none') {
+          throw new Error('token journey animated under reduced motion')
+        }
+      }
+      const probabilities = await visibleStep.locator('[data-token-probability]').allTextContents()
+      if (probabilities.length !== 4 || probabilities.reduce((sum, text) => sum + Number.parseInt(text, 10), 0) !== 100) {
+        throw new Error('token journey did not show a complete next-token probability distribution')
+      }
+      await steps.last().press('ArrowLeft')
+      await visibleStep.and(journey.locator('[data-token-step="context"]')).waitFor()
+      await page.locator('a[href="#transformer-components"]').click()
+      if (!page.url().endsWith('#transformer-components')) throw new Error('explorer did not jump to the component index')
+    } catch (error) {
+      failures.push(`${name} ${prefix || '/'} learning studio: ${error.message}`)
+    } finally {
+      await page.close()
+    }
+  }
+  const fallback = await browser.newPage({ javaScriptEnabled: false, viewport: { width: 320, height: 740 } })
+  try {
+    await fallback.goto(base + '/pt-br/')
+    const experiment = fallback.locator('[data-sampling-preview]')
+    if (!await experiment.locator('[data-preview-probability]').first().isVisible()) throw new Error('missing worked example')
+    if (await experiment.getByRole('slider').isVisible()) throw new Error('inert slider is visible')
+    await experiment.locator('summary').click()
+    if (!await experiment.locator('details p').isVisible()) throw new Error('explanation did not open')
+    await fallback.goto(base + '/pt-br/explore/')
+    const journey = fallback.locator('[data-token-journey]')
+    const panels = journey.locator('[data-token-step]:visible')
+    for (const stage of ['prompt', 'tokens', 'context', 'output']) {
+      await journey.locator(`label[for="token-step-${stage}"]`).click()
+      await panels.and(journey.locator(`[data-token-step="${stage}"]`)).waitFor()
+      if (await panels.count() !== 1) throw new Error(`token journey did not show just the ${stage} stage`)
+      const width = await fallback.evaluate(() => document.documentElement.scrollWidth)
+      if (width > 320) throw new Error(`token journey overflows at the ${stage} stage`)
+    }
+    for (const prefix of ['', '/pt-br']) {
+      await fallback.goto(base + prefix + '/explore/')
+      const links = fallback.locator('#transformer-components a[href]')
+      if (await links.count() !== 12) throw new Error('static component index is incomplete')
+      const lesson = links.nth(4)
+      const href = await lesson.getAttribute('href')
+      await Promise.all([fallback.waitForURL((url) => url.pathname === href), lesson.press('Enter')])
+      if (new URL(fallback.url()).pathname !== href || !href?.startsWith(prefix + '/lessons/')) {
+        throw new Error('static component index failed to open the localized lesson')
+      }
+    }
+  } catch (error) {
+    failures.push(`${name} /pt-br/ learning studio without JavaScript: ${error.message}`)
+  } finally {
+    await fallback.close()
   }
   return failures
 }
@@ -426,7 +750,7 @@ try {
   if (unknown.length) throw new Error('unknown engine(s): ' + unknown.join(', '))
   const allRoutes = routes()
   if (allRoutes.length === 0) throw new Error('dist/ has no routes; run pnpm build first')
-  for (const route of BASELINE_ROUTES) if (!allRoutes.includes(route)) throw new Error('baseline route missing from dist/: ' + route)
+  for (const route of [...BASELINE_ROUTES, ...Object.values(MOTION_ROUTES)]) if (!allRoutes.includes(route)) throw new Error('fixed route missing from dist/: ' + route)
   const checked = selfTest ? allRoutes.slice(0, 1) : allRoutes
 
   const failures = []
@@ -435,19 +759,29 @@ try {
   // An explorer check that ran nowhere would pass vacuously.
   if (explorerEngines.length === 0) failures.push('explorer: no engine had WebGL, so the stage lifecycle went unchecked')
   const explorerNote = `explorer lifecycle in ${explorerEngines.join(', ') || 'no engine'}` +
-    (explorerRestoreUncovered.length ? ` (restore replay not coverable in ${explorerRestoreUncovered.join(', ')}: a reload keeps the failed module)` : '')
+    (explorerRestoreUncovered.length ? ` (restore replay not coverable in ${explorerRestoreUncovered.join(', ')}: a reload keeps the failed module)` : '') +
+    `; scroll-linked figure motion in ${scrollLinkedEngines.join(', ') || 'no engine'}`
 
   if (selfTest) {
     const expected = engines.flatMap((engine) => [
       `${engine} ${checked[0]}: page overflows`,
       `${engine} ${checked[0]}: unnamed control: <button data-planted="icon"`,
+      `${engine} ${checked[0]}: unnamed control: <button data-planted="open-panel"`,
       `${engine} ${checked[0]}: unnamed control: <button data-planted="hidden-glyph"`,
       `${engine} ${checked[0]}: link in running text without an underline: planted direct link`,
       `${engine} ${checked[0]}: link in running text without an underline: planted wrapped link`,
+      `${engine} ${checked[0]}: select option clipped`,
       ...(engine === 'chromium' ? [`chromium+wide-fonts ${checked[0]}: page overflows`] : []),
       ...BASELINE_ROUTES.map((route) => `${engine} ${route} @1280: inline maths moves`),
       `${engine} / @no-js: mechanics stage 1 visible panels`,
       `${engine} /explore/: strip .index__list did not reach its final item cleanly at 320px`,
+      `${engine} ${MOTION_ROUTES.flow}: a stepped flow did not replay on a step change`,
+      `${engine} ${MOTION_ROUTES.stack}: stepped stack motion lasts`,
+      `${engine} ${MOTION_ROUTES.grid}: a stepped grid ended with`,
+      ...(scrollLinkedEngines.includes(engine) ? [`${engine} ${MOTION_ROUTES.singleGrid}: a single-panel grid in view has`] : []),
+      `${engine} ${MOTION_ROUTES.flow} @reduced-motion: figure animations run`,
+      `${engine} ${MOTION_ROUTES.flow} @print: figure animations run`,
+      `${engine} ${MOTION_ROUTES.flow} @print: steps hidden`,
       ...(explorerEngines.includes(engine)
         ? [
             `${engine} /explore/: the stage was not still loading at the click`,
@@ -460,9 +794,11 @@ try {
         : []),
     ])
     const missed = expected.filter((prefix) => !failures.some((failure) => failure.startsWith(prefix)))
-    if (missed.length) {
+    const falsePositives = failures.filter((failure) => failure.includes('unnamed control: <button data-planted="closed-panel"'))
+    if (missed.length || falsePositives.length) {
       console.error('render:check SELF-TEST FAIL — injected defects went undetected:')
       for (const miss of missed) console.error('- ' + miss)
+      for (const falsePositive of falsePositives) console.error('- hidden control incorrectly reported: ' + falsePositive)
       process.exitCode = 1
     } else {
       console.log(`render:check SELF-TEST PASS — every injected defect was caught in ${engines.join(', ')} (${explorerNote})`)

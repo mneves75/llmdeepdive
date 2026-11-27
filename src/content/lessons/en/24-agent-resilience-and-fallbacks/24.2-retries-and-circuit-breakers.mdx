@@ -38,20 +38,20 @@ citations:
     authors: "Mike Ulrich, Google; O'Reilly Media"
     year: 2017
     url: "https://sre.google/sre-book/addressing-cascading-failures/"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-At 09:00 the model provider goes down for five minutes. The purchasing assistant starts a task every ten seconds, and each task retries a failed call up to five times. Lesson 24.1's classifier says a 503 on a read is worth retrying, and it is right. Still, in the course's simulation 26 tasks arrive during the outage, and each makes 5 attempts. That is 130 failed calls sent to a provider that is already struggling. With the three limits this lesson adds, the same ten minutes produce 14 failed calls. In both runs the tasks that arrived during the outage fail and every task after it succeeds. The limits cut the load on the provider without losing any useful work.
+At 09:00 the model provider goes down for five minutes. The purchasing assistant starts a task every ten seconds, and each task retries a failed call up to five times. [Lesson 24.1](/lessons/24-agent-resilience-and-fallbacks/24.1-classify-failures-before-retrying/)'s classifier says a 503 (temporary overload or maintenance) on a read is worth retrying, and it is right. Still, in the course's simulation 26 tasks arrive during the outage, and each makes 5 attempts. That is 130 failed calls sent to a provider that is already struggling. With the three limits this lesson adds, the same ten minutes produce 14 failed calls. In both runs the tasks that arrived during the outage fail and every task after it succeeds. The limits cut the load on the provider without losing any useful work.
 
 ## Why retries can make an outage worse
 
-A retry is a bet that the failure was brief. During a long failure every retry is extra load on a system that is already overloaded, and that load can keep it down. Google's chapter on cascading failures, by Mike Ulrich, gives the multiplication: if three layers of a stack each retry 3 times, one user action can turn into 4 × 4 × 4 = 64 attempts on the database at the bottom. The chapter's advice is to "always use randomized exponential backoff", "limit retries per request", consider "a server-wide retry budget", and avoid retrying at several layers.
+A retry is a bet that the failure was brief. During a long failure every retry is extra load on a system that is already overloaded, and that load can keep it down. Google's chapter on cascading failures, by Mike Ulrich, gives the multiplication: if three layers of a stack (services calling one another in sequence) each retry 3 times, one user action can turn into 4 × 4 × 4 = 64 attempts on the database at the bottom. The chapter's advice is to "always use randomized exponential backoff", "limit retries per request", consider "a server-wide retry budget", and avoid retrying at several layers.
 
 Timing matters as well as count. Clients that failed at the same moment and wait the same time retry at the same moment, so the server sees the original spike again, then again. Those synchronized waves are what people call a retry storm.
 
 ## Exponential backoff with full jitter
 
-Exponential backoff doubles the wait after each failure, up to a cap. Jitter adds randomness so clients spread out. Marc Brooker's 2015 post on the AWS Architecture Blog compared variants in a simulation and found that backoff without jitter "is the clear loser": it "takes more work" and "more time than the jittered approaches". Between the two best variants the verdict was mixed: "Full Jitter" uses less work but slightly more time than "Decorrelated Jitter". The course uses full jitter because it is the simplest of the two. Its formula, as written in the post's simulator, draws a wait uniformly from zero to the capped exponential:
+Exponential backoff doubles the wait after each failure, up to a cap. Jitter adds randomness so clients spread out. Marc Brooker's 2015 post on the AWS Architecture Blog compared variants in a simulation and found that backoff without jitter "is the clear loser": it "takes more work" and "more time than the jittered approaches". Between the two best variants the verdict was mixed: "Full Jitter" uses less work but slightly more time than "Decorrelated Jitter". The course uses full jitter because it is the simplest of the two. The `full_jitter` function below takes the retry index (`attempt`), a starting wait (`base_s`), a ceiling (`cap_s`), and a random number generator (`rng`), doubles the starting wait on each retry up to the ceiling, and draws a delay uniformly (every value equally likely) between zero and that bound:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/resilience/retry.py
@@ -60,21 +60,23 @@ def full_jitter(attempt: int, *, base_s: float, cap_s: float, rng: random.Random
     return rng.uniform(0.0, min(cap_s, base_s * 2**attempt))
 ```
 
-With `base_s=0.5`, the fourth attempt (`attempt=3`) waits somewhere between 0 and 4 seconds, about 2 on average. The test draws 1,000 waits from a seeded generator and checks the range, the average and that the waits are spread out. The generator is passed in, so the same seed always gives the same waits and the test never depends on luck.
+With `base_s=0.5`, the fourth attempt (`attempt=3`) waits somewhere between 0 and 4 seconds, about 2 on average. The test draws 1,000 waits from a seeded generator (one started from a fixed seed so it replays the same sequence every run) and checks the range, the average and that the waits are spread out. Because the generator is passed in, the same seed always gives the same waits and the test never depends on luck.
 
 When the server sends `Retry-After`, the wait is the larger of the jittered value and the server's delay. A server asking for more than the call may wait (`max_wait_s`, 60 seconds by default) ends the call with a stop instead of a sleep, because a run with a deadline cannot spend an hour waiting.
 
 ## A retry budget for the whole process
 
-The attempt limit applies to one call, while a retry budget applies to everything one process does. The SRE chapter's example is to "only allow 60 retries per minute in a process" and, past that, to fail the request instead of retrying. `RetryBudget` keeps the times of recent retries and refuses a new one once `limit` retries fall inside the last `window`.
+The attempt limit applies to one call, while a retry budget applies to everything one process (one running copy of a program) does. The SRE (Site Reliability Engineering) chapter's example is to "only allow 60 retries per minute in a process" and, past that, to fail the request instead of retrying. `RetryBudget` keeps the timestamps of recent retries and refuses a new one once `limit` retries already fall inside the sliding `window` (for example, the last 60 seconds).
 
 The budget catches a failure the breaker below cannot. In the budget test the provider fails every other call. A breaker that counts consecutive failures never opens, because each success resets the count. With a budget of 3 retries per minute, six tasks make three retries between them, and the fourth task that needs one gets a stop whose reason says the retry budget is spent. A minute later the window has moved on and retries are allowed again.
 
 ## The circuit breaker
 
-Martin Fowler's 2014 description is short: "You wrap a protected function call in a circuit breaker object, which monitors for failures." Once failures reach a threshold "the circuit breaker trips", and calls then fail at once without reaching the dependency. After a pause the breaker goes "half open", ready "to make a real call as trial to see if the problem is fixed". A successful trial resets the breaker, and a failed one restarts the pause.
+Martin Fowler's 2014 description is short: "You wrap a protected function call in a circuit breaker object, which monitors for failures." Once failures reach a threshold (a count of consecutive failures) "the circuit breaker trips", and calls then fail at once without reaching the dependency (the external service or tool the assistant relies on). After a pause the breaker goes "half open", ready "to make a real call as trial to see if the problem is fixed". A successful trial resets the breaker, and a failed one restarts the pause.
 
 <Figure id="circuit-breaker-states" />
+
+The two methods below implement those state transitions. `allow` moves an open breaker to `half_open` once its pause expires on the injected `clock()`, lets calls pass while closed, permits exactly one trial while `half_open`, and refuses everything else; `record` resets the failure count on success, or increments it and opens the breaker whenever the threshold is reached or a trial fails:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/resilience/retry.py
@@ -97,9 +99,9 @@ Martin Fowler's 2014 description is short: "You wrap a protected function call i
             self.state, self.opened_at, self.trial_running = "open", self.clock(), False
 ```
 
-Two choices in `call_with_retries` matter. The breaker counts a failure only when 24.1's verdict is retry or reconcile. A 403 or a 404 means the dependency answered properly, so it counts as healthy. And a breaker that refuses a call returns a stop whose reason starts with "circuit open", which a caller can report as degraded instead of failed.
+Two choices in `call_with_retries` matter. The breaker counts a failure only when 24.1's verdict is retry or reconcile. A 403 (forbidden) or a 404 (not found or hidden) means the dependency answered properly, so it counts as healthy. And a breaker that refuses a call returns a stop whose reason starts with "circuit open", which a caller can report as degraded instead of failed.
 
-In the outage test the breaker has `threshold=5` and a 30-second pause. The first task makes five attempts, using four retries of the budget, and its fifth failure opens the breaker. The next two tasks make no call at all. Then roughly every 30 seconds one task makes a single trial call, which fails and reopens the breaker. That adds 9 trials to the first 5 failures, 14 in all, and the first task after recovery succeeds. The breaker and the budget are plain objects in one process, so several worker processes would each have their own. Sharing one across processes needs shared state, the same problem lesson 24.4 solves for money.
+In the outage test the breaker has `threshold=5` and a 30-second pause. The first task makes five attempts, using four retries of the budget, and its fifth failure opens the breaker. The next two tasks make no call at all. Then roughly every 30 seconds one task makes a single trial call, which fails and reopens the breaker. That adds 9 trials to the first 5 failures, 14 in all, and the first task after recovery succeeds. The breaker and the budget are plain objects in one process, so several worker processes (separate copies of the assistant handling tasks side by side) would each have their own. Sharing one across processes needs shared state (a common store, such as a database), the same problem [lesson 24.4](/lessons/24-agent-resilience-and-fallbacks/24.4-model-cascades-and-budgets/) solves for money.
 
 ## Run the exercise
 

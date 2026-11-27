@@ -34,24 +34,24 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
 ## What DPO removes from the pipeline
 
 [Lesson 6.5](/lessons/6-post-training-and-alignment/6.5-rlhf-with-ppo/) left you holding four models at once and a 27B-parameter policy whose optimizer state alone runs to hundreds of gigabytes. Most teams cannot run that, and many do not need to.
 
-**Direct Preference Optimization** (DPO) starts from a mathematical relationship between the best possible policy under a KL penalty and the reward it was optimized for. It then rearranges that relationship so the policy can be trained directly on preference pairs. There is no reward model, no rollout workers sampling new responses, and no value head. What survives is a forward pass and a loss.
+**Direct Preference Optimization** (DPO) starts from a mathematical relationship between the best possible policy under a KL penalty and the reward it was optimized for. It then rearranges that relationship so the policy can be trained directly on preference pairs. There is no reward model, no **rollout workers** (servers running the model to sample new practice responses), and no **value head** (the extra layer that predicts future reward). What survives is a forward pass and a loss.
 
 ## What DPO compares for each pair
 
 DPO needs one number per response: its **log-probability**, the sum of the logs of the probabilities the model gives to each of the response's tokens, each given the prompt and the response tokens before it. It is negative, and closer to zero means the model finds the whole response more likely.
 
-DPO computes that number twice for each response. Once under the **policy** being trained, and once under a frozen **reference**, usually the starting checkpoint. The difference says how much more the policy now favours the response than the reference already did. DPO wants that gain to be larger for the chosen response than for the rejected one. The gap between the two gains, scaled by a setting $\beta$, is a margin, and the loss is the same logistic loss as the reward model's in [lesson 6.4](/lessons/6-post-training-and-alignment/6.4-reward-models-and-human-preference-data/).
+DPO computes that number twice for each response — once under the trainable **policy** and once under a frozen **reference**, usually the starting checkpoint — and scales the gap between the two relative gains by a setting $\beta$ before feeding it to the logistic loss from [lesson 6.4](/lessons/6-post-training-and-alignment/6.4-reward-models-and-human-preference-data/).
 
-Run one example through the arithmetic. Take $\beta = 0.1$. Suppose the chosen response scores $-42.0$ under the policy and $-45.0$ under the reference, a relative gain of $+3.0$; the rejected response scores $-50.0$ under the policy and $-48.0$ under the reference, a relative loss of $-2.0$. Then $m = 0.1 \times (3.0 - (-2.0)) = 0.5$, and the loss is $-\log\sigma(0.5)\approx 0.47$. Note what moved the number: not how likely either response is, but how each one's likelihood shifted *relative to the reference*.
+Run one example through the arithmetic at $\beta = 0.1$: chosen scores $-42.0$ under the policy and $-45.0$ under the reference ($+3.0$ gain); rejected scores $-50.0$ under the policy and $-48.0$ under the reference ($-2.0$ loss). That gives $m = 0.1 \times (3.0 - (-2.0)) = 0.5$ and loss $-\log\sigma(0.5)\approx 0.47$. Note what moved the number: how each response's **likelihood** (how probable the model considers it) shifted *relative to the reference*.
 
-In symbols, each example contains a prompt $x$, a preferred response $y^{+}$, and a rejected response $y^{-}$. DPO uses a trainable policy $\pi_\theta$ and a frozen reference $\pi_{ref}$, sums token log-probabilities over each response conditioned on the prompt, and compares how much more the policy favours each response than the reference already did:
+In symbols, each example contains a prompt $x$, a preferred response $y^{+}$, and a rejected response $y^{-}$. DPO uses a trainable policy $\pi_\theta$ and a frozen reference $\pi_{ref}$:
 
 $$
 m=\beta\left[
@@ -61,11 +61,13 @@ m=\beta\left[
 \mathcal{L}_{\text{DPO}}=-\log\sigma(m).
 $$
 
+<Figure id="t6-dpo-pair-margin" />
+
 ## Setting up a DPO run on Qwen3.8-27B
 
 Now make it concrete on this course's model. You want to adapt Qwen3.8-27B's instruct-mode style for a support product, and you have 8,000 preference pairs. Setting up the run means answering four questions, in this order.
 
-**First, where does the reference model come from?** Naively loading two 27B bf16 checkpoints is not a one-card plan. Combine DPO with LoRA from [lesson 6.3](/lessons/6-post-training-and-alignment/6.3-lora-qlora-and-peft/) instead. Train adapters over one low-bit backbone, and obtain the reference log-probability by running the same backbone with adapters disabled. That removes the second weight copy, but it does not prove the run fits a given GPU. Activation memory, quantization metadata, sequence length, micro-batch, and backend buffers still decide how much memory it needs.
+**First, where does the reference model come from?** Naively loading two 27B bf16 checkpoints is not a one-card plan. Combine DPO with LoRA from [lesson 6.3](/lessons/6-post-training-and-alignment/6.3-lora-qlora-and-peft/) instead. Train adapters over one low-bit backbone, and obtain the reference log-probability by running the same backbone with adapters disabled. That removes the second weight copy, but it does not prove the run fits a given GPU. Activation memory, **quantization metadata** (extra scale numbers stored alongside compressed weights), sequence length, micro-batch, and **backend buffers** (temporary GPU memory workspaces) still decide how much memory it needs.
 
 **Second, which mode are you training?** Qwen3.8-27B ships thinking mode on by default and instruct mode behind enable_thinking set to False. The two render the same conversation into different token sequences. Log-probabilities are computed over tokens, so a pair collected in one mode and scored in the other is not merely noisy: it is a different objective. Pick a mode, render both the chosen and rejected responses through that exact template branch, and record which branch the dataset used.
 
@@ -77,7 +79,7 @@ Now make it concrete on this course's model. You want to adapt Qwen3.8-27B's ins
 
 The "relative to the reference" distinction sets up the classic wrong turn. Teams log the policy's raw log-probability of the chosen responses and watch it fall during training. They conclude the run is broken: the model is getting worse at producing the answers we told it to prefer.
 
-Look at both series and the panic dissolves. It is entirely normal for chosen log-probability to drift down from $-42$ to $-44$ while rejected log-probability collapses from $-50$ to $-60$. The margin widened from 8 to 16, which is exactly what the objective optimizes. DPO never promised to raise the chosen response's absolute likelihood. It promised to make the chosen response more characteristic of the new policy than the rejected one is. If you want a floor on absolute likelihood, you need a supervised term as well, which is the design ORPO adopts in [lesson 6.7](/lessons/6-post-training-and-alignment/6.7-orpo-kto-simpo-and-the-alignment-zoo/).
+Look at both series — step 2 of the figure above — and the panic dissolves. Chosen log-probability can drift from $-42$ to $-44$ while rejected drops from $-50$ to $-60$, doubling the margin from 8 to 16. DPO never promised to raise the chosen response's absolute likelihood; it promised to make the chosen response more characteristic of the new policy than the rejected one is. If you want a floor on absolute likelihood, you need a supervised term as well, which is the design ORPO adopts in [lesson 6.7](/lessons/6-post-training-and-alignment/6.7-orpo-kto-simpo-and-the-alignment-zoo/).
 
 What you should watch instead:
 
@@ -98,6 +100,6 @@ Removing the reward model does not remove the preferences. Every weakness lesson
 
 Standard DPO is also offline: it collects no new judgments as the policy moves. If training pushes the model into behaviour the dataset never covered, no feedback exists there at all. Iterative variants regenerate candidates and gather new pairs. That restores a data-production loop while still avoiding PPO's machinery.
 
-The mechanical details deserve the same care as the mathematics. Padding must be masked. Prompt tokens must be excluded consistently on both sides. Truncation must never delete the evidence that determined the label: a rejected response cut off before its error is a rejected response with no visible reason to be rejected. And $\beta$ conventions differ across libraries, so a value copied from someone else's config may mean something else in yours.
+The mechanical details deserve the same care as the mathematics. **Padding** (filler tokens added so sequences in a batch share one length) must be masked. Prompt tokens must be excluded consistently on both sides. **Truncation** (cutting off a response that exceeds the maximum length) must never delete the evidence that determined the label: a rejected response cut off before its error is a rejected response with no visible reason to be rejected. And $\beta$ conventions differ across libraries, so a value copied from someone else's config may mean something else in yours.
 
 The durable model is pairwise policy shaping. DPO makes the desired response more characteristic of the new policy relative to a fixed baseline, and the rejected response less so. It trades a learned scalar judge and an online optimizer for an elegant offline loss. The human judgments, the reference choice, the template branch, and the evaluation remain the real specification.

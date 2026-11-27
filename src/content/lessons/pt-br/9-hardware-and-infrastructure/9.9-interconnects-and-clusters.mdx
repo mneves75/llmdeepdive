@@ -34,14 +34,14 @@ citations:
     authors: "Qwen Team"
     year: 2026
     url: "https://huggingface.co/Qwen/Qwen3.8-27B"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-A [aula 9.4](/pt-br/lessons/9-hardware-and-infrastructure/9.4-nvidia-cuda-hopper-blackwell/) deixou você com um problema de dimensionamento. O Qwen3.8-27B em bf16 são 54 GB de pesos, e a [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) acrescenta até 16 GiB de KV cache para uma única sequência de comprimento máximo. Um único acelerador de 80 GB, portanto, serve o modelo com muito pouco espaço para usuários. A correção óbvia é mais GPUs. Esta aula responde quanto isso de fato custa, porque o fio entre os chips tem um preço que não aparece em nenhuma ficha técnica que você estava consultando.
+A [aula 9.4](/pt-br/lessons/9-hardware-and-infrastructure/9.4-nvidia-cuda-hopper-blackwell/) deixou você com um problema de dimensionamento. O Qwen3.8-27B em bf16 são 54 GB de pesos, e a [aula 7.2](/pt-br/lessons/7-inference-and-efficiency/7.2-the-kv-cache/) acrescenta até 16 GiB de KV cache para uma única sequência de comprimento máximo. Um único acelerador de 80 GB, portanto, serve o modelo com muito pouco espaço para usuários. O primeiro impulso é usar mais GPUs. Esta aula responde quanto isso de fato custa, porque o fio entre os chips tem um preço que não aparece em nenhuma ficha técnica que você estava consultando.
 
 ## O que precisa atravessar o fio a cada token?
 
-A [aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) estabeleceu o mecanismo. Sob **tensor parallelism**, cada matriz de pesos é dividida entre **ranks** (as GPUs participantes, numeradas de 0 a N−1). Heads de attention e de DeltaNet são distribuídos de um jeito, as projeções de subida e descida da rede feed-forward de outro. Cada rank computa um resultado parcial sobre sua fatia, e as fatias precisam ser somadas antes de o residual stream (o vetor que cada token carrega de camada em camada) seguir.
+A [aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) estabeleceu o mecanismo. Sob **tensor parallelism**, cada matriz de pesos é dividida entre **ranks** (as GPUs participantes, numeradas de 0 a N−1). Heads de attention e de DeltaNet são distribuídos de um jeito, as projeções de subida e descida da rede feed-forward (as matrizes de alargamento e estreitamento) de outro. Cada rank computa um resultado parcial sobre sua fatia, e as fatias precisam ser somadas antes de o residual stream (o vetor que cada token carrega de camada em camada) seguir.
 
 No arranjo padrão, cada camada tem dois desses pontos de reconciliação:
 
@@ -64,15 +64,15 @@ $$
 128 \times 10\ \text{KiB} = 1{,}280\ \text{KiB} = 1.25\ \text{MiB de payload por token}.
 $$
 
-Um ring all-reduce, o algoritmo comum em que os ranks passam pedaços ao redor de um anel, coloca $\tfrac{2(N-1)}{N}$ vezes o payload no fio de cada rank. Então duas GPUs movem 1,25 MiB por token e quatro movem cerca de 1,875 MiB. A uma taxa interativa de 50 tokens por segundo, isso é menos de 100 MiB por segundo por rank. O NVLink, a ligação direta de GPU para GPU da NVIDIA, é informado pelo fabricante em centenas de gigabytes por segundo, então esse tráfego é um erro de arredondamento ali, e confortável até para PCIe, o barramento de expansão comum.
+Aqui **payload** significa os bytes reais de dados enviados pelo link. Um ring all-reduce, o algoritmo comum em que os ranks passam pedaços ao redor de um anel, coloca $\tfrac{2(N-1)}{N}$ vezes o payload no fio de cada rank. Então duas GPUs movem 1,25 MiB por token e quatro movem cerca de 1,875 MiB. A uma taxa interativa de 50 tokens por segundo, isso é menos de 100 MiB por segundo por rank. O NVLink, a ligação direta de GPU para GPU da NVIDIA, é informado pelo fabricante em centenas de gigabytes por segundo, então esse tráfego é um erro de arredondamento ali, e confortável até para PCIe, o barramento de expansão comum.
 
 ## Os bytes não são o problema; as idas e voltas são
 
 É exatamente aqui que acontece o desvio errado de sempre. Um engenheiro calcula esse payload, vê que é minúsculo, conclui que o interconnect é irrelevante e compra quatro GPUs numa placa só com PCIe esperando quatro vezes o throughput de uma.
 
-O erro é medir a quantidade errada. Os 128 all-reduces por token não são uma transferência de 1,25 MiB. São 128 idas e voltas bloqueantes, uma depois da outra, e num coletivo pequeno (um passo de comunicação que envolve todos os ranks) o custo é dominado pela latência, não pela bandwidth. Pense em 128 requisições HTTP pequenas em sequência: o tempo total é fixado pelo tempo de ida e volta, não por quantos bytes cada uma carrega.
+O erro é medir a quantidade errada. Os 128 all-reduces por token não são uma transferência de 1,25 MiB. São 128 idas e voltas **bloqueantes** (cada GPU precisa pausar até a troca terminar), uma depois da outra, e num coletivo pequeno (um passo de comunicação que envolve todos os ranks) o custo é dominado pela latência, não pela bandwidth. Pense em 128 requisições web (HTTP) pequenas em sequência: o tempo total é fixado pelo tempo de ida e volta, não por quantos bytes cada uma carrega.
 
-Coloque hipóteses declaradas sobre a latência (hipóteses para tornar o formato visível, não números de fabricante) e refaça a aritmética. Digamos que um fabric rápido dentro de uma máquina custe cerca de 10 microssegundos por all-reduce pequeno e um lento cerca de 50. Para um cenário declarado pelo tamanho do checkpoint, aplique a divisão da [aula 9.1](/pt-br/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/) à fatia do arquivo de cada GPU; isso é uma heurística de planejamento, não tráfego ativo medido:
+Coloque hipóteses declaradas sobre a latência (hipóteses para tornar o formato visível, não números de fabricante) e refaça a aritmética. Digamos que um **fabric** (ligação de alta velocidade) rápido dentro de uma máquina custe cerca de 10 **microssegundos** (milionésimos de segundo) por all-reduce pequeno e um lento cerca de 50. Para um cenário declarado pelo tamanho do checkpoint, aplique a divisão da [aula 9.1](/pt-br/lessons/9-hardware-and-infrastructure/9.1-memory-bandwidth-vs-flops/) à fatia do arquivo de cada GPU; isso é uma heurística de planejamento, não tráfego ativo medido:
 
 $$
 N = 2:\quad \frac{27\ \text{GB}}{3.35\ \text{TB/s}} \approx 8.06\ \text{ms}, \qquad N = 4:\quad \frac{13.5\ \text{GB}}{3.35\ \text{TB/s}} \approx 4.03\ \text{ms}.
@@ -94,12 +94,9 @@ $$
 
 ## Lendo as três linhas
 
-Leia essas três linhas com atenção.
+<Figure id="t9-tp-latency-split" />
 
-- Dobrar de duas para quatro GPUs no fabric rápido devolveu 1,76 vez, não 2. O termo pelo tamanho do checkpoint caiu pela metade enquanto a comunicação suposta permaneceu fixa.
-- Quatro GPUs no fabric lento são mais lentas que duas no rápido.
-
-O interconnect, e não a contagem de aceleradores, decidiu o resultado. É por isso que o NVLink existe como produto distinto do PCIe, e por que o tensor parallelism é mantido dentro de um nó (uma máquina). Fabrics entre nós, como InfiniBand ou RoCE (redes que ligam máquinas), ficam reservados às formas de paralelismo que reconciliam raramente:
+Avance pelas três configurações acima: o interconnect, e não a contagem de aceleradores, decidiu o resultado. É por isso que o NVLink existe como produto distinto do PCIe, e por que o tensor parallelism é mantido dentro de um nó (uma máquina). Fabrics entre nós, como InfiniBand ou RoCE (redes que ligam máquinas), ficam reservados às formas de paralelismo que reconciliam raramente:
 
 - **data parallelism**, que sincroniza uma vez por passo de treinamento;
 - **pipeline parallelism** sobre os 16 super-blocos do modelo (grupos de camadas que se repetem), que passa uma ativação de um estágio para o seguinte em vez de reconciliar a cada camada.
@@ -115,11 +112,11 @@ $$
 Agora os bytes importam de verdade e a bandwidth governa. É a divisão de arithmetic intensity da [aula 7.3](/pt-br/lessons/7-inference-and-efficiency/7.3-prefill-vs-decode-two-different-machines/) reaparecendo na rede em vez da memória. O prefill é limitado por bandwidth sobre o fabric; o decode é limitado por latência sobre ele.
 
 :::warning
-Um equívoco frequente é achar que o grau de tensor parallel (o número de GPUs entre as quais uma camada é dividida) é um botão de ajuste livre. As próprias formas do modelo o restringem. O Qwen3.8-27B tem 24 query heads e 4 KV heads. O tamanho intermediário da FFN é 17.408 e o vocabulário com padding é 248.320, e ambos dividem limpo por 4, 8 e bem além; o padding de vocabulário da [aula 5.3](/pt-br/lessons/5-pretraining-at-scale/5.3-training-tokenizer/) existe precisamente para tornar isso verdade. A forma que restringe primeiro são os 4 KV heads. No grau 4, cada rank possui exatamente um KV head e o cache faz sharding perfeito. No grau 8, os KV heads precisam ser replicados entre pares de ranks, então cada rank armazena uma duplicata das mesmas entradas de cache. A economia de KV cache então para de crescer, embora os pesos e a FFN continuem sendo divididos, justo quando a fração de comunicação está subindo. O grau 8 é um custo a precificar, não uma impossibilidade. O design de grouped-query da [aula 7.6](/pt-br/lessons/7-inference-and-efficiency/7.6-mqa-gqa-and-mla/) que tornou o cache pequeno é o mesmo design que limita até onde o cache é dividido.
+Um equívoco frequente é achar que o grau de tensor parallel (o número de GPUs entre as quais uma camada é dividida) é um botão de ajuste livre. As próprias formas do modelo o restringem. O Qwen3.8-27B tem 24 query heads e 4 KV heads. O tamanho intermediário da FFN é 17.408 e o vocabulário com padding é 248.320, e ambos dividem limpo por 4, 8 e bem além; o **padding de vocabulário** (linhas extras sem uso adicionadas para dividir de forma limpa, [aula 5.3](/pt-br/lessons/5-pretraining-at-scale/5.3-training-tokenizer/)) existe precisamente para tornar isso verdade. A forma que restringe primeiro são os 4 KV heads. No grau 4, cada rank possui exatamente um KV head e o cache faz sharding perfeito. No grau 8, os KV heads precisam ser replicados entre pares de ranks, então cada rank armazena uma duplicata das mesmas entradas de cache. A economia de KV cache então para de crescer, embora os pesos e a FFN continuem sendo divididos, justo quando a fração de comunicação está subindo. O grau 8 é um custo a precificar, não uma impossibilidade. O design de grouped-query da [aula 7.6](/pt-br/lessons/7-inference-and-efficiency/7.6-mqa-gqa-and-mla/) que tornou o cache pequeno é o mesmo design que limita até onde o cache é dividido.
 :::
 
 :::caveat
-Os números de latência acima são hipóteses declaradas para que você as substitua pelas suas, e os 3,35 TB/s e as bandwidths de NVLink são especificações publicadas pelo fabricante, não medições feitas aqui. A contagem de 128 coletivos é um modelo de primeira ordem de um layout de tensor parallel padrão: implementações reais fundem operações, sobrepõem comunicação com computação e podem reconciliar de forma diferente nas camadas de Gated DeltaNet. Perfile a sua própria configuração com a instrumentação da biblioteca de coletivos antes de se comprometer com uma topologia, e nunca cite esta aritmética como benchmark.
+Os números de latência acima são hipóteses declaradas para que você as substitua pelas suas, e os 3,35 TB/s e as bandwidths de NVLink são especificações publicadas pelo fabricante, não medições feitas aqui. A contagem de 128 coletivos é um modelo de primeira ordem de um layout de tensor parallel padrão: implementações reais fundem operações, sobrepõem comunicação com computação e podem reconciliar de forma diferente nas camadas de Gated DeltaNet. Perfile a sua própria configuração com a **instrumentação** (ferramentas embutidas de medição de tempo) da biblioteca de coletivos antes de se comprometer com uma topologia, e nunca cite esta aritmética como benchmark.
 :::
 
 A regra para projeto de cluster é colocar o paralelismo que reconcilia com mais frequência no fio mais rápido que você possui, e dividir um modelo onde as dimensões dele próprio dividem de forma limpa, a menos que você tenha precificado a replicação. Para este modelo, isso em geral significa tensor parallelism dentro de um nó, em grau 2 ou 4, sobre NVLink, e todo o resto pela rede. O grau 8 também funciona, mas paga por KV duplicado e mais sincronização, então meça antes de escolhê-lo. A [aula 9.10](/pt-br/lessons/9-hardware-and-infrastructure/9.10-cost-per-token/) pega essas configurações e finalmente as precifica.

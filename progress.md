@@ -1,38 +1,20 @@
-# Test suite maintenance
+# 0.19.0 progress
 
-## Acceptance
+Plan and frozen acceptance criteria: `docs/plans/0.19-pictures-and-the-browser-lab/plan.md`.
+Test status: `tests.json`.
 
-- Run the existing website and Python example suites before editing. Record executed cases and any baseline limits in `tests.json`.
-- Use `cccc` to measure supported source. Write new tests only for code with cognitive complexity above 5 or code containing a regular expression.
-- Remove existing tests or assertions only when they guard no behavior or a named check covers the same behavior. Preserve unique regressions, even when the source is simple.
-- Re-run the affected suites and repository gates. Obtain fresh independent verification of the changes before merging and tagging.
-- Bump the patch version, update release and contributor documentation, and keep unrelated worktrees and files intact.
+## Done
 
-## Progress
+- **Wave 1 (Foundation):** Built `release/0.19-qwen-lab` from `origin/main` (`c7148f3`); updated reader contract (`docs/WRITING.md`, `PRODUCT.md`); implemented zero-JS CSS figure motion (`Figure.astro`, `FigureBody.astro`, extracted to `src/styles/figure.css` in Wave 7); extended `scripts/render-check.mjs` and `--self-test` across all four figure kinds, reduced motion, print, and forced colors; registered all 35 track figure modules.
+- **Wave 2 (Pilot):** Rewrote/clarified Track 0 (`0.1`–`0.8`, both locales) with 7 figures (including 2 stepped plots on `0.3` and `0.6`). Independent review fired the kill criterion on `0.8` (kept prose-only), updating Acceptance 1 and `docs/WRITING.md` to "every lesson triaged in its track ledger; a figure wherever a passage teaches a process, architecture, comparison, or numerical/visual structure".
+- **Wave 3 (Lab & Track 34):** Vendored and hardened `examples/qwen-local-lab/` (`fetch_vendor.py` npm SHA-512/SHA-256 verification + 1-line `wllama.js` worker patch, streaming `hash-wasm` SHA-256 on downloaded & cached 639.45 MB GGUF, pinned SHA-256 WebGPU `model_lib` `blob:` handoff, hashed CSP in `dist/_headers` and `<meta>`, CI `lab` job with 12 Node + 9 Python tests). Ran real-browser verification on Apple M5 Pro (macOS 27.3, Chromium `156.0.8078.4`) across CPU 4-thread WASM and Metal-3 WebGPU. Authored `src/lib/browser-lab-facts.ts` and Track 34 (`34.1`–`34.8`, both locales, 10 figures, all code blocks verified by `content:excerpts`).
+- **Wave 4 (Lanes, Tracks 1–33):** Triaged and updated all 33 remaining tracks in both locales (476 MDX files total across 35 tracks), adding 208 new zero-JS animated figures (**248 figures across 237 of 238 lessons**), recording every lesson in `docs/plans/0.19-pictures-and-the-browser-lab/ledger/`, and running fresh-context cross-model fact checks on every track. Added strict 100% triage-ledger coverage gate + negative-control test in `scripts/content-figures.mjs` and `tests/content-checkers.test.mjs`.
+- **Wave 5 (Front end):** Completed design critique and UI accessibility audit; applied focus-restore, keyboard, print, forced-colors, and mobile fixes; inspected desktop (1440 px) and mobile (390 px) screenshots in Desk and Field editions plus two angles of `/explore/`.
+- **Wave 6 (Review & Security Audit):** Completed two-axis `code-review` (Standards + Spec) and `security-audit` (**GO — 0 confirmed or candidate exploitable vulnerabilities**); fixed all review findings (removed `beforeprint` JS from `Lesson.astro`, fixed `WRITING.md` self-contradiction, hardened `build.py`/`fetch_vendor.py`/`serve.py`/`app.js`, extended `render-check.mjs`, synced deterministic 15,658,390-byte `dist/index.html`).
+- **Wave 7 (Integration):** Extracted `src/styles/figure.css` (worst-route CSS `70.0 KB` <= `72 KB`, CSP `559` chars <= `1,900`), stripped duplicate step tab prefixes in `Figure.astro`, raised `.figure` specificity over `.prose`, verified `cccc` cognitive complexity on new/edited code (0 parse errors; no redundant tests to prune), passed 332/332 website tests + 12/12 lab worker tests + 9/9 lab Python tests + all content/budget/contrast/privacy/audit gates.
+- **Wave 8 (Release prep):** Bumped `package.json` to `0.19.0`, `wrangler.jsonc` `compatibility_date` to `2026-11-26`, and updated `CHANGELOG.md` (with measured baseline vs 0.19 readability metrics), `PRODUCT.md`, `README.md`, `MEMORY.md`, `AGENTS.md`, `FOR_YOU_KNOW.md`, `progress.md`, and `tests.json`.
+- **Wave 9 (Owner scope addition, 2026-11-26):** Lesson 7.6 gained the `kv-whatif` lab (12th lab; `kvCounterfactual`/`kvWhatIf`, defaults equal lesson 7.2 in both locales, real-browser checked at 390 and 1440 px in both editions) and a table of KV per token across attention families (`KV_PEER_CONFIGS`, six configs at pinned Hugging Face revisions). `readLabControl` now rejects an empty select. 346/346 website tests; worst-route CSS `70.4 KB` <= `72 KB`; CSP line 559 characters.
 
-- Established the baseline at the `v0.17.0` main commit in an isolated worktree. The website build generated 538 pages. The website and all four Python suites passed with one existing Python skip.
-- Scanned all 181 supported source files under `src`, `scripts`, and the Python example source with `cccc 1.8.0`. The scanner scored 1,293 functions and reported zero parse errors. Astro templates are outside this scan.
-- Audited all 33 website test files and the four Python suite inventories. Existing tests with distinct behavior stay, including those for low-complexity code.
-- Pruned 10 website cases and seven assertion groups across the website and Python suites. Added no tests. The website suite passed 329 cases. All four Python suites matched their baseline counts.
-- The website suite's measured line and function coverage held at 41.29% and 87.20%. Reported branch coverage was 80.78% at baseline and 80.87% in the corrected candidate.
-- Independent review kept the retired CSS token guard. A stylesheet can define and use a retired token without violating the undefined-token check.
+## Pending owner confirmation
 
-## Pruning ledger
-
-| Existing check | Reason and coverage that stays |
-| --- | --- |
-| `agent-engineering-acceptance`: both locale quiz length census cases | Duplicate of `pnpm content:parity` on the same corpus, directions and thresholds. The per-lesson and planted-corpus checks stay. |
-| `agent-engineering-acceptance`: the `lastVisitKey('pt-br')` assertion | Identical input and expected key in `progress.test.mjs`. The distinct first-part completion key stays. |
-| `content-quiz-distribution`: balanced positions positive case | The comparable-length positive case uses the same positions, bilingual structure, relative option lengths and successful exit assertion. |
-| `course-player`: route-existence case | The acceptance tests require exactly 230 lesson pages and 34 track pages per locale. The rendered home-parts test requires content on both home routes. |
-| `math-scroll`: synthetic inline MathML case | The real Markdown pipeline requires the exact inline span opening, excluding focus and region attributes. The transform idempotence test stays. |
-| `moe-math`: counterfactual total and serving-read derivations | The Qwen counterfactual case pins each operand using the same fixture. The removed cases recompute values in the test without calling additional application code. |
-| `rendered-html`: build-produced-pages case | The SEO route-set test requires both a page and a lesson minimum and fails on missing output. |
-| `rendered-html`: generic language and canonical case | Exact locale-specific language remains checked on the same HTML files. The SEO metadata test requires each page's canonical URL. |
-| `rendered-html`: native timezone demonstration | Tests the runtime's formatter using constant values. The application UTC requirement and rendered lesson dates stay checked. |
-| `seo`: second social-card file lookup | The exact card pathname and byte hash are checked against the first lookup. The file's actual PNG dimensions stay checked. |
-| `sky-layout`: loose horizontal star bound | The same stars must stay at least 14 units inside the horizontal bounds for each catalog. Vertical and label checks stay. |
-| `transformer-scene`: marker ID uniqueness | Marker IDs must equal the ordered component IDs, which are separately pinned to a unique sequence. |
-| `video-token-lab`: pt-BR parsing unit case | The calculator suite uses the same parser, locale, strings and expected values. The rendered video-lab locale case stays. |
-| Python `test_evals_corpus`: count of executed results | The same seeded fixture has its category sizes pinned and all case execution categories checked. Actual results are still checked for problems. |
-| Python `test_memory_compression`: strictly fewer tokens in the pinned ledger | The same pinned ledger is checked against the budget separately, and the uncompressed conversation is above that budget. The ledger must still preserve its facts. |
+- Merge PR #31 (`release/0.19-qwen-lab`) to `main`, tag `v0.19.0`, deploy production, run `verify:live --target production`, turn staging off, and run `devtrim purge`.

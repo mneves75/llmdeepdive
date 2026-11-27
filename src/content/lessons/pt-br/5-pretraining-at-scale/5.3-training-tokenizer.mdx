@@ -42,22 +42,22 @@ citations:
     authors: "Taku Kudo e John Richardson"
     year: 2018
     url: "https://arxiv.org/abs/1808.06226"
-updated: "2026-10-18"
+updated: "2026-11-26"
 ---
 
-Abra o tokenizer fixado e o config do Qwen, e aparecem dois números relacionados. O vocabulário do modelo e os added tokens usam IDs de 0 a 248.076. Já as matrizes de embedding e de saída alocam **248.320 linhas**. Isso deixa 243 linhas que o tokenizer fixado nunca emite.
+Abra o tokenizer fixado e o config (o arquivo de configuração do modelo) do Qwen, e aparecem dois números relacionados. O vocabulário do modelo e os added tokens usam IDs de 0 a 248.076. Já as matrizes de embedding e de saída alocam **248.320 linhas**. Isso deixa 243 linhas que o tokenizer fixado nunca emite.
 
 Os arquivos estabelecem essas contagens; eles não dizem por que a equipe escolheu a alocação maior. Mantenha as duas perguntas separadas. O design do tokenizer é uma decisão linguística, o alinhamento de matriz é uma restrição de engenharia, e uma explicação plausível não deve ser registrada como história. Esta aula cobre as duas metades e depois o que precisa ser decidido antes de congelar um tokenizer para sempre.
 
 ## Como um tokenizer aprende suas peças?
 
-Um modelo de linguagem nunca recebe texto bruto. O tokenizer mapeia texto para IDs inteiros, e a tabela de embedding mapeia esses IDs para vetores de 5120 dimensões. Treinar um tokenizer significa escolher uma amostra representativa do corpus governado da [aula 5.2](/pt-br/lessons/5-pretraining-at-scale/5.2-data-pipeline/), com os limites de mistura já aplicados, e aprender dela um inventário de tamanho fixo de peças de subword. Três famílias fazem isso:
+Um modelo de linguagem nunca recebe texto bruto. O tokenizer mapeia texto para IDs inteiros, e a tabela de embedding mapeia esses IDs para vetores de 5120 dimensões. Treinar um tokenizer significa escolher uma amostra representativa do corpus governado da [aula 5.2](/pt-br/lessons/5-pretraining-at-scale/5.2-data-pipeline/), com os limites de mistura já aplicados, e aprender dela um inventário de tamanho fixo de peças de subword (fragmentos entre letras isoladas e palavras inteiras). Três famílias fazem isso:
 
-- Esquemas **byte-level** partem de bytes, então qualquer entrada é representável.
+- Esquemas **byte-level** partem de bytes (as unidades brutas de 8 bits em que computadores guardam texto), então qualquer entrada é representável.
 - **BPE** (byte-pair encoding) funde repetidamente o par adjacente de peças mais frequente, produzindo uma lista ordenada de merges.
-- **Unigram** começa com muitas peças candidatas e poda as que menos contribuem para um objetivo probabilístico.
+- **Unigram** começa com muitas peças candidatas e poda as que menos contribuem para um objetivo probabilístico (quão bem o vocabulário explica a amostra de texto).
 
-O SentencePiece, uma biblioteca muito usada, consegue treinar sobre sentenças brutas e trata o espaço em branco como um símbolo explícito. Todos esses são compromissos entre unidades universais minúsculas (bytes ou letras) e um dicionário impossível com todas as palavras inteiras.
+O SentencePiece, uma biblioteca de software muito usada, consegue treinar sobre sentenças brutas e trata o espaço em branco (espaços e quebras de linha) como um símbolo explícito. Todos esses são compromissos entre unidades universais minúsculas (bytes ou letras) e um dicionário impossível com todas as palavras inteiras.
 
 ## O que um vocabulário maior compra, e quanto custa?
 
@@ -81,21 +81,19 @@ A concepção equivocada mais comum é que um vocabulário maior é sempre melho
 
 ## Por que a contagem de linhas pode ser 248.320?
 
-Agora olhe para uma propriedade de engenharia da contagem de linhas alocada, sem atribuir intenção. O **tensor parallelism** divide uma matriz de pesos entre várias GPUs, cada uma chamada de rank, para que cada uma guarde uma fatia (a [aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) trata disso). Ele só consegue dividir uma dimensão de vocabulário igualmente quando a contagem de linhas é divisível pelo número de ranks, o grau paralelo. O valor lançado fatora como:
+Agora olhe para uma propriedade de engenharia da contagem de linhas alocada, sem atribuir intenção. O **tensor parallelism** divide uma matriz de pesos entre várias GPUs (processadores gráficos), cada uma chamada de rank, para que cada uma guarde uma fatia (a [aula 5.8](/pt-br/lessons/5-pretraining-at-scale/5.8-model-parallelism/) trata disso). Ele só consegue dividir uma dimensão de vocabulário igualmente quando a contagem de linhas é divisível pelo número de ranks, o grau paralelo. Compare a contagem de linhas lançada com um número de aparência redonda, 250.000:
 
 $$
-248{,}320 = 512\times 485 = 2^{9}\times 5\times 97.
+248{,}320 = 512\times 485 = 2^{9}\times 5\times 97,
 $$
 
-Ele divide limpo por 2, 4, 8, 16, 32, 64, 128, 256 e 512. Então qualquer grau de tensor parallel em potência de dois até 512 recebe uma fatia igual: no grau 8, cada rank tem 31.040 linhas; no grau 32, 7.760; no grau 64, 3.880. Em contraste, um número de aparência redonda como 250.000 só divide até o grau 16 entre essas potências de dois:
-
 $$
-250{,}000 = 2^{4}\times 5^{6} = 16\times 15{,}625,
+250{,}000 = 2^{4}\times 5^{6} = 16\times 15{,}625.
 $$
 
-que divide por 16 e então para. No grau 32 de tensor parallel você teria 7.812,5 linhas por rank, o que é impossível. O framework preencheria a matriz sem avisar ou falharia ruidosamente no lançamento.
+<Figure id="t5-vocab-alignment" />
 
-Então o inventário aprendido pelo tokenizer é preenchido até uma contagem de linhas divisível por toda potência de dois até 512, e as linhas excedentes nunca são emitidas. Elas custam alguns milhões de parâmetros e compram liberdade em todo layout paralelo futuro. Frameworks conseguem preencher dimensões incompatíveis por conta própria, então a divisibilidade é um benefício real de implementação. Os arquivos públicos **não** dizem que esse benefício levou a Qwen a escolher 248.320; essa explicação causal continua sendo inferência.
+Como mostram os dois quadros, 248.320 divide limpo por toda potência de dois até 512, enquanto 250.000 para no grau 16 e força o framework de treino (o software que coordena o treino distribuído) a preencher em silêncio ou falhar no lançamento. As linhas excedentes custam alguns milhões de parâmetros e compram liberdade em layouts paralelos futuros — embora frameworks consigam preencher dimensões incompatíveis por conta própria, e os arquivos públicos **não** digam que essa divisibilidade levou a Qwen a escolher 248.320. Essa explicação causal continua sendo inferência.
 
 ## Dá para aparar as linhas não usadas?
 
@@ -103,15 +101,15 @@ Então o inventário aprendido pelo tokenizer é preenchido até uma contagem de
 Um config lançado reporta a alocação da matriz, não necessariamente a quantidade de IDs que seu tokenizer emite. Neste artefato fixado, os números observados são 248.077 IDs usados e 248.320 linhas. Inspecione sempre os dois arquivos antes de interpretar a diferença.
 :::
 
-O erro clássico vem logo em seguida: tratar as linhas não usadas da cauda como removíveis com segurança. Aparar a matriz mudaria os shapes do checkpoint e poderia eliminar divisibilidade útil, economizando apenas 243 × 5120 × 2 matrizes × 2 bytes bf16, cerca de 5 MB. O próprio mapeamento de tokens também precisa permanecer igual. A conclusão segura é contratual: carregue os shapes de matriz e de tokenizer que o checkpoint publica, e não invente nem remova linhas de um artefato treinado.
+O erro clássico vem logo em seguida: tratar as linhas não usadas da cauda como removíveis com segurança. Aparar a matriz mudaria os shapes do checkpoint (o arquivo salvo do modelo) e poderia eliminar divisibilidade útil, economizando apenas 243 × 5120 × 2 matrizes × 2 bytes bf16, cerca de 5 MB. O próprio mapeamento de tokens também precisa permanecer igual. A conclusão segura é contratual: carregue os shapes de matriz e de tokenizer que o checkpoint publica, e não invente nem remova linhas de um artefato treinado.
 
 ## O que precisa ser decidido antes de congelar o tokenizer?
 
 Todo o resto sobre o treino de um tokenizer decorre de um fato: o artefato é permanente. Depois que um modelo treina com ele, cada linha do embedding significa "o token com este ID", para sempre.
 
 - **Reserve tokens especiais antes de congelar os IDs**: padding, fronteiras de sequência, marcadores de papel de chat, marcadores de modo de pensamento, marcadores de FIM. Acrescentar um depois significa redimensionar os embeddings e treinar uma linha fria do zero. Inserir um no meio desloca todos os IDs seguintes e corrompe toda associação que o modelo aprendeu.
-- **Decida a normalização deliberadamente.** O Unicode pode escrever texto visualmente idêntico de várias formas. Converter maiúsculas e minúsculas para uma forma única ou remover acentos encolhe um vocabulário, ao custo de distinções de que seu produto pode precisar.
-- **Avalie em amostras held-out.** Reporte a fertilidade por idioma e domínio em vez de uma média global única, mais a correção de ida e volta (decodificar os IDs devolve o texto normalizado, que é o texto original sempre que a normalização não mudou nada), a pior expansão em entrada adversarial e o throughput de codificação.
-- **Inspecione exemplos reais na mão**, porque a morfologia do português, acentos combinantes, sequências de emoji, texto CJK, escritas da direita para a esquerda, indentação e cadeias longas de dígitos quebram cada um de um jeito.
+- **Decida a normalização deliberadamente.** O Unicode (o padrão internacional que atribui um código a cada caractere e emoji) pode escrever texto visualmente idêntico de várias formas. Converter maiúsculas e minúsculas para uma forma única ou remover acentos encolhe um vocabulário, ao custo de distinções de que seu produto pode precisar.
+- **Avalie em amostras held-out.** Reporte a fertilidade por idioma e domínio em vez de uma média global única, mais a correção de ida e volta (decodificar os IDs devolve o texto normalizado, que é o texto original sempre que a normalização não mudou nada), a pior expansão em entrada adversarial e o throughput (tokens processados por segundo) de codificação.
+- **Inspecione exemplos reais na mão**, porque a morfologia do português, acentos combinantes, sequências de emoji, texto CJK (chinês, japonês e coreano), escritas da direita para a esquerda, indentação e cadeias longas de dígitos quebram cada um de um jeito.
 
-Então congele os arquivos e calcule seus hashes. Guarde a versão do código de treino, as regras de normalização, o manifesto da amostra, o vocabulário, os merges, a tabela de tokens especiais e o relatório de avaliação. Teste que cada worker de dados produz IDs idênticos byte a byte para um conjunto dourado, uma lista fixa de entradas com saídas corretas conhecidas. Uma incompatibilidade de versão do tokenizer que ninguém percebe deixa uma run treinar alegremente sobre entrada sem sentido enquanto a loss permanece finita e plausível. É a falha silenciosa mais cara desta trilha.
+Então congele os arquivos e calcule seus hashes (impressões digitais criptográficas que acusam qualquer edição acidental). Guarde a versão do código de treino, as regras de normalização, o manifesto da amostra, o vocabulário, os merges, a tabela de tokens especiais e o relatório de avaliação. Teste que cada worker de dados (processo paralelo que prepara batches de treino) produz IDs idênticos byte a byte para um conjunto dourado, uma lista fixa de entradas com saídas corretas conhecidas. Uma incompatibilidade de versão do tokenizer que ninguém percebe deixa uma run treinar alegremente sobre entrada sem sentido enquanto a loss permanece finita e plausível. É a falha silenciosa mais cara desta trilha.

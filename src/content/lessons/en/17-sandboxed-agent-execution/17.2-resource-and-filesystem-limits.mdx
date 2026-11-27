@@ -42,10 +42,10 @@ citations:
     authors: "Firecracker project"
     year: 2026
     url: "https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/docs/prod-host-setup.md"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
-The model's report script has a bug. It means to read the purchases CSV row by row, but it never advances the row, so the loop never ends. A second version keeps appending every row to a list inside that loop, and a third prints the whole table on every pass. Nobody attacked anything: the model made an ordinary mistake. Still, the first script holds a CPU core forever, the second takes memory until the machine swaps, and the third pours megabytes of text back into the model's next prompt. This lesson bounds each of them with limits the kernel enforces, and it is honest about what those limits leave open.
+The model's report script has a bug. It means to read the purchases CSV (comma-separated values, a plain-text table) row by row, but it never advances the row, so the loop never ends. A second version keeps appending every row to a list inside that loop, and a third prints the whole table on every pass. Nobody attacked anything: the model made an ordinary mistake. Still, the first script holds a central processing unit (CPU) core forever, the second fills memory until the machine starts *swapping* (spilling memory onto slow disk), and the third pours megabytes of text back into the model's next prompt. This lesson bounds each of them with limits the kernel enforces, and it is honest about what those limits leave open.
 
 ## What can an honest bug exhaust?
 
@@ -54,26 +54,26 @@ Five resources run out, and each has its own symptom:
 - **CPU time**: a loop that never ends.
 - **Memory**: a list or string that keeps growing.
 - **Disk and output**: a file or a print that never stops.
-- **File descriptors**: files or sockets opened in a loop and never closed. A *file descriptor* is the number the kernel gives a process for each open file, pipe or socket.
+- **File descriptors**: files or sockets ([lesson 17.1](/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/)) opened in a loop and never closed. A *file descriptor* is the number the kernel gives a process for each open file, *pipe* (an in-memory channel connecting one program's output to another's input) or socket.
 - **Processes**: a loop that starts new processes, the classic *fork bomb*. `fork` is the system call that copies the current process.
 
-Wall-clock time is a sixth. A script that sleeps or waits on a lock uses no CPU, yet it still holds the run open.
+Wall-clock time is a sixth. A script that sleeps or waits on a *lock* (a coordination marker protecting a shared resource) uses no CPU, yet it still holds the run open.
 
 ## Limits the kernel enforces per process
 
-A *resource limit*, or *rlimit*, is a ceiling the kernel attaches to a process and to the processes it starts. Each has a *soft* value, where the kernel starts objecting, and a *hard* value, the ceiling for the soft one. An unprivileged process may lower either value but can never raise the hard one again. That is why limits set inside the child before the script starts hold for the script's whole life.
+A *resource limit*, or *rlimit*, is a ceiling the kernel attaches to a process and to the processes it starts. Each has a *soft* value, where the kernel starts objecting, and a *hard* value, the ceiling for the soft one. An *unprivileged process* (one running as an ordinary user without administrator rights) may lower either value but can never raise the hard one again. That is why limits set inside the child before the script starts hold for the script's whole life.
 
-The getrlimit man page says what each limit does when reached:
+The getrlimit man page says what each limit does when reached. A *signal* is a short notice the kernel sends to a process (`SIGXCPU` warns that CPU time ran out; `SIGKILL` ends the process immediately and cannot be ignored), while `EFBIG`, `EMFILE` and `EAGAIN` are operating-system error codes for file too large, too many open files, and resource temporarily unavailable:
 
 | Limit | Bounds | When reached |
 |---|---|---|
 | `RLIMIT_CPU` | CPU seconds | `SIGXCPU` at the soft value, then `SIGKILL` at the hard value |
-| `RLIMIT_AS` | address space | memory requests fail; Python raises `MemoryError` |
+| `RLIMIT_AS` | address space (total virtual memory mapped) | memory requests fail; Python raises `MemoryError` |
 | `RLIMIT_FSIZE` | size of each file written | the write fails with `EFBIG` (CPython ignores `SIGXFSZ`) |
 | `RLIMIT_NOFILE` | open file descriptors | `open` fails with `EMFILE` |
 | `RLIMIT_NPROC` | processes of the real user | `fork` fails with `EAGAIN` |
 
-The project's limits are one small record:
+The `Limits` record below bundles the project's default ceilings in one read-only object: 2 seconds of CPU time, 10 seconds of wall-clock time, 256 MiB of address space where supported, 1 MiB per written file, 64 open file descriptors, and zero child processes:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/sandbox/process.py
@@ -91,7 +91,7 @@ class Limits:
     allow_processes: bool = False
 ```
 
-A short bootstrap applies them inside the child, before the script runs. Python's documentation warns that the alternative, a `preexec_fn` callback, "is NOT SAFE to use in the presence of threads in your application". The required limits fail closed:
+A short *bootstrap* (a startup script inside the child) applies those ceilings before the untrusted script runs. Python's documentation warns that the alternative, a `preexec_fn` callback, "is NOT SAFE to use in the presence of threads in your application" (*threads* are parallel execution paths sharing memory inside one process). The block below applies each required limit with `cap()` and *fails closed* — if the operating system refuses any ceiling, it writes the error as JSON to the report pipe and exits with code 125 so the untrusted code never runs:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/sandbox/process.py
@@ -106,21 +106,25 @@ except (ValueError, OSError) as error:
     sys.exit(125)
 ```
 
-If any of these cannot be set, the bootstrap reports the error and exits before the script starts, and `run_python` raises `SandboxSetupError`. The CPU limit has a hard value one second above the soft one, so the first signal is `SIGXCPU`, as the man page describes. The report travels through a pipe that the bootstrap closes before the script runs, so the script cannot write a fake report.
+When the bootstrap exits before closing a valid report, `run_python` raises `SandboxSetupError`. Setting the CPU hard limit one second above the soft limit lets `SIGXCPU` arrive first, as the man page describes, and closing the report pipe before guest code starts prevents the script from forging the status report.
 
 ## Time the CPU limit cannot see
 
-A sleeping loop uses almost no CPU, so `RLIMIT_CPU` never fires. The parent therefore waits with a wall-clock timeout and then kills the child. A kill sent only to the child would miss any process the child started. That is why the child starts with `start_new_session=True`, which makes it the leader of a new *process group*, and why the parent kills the whole group with one `killpg` call. The kill targets exactly the group this run created, never every Python process on the machine.
+The stepped figure below walks through how `run_python` bounds setup, busy or noisy scripts, and sleeping scripts that `RLIMIT_CPU` never catches.
+
+<Figure id="t17-rlimit-enforcement" />
+
+A kill sent only to the child process would miss any descendant the child started. Starting the child with `start_new_session=True` makes it the leader of a new *process group* (a set of related processes that can be signaled together), so the parent's `killpg` call stops exactly the group this run created, never every Python process on the machine.
 
 The timeout cannot take an injected clock. The kernel measures real time, so the tests that prove it spend about a second of real time each.
 
 :::caveat
-A process that calls `setsid()` leaves the group and survives the kill. A Linux *cgroup*, a kernel group that carries quotas and can be emptied in one step, reaches it. So does destroying a VM. Both appear in [lesson 17.4](/lessons/17-sandboxed-agent-execution/17.4-a-python-interpreter-in-a-microvm/).
+A process that calls `setsid()` leaves the group and survives the kill. A Linux *cgroup* ([lesson 17.1](/lessons/17-sandboxed-agent-execution/17.1-what-isolation-protects/)), a kernel group that carries quotas and can be emptied in one step, reaches it. So does destroying a virtual machine (VM). Both appear in [lesson 17.4](/lessons/17-sandboxed-agent-execution/17.4-a-python-interpreter-in-a-microvm/).
 :::
 
 ## Output is a resource too
 
-The child's stdout and stderr go to temporary files, not pipes. A pipe would make the parent read everything the child writes, so a flood of output would land in the parent's memory. A file is bounded by `RLIMIT_FSIZE`, and the parent then reads at most `max_file_bytes` of it. The same limit caps every file the script writes in its working directory. That per-file cap is the only disk bound here.
+The child's `stdout` (standard output, for normal printed text) and `stderr` (standard error, for error messages) go to temporary files, not pipes. A pipe would make the parent read everything the child writes, so a flood of output would land in the parent's memory. A file is bounded by `RLIMIT_FSIZE`, and the parent then reads at most `max_file_bytes` of it. The same limit caps every file the script writes in its working directory. That per-file cap is the only disk bound here.
 
 The working directory is the caller's job: every run gets a new, empty one, and it is deleted afterwards. Lesson 17.4's backend does both.
 
@@ -129,8 +133,8 @@ The working directory is the caller's job: every run gets a new, empty one, and 
 Three platform facts shape what these limits mean:
 
 - **macOS refuses `RLIMIT_AS`.** On macOS, `setrlimit` raised `ValueError` for both `RLIMIT_AS` and `RLIMIT_DATA` in this project's checks, so a Mac gives no address-space bound through `resource`. Failing closed would make every run fail, so memory is the one best-effort limit. `RunResult.memory_limited` says whether it was applied, and on Linux the test requires it to be true.
-- **`RLIMIT_NPROC` counts the whole user.** The man page defines it per real user ID and says it "is not enforced" for root or for processes with `CAP_SYS_ADMIN` or `CAP_SYS_RESOURCE`. A small positive number would block the user's other processes too, so the only portable setting is zero: no new processes, and on Linux no new threads.
-- **Some limits need more than rlimits.** A total disk quota, a read-only filesystem and a per-sandbox process count all need operating-system features: mounts, namespaces, cgroups. Firecracker's production guide recommends exactly that layer for its own processes.
+- **`RLIMIT_NPROC` counts the whole user.** The man page defines it per real user ID and says it "is not enforced" for `root` (the Unix/Linux administrator account) or for processes with administrator capabilities `CAP_SYS_ADMIN` or `CAP_SYS_RESOURCE`. A small positive number would block the user's other processes too, so the only portable setting is zero: no new processes, and on Linux no new threads.
+- **Some limits need more than rlimits.** A total disk quota, a read-only filesystem and a per-sandbox process count all need operating-system features: *mounts* (attaching a directory with rules such as read-only access), namespaces and cgroups. Firecracker's production guide recommends exactly that layer for its own processes.
 
 ## Run the exercise
 

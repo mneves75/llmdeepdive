@@ -42,10 +42,10 @@ citations:
     authors: "Jie Huang et al."
     year: 2023
     url: "https://arxiv.org/abs/2310.01798"
-updated: "2026-10-19"
+updated: "2026-11-26"
 ---
 
-The repair loop from [lesson 21.3](/lessons/21-bounded-agent-self-correction/21.3-repair-with-a-bounded-context/) could, in principle, ask the model for patches forever. Each attempt costs a model call, a test run and a little time, and a loop stuck on a bug it cannot fix keeps paying. How many attempts should it get, what does that cost on average and in the worst case, and how does the limit survive the process crashing halfway through? This lesson sets the budget, works out its arithmetic and makes the counters durable.
+The repair loop from [lesson 21.3](/lessons/21-bounded-agent-self-correction/21.3-repair-with-a-bounded-context/) could, in principle, ask the model for patches forever. Each attempt costs a model call, a test run and a little time, and a loop stuck on a bug it cannot fix keeps paying. How many attempts should it get, what does that cost on average and in the worst case, and how does the limit survive the *process* (the running program) crashing halfway through? This lesson sets the budget, works out its arithmetic and makes the counters *durable* (saved to disk so they survive a restart).
 
 ## What does "three attempts" mean?
 
@@ -62,12 +62,12 @@ The *expected attempts* count repair attempts only, including the successful one
 The calculator starts from these numbers. Change the success chance or the number of attempts and watch how fast the extra attempts stop paying for themselves.
 
 :::caveat
-Every number above assumes independent attempts. Real ones are rarely independent. If the bug sits outside the allowed files, or the failing test itself is wrong, every attempt fails for the same reason and the true success chance is zero. Huang et al. (2023) found that models revising their own reasoning without outside feedback often fail to correct it. A model writing its third patch from the same evidence is in a similar position. Correlated failures make escalation more likely than the calculator says, which is why the loop also stops on repeated failures.
+Every number above assumes independent attempts. Real ones are rarely independent. If the bug sits outside the allowed files, or the failing test itself is wrong, every attempt fails for the same reason and the true success chance is zero. Huang et al. (2023) found that models revising their own reasoning without outside feedback often fail to correct it. A model writing its third patch from the same evidence is in a similar position. *Correlated* failures (linked so that one failure makes the next likely too) make escalation more likely than the calculator says, which is why the loop also stops on repeated failures.
 :::
 
 ## Three limits, checked before every attempt
 
-Attempts are one limit. Tokens and wall-clock time are the other two, because one huge prompt or one hung test run can blow a budget without using many attempts. The loop checks all three before it starts an attempt:
+Attempts are one limit. Tokens and *wall-clock time* (real elapsed seconds) are the other two, because one huge prompt or one *hung* (stuck and unresponsive) test run can blow a budget without using many attempts. Before starting each attempt, `exhausted` checks attempts, tokens and elapsed seconds in order and returns the first limit reached, or `None` when all three still have room:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/repair/budget.py
@@ -82,11 +82,11 @@ Attempts are one limit. Tokens and wall-clock time are the other two, because on
         return None
 ```
 
-The defaults are 3 attempts, 20,000 tokens and 600 seconds. Tokens are counted with the same approximation [lesson 19.3](/lessons/19-agent-memory-and-context/19.3-token-budgets-and-compression/) labels as one, about four characters per token, over every repair prompt and reply. In the exercise, three wrong patches spend 1,793 approximate tokens; with a 1,000-token budget the loop stops after two attempts, at 1,178. A limit is checked between attempts, so one attempt can overshoot it; the per-run limits of [lesson 17.2](/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/) bound how far. Time comes from an injected clock, so the test of the wall-time limit runs instantly: with a clock that advances 100 seconds per reading and a 150-second budget, the second attempt is the last.
+The defaults are 3 attempts, 20,000 tokens and 600 seconds. Tokens are counted with the same approximation [lesson 19.3](/lessons/19-agent-memory-and-context/19.3-token-budgets-and-compression/) labels as one, about four characters per token, over every repair prompt and reply. In the exercise, three wrong patches spend 1,793 approximate tokens; with a 1,000-token budget the loop stops after two attempts, at 1,178. A limit is checked between attempts, so one attempt can overshoot it; the per-run limits of [lesson 17.2](/lessons/17-sandboxed-agent-execution/17.2-resource-and-filesystem-limits/) bound how far. Time comes from an *injected clock* (a fake clock supplied by the test so time advances immediately without waiting), so the test of the wall-time limit runs instantly: with a clock that advances 100 seconds per reading and a 150-second budget, the second attempt is the last.
 
 ## Counters that survive a restart
 
-A budget held in a variable resets when the process dies, and a loop that crashes on every model call would then retry forever. The counters therefore live in SQLite, one row per run, written with the compare-and-swap of [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): an update matches only if nobody committed since the writer read the row. The order of writes is the point:
+A budget held in a *variable* (a value stored only in temporary memory) resets when the process dies, and a loop that crashes on every model call would then retry forever. The counters therefore live in *SQLite* (a small database stored in a single file on disk), one row per run, written with the compare-and-swap of [lesson 14.3](/lessons/14-agent-architecture-and-state/14.3-checkpoints-and-serialization/): an update matches only if nobody *committed* (permanently saved) a change since the writer read the row. Inside the loop below, the code builds the prompt, writes the new attempt and its prompt tokens to SQLite first, and only then calls the model:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/repair/loop.py
@@ -99,13 +99,13 @@ A budget held in a variable resets when the process dies, and a loop that crashe
         reply = model.complete(messages, tools=[PATCH_TOOL])
 ```
 
-The attempt and its prompt tokens are committed before the call. If the process dies inside the call, the attempt is spent; what is lost is only that attempt's reply tokens and elapsed time, which were never measured. The exercise kills a run inside attempt 2, opens the database again as a new process would and finds `attempts` at 2. The resumed loop calls the model once more, for attempt 3, and then escalates.
+Because that write commits before the call, a crash inside the model call loses only the unmeasured reply tokens and elapsed time; the attempt itself stays spent.
 
-The same row keeps the history: each attempt's number, hypothesis, patch hash, result and failure signature. The next prompt lists earlier hypotheses and their results, much as Reflexion (Shinn et al., 2023) stores verbal reflections on earlier trials in an episodic memory buffer for later ones. Here the history also feeds two rules: a patch identical to an earlier one is refused, and a repeated failure stops the loop.
+The same row keeps the history: each attempt's number, hypothesis, *patch hash* (the fingerprint identifying its exact text, from lesson 21.3), result and failure signature. The next prompt lists earlier hypotheses and their results, much as Reflexion (Shinn et al., 2023) stores verbal reflections on earlier trials in an *episodic memory buffer* (a stored list of past attempts and outcomes) for later ones. Here the history also feeds two rules: a patch identical to an earlier one is refused, and a repeated failure stops the loop.
 
 ## Stop when the same failure comes back
 
-A failure's *signature* is the failing test, the error type and the relevant frame's file and line, which stay the same when only the values change. If two consecutive patches that ran produce the same signature, neither patch touched the cause, and a third is likely to miss it too:
+A failure's *signature* is the failing test, the error type and the relevant frame's file and line, which stay the same when only the values change. After a patch runs, the check below compares its signature with the previous run's signature and escalates immediately when both match, because neither patch touched the cause:
 
 ```python
 # file: examples/agent-engineering/src/agentlab/repair/loop.py
@@ -113,7 +113,9 @@ A failure's *signature* is the failing test, the error type and the relevant fra
             return RepairOutcome("escalated", f"repeated failure: attempts {previous.number} and {number} failed the same way ({feedback.signature})", original, spent)
 ```
 
-Changing the discount rate to 0.5 and then to 0.25 leaves ten units without a discount both times, so the loop escalates after two attempts instead of three. Escalation is the designed exit, not a crash: the outcome carries the original failure, every attempt's hypothesis and result, and the counters, which is what a person needs to start where the loop stopped.
+<Figure id="t21-loop-stop-rules" />
+
+Escalation is the designed exit, not a crash: the outcome hands a person the original failure, every attempt's hypothesis and result, and the counters, so they can start where the loop stopped.
 
 ## Run the exercise
 
