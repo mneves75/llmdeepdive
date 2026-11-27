@@ -61,8 +61,8 @@ The interface supports light, dark, and operating-system themes.
   backed by `examples/qwen-local-lab/` whose vendored rebuild and tests CI runs),
   paired with a bilingual `/roadmap/` route mapping all 35 tracks into
   16 levels, a 100-day path, portfolio blueprints and defense drills.
-- eleven interactive labs (memory budget, cost per token, sampling distribution,
-  video tokens, MoE balancing, context budget, repair-loop budget, trajectory
+- twelve interactive labs (memory budget, KV-cache design what-if, cost per
+  token, sampling distribution, video tokens, MoE balancing, context budget, repair-loop budget, trajectory
   checker, cost per successful task, RAG retrieval metrics, and AI system
   latency/cost budget) that server-render their defaults and stay usable without
   JavaScript.

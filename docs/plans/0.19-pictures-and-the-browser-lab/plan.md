@@ -209,3 +209,16 @@ Measurements (34.8) are environment-tested runs on this Mac, recorded with brows
 10. The security audit's findings are each fixed with a test, or accepted by name by the owner.
 
 Reported, not accepted on: total prose words, words per sentence and Flesch–Kincaid grade per locale against the baseline. No learners were tested.
+
+## Scope addition (owner, 2026-11-26)
+
+After the acceptance above was frozen, the owner added two items to this release. All earlier verification and security evidence predates them and was redone on the commit that includes them.
+
+1. Lesson 7.6 gets the `kv-whatif` lab, in both locales. It combines KV heads, caching layers, cache precision and context, and poses three design problems. Accepted when:
+   - every gate passes;
+   - without JavaScript, the defaults equal lesson 7.2's numbers in both locales, and the prose's 24 KiB same-geometry MHA figure stays;
+   - with JavaScript, each of the three problems flips to met by one change, a 32K context reads as a smaller job rather than a smaller design, and an invalid state blanks every result;
+   - screenshots exist at 390 and 1440 px, in EN and pt-BR, in the light and field editions.
+2. Lesson 7.6's MLA section gets a sourced table "KV per token across attention families", in its own commit. Every row is read from a config at a pinned revision, cited in both locales and held by a test, and the table is checked for scroll at the same widths.
+
+Accepted on the same terms as items 8 to 10 above.
