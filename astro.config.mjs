@@ -127,6 +127,8 @@ export default defineConfig({
         '.roadmap__done',
         '.track__back',
         '.track__next',
+        // A lab's design-problem status lines change with the reader's input.
+        '[data-kv-status]',
       ],
     },
   })],

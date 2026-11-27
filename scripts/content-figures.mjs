@@ -25,6 +25,7 @@ const VALID_VERDICTS = new Set(['keep', 'clarify', 'restructure', 'rewrite'])
 /** Lab ids, so a figure id can never collide with one. See the note below. */
 const LAB_IDS = [
   'kv-budget',
+  'kv-whatif',
   'cost-per-token',
   'video-tokens',
   'token-sampling',

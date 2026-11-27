@@ -4,7 +4,8 @@
  * One file per track, matching the disjoint-directory rule content lanes already
  * follow: a single large registry would collide on every concurrent lane.
  *
- * Every number here comes from `~/lib/model-facts`. Nothing is derived locally.
+ * Every number here comes from `~/lib/model-facts`, or from a `~/lib/lab-math`
+ * function called with those facts, so a figure and its lab cannot disagree.
  */
 import { formatNumber } from '~/lib/i18n'
 import {
@@ -14,6 +15,7 @@ import {
   QWEN,
   QWEN_COMMON_MISTAKE,
 } from '~/lib/model-facts'
+import { kvCounterfactual } from '~/lib/lab-math'
 import { SAMPLING_PRESETS, sampleDistribution } from '~/lib/sampling-math'
 import type { Figure, FigureStep, Localised } from './types'
 
@@ -64,11 +66,19 @@ const samplingBands = (temperature: number, topP: number): readonly FigureStep[]
 const THINKING_BANDS = samplingBands(1.0, 0.95)
 const INSTRUCT_BANDS = samplingBands(0.7, 0.8)
 
-/** 7.6: full-context KV GiB per KV head in Qwen3.8-27B's 16 full-attention layers. */
-const GIB_PER_KV_HEAD = QWEN.kvGibFullContext.value / QWEN.kvHeads.value
-const MHA_FULL_GIB = GIB_PER_KV_HEAD * QWEN.queryHeads.value
-const GQA_FULL_GIB = QWEN.kvGibFullContext.value
-const MQA_FULL_GIB = GIB_PER_KV_HEAD
+/** 7.6: full-context KV GiB for 24, 4 and 1 KV heads in Qwen3.8-27B's 16 full-attention layers. */
+const fullContextGib = (kvHeads: number): number => kvCounterfactual({
+  kvHeads,
+  headDim: QWEN.headDim.value,
+  cachedLayers: QWEN.attentionLayers.value,
+  totalLayers: QWEN.layers.value,
+  bytes: QWEN.bytesPerElement.value,
+  context: QWEN.contextNative.value,
+  stateMibPerRecurrentLayer: QWEN.deltaNetStateMib.value / QWEN.deltaNetLayers.value,
+}).gibPerSequence
+const MHA_FULL_GIB = fullContextGib(QWEN.queryHeads.value)
+const GQA_FULL_GIB = fullContextGib(QWEN.kvHeads.value)
+const MQA_FULL_GIB = fullContextGib(1)
 
 /** 7.8: 80 GB bf16 state pool (23.3 GiB = 23,859 MiB, owned by lesson 9.3). */
 const POOL_80GB_MIB = 23859

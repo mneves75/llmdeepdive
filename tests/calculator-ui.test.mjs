@@ -323,3 +323,114 @@ test('cost per success marks the successes field, not the runs, when successes e
   assert.equal(fraction.validation.textContent, 'success invalid')
   assert.equal(fractional.runs.attributes.get('aria-invalid'), 'true')
 })
+
+// Lesson 7.6's KV what-if lab. Status and verdict copy are placeholders that
+// name their key, so each assertion says which branch the script took.
+const WHATIF_FACTS = { kvHeads: '4', headDim: '256', cachedLayers: '16', totalLayers: '64', bytes: '2', context: '262144', stateMib: '3', queryHeads: '24' }
+const WHATIF_STATUS = { met: 'met {gib}', notYet: 'notYet {gib}', shrankJob: 'shrankJob', keepHeads: 'keepHeads' }
+const WHATIF_CHANGES = ['shipped', 'headsUp', 'headsDown', 'layersUp', 'layersDown', 'bytesDown', 'contextDown']
+
+function whatIf({ kvHeads = '4', cachedLayers = '16', bytes = '2', context = '262144' } = {}, isPt = false) {
+  const outputs = {
+    ...Object.fromEntries(['perLayer', 'perToken', 'perSequence', 'state'].map((name) => [name, { textContent: `server ${name}` }])),
+    against: { textContent: 'server against', dataset: { larger: '{n}× larger', smaller: '{n}× smaller', same: 'same' } },
+    verdict: { textContent: 'server verdict', dataset: Object.fromEntries(WHATIF_CHANGES.map((key) => [key, key])) },
+    ...Object.fromEntries(['p1', 'p2', 'p3'].map((name) => [name, { textContent: `server ${name}`, dataset: WHATIF_STATUS }])),
+    validation: { textContent: '', dataset: { invalid: 'whatif invalid' } },
+  }
+  const controls = {
+    kvHeads: new FakeSelect(kvHeads),
+    cachedLayers: new FakeSelect(cachedLayers),
+    bytes: new FakeSelect(bytes),
+    context: new FakeSelect(context),
+  }
+  const form = createForm({ controls, outputs, isPt, dataset: WHATIF_FACTS })
+  return { outputs, controls, form }
+}
+
+const text = (outputs) => Object.fromEntries(Object.entries(outputs).map(([name, element]) => [name, element.textContent]))
+
+test('KV what-if lab opens on the shipped design with every problem open', async () => {
+  const { outputs, form } = whatIf()
+  await runCalculator('src/components/labs/KvWhatIfLab.astro', form)
+  assert.deepEqual(text(outputs), {
+    perLayer: '4 KiB', perToken: '64 KiB', perSequence: '16 GiB', state: '144 MiB', against: 'same',
+    verdict: 'shipped', p1: 'notYet 16', p2: 'notYet 16', p3: 'notYet 16', validation: '',
+  })
+})
+
+test('KV what-if lab accepts each single change that halves the cache, and names its cost', async () => {
+  for (const [change, perSequence, state, verdict] of [
+    [{ bytes: '1' }, '8 GiB', '144 MiB', 'bytesDown'],
+    [{ kvHeads: '1' }, '4 GiB', '144 MiB', 'headsDown'],
+    [{ cachedLayers: '8' }, '8 GiB', '168 MiB', 'layersDown'],
+  ]) {
+    const { outputs, form } = whatIf(change)
+    await runCalculator('src/components/labs/KvWhatIfLab.astro', form)
+    assert.equal(outputs.perSequence.textContent, perSequence, JSON.stringify(change))
+    assert.equal(outputs.p1.textContent, `met ${perSequence.replace(' GiB', '')}`, JSON.stringify(change))
+    assert.equal(outputs.state.textContent, state)
+    assert.equal(outputs.verdict.textContent, verdict)
+  }
+})
+
+test('KV what-if lab finds MHA in every layer at 24 times the cache, with no state', async () => {
+  const { outputs, form } = whatIf({ kvHeads: '24', cachedLayers: '64' })
+  await runCalculator('src/components/labs/KvWhatIfLab.astro', form)
+  assert.equal(outputs.perToken.textContent, '1,536 KiB')
+  assert.equal(outputs.perSequence.textContent, '384 GiB')
+  assert.equal(outputs.against.textContent, '24× larger')
+  assert.equal(outputs.state.textContent, '0 MiB')
+  assert.equal(outputs.p2.textContent, 'met 384')
+  assert.equal(outputs.p1.textContent, 'notYet 384')
+  assert.equal(outputs.verdict.textContent, 'headsUp layersUp')
+})
+
+test('KV what-if lab reaches MQA with 4 KV heads only by combining two axes', async () => {
+  const combined = whatIf({ cachedLayers: '8', bytes: '1' })
+  await runCalculator('src/components/labs/KvWhatIfLab.astro', combined.form)
+  assert.equal(combined.outputs.p3.textContent, 'met 4')
+  assert.equal(combined.outputs.verdict.textContent, 'layersDown bytesDown')
+
+  const mqa = whatIf({ kvHeads: '1' })
+  await runCalculator('src/components/labs/KvWhatIfLab.astro', mqa.form)
+  assert.equal(mqa.outputs.perSequence.textContent, '4 GiB')
+  assert.equal(mqa.outputs.p3.textContent, 'keepHeads')
+})
+
+test('KV what-if lab says a shorter context shrank the job, not the design', async () => {
+  const { outputs, form } = whatIf({ context: '32768' })
+  await runCalculator('src/components/labs/KvWhatIfLab.astro', form)
+  assert.equal(outputs.perSequence.textContent, '2 GiB')
+  assert.equal(outputs.against.textContent, '8× smaller')
+  assert.deepEqual([outputs.p1.textContent, outputs.p2.textContent, outputs.p3.textContent], ['shrankJob', 'shrankJob', 'shrankJob'])
+  assert.equal(outputs.verdict.textContent, 'contextDown')
+})
+
+test('KV what-if lab blanks every result when a select has no option chosen, then recovers', async () => {
+  // A browser reads such a select as '' (Number('') is 0, not NaN).
+  const { outputs, controls, form } = whatIf({ kvHeads: '' })
+  await runCalculator('src/components/labs/KvWhatIfLab.astro', form)
+  assert.deepEqual(text(outputs), {
+    perLayer: '—', perToken: '—', perSequence: '—', state: '—', against: '—',
+    verdict: '', p1: '', p2: '', p3: '', validation: 'whatif invalid',
+  })
+
+  controls.kvHeads.value = '4'
+  form.listeners.get('change')()
+  assert.equal(outputs.perSequence.textContent, '16 GiB')
+  assert.equal(outputs.validation.textContent, '')
+})
+
+test('KV what-if lab writes pt-BR decimals and grouping', async () => {
+  const { outputs, form } = whatIf({ kvHeads: '1', cachedLayers: '8', bytes: '1', context: '32768' }, true)
+  await runCalculator('src/components/labs/KvWhatIfLab.astro', form)
+  assert.equal(outputs.perLayer.textContent, '0,5 KiB')
+  assert.equal(outputs.perSequence.textContent, '0,125 GiB')
+  assert.equal(outputs.against.textContent, '128× smaller')
+  assert.equal(outputs.state.textContent, '168 MiB')
+
+  const big = whatIf({ kvHeads: '24', cachedLayers: '64' }, true)
+  await runCalculator('src/components/labs/KvWhatIfLab.astro', big.form)
+  assert.equal(big.outputs.perToken.textContent, '1.536 KiB')
+})

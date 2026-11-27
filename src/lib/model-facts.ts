@@ -28,7 +28,7 @@
  */
 
 /** Where a number came from, so a reviewer can check it without leaving the file. */
-import { dispatchBytes, moeParameterBudget } from './moe-math'
+import { dispatchBytes, moeParameterBudget } from './moe-math.ts'
 
 export type FactSource = 'config' | 'card' | 'tokenizer' | 'derived' | 'measured'
 export interface ModelFact {

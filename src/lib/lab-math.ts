@@ -39,6 +39,87 @@ export function kvBudget(input: KvBudgetInput): { weightsGiB: number; poolGiB: n
   return { weightsGiB, poolGiB, perSeqMiB, seats, verdict }
 }
 
+export interface KvCounterfactualInput {
+  kvHeads: number
+  headDim: number
+  /** Layers that run full attention, the only ones that cache per token. */
+  cachedLayers: number
+  totalLayers: number
+  /** Bytes per cached element: 2 for bf16, 1 for fp8. */
+  bytes: number
+  context: number
+  /** The fixed state each non-attention (Gated DeltaNet) layer keeps instead. */
+  stateMibPerRecurrentLayer: number
+}
+
+export interface KvCounterfactual { kibPerLayer: number; kibPerToken: number; gibPerSequence: number; stateMib: number }
+
+/**
+ * Lesson 7.2's KV-cache derivation with every design axis exposed. Called with
+ * Qwen3.8-27B's config it is the real model; any other call is a
+ * counterfactual design, not a model anyone ships.
+ */
+export function kvCounterfactual(input: KvCounterfactualInput): KvCounterfactual {
+  const kibPerLayer = (input.kvHeads * input.headDim * 2 * input.bytes) / 1024
+  const kibPerToken = kibPerLayer * input.cachedLayers
+  return {
+    kibPerLayer,
+    kibPerToken,
+    gibPerSequence: (kibPerToken * input.context) / 1024 ** 2,
+    stateMib: (input.totalLayers - input.cachedLayers) * input.stateMibPerRecurrentLayer,
+  }
+}
+
+export type KvProblemStatus = 'met' | 'notYet' | 'shrankJob' | 'keepHeads'
+export type KvChange = 'shipped' | 'headsUp' | 'headsDown' | 'layersUp' | 'layersDown' | 'bytesDown' | 'contextDown'
+
+export interface KvWhatIf {
+  result: KvCounterfactual
+  /** The design against the shipped cache: `factor` times larger or smaller. */
+  against: { direction: 'larger' | 'smaller' | 'same'; factor: number }
+  /** Halve the cache; cache `mhaEverywhere` times more; reach MQA's cache with the shipped KV heads. */
+  problems: readonly [KvProblemStatus, KvProblemStatus, KvProblemStatus]
+  /** One entry per axis that differs from the shipped design, in control order. */
+  changes: KvChange[]
+}
+
+/**
+ * Lesson 7.6's lab: a design judged against the shipped one. The three design
+ * problems are set at the shipped context, so a shorter context answers none of
+ * them, and their targets are computed here rather than written as numbers.
+ */
+export function kvWhatIf(shipped: KvCounterfactualInput, design: KvCounterfactualInput, queryHeads: number): KvWhatIf {
+  const result = kvCounterfactual(design)
+  const gib = result.gibPerSequence
+  const base = kvCounterfactual(shipped).gibPerSequence
+  const mqa = kvCounterfactual({ ...shipped, kvHeads: 1 }).gibPerSequence
+  const mhaEverywhere = kvCounterfactual({ ...shipped, kvHeads: queryHeads, cachedLayers: shipped.totalLayers }).gibPerSequence
+  const judge = (met: boolean): KvProblemStatus => (design.context < shipped.context ? 'shrankJob' : met ? 'met' : 'notYet')
+
+  const changes: KvChange[] = []
+  if (design.kvHeads !== shipped.kvHeads) changes.push(design.kvHeads > shipped.kvHeads ? 'headsUp' : 'headsDown')
+  if (design.cachedLayers !== shipped.cachedLayers) changes.push(design.cachedLayers > shipped.cachedLayers ? 'layersUp' : 'layersDown')
+  if (design.bytes < shipped.bytes) changes.push('bytesDown')
+  if (design.context < shipped.context) changes.push('contextDown')
+
+  const ratio = gib / base
+  return {
+    result,
+    against: ratio === 1 ? { direction: 'same', factor: 1 } : ratio > 1 ? { direction: 'larger', factor: ratio } : { direction: 'smaller', factor: 1 / ratio },
+    problems: [
+      judge(gib <= base / 2),
+      judge(gib === mhaEverywhere),
+      design.kvHeads === shipped.kvHeads ? judge(gib <= mqa) : 'keepHeads',
+    ],
+    changes: changes.length > 0 ? changes : ['shipped'],
+  }
+}
+
+/** Cache sizes in this lab are exact binary fractions; three decimals show every one. */
+export function upToThreeDecimals(locale: NumberLocale): Intl.NumberFormat {
+  return new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { maximumFractionDigits: 3 })
+}
+
 export const HOURS_PER_MONTH = 730
 
 export type CostVerdict = 'managed' | 'self' | 'close' | 'tie'
