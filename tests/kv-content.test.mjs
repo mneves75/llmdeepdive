@@ -7,13 +7,15 @@
  * stages on purpose; and both lessons must print the numbers it returns, in
  * both locales, inside the `##` section that makes each claim (a match
  * elsewhere in the file cannot cover for a corrupted copy, the lesson
- * `moe-content.test.mjs` learned first).
+ * `moe-content.test.mjs` learned first). The table of peer models in 7.6's MLA
+ * section is held to `KV_PEER_CONFIGS` cell by cell, so two swapped rows or an
+ * English decimal point in pt-BR fail.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { kvCounterfactual } from '../src/lib/lab-math.ts'
-import { QWEN, QWEN_COMMON_MISTAKE } from '../src/lib/model-facts.ts'
+import { KV_PEER_CONFIGS, QWEN, QWEN_COMMON_MISTAKE } from '../src/lib/model-facts.ts'
 
 const LOCALES = ['en', 'pt-br']
 const SHIPPED = {
@@ -38,6 +40,7 @@ const SECTIONS = {
   '7.6-mqa-gqa-and-mla': {
     cost: { en: 'What a KV head costs', 'pt-br': 'Quanto custa um KV head' },
     mqa: { en: 'MQA: one shared key/value head', 'pt-br': 'MQA: um único key/value head compartilhado' },
+    mla: { en: 'MLA: caching a compressed summary', 'pt-br': 'MLA: guardar um resumo comprimido' },
   },
 }
 
@@ -99,5 +102,69 @@ test('lesson 7.6 prints same-geometry MHA, the shipped GQA and MQA from the same
     assertPrints(mqaSection, mqa.kibPerLayer, 'KiB', locale, '7.6 MQA')
     assertPrints(mqaSection, mqa.kibPerToken, 'KiB', locale, '7.6 MQA')
     assertPrints(mqaSection, mqa.gibPerSequence, 'GiB', locale, '7.6 MQA')
+  }
+})
+
+const COURSE_ROW = {
+  model: 'Qwen3.8-27B',
+  attention: 'GQA + Gated DeltaNet',
+  geometry: { kind: 'kv', kvHeads: QWEN.kvHeads.value, headDim: QWEN.headDim.value },
+  layers: QWEN.layers.value,
+  cachedLayers: QWEN.attentionLayers.value,
+  kibPerToken: QWEN.kvKibPerToken.value,
+}
+const TABLE_WORDS = {
+  en: { kv: 'K and V', latent: 'latent', rope: 'RoPE key', of: 'of' },
+  'pt-br': { kv: 'K e V', latent: 'latente', rope: 'key de RoPE', of: 'de' },
+}
+
+/** The cells a row must print, in the locale's words and number format. */
+function expectedCells(row, locale) {
+  const words = TABLE_WORDS[locale]
+  const number = new Intl.NumberFormat(locale === 'pt-br' ? 'pt-BR' : 'en-US', { maximumFractionDigits: 3 })
+  const g = row.geometry
+  const stored = g.kind === 'kv'
+    ? `${words.kv}, ${g.kvHeads} heads × ${g.headDim}`
+    : `${words.latent} ${g.latentDim} + ${words.rope} ${g.ropeDim}`
+  return [row.model, row.attention, stored, `${row.cachedLayers} ${words.of} ${row.layers}`, `${number.format(row.kibPerToken)} KiB`]
+}
+
+/** Body rows of the section's one GFM table, in order, keyed by the model cell. */
+function tableRows(text) {
+  const lines = text.split('\n').filter((line) => line.startsWith('|'))
+  return new Map(lines.slice(2).map((line) => {
+    const cells = line.slice(1, -1).split('|').map((cell) => cell.trim())
+    return [cells[0], cells]
+  }))
+}
+
+test('every peer row is the arithmetic of its own config fields', () => {
+  for (const row of KV_PEER_CONFIGS) {
+    const g = row.geometry
+    const kib = g.kind === 'kv'
+      ? kvCounterfactual({ ...SHIPPED, kvHeads: g.kvHeads, headDim: g.headDim, cachedLayers: row.cachedLayers, totalLayers: row.layers, bytes: 2 }).kibPerToken
+      : ((g.latentDim + g.ropeDim) * 2 * row.cachedLayers) / 1024
+    assert.equal(kib, row.kibPerToken, row.model)
+  }
+  assert.equal(COURSE_ROW.kibPerToken, shipped.kibPerToken)
+})
+
+test('lesson 7.6 tabulates every peer config and the course model, cell by cell, in both locales', () => {
+  const rows = [...KV_PEER_CONFIGS.slice(0, 4), COURSE_ROW, ...KV_PEER_CONFIGS.slice(4)]
+  for (const locale of LOCALES) {
+    const table = tableRows(section(locale, '7.6-mqa-gqa-and-mla', 'mla'))
+    assert.deepEqual([...table.keys()], rows.map((row) => row.model), `${locale}: table rows`)
+    for (const row of rows) assert.deepEqual(table.get(row.model), expectedCells(row, locale), `${locale}: ${row.model}`)
+  }
+})
+
+test('lesson 7.6 cites every peer config at the revision the table was read from', () => {
+  for (const locale of LOCALES) {
+    const file = new URL(`../src/content/lessons/${locale}/7-inference-and-efficiency/7.6-mqa-gqa-and-mla.mdx`, import.meta.url)
+    const frontmatter = readFileSync(file, 'utf8').split(/^---$/mu)[1]
+    for (const { repo, revision } of KV_PEER_CONFIGS) {
+      const url = `https://huggingface.co/${repo}/blob/${revision}/config.json`
+      assert.ok(frontmatter.includes(`url: "${url}"`), `${locale}: cite ${url}`)
+    }
   }
 })
