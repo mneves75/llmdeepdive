@@ -217,8 +217,11 @@ After the acceptance above was frozen, the owner added two items to this release
 1. Lesson 7.6 gets the `kv-whatif` lab, in both locales. It combines KV heads, caching layers, cache precision and context, and poses three design problems. Accepted when:
    - every gate passes;
    - without JavaScript, the defaults equal lesson 7.2's numbers in both locales, and the prose's 24 KiB same-geometry MHA figure stays;
-   - with JavaScript, each of the three problems flips to met by one change, a 32K context reads as a smaller job rather than a smaller design, and an invalid state blanks every result;
+   - with JavaScript, each of the three passing answers flips the status line to met (problem 1 is one change from the defaults; problems 2 and 3 are two changes each, by design), a 32K context reads as a smaller job rather than a smaller design, and an invalid state blanks every result;
    - screenshots exist at 390 and 1440 px, in EN and pt-BR, in the light and field editions.
 2. Lesson 7.6's MLA section gets a sourced table "KV per token across attention families", in its own commit. Every row is read from a config at a pinned revision, cited in both locales and held by a test, and the table is checked for scroll at the same widths.
+   - Its last column links each row's config at that revision. One sentence says why sliding-window and attention-free models are left out.
+   - Every row agrees with rasbt/llm-architecture-gallery at `660cc18` (Apache-2.0), cited in both locales; no gallery prose or image is copied.
+   - Llama 3 8B and Llama 3.1 405B, two of the planned candidates, were dropped: their configs are gated (HTTP 401 on 2026-11-26), so they cannot be re-read at a pinned revision. Phi-4 and GLM-4.5 cover dense GQA and GQA with mixture of experts.
 
 Accepted on the same terms as items 8 to 10 above.

@@ -437,8 +437,17 @@ export const LLAMA_CPP_QUANT_BENCH_MODEL = 'Llama-3.1-8B'
  *     (Mamba-2) and 23 `E` (expert feed-forward) among its 52 layers, per
  *     `configuration_nemotron_h.py` at the same revision.
  *
- * Cross-check: rasbt/llm-architecture-gallery at 660cc18 (Apache-2.0) lists the
- * same KV per token for Phi-4, GLM-4.5, DeepSeek-V3 (68.6) and Nemotron 3 Nano.
+ * The Qwen3.8-27B row cites the config revision track 7 already cites
+ * (`QWEN_CONFIG`); on 2026-11-26 that config.json was byte-identical to main's
+ * (3756181) and its KV fields matched `QWEN`.
+ *
+ * Cross-check: `KV_TABLE_GALLERY` lists the same KV per token for all seven rows
+ * of the table, printed to one decimal (DeepSeek-V3 as 68.6).
+ *
+ * The plan's candidates also named Llama 3 8B and Llama 3.1 405B. Their configs
+ * are gated (meta-llama, manual approval; HTTP 401 without an accepted licence
+ * on 2026-11-26), so they could not be re-read at a pinned revision. Phi-4
+ * (dense GQA) and GLM-4.5 (GQA mixture of experts) cover those two families.
  */
 export type KvPeerGeometry =
   | { readonly kind: 'kv'; readonly kvHeads: number; readonly headDim: number }
@@ -518,6 +527,20 @@ export const KV_PEER_CONFIGS = [
     kibPerToken: 6,
   },
 ] as const satisfies readonly KvPeerConfig[]
+
+/** The Qwen3.8-27B config revision track 7 cites, lesson 7.2 and 7.6's table alike. */
+export const QWEN_CONFIG = {
+  repo: 'Qwen/Qwen3.8-27B',
+  revision: '1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0',
+} as const
+
+/** The independent catalog lesson 7.6's table was cross-checked against, cited there. */
+export const KV_TABLE_GALLERY = {
+  repo: 'rasbt/llm-architecture-gallery',
+  revision: '660cc1886a9d2a009c46ecc8e17e98b1075f58b2',
+  file: 'models.yml',
+  licence: 'Apache-2.0',
+} as const
 
 /**
  * The instructive wrong turn in lesson 7.2: assuming every layer caches KV.

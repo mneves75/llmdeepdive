@@ -8,14 +8,14 @@
  * both locales, inside the `##` section that makes each claim (a match
  * elsewhere in the file cannot cover for a corrupted copy, the lesson
  * `moe-content.test.mjs` learned first). The table of peer models in 7.6's MLA
- * section is held to `KV_PEER_CONFIGS` cell by cell, so two swapped rows or an
- * English decimal point in pt-BR fail.
+ * section is held to `KV_PEER_CONFIGS` cell by cell, so two swapped rows, an
+ * English decimal point in pt-BR or a revision link to the wrong commit fail.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { kvCounterfactual } from '../src/lib/lab-math.ts'
-import { KV_PEER_CONFIGS, QWEN, QWEN_COMMON_MISTAKE } from '../src/lib/model-facts.ts'
+import { KV_PEER_CONFIGS, KV_TABLE_GALLERY, QWEN, QWEN_COMMON_MISTAKE, QWEN_CONFIG } from '../src/lib/model-facts.ts'
 
 const LOCALES = ['en', 'pt-br']
 const SHIPPED = {
@@ -112,7 +112,9 @@ const COURSE_ROW = {
   layers: QWEN.layers.value,
   cachedLayers: QWEN.attentionLayers.value,
   kibPerToken: QWEN.kvKibPerToken.value,
+  ...QWEN_CONFIG,
 }
+const configUrl = ({ repo, revision }) => `https://huggingface.co/${repo}/blob/${revision}/config.json`
 const TABLE_WORDS = {
   en: { kv: 'K and V', latent: 'latent', rope: 'RoPE key', of: 'of' },
   'pt-br': { kv: 'K e V', latent: 'latente', rope: 'key de RoPE', of: 'de' },
@@ -126,7 +128,8 @@ function expectedCells(row, locale) {
   const stored = g.kind === 'kv'
     ? `${words.kv}, ${g.kvHeads} heads × ${g.headDim}`
     : `${words.latent} ${g.latentDim} + ${words.rope} ${g.ropeDim}`
-  return [row.model, row.attention, stored, `${row.cachedLayers} ${words.of} ${row.layers}`, `${number.format(row.kibPerToken)} KiB`]
+  const revision = `[\`${row.revision.slice(0, 7)}\`](${configUrl(row)})`
+  return [row.model, row.attention, stored, `${row.cachedLayers} ${words.of} ${row.layers}`, `${number.format(row.kibPerToken)} KiB`, revision]
 }
 
 /** Body rows of the section's one GFM table, in order, keyed by the model cell. */
@@ -158,13 +161,16 @@ test('lesson 7.6 tabulates every peer config and the course model, cell by cell,
   }
 })
 
-test('lesson 7.6 cites every peer config at the revision the table was read from', () => {
+test('lesson 7.6 cites every row config at the revision the table was read from, and the gallery it was checked against', () => {
+  const gallery = KV_TABLE_GALLERY
+  const urls = [
+    ...[...KV_PEER_CONFIGS, COURSE_ROW].map(configUrl),
+    `https://github.com/${gallery.repo}/blob/${gallery.revision}/${gallery.file}`,
+  ]
   for (const locale of LOCALES) {
     const file = new URL(`../src/content/lessons/${locale}/7-inference-and-efficiency/7.6-mqa-gqa-and-mla.mdx`, import.meta.url)
     const frontmatter = readFileSync(file, 'utf8').split(/^---$/mu)[1]
-    for (const { repo, revision } of KV_PEER_CONFIGS) {
-      const url = `https://huggingface.co/${repo}/blob/${revision}/config.json`
-      assert.ok(frontmatter.includes(`url: "${url}"`), `${locale}: cite ${url}`)
-    }
+    for (const url of urls) assert.ok(frontmatter.includes(`url: "${url}"`), `${locale}: cite ${url}`)
+    assert.ok(frontmatter.includes(`revision ${gallery.revision.slice(0, 7)} (${gallery.licence})`), `${locale}: gallery licence and pin`)
   }
 })
