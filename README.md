@@ -147,6 +147,9 @@ defense (including discrete masked and block text diffusion in lesson 33.2),
 and Track 34 — running Qwen3-0.6B completely inside one browser tab with
 [`examples/qwen-local-lab/`](examples/qwen-local-lab/), whose reproducible npm
 vendor rebuild, single-file build, and worker/Python tests run in CI.
+Lesson 7.6 adds a `kv-whatif` lab that combines four KV-cache design axes (KV heads,
+attention layers, cache precision and context) and a table of KV cache per token for
+seven models, each row read from its pinned `config.json`.
 Lesson 7.4 adds an interactive next-token `token-sampling` lab (temperature, top-k,
 top-p and min-p), the home page adds a zero-JS 5-stage forward-pass pipeline
 walkthrough, and a bilingual [`/roadmap/`](https://llmdeepdive.com/roadmap/)
