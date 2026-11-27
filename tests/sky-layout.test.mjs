@@ -43,33 +43,27 @@ const { tracks, lessons } = corpus('en')
 const sky = buildSky(tracks, lessons)
 
 // The planned catalogs across releases (agent-engineering + engineering + 0.19):
-// every planned track and lesson laid out so the full 35-track sky is proven
-// both from the published corpus and from the planned inventories.
+// every planned track and lesson laid out directly from the inventories (replacing
+// matching published entries so planned inventory records are actually exercised).
 function plannedCatalog() {
   const inventories = [
     JSON.parse(readFileSync('docs/specs/agent-engineering/inventory.json', 'utf8')),
     JSON.parse(readFileSync('docs/plans/ai-engineering-roadmap/inventory.json', 'utf8')),
     JSON.parse(readFileSync('docs/plans/0.19-pictures-and-the-browser-lab/inventory.json', 'utf8')),
   ]
-  const extraTracks = []
-  const extraLessons = []
-  const ids = new Set(tracks.map((track) => track.id))
-  const known = new Set(lessons.map((lesson) => lesson.id))
+  const trackMap = new Map(tracks.map((track) => [track.id, track]))
+  const lessonMap = new Map(lessons.map((lesson) => [lesson.id, lesson]))
   for (const inventory of inventories) {
     for (const track of inventory.tracks) {
-      if (ids.has(track.id)) continue
-      ids.add(track.id)
-      extraTracks.push({ id: track.id, order: track.order, tier: track.tier, title: track.titleEn, part: track.part })
+      trackMap.set(track.id, { id: track.id, order: track.order, tier: track.tier, title: track.titleEn, part: track.part })
     }
     for (const lesson of inventory.lessons) {
-      if (known.has(lesson.id)) continue
-      known.add(lesson.id)
-      extraLessons.push({ id: lesson.id, track: lesson.track, order: lesson.order, prerequisites: lesson.prerequisites })
+      lessonMap.set(lesson.id, { id: lesson.id, track: lesson.track, order: lesson.order, prerequisites: lesson.prerequisites })
     }
   }
   return {
-    tracks: [...tracks, ...extraTracks],
-    lessons: [...lessons, ...extraLessons],
+    tracks: [...trackMap.values()],
+    lessons: [...lessonMap.values()],
   }
 }
 const planned = plannedCatalog()

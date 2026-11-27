@@ -133,18 +133,22 @@ class BuildTest(unittest.TestCase):
         outside = self.root / 'secret.txt'
         outside.write_text('do-not-serve')
         (self.root / 'dist/escape.txt').symlink_to(outside)
+        sub = self.root / 'dist/sub'
+        sub.mkdir()
+        (sub / 'index.html').symlink_to(outside)
         handler = partial(serve.Handler, directory=str(self.root / 'dist'), headers=serve.read_headers(self.root / 'dist/_headers'))
         server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            conn = http.client.HTTPConnection('127.0.0.1', server.server_address[1], timeout=5)
-            conn.request('GET', '/escape.txt')
-            resp = conn.getresponse()
-            body = resp.read()
-            conn.close()
-            self.assertEqual(resp.status, 403)
-            self.assertNotIn(b'do-not-serve', body)
+            for path in ('/escape.txt', '/sub/'):
+                conn = http.client.HTTPConnection('127.0.0.1', server.server_address[1], timeout=5)
+                conn.request('GET', path)
+                resp = conn.getresponse()
+                body = resp.read()
+                conn.close()
+                self.assertEqual(resp.status, 403, path)
+                self.assertNotIn(b'do-not-serve', body, path)
         finally:
             server.shutdown()
             server.server_close()

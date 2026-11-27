@@ -23,12 +23,25 @@ class Handler(SimpleHTTPRequestHandler):
         self.site_headers = headers
         super().__init__(*args, **kwargs)
 
+    @staticmethod
+    def _is_within_root(target, root):
+        resolved = target.resolve()
+        return resolved == root or root in resolved.parents
+
     def send_head(self):
         root = Path(self.directory).resolve()
-        candidate = Path(self.translate_path(self.path)).resolve()
-        if candidate != root and root not in candidate.parents:
+        candidate = Path(self.translate_path(self.path))
+        if not self._is_within_root(candidate, root):
             self.send_error(403, 'Forbidden')
             return None
+        if candidate.is_dir():
+            for index in getattr(self, 'index_pages', ('index.html', 'index.htm')):
+                index_path = candidate / index
+                if index_path.exists() or index_path.is_symlink():
+                    if not self._is_within_root(index_path, root):
+                        self.send_error(403, 'Forbidden')
+                        return None
+                    break
         return super().send_head()
 
     def end_headers(self):
