@@ -34,6 +34,7 @@ pnpm a11y:contrast       # palette stays above accessible contrast ratios; dark 
                          #   and inks stay neutral, with a visible lightness ladder
 pnpm render:check        # every route in Chromium, WebKit, Firefox: 320px overflow,
                          #   duplicate ids, page errors, scroll regions, unnamed controls,
+                         #   select options clipped in their closed box,
                          #   un-underlined links in running text, inline-maths baseline,
                          #   explorer leave-mid-boot and failed-import handling
                          #   (needs `pnpm build` and `pnpm exec playwright install`)

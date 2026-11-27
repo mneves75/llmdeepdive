@@ -14,7 +14,8 @@
  * page while the 3D stage is still loading, which must not be reported as a
  * failure, and breaks the stage chunk, which must be. Figure motion must replay
  * on every step change within 1.5s, end fully opaque, follow the page on a
- * single-panel grid, and stay off under reduced motion and in print.
+ * single-panel grid, and stay off under reduced motion and in print. A closed
+ * select must show every option label whole at 320px.
  *
  * The site uses system fonts only, so layout depends on what a visitor has
  * installed: CI's Linux fonts overflowed a pt-BR heading that condensed Avenir
@@ -118,6 +119,25 @@ async function layoutFailures(page) {
     const unmarked = [...document.querySelectorAll('main a[href]')]
       .filter((link) => shown(link) && getComputedStyle(link).display === 'inline' && !getComputedStyle(link).textDecorationLine.includes('underline') && inText(link))
     for (const link of unmarked.slice(0, 5)) failures.push(`link in running text without an underline: ${link.textContent.trim().slice(0, 30)}`)
+    // A closed <select> shows its option in a box that does not wrap and has
+    // no overflow of its own: a label wider than the box is cut silently, with
+    // the page still fitting 320px. Lab labels clipped like that in 0.19.
+    // Measure each option in a probe carrying the select's font against the
+    // box minus padding (the custom arrow sits inside the end padding).
+    const probe = document.createElement('span')
+    probe.style.cssText = 'position: absolute; visibility: hidden; white-space: pre; inset-block-start: 0; inset-inline-start: 0'
+    document.body.append(probe)
+    for (const select of [...document.querySelectorAll('select')].filter((control) => shown(control) && !control.multiple && control.size <= 1)) {
+      const style = getComputedStyle(select)
+      for (const property of ['fontFamily', 'fontSize', 'fontStyle', 'fontWeight', 'fontStretch', 'letterSpacing', 'fontVariantNumeric', 'fontFeatureSettings']) probe.style[property] = style[property]
+      const box = select.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight)
+      for (const option of select.options) {
+        probe.textContent = option.text
+        const width = probe.getBoundingClientRect().width
+        if (width > box + 0.5) failures.push(`select option clipped (${Math.round(width)}px in ${Math.round(box)}px): ${option.text.slice(0, 40)}`)
+      }
+    }
+    probe.remove()
     return failures
   })
 }
@@ -381,6 +401,7 @@ async function checkEngine(name, base, allRoutes, wideFonts = false) {
             '<button data-planted="hidden-glyph"><span aria-hidden="true">×</span></button>',
             '<p>Read <a href="#" style="text-decoration: none">planted direct link</a> first.</p>',
             '<p>Read <em><a href="#" style="text-decoration: none">planted wrapped link</a></em> first.</p>',
+            '<select aria-label="Planted" style="inline-size: 6rem"><option>planted option label far too long to fit</option></select>',
           ].join('')
           document.querySelector('main')?.append(planted)
         })
@@ -749,6 +770,7 @@ try {
       `${engine} ${checked[0]}: unnamed control: <button data-planted="hidden-glyph"`,
       `${engine} ${checked[0]}: link in running text without an underline: planted direct link`,
       `${engine} ${checked[0]}: link in running text without an underline: planted wrapped link`,
+      `${engine} ${checked[0]}: select option clipped`,
       ...(engine === 'chromium' ? [`chromium+wide-fonts ${checked[0]}: page overflows`] : []),
       ...BASELINE_ROUTES.map((route) => `${engine} ${route} @1280: inline maths moves`),
       `${engine} / @no-js: mechanics stage 1 visible panels`,
